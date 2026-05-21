@@ -30,7 +30,7 @@ def main() -> int:
 
     # Vor dem job_start den File-Lock probieren - wenn der Web-Trigger
     # gerade den Scraper laufen lässt, sauber rausgehen, nicht doppelt
-    # IMAP-Login + Telegram-Spam machen.
+    # IMAP-Login + Download machen.
     with file_lock_or_none("scraper") as flock:
         if flock is None:
             logger.info("Scraper-Job (CLI): anderer Prozess hält den Lock - skip")

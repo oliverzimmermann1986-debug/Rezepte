@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from ..config_store import get_config
-from ..core.notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -271,31 +270,6 @@ def run_job(dry_run: bool = False, pairs_filter: list = None) -> Dict:
         "total_pairs": len(pairs),
         "total_transferred": total_transferred,
     }
-
-    # Telegram-Bericht
-    tg_cfg = cfg.get("telegram", default={}) or {}
-    notifier = TelegramNotifier(
-        tg_cfg.get("backup_bot_token", "") or tg_cfg.get("recipe_bot_token", ""),
-        tg_cfg.get("backup_chat_id", "") or tg_cfg.get("recipe_chat_id", ""),
-        label="backup",
-    )
-    if notifier.enabled and tg_cfg.get("enabled", True):
-        lines = ["📊 <b>Backup Bericht</b>", ""]
-        for r in results:
-            ok = "✅" if r.get("ok") else "❌"
-            lines.append(f"{ok} <b>{r['name']}</b>")
-            lines.append(f"☁️ {r.get('cloud_files', 0)} Dateien · {r.get('cloud_size','?')}")
-            lines.append(f"🖥 {r.get('local_files_after', 0)} Dateien · {r.get('local_size_after','?')}")
-            if r.get("warning"):
-                lines.append(f"⚠️ {r['warning']}")
-            if r.get("error"):
-                lines.append(f"❗ {r['error']}")
-            lines.append("")
-        lines.append(f"⏱ {int(duration // 60)}m {int(duration % 60)}s · "
-                       f"{ok_count}/{len(pairs)} OK")
-        if dry_run:
-            lines.insert(1, "🔍 (DRY-RUN)")
-        notifier.send("\n".join(lines))
 
     return summary
 

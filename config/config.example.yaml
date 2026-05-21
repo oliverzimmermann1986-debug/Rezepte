@@ -69,20 +69,6 @@ ai:
   fallback_threshold: 0.5          # fallback-Modell: darunter → Pending
   description_min_length: 20
 
-# Telegram - NUR Benachrichtigungen, KEIN Reply-Handling mehr!
-# Pending-Items werden im Web-Interface verwaltet.
-telegram:
-  enabled: true
-  # Rezept-Benachrichtigungen
-  recipe_bot_token: ""
-  recipe_chat_id: ""
-  # Hochzeit-Benachrichtigungen (optional - sonst Recipe-Bot)
-  wedding_bot_token: ""
-  wedding_chat_id: ""
-  # Backup-Job Benachrichtigungen
-  backup_bot_token: ""
-  backup_chat_id: ""
-
 # yt-dlp
 ytdlp:
   binary: /opt/scrapper/venv/bin/yt-dlp

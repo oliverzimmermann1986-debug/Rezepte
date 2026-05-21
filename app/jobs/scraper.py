@@ -23,7 +23,6 @@ from ..db import get_db
 from ..core.analyzer import OllamaAnalyzer, RecipeAnalysis, WeddingAnalysis
 from ..core.downloader import VideoDownloader
 from ..core.email_processor import MailAccount, EmailRouter
-from ..core.notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -87,18 +86,6 @@ class ScraperJob:
         self.downloader = VideoDownloader(
             cfg.get("ytdlp", "binary", default="/opt/scrapper/venv/bin/yt-dlp"),
             self.temp_dir,
-        )
-
-        # Telegram
-        tg = cfg.get("telegram", default={}) or {}
-        self.tg_enabled = bool(tg.get("enabled", True))
-        self.recipe_bot = TelegramNotifier(
-            tg.get("recipe_bot_token", ""), tg.get("recipe_chat_id", ""), label="recipe",
-        )
-        self.wedding_bot = TelegramNotifier(
-            tg.get("wedding_bot_token", "") or tg.get("recipe_bot_token", ""),
-            tg.get("wedding_chat_id", "") or tg.get("recipe_chat_id", ""),
-            label="wedding",
         )
 
         # E-Mail Konten
@@ -224,23 +211,11 @@ class ScraperJob:
                         },
                     )
                     result.update({"status": "pending", "name": r.name})
-                    if self.recipe_bot.enabled:
-                        self.recipe_bot.send_async(
-                            f"❓ Unklar – im Web zuordnen\n"
-                            f"<b>{r.name}</b>\n"
-                            f"{r.type} / {r.category} ({r.confidence:.0%})\n"
-                            f"🔗 {url}"
-                        )
                 else:
                     target = self._save_recipe(r, url, video, description)
                     self.db.history_add(url, content_type="recipe", name=r.name,
                                          target_dir=str(target))
                     result.update({"status": "auto", "name": r.name, "target": str(target)})
-                    if self.recipe_bot.enabled:
-                        self.recipe_bot.send_async(
-                            f"✅ Rezept\n<b>{r.name}</b>\n"
-                            f"{r.type} / {r.category or 'N/A'} ({r.confidence:.0%})"
-                        )
             else:  # wedding
                 default_cat = item.get("default_category") or "Sonstiges"
                 w = self._analyze_wedding(description)
@@ -256,23 +231,11 @@ class ScraperJob:
                         },
                     )
                     result.update({"status": "pending", "name": w.name})
-                    if self.wedding_bot.enabled:
-                        self.wedding_bot.send_async(
-                            f"❓ Hochzeit unklar – im Web zuordnen\n"
-                            f"<b>{w.name}</b>\n"
-                            f"Kategorie: {w.category or default_cat} ({w.confidence:.0%})\n"
-                            f"🔗 {url}"
-                        )
                 else:
                     target = self._save_wedding(w, url, video, description, default_cat)
                     self.db.history_add(url, content_type="wedding", name=w.name,
                                          target_dir=str(target))
                     result.update({"status": "auto", "name": w.name, "target": str(target)})
-                    if self.wedding_bot.enabled:
-                        self.wedding_bot.send_async(
-                            f"💒 Hochzeit\n<b>{w.name}</b>\n"
-                            f"{w.category or default_cat} ({w.confidence:.0%})"
-                        )
         finally:
             self._cleanup_temp(video)
 
@@ -458,11 +421,6 @@ class ScraperJob:
                 self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
                 self.db.pending_resolve(url, status="resolved")
                 self._remove_pending_files(entry)
-                if self.recipe_bot.enabled:
-                    self.recipe_bot.send_async(
-                        f"✅ Rezept (KI-Reanalyse)\n<b>{r.name}</b>\n"
-                        f"{r.type} / {r.category or 'N/A'} ({r.confidence:.0%})"
-                    )
                 return {"ok": True, "action": "auto_saved", "target": str(target),
                         "analysis": suggestion}
             self.db.pending_update_suggestion(url, suggestion)
@@ -479,11 +437,6 @@ class ScraperJob:
                 self.db.history_add(url, content_type="wedding", name=w.name, target_dir=str(target))
                 self.db.pending_resolve(url, status="resolved")
                 self._remove_pending_files(entry)
-                if self.wedding_bot.enabled:
-                    self.wedding_bot.send_async(
-                        f"💒 Hochzeit (KI-Reanalyse)\n<b>{w.name}</b>\n"
-                        f"{w.category or default_cat} ({w.confidence:.0%})"
-                    )
                 return {"ok": True, "action": "auto_saved", "target": str(target),
                         "analysis": suggestion}
             self.db.pending_update_suggestion(url, suggestion)
@@ -517,11 +470,6 @@ class ScraperJob:
             )
             target = self._save_recipe(r, url, video_path, description)
             self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
-            if self.recipe_bot.enabled:
-                self.recipe_bot.send_async(
-                    f"✅ Rezept manuell zugeordnet\n<b>{r.name}</b>\n"
-                    f"{r.type} / {r.category or 'N/A'}"
-                )
         else:
             w = WeddingAnalysis(
                 name=decision.get("name", "Unbekannt"),
@@ -531,12 +479,6 @@ class ScraperJob:
             )
             target = self._save_wedding(w, url, video_path, description, default_cat="Sonstiges")
             self.db.history_add(url, content_type="wedding", name=w.name, target_dir=str(target))
-            if self.wedding_bot.enabled:
-                self.wedding_bot.send_async(
-                    f"💒 Hochzeit manuell zugeordnet\n<b>{w.name}</b>\n"
-                    f"{w.category or 'Sonstiges'}"
-                )
-
         self.db.pending_resolve(url, status="resolved")
         self._remove_pending_files(entry)
         return {"ok": True, "action": "saved", "target": str(target)}

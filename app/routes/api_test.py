@@ -15,7 +15,6 @@ from ..auth import require_auth
 from ..config_store import get_config
 from ..core.analyzer import OllamaAnalyzer
 from ..core.email_processor import MailAccount
-from ..core.notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -93,46 +92,7 @@ def test_ollama() -> Dict[str, Any]:
 
 # /openai-Test wurde entfernt: OpenAI Vision (Frame-basiert) ist mit der
 # Frame-Extraktion zusammen rausgenommen worden.
-
-
-class TelegramTestRequest(BaseModel):
-    bot: str = "recipe"  # 'recipe' | 'wedding' | 'backup'
-
-
-@router.post("/telegram")
-def test_telegram(req: TelegramTestRequest) -> Dict[str, Any]:
-    """Telegram Test-Nachricht versenden."""
-    tg = get_config().get("telegram", default={}) or {}
-    if not tg.get("enabled", True):
-        return {"ok": False, "error": "Telegram ist in der Config deaktiviert"}
-
-    if req.bot == "recipe":
-        token, chat = tg.get("recipe_bot_token", ""), tg.get("recipe_chat_id", "")
-        label = "Rezept-Bot"
-    elif req.bot == "wedding":
-        token = tg.get("wedding_bot_token", "") or tg.get("recipe_bot_token", "")
-        chat = tg.get("wedding_chat_id", "") or tg.get("recipe_chat_id", "")
-        label = "Hochzeit-Bot"
-    elif req.bot == "backup":
-        token = tg.get("backup_bot_token", "") or tg.get("recipe_bot_token", "")
-        chat = tg.get("backup_chat_id", "") or tg.get("recipe_chat_id", "")
-        label = "Backup-Bot"
-    else:
-        raise HTTPException(400, "bot muss recipe/wedding/backup sein")
-
-    notifier = TelegramNotifier(token, chat, label=req.bot)
-    if not notifier.enabled:
-        return {"ok": False, "error": f"Token oder Chat-ID fehlt für {label}"}
-
-    from datetime import datetime
-    msg_id = notifier.send(
-        f"✅ <b>{label} Test</b>\n"
-        f"Verbindung funktioniert.\n"
-        f"<i>{datetime.now():%Y-%m-%d %H:%M:%S}</i>"
-    )
-    if msg_id:
-        return {"ok": True, "message": f"Test-Nachricht an {label} gesendet (msg_id={msg_id})"}
-    return {"ok": False, "error": "Senden fehlgeschlagen – Token oder Chat-ID falsch?"}
+# /telegram-Test wurde entfernt: Telegram-Benachrichtigungen sind raus.
 
 
 class RcloneTestRequest(BaseModel):

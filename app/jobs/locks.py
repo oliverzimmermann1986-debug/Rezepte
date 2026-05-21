@@ -2,9 +2,9 @@
 
 Der In-Process ``threading.Lock`` in api_jobs schützt nur den Web-Prozess.
 Wenn der ``scrapper-job.timer`` feuert während ein Web-Trigger schon läuft,
-würden ZWEI Scraper-Prozesse gleichzeitig E-Mails lesen + Videos laden +
-Telegram spammen. Dieses Modul schließt die Lücke per ``fcntl.flock``,
-das auch über Prozessgrenzen hinweg greift.
+würden ZWEI Scraper-Prozesse gleichzeitig E-Mails lesen und Videos laden -
+plus die History/Pending-DB beschreiben. Dieses Modul schließt die Lücke
+per ``fcntl.flock``, das auch über Prozessgrenzen hinweg greift.
 
 Verwendung:
     with file_lock_or_none("scraper") as fh:

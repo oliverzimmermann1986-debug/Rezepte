@@ -239,7 +239,6 @@ function scrapperApp() {
       cfg.mail.wedding ||= {};
       cfg.ai ||= {};
       cfg.ai.ollama ||= {};
-      cfg.telegram ||= {};
       cfg.backup ||= {};
       cfg.backup.pairs ||= [];
       cfg.backup.rclone_args ||= [];
@@ -263,7 +262,6 @@ function scrapperApp() {
     testing: {
       mail_recipe: false, mail_wedding: false,
       ollama: false,
-      tg_recipe: false, tg_wedding: false, tg_backup: false,
       rclone: false, paths: false, ytdlp: false,
       schedule_preview: false, schedule_save: false,
     },
@@ -326,7 +324,6 @@ function scrapperApp() {
       this.runTest('mail_' + account, '/api/test/mail', { account });
     },
     testOllama() { this.runTest('ollama', '/api/test/ollama'); },
-    testTelegram(bot) { this.runTest('tg_' + bot, '/api/test/telegram', { bot }); },
     testRclone(pairIndex = null) {
       const body = pairIndex !== null ? { pair_index: pairIndex } : {};
       this.runTest(pairIndex !== null ? 'rclone_' + pairIndex : 'rclone', '/api/test/rclone', body);

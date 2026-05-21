@@ -801,64 +801,7 @@
           <!-- KI · OpenAI Vision Block wurde entfernt: Frame-Extraktion ist raus,
                Vision-Analyse nicht mehr möglich. -->
 
-          <!-- Telegram -->
-          <div class="config-section">
-            <div class="head">Telegram (nur Notifications, kein Reply-Handling mehr)</div>
-            <div class="body">
-              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
-                <input type="checkbox" x-model="config.telegram.enabled" id="tg-en">
-                <label for="tg-en">Aktiv</label>
-              </div>
-              <div class="row">
-                <div class="field"><label>Rezept Bot Token</label><input type="password" x-model="config.telegram.recipe_bot_token"></div>
-                <div class="field">
-                  <label style="display:flex; align-items:center; gap:10px;">
-                    <span>Rezept Chat ID</span>
-                    <button type="button" class="btn" style="font-size:10px; padding: 3px 8px;" @click="testTelegram('recipe')" :disabled="testing.tg_recipe">
-                      <span x-show="!testing.tg_recipe">⌬ Test</span>
-                      <span x-show="testing.tg_recipe">…</span>
-                    </button>
-                  </label>
-                  <input x-model="config.telegram.recipe_chat_id">
-                </div>
-              </div>
-              <div x-show="testResults.tg_recipe" class="test-result" :class="(testResults.tg_recipe && testResults.tg_recipe.ok) ? 'ok' : 'err'">
-                <span x-text="(testResults.tg_recipe && (testResults.tg_recipe.message || testResults.tg_recipe.error))"></span>
-              </div>
-              <div class="row">
-                <div class="field"><label>Hochzeit Bot Token</label><input type="password" x-model="config.telegram.wedding_bot_token"><div class="hint">leer → Rezept-Bot wird verwendet</div></div>
-                <div class="field">
-                  <label style="display:flex; align-items:center; gap:10px;">
-                    <span>Hochzeit Chat ID</span>
-                    <button type="button" class="btn" style="font-size:10px; padding: 3px 8px;" @click="testTelegram('wedding')" :disabled="testing.tg_wedding">
-                      <span x-show="!testing.tg_wedding">⌬ Test</span>
-                      <span x-show="testing.tg_wedding">…</span>
-                    </button>
-                  </label>
-                  <input x-model="config.telegram.wedding_chat_id">
-                </div>
-              </div>
-              <div x-show="testResults.tg_wedding" class="test-result" :class="(testResults.tg_wedding && testResults.tg_wedding.ok) ? 'ok' : 'err'">
-                <span x-text="(testResults.tg_wedding && (testResults.tg_wedding.message || testResults.tg_wedding.error))"></span>
-              </div>
-              <div class="row">
-                <div class="field"><label>Backup Bot Token</label><input type="password" x-model="config.telegram.backup_bot_token"></div>
-                <div class="field">
-                  <label style="display:flex; align-items:center; gap:10px;">
-                    <span>Backup Chat ID</span>
-                    <button type="button" class="btn" style="font-size:10px; padding: 3px 8px;" @click="testTelegram('backup')" :disabled="testing.tg_backup">
-                      <span x-show="!testing.tg_backup">⌬ Test</span>
-                      <span x-show="testing.tg_backup">…</span>
-                    </button>
-                  </label>
-                  <input x-model="config.telegram.backup_chat_id">
-                </div>
-              </div>
-              <div x-show="testResults.tg_backup" class="test-result" :class="(testResults.tg_backup && testResults.tg_backup.ok) ? 'ok' : 'err'">
-                <span x-text="(testResults.tg_backup && (testResults.tg_backup.message || testResults.tg_backup.error))"></span>
-              </div>
-            </div>
-          </div>
+          <!-- Telegram-Block entfernt: Benachrichtigungen sind raus. -->
 
           <!-- Backup -->
           <div class="config-section">
