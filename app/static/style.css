@@ -592,3 +592,31 @@ input[type="checkbox"] { width: auto !important; }
 .browser-entry.active { background: var(--bg-elev-2); border-left: 2px solid var(--accent); }
 .browser-entry .icon { font-size: 14px; }
 .browser-entry .name { flex: 1; }
+
+
+/* ---------- Progress Bar ---------- */
+.progress-bar {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  height: 8px;
+  overflow: hidden;
+  position: relative;
+}
+.progress-fill {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  height: 100%;
+  transition: width 0.4s ease;
+  border-radius: 99px;
+  position: relative;
+}
+.progress-fill::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+  animation: progress-shine 1.4s linear infinite;
+}
+@keyframes progress-shine {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}

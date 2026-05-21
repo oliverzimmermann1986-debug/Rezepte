@@ -105,6 +105,54 @@
       </div>
     </section>
 
+      <!-- Scraper Progress -->
+      <div x-show="scraperProgress && scraperProgress.running" class="card" style="margin-top: 18px;">
+        <div class="card-head">
+          <h3>Scraper läuft</h3>
+          <span class="pill running">aktiv</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 14px;">
+          <div>
+            <div class="muted" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;">Laufzeit</div>
+            <div class="mono" style="font-size: 16px;" x-text="scraperProgress && formatDuration(scraperProgress.elapsed_sec)"></div>
+          </div>
+          <div>
+            <div class="muted" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;">URLs gefunden</div>
+            <div class="mono" style="font-size: 16px;" x-text="(scraperProgress && scraperProgress.total_urls) || '—'"></div>
+          </div>
+        </div>
+        <div class="hint mono" style="font-size: 11px; max-height: 60px; overflow-y: auto; white-space: pre-wrap;" x-text="(scraperProgress && scraperProgress.current) || 'lädt…'"></div>
+      </div>
+
+      <!-- Backup Progress -->
+      <div x-show="backupProgress && backupProgress.running" class="card" style="margin-top: 18px;">
+        <div class="card-head">
+          <h3>Backup läuft</h3>
+          <span class="pill running" x-text="(backupProgress && backupProgress.done_pairs) + ' / ' + (backupProgress && backupProgress.total_pairs) + ' Paare'"></span>
+        </div>
+        <div style="margin-bottom: 14px;">
+          <div class="muted" style="font-size: 11px;">Gesamt-Laufzeit: <span class="mono" x-text="backupProgress && formatDuration(backupProgress.elapsed_sec)"></span></div>
+        </div>
+        <template x-for="pair in (backupProgress && backupProgress.pairs || [])" :key="pair.name">
+          <div style="margin-bottom: 14px;">
+            <div class="flex between" style="margin-bottom: 4px;">
+              <div>
+                <strong x-text="pair.name"></strong>
+                <span class="pill" :class="pair.status === 'done' ? 'ok' : (pair.status === 'running' ? 'running' : '')" x-text="pair.status" style="margin-left: 6px;"></span>
+              </div>
+              <div class="mono" style="font-size: 11px; color: var(--fg-dim);" x-text="(pair.transferred || '—') + ' / ' + (pair.total || '—')"></div>
+            </div>
+            <div class="progress-bar">
+              <div class="progress-fill" :style="`width: ${pair.percent || 0}%`"></div>
+            </div>
+            <div class="flex between" style="margin-top: 4px; font-size: 11px;" class="muted">
+              <span class="mono muted" x-text="(pair.speed || '—') + ' · ETA ' + (pair.eta || '—')"></span>
+              <span class="mono muted" x-text="(pair.files !== null ? (pair.files + '/' + pair.files_total + ' Dateien') : '') + (pair.errors ? ' · ' + pair.errors + ' err' : '')"></span>
+            </div>
+          </div>
+        </template>
+      </div>
+
     <!-- ========== PENDING ========== -->
     <section x-show="page==='pending'">
       <div class="page-head">

@@ -123,6 +123,170 @@ def job_log(job_id: int, tail: int = 500):
         return {"log": f"<Fehler: {e}>"}
 
 
+@router.get("/backup/progress")
+def backup_progress():
+    """Live-Progress des laufenden (oder letzten) Backup-Jobs."""
+    import re
+    db = get_db()
+    cfg = get_config()
+    running = db.job_running("backup")
+    if not running:
+        last = db.job_list(kind="backup", limit=1)
+        return {"running": False, "last": last[0] if last else None}
+
+    log_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs")) / "rclone"
+    started = float(running["started_at"])
+
+    stats_re = re.compile(
+        r'Transferred:\s+([0-9.]+\s*[KMGT]?i?B)\s*/\s*([0-9.]+\s*[KMGT]?i?B),\s*([0-9.]+)\s*%,\s*([0-9.]+\s*[KMGT]?i?B/s),\s*ETA\s*([\w]+)'
+    )
+    files_re = re.compile(r'Transferred:\s*(\d+)\s*/\s*(\d+),\s*([0-9.]+)\s*%')
+    elapsed_re = re.compile(r'Elapsed time:\s*([\w.]+)')
+    errors_re = re.compile(r'Errors:\s*(\d+)')
+
+    pairs_status = []
+    pairs_cfg = cfg.get("backup", "pairs", default=[]) or []
+    for pair in pairs_cfg:
+        name = pair["name"]
+        # Neueste log-Datei für dieses Paar (gleicher Run)
+        matches = sorted(
+            log_dir.glob(f"sync-{name}-*.log"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        active_log = None
+        for m in matches:
+            if m.stat().st_mtime >= started - 30:   # ±30s Toleranz
+                active_log = m
+                break
+
+        pair_data = {
+            "name": name,
+            "remote": pair.get("remote", ""),
+            "local": pair.get("local", ""),
+            "log_file": str(active_log) if active_log else None,
+            "status": "pending",
+            "transferred": None,
+            "total": None,
+            "percent": None,
+            "speed": None,
+            "eta": None,
+            "files": None,
+            "files_total": None,
+            "elapsed": None,
+            "errors": 0,
+        }
+
+        if active_log:
+            try:
+                # Letzte 8 KB lesen für Stats
+                with open(active_log, "rb") as f:
+                    f.seek(0, 2)
+                    size = f.tell()
+                    f.seek(max(0, size - 8192))
+                    tail = f.read().decode("utf-8", errors="ignore")
+
+                # Letzte Stats-Zeilen finden
+                lines = tail.splitlines()
+                for line in reversed(lines):
+                    m = stats_re.search(line)
+                    if m and pair_data["transferred"] is None:
+                        pair_data.update({
+                            "transferred": m.group(1).strip(),
+                            "total": m.group(2).strip(),
+                            "percent": float(m.group(3)),
+                            "speed": m.group(4).strip(),
+                            "eta": m.group(5).strip(),
+                            "status": "running",
+                        })
+                    if pair_data["files"] is None:
+                        m2 = files_re.search(line)
+                        if m2:
+                            pair_data["files"] = int(m2.group(1))
+                            pair_data["files_total"] = int(m2.group(2))
+                    if pair_data["elapsed"] is None:
+                        m3 = elapsed_re.search(line)
+                        if m3:
+                            pair_data["elapsed"] = m3.group(1).strip()
+                    m4 = errors_re.search(line)
+                    if m4:
+                        pair_data["errors"] = max(pair_data["errors"], int(m4.group(1)))
+
+                # Status: wenn das Log "successfully" enthält → done
+                if "Bisync successful" in tail or "completed successfully" in tail.lower():
+                    pair_data["status"] = "done"
+                elif pair_data["status"] == "pending":
+                    pair_data["status"] = "running"  # log existiert, kein finish
+            except Exception as e:
+                logger.warning(f"progress parse {active_log}: {e}")
+
+        pairs_status.append(pair_data)
+
+    import time
+    return {
+        "running": True,
+        "job_id": running["id"],
+        "started_at": started,
+        "elapsed_sec": round(time.time() - started),
+        "pairs": pairs_status,
+        "total_pairs": len(pairs_cfg),
+        "done_pairs": sum(1 for p in pairs_status if p["status"] == "done"),
+    }
+
+
+@router.get("/scraper/progress")
+def scraper_progress():
+    """Live-Progress des laufenden Scraper-Jobs (aus dem Job-Log)."""
+    import re
+    db = get_db()
+    cfg = get_config()
+    running = db.job_running("scraper")
+    if not running:
+        last = db.job_list(kind="scraper", limit=1)
+        return {"running": False, "last": last[0] if last else None}
+
+    log_file = running.get("log_file")
+    info = {
+        "running": True,
+        "job_id": running["id"],
+        "started_at": float(running["started_at"]),
+        "elapsed_sec": None,
+        "current": None,        # zuletzt verarbeitete URL
+        "total_urls": None,
+        "processed": 0,
+        "auto": 0,
+        "pending": 0,
+        "errors": 0,
+    }
+    import time
+    info["elapsed_sec"] = round(time.time() - info["started_at"])
+
+    if log_file and Path(log_file).exists():
+        try:
+            with open(log_file, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 16384))
+                tail = f.read().decode("utf-8", errors="ignore")
+
+            # Counts aus Log-Zeilen extrahieren (best-effort)
+            for line in tail.splitlines():
+                if "Neue URLs:" in line:
+                    m = re.search(r'Neue URLs:\s*(\d+)', line)
+                    if m: info["total_urls"] = int(m.group(1))
+                if "Job-Summary:" in line:
+                    # Job ist fertig - wir sind hier eigentlich gar nicht running
+                    pass
+            # Letzte URL die verarbeitet wird
+            for line in reversed(tail.splitlines()):
+                if "Verarbeite" in line or "→ Pending" in line or "→ AUTO" in line:
+                    info["current"] = line.strip()[-200:]
+                    break
+        except Exception as e:
+            logger.warning(f"scraper progress: {e}")
+
+    return info
+
 @router.get("/status/current")
 def status_current():
     """Was läuft gerade?"""

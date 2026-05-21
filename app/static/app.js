@@ -21,6 +21,8 @@ function scrapperApp() {
       this.refreshStatus();
       this.loadRecentJobs();
       this._statusTimer = setInterval(() => this.refreshStatus(), 4000);
+      this._progressTimer = setInterval(() => this.refreshProgress(), 3000);
+      this.refreshProgress();
     },
 
     // ------------- Helpers -------------
@@ -40,6 +42,16 @@ function scrapperApp() {
     showToast(message, type = 'ok') {
       this.toast = { show: true, message, type };
       setTimeout(() => this.toast.show = false, 3500);
+    },
+    formatDuration(sec) {
+      if (sec === null || sec === undefined) return '—';
+      sec = Math.round(sec);
+      if (sec < 60) return sec + 's';
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      if (m < 60) return m + 'm ' + s + 's';
+      const h = Math.floor(m / 60);
+      return h + 'h ' + (m % 60) + 'm';
     },
     formatTs(ts) {
       if (!ts) return '—';
@@ -84,6 +96,20 @@ function scrapperApp() {
         this.lastScraper = all.find(j => j.kind === 'scraper' && j.status === 'ok');
         this.lastBackup = all.find(j => j.kind === 'backup' && j.status === 'ok');
       } catch(e) {}
+    },
+    async refreshProgress() {
+      // Nur abfragen wenn Job läuft, sonst Last-Info behalten
+      if (this.status && this.status.backup) {
+        try { this.backupProgress = await this.api('GET', '/api/jobs/backup/progress'); } catch(e) {}
+      } else if (this.backupProgress && this.backupProgress.running) {
+        // war running, jetzt nicht mehr → finalen Stand laden
+        try { this.backupProgress = await this.api('GET', '/api/jobs/backup/progress'); } catch(e) {}
+      }
+      if (this.status && this.status.scraper) {
+        try { this.scraperProgress = await this.api('GET', '/api/jobs/scraper/progress'); } catch(e) {}
+      } else if (this.scraperProgress && this.scraperProgress.running) {
+        try { this.scraperProgress = await this.api('GET', '/api/jobs/scraper/progress'); } catch(e) {}
+      }
     },
 
     // ------------- Jobs -------------
@@ -195,6 +221,9 @@ function scrapperApp() {
     schedule: { scraper: { oncalendar: '', next_run: null }, backup: { oncalendar: '', next_run: null } },
     scheduleEdit: { scraper: '', backup: '' },
     schedulePreview: null,
+    backupProgress: null,
+    scraperProgress: null,
+    _progressTimer: null,
     isTesting(key) { return this.testing[key] === true; },
     testResult(key) { return this.testResults[key] || null; },
     testResultMsg(key) {
