@@ -73,11 +73,12 @@ def _systemctl_via_sudo(*args) -> Dict:
 
 @router.get("")
 def get_schedule() -> Dict:
-    """Aktuelle OnCalendar-Werte + nächste Lauftermine."""
+    """Aktuelle OnCalendar-Werte + letzter & nächster Lauf."""
+    from ..db import get_db
+    db = get_db()
     result = {}
     for kind, path in TIMER_FILES.items():
         oc = _read_oncalendar(path)
-        # Next-Trigger via systemctl
         unit_name = Path(path).name
         next_run = None
         try:
@@ -86,9 +87,35 @@ def get_schedule() -> Dict:
                 capture_output=True, text=True, timeout=10,
             )
             if r.returncode == 0 and r.stdout.strip():
-                parts = r.stdout.strip().split(None, 5)
-                if len(parts) >= 2:
-                    next_run = " ".join(parts[:2])
+                # Format: "Thu 2024-05-21 14:00:00 UTC 30min Wed ..."
+                line = r.stdout.strip()
+                parts = line.split()
+                if len(parts) >= 3:
+                    next_run = " ".join(parts[:3])
+        except Exception:
+            pass
+        # Letzter erfolgreicher Lauf aus DB
+        last_run = None
+        last_summary = None
+        try:
+            jobs = db.job_list(kind=kind, limit=10)
+            for j in jobs:
+                if j.get("ended_at"):
+                    last_run = j["ended_at"]
+                    last_summary = {
+                        "status": j.get("status"),
+                        "duration": round(j["ended_at"] - j["started_at"]) if j.get("started_at") else None,
+                    }
+                    if j.get("summary"):
+                        s = j["summary"]
+                        if kind == "scraper":
+                            last_summary["auto"] = s.get("auto", 0)
+                            last_summary["pending"] = s.get("pending", 0)
+                            last_summary["errors"] = s.get("errors", 0)
+                        elif kind == "backup":
+                            last_summary["ok_count"] = s.get("ok_count", 0)
+                            last_summary["total_pairs"] = s.get("total_pairs", 0)
+                    break
         except Exception:
             pass
         result[kind] = {
@@ -96,6 +123,8 @@ def get_schedule() -> Dict:
             "timer_file": path,
             "unit": unit_name,
             "next_run": next_run,
+            "last_run": last_run,
+            "last_summary": last_summary,
         }
     return result
 

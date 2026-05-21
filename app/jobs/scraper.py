@@ -75,11 +75,15 @@ class ScraperJob:
         # AI
         ollama_cfg = cfg.get("ai", "ollama", default={}) or {}
         self.ollama_enabled = bool(ollama_cfg.get("enabled", True))
+        url = ollama_cfg.get("url", "http://localhost:11434")
+        timeout = int(ollama_cfg.get("timeout", 60))
         self.ollama = OllamaAnalyzer(
-            ollama_cfg.get("url", "http://localhost:11434"),
-            ollama_cfg.get("model", "gemma3:12b"),
-            int(ollama_cfg.get("timeout", 60)),
+            url, ollama_cfg.get("model", "qwen2.5:7b-instruct"), timeout
         ) if self.ollama_enabled else None
+        fb = ollama_cfg.get("fallback_model", "").strip() if ollama_cfg.get("fallback_model") else ""
+        self.ollama_fallback = (
+            OllamaAnalyzer(url, fb, timeout) if (self.ollama_enabled and fb) else None
+        )
 
         openai_cfg = cfg.get("ai", "openai", default={}) or {}
         self.vision = None
@@ -93,6 +97,7 @@ class ScraperJob:
                 logger.warning(f"OpenAI init: {e}")
 
         self.confidence_threshold = float(cfg.get("ai", "confidence_threshold", default=0.75))
+        self.fallback_threshold = float(cfg.get("ai", "fallback_threshold", default=0.5))
         self.min_desc_len = int(cfg.get("ai", "description_min_length", default=20))
 
         # Downloader
@@ -134,27 +139,60 @@ class ScraperJob:
     # ---------------- Analyse ----------------
     def _analyze_recipe(self, description: Optional[str], video: Path
                          ) -> Tuple[RecipeAnalysis, Optional[Path]]:
+        # Cascade: fast Modell → fallback Modell → Vision
+        best = None
         if self.ollama and _has_usable_description(description, self.min_desc_len):
             r = self.ollama.analyze_recipe(description)
+            logger.info(f"Ollama fast: name={r.name} typ={r.type} conf={r.confidence:.2f}")
             if not r.needs_manual_input(self.confidence_threshold):
                 return r, None
-        # Vision-Fallback
+            best = r
+            # fast unsicher → fallback-Modell
+            if self.ollama_fallback:
+                r2 = self.ollama_fallback.analyze_recipe(description)
+                logger.info(f"Ollama fallback: name={r2.name} typ={r2.type} conf={r2.confidence:.2f}")
+                if not r2.needs_manual_input(self.fallback_threshold):
+                    return r2, None
+                if r2.confidence > (best.confidence if best else 0):
+                    best = r2
+        # Vision-Fallback wenn beide Ollama-Versuche unsicher
         if self.vision:
             frame = FrameExtractor.extract(video)
             if frame:
-                return self.vision.analyze_recipe(frame), frame
+                v = self.vision.analyze_recipe(frame)
+                logger.info(f"Vision: name={v.name} conf={v.confidence:.2f}")
+                if best and best.confidence > v.confidence:
+                    return best, frame
+                return v, frame
+        if best:
+            return best, None
         return RecipeAnalysis("Unbekannt", "Unbekannt", None, 0.0), None
 
     def _analyze_wedding(self, description: Optional[str], video: Path
                           ) -> Tuple[WeddingAnalysis, Optional[Path]]:
+        best = None
         if self.ollama and _has_usable_description(description, self.min_desc_len):
             w = self.ollama.analyze_wedding(description, self.wedding_categories)
+            logger.info(f"Ollama fast (wedding): name={w.name} cat={w.category} conf={w.confidence:.2f}")
             if not w.needs_manual_input(self.confidence_threshold):
                 return w, None
+            best = w
+            if self.ollama_fallback:
+                w2 = self.ollama_fallback.analyze_wedding(description, self.wedding_categories)
+                logger.info(f"Ollama fallback (wedding): name={w2.name} cat={w2.category} conf={w2.confidence:.2f}")
+                if not w2.needs_manual_input(self.fallback_threshold):
+                    return w2, None
+                if w2.confidence > (best.confidence if best else 0):
+                    best = w2
         if self.vision:
             frame = FrameExtractor.extract(video)
             if frame:
-                return self.vision.analyze_wedding(frame, self.wedding_categories), frame
+                v = self.vision.analyze_wedding(frame, self.wedding_categories)
+                if best and best.confidence > v.confidence:
+                    return best, frame
+                return v, frame
+        if best:
+            return best, None
         return WeddingAnalysis("Unbekannt", None, 0.0), None
 
     # ---------------- Persistierung ----------------

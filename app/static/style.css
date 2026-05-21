@@ -620,3 +620,36 @@ input[type="checkbox"] { width: auto !important; }
   from { transform: translateX(-100%); }
   to   { transform: translateX(100%); }
 }
+
+
+/* ---------- Schedule Job Cards ---------- */
+.job-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.job-card-head {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.job-card-head strong {
+  font-size: 14px;
+  letter-spacing: -0.01em;
+}
+.job-icon {
+  font-size: 18px;
+}
+.job-stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-size: 12px;
+}
+.job-stat-row .muted {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}

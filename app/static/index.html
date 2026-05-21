@@ -414,24 +414,59 @@
               </button>
             </div>
             <div class="body">
-              <div class="hint" style="margin-bottom: 14px;">
-                systemd-OnCalendar-Format. Beispiele:<br>
-                <span class="mono">*:0/30</span> = alle 30 Min &nbsp;·&nbsp;
-                <span class="mono">*-*-* 03:00:00</span> = täglich 03:00 &nbsp;·&nbsp;
-                <span class="mono">Mon..Fri *:0/15</span> = Mo–Fr alle 15 Min &nbsp;·&nbsp;
-                <span class="mono">hourly</span> = stündlich
+              <!-- Job-Karten -->
+              <div class="row" style="margin-bottom: 18px;">
+                <div class="job-card">
+                  <div class="job-card-head">
+                    <span class="job-icon">🤖</span>
+                    <strong>Scraper</strong>
+                  </div>
+                  <div class="job-stat-row">
+                    <span class="muted">Letzter Lauf</span>
+                    <span class="mono" x-text="schedule.scraper && schedule.scraper.last_run ? formatTs(schedule.scraper.last_run) : 'noch nicht gelaufen'"></span>
+                  </div>
+                  <div class="job-stat-row" x-show="schedule.scraper && schedule.scraper.last_summary">
+                    <span class="muted">Ergebnis</span>
+                    <span class="mono" x-text="schedule.scraper && schedule.scraper.last_summary ? ((schedule.scraper.last_summary.auto || 0) + ' auto / ' + (schedule.scraper.last_summary.pending || 0) + ' pending / ' + (schedule.scraper.last_summary.errors || 0) + ' err · ' + (schedule.scraper.last_summary.duration || 0) + 's') : '—'"></span>
+                  </div>
+                  <div class="job-stat-row">
+                    <span class="muted">Nächster Lauf</span>
+                    <span class="mono" style="color: var(--accent)" x-text="(schedule.scraper && schedule.scraper.next_run) || '—'"></span>
+                  </div>
+                  <div class="field" style="margin: 10px 0 0;">
+                    <input class="mono" x-model="scheduleEdit.scraper" placeholder="*:0/30">
+                  </div>
+                </div>
+
+                <div class="job-card">
+                  <div class="job-card-head">
+                    <span class="job-icon">☁️</span>
+                    <strong>Backup</strong>
+                  </div>
+                  <div class="job-stat-row">
+                    <span class="muted">Letzter Lauf</span>
+                    <span class="mono" x-text="schedule.backup && schedule.backup.last_run ? formatTs(schedule.backup.last_run) : 'noch nicht gelaufen'"></span>
+                  </div>
+                  <div class="job-stat-row" x-show="schedule.backup && schedule.backup.last_summary">
+                    <span class="muted">Ergebnis</span>
+                    <span class="mono" x-text="schedule.backup && schedule.backup.last_summary ? ((schedule.backup.last_summary.ok_count || 0) + '/' + (schedule.backup.last_summary.total_pairs || 0) + ' Paare · ' + (schedule.backup.last_summary.duration || 0) + 's') : '—'"></span>
+                  </div>
+                  <div class="job-stat-row">
+                    <span class="muted">Nächster Lauf</span>
+                    <span class="mono" style="color: var(--accent)" x-text="(schedule.backup && schedule.backup.next_run) || '—'"></span>
+                  </div>
+                  <div class="field" style="margin: 10px 0 0;">
+                    <input class="mono" x-model="scheduleEdit.backup" placeholder="*-*-* 03:00:00">
+                  </div>
+                </div>
               </div>
-              <div class="row">
-                <div class="field">
-                  <label>Scraper (E-Mails abrufen)</label>
-                  <input class="mono" x-model="scheduleEdit.scraper" placeholder="*:0/30">
-                  <div class="hint">Nächster Lauf: <span class="mono" x-text="schedule.scraper && schedule.scraper.next_run || '—'"></span></div>
-                </div>
-                <div class="field">
-                  <label>Backup (rclone bisync)</label>
-                  <input class="mono" x-model="scheduleEdit.backup" placeholder="*-*-* 03:00:00">
-                  <div class="hint">Nächster Lauf: <span class="mono" x-text="schedule.backup && schedule.backup.next_run || '—'"></span></div>
-                </div>
+
+              <div class="hint" style="margin-bottom: 14px;">
+                systemd-OnCalendar Format · 
+                <span class="mono">*:0/30</span> alle 30 Min · 
+                <span class="mono">*-*-* 03:00:00</span> täglich 03:00 · 
+                <span class="mono">Mon..Fri *:0/15</span> Mo–Fr alle 15 Min · 
+                <span class="mono">hourly</span> stündlich
               </div>
 
               <div x-show="schedulePreview" class="test-result ok">
@@ -576,10 +611,10 @@
             </div>
           </div>
 
-          <!-- AI -->
+          <!-- AI · Ollama -->
           <div class="config-section">
             <div class="head">
-              <span style="flex: 1;">KI · Ollama (lokal, primär)</span>
+              <span style="flex: 1;">KI · Ollama (Cascade: fast → fallback)</span>
               <button class="btn" @click="testOllama()" :disabled="testing.ollama">
                 <span x-show="!testing.ollama">⌬ Verbindung testen</span>
                 <span x-show="testing.ollama">… testet</span>
@@ -593,13 +628,37 @@
                 <input type="checkbox" x-model="config.ai.ollama.enabled" id="oll-en">
                 <label for="oll-en">Aktiv</label>
               </div>
-              <div class="row">
-                <div class="field"><label>URL</label><input x-model="config.ai.ollama.url"></div>
-                <div class="field"><label>Modell</label><input x-model="config.ai.ollama.model"></div>
+              <div class="field">
+                <label>URL</label>
+                <input x-model="config.ai.ollama.url" placeholder="http://192.168.x.x:11434">
               </div>
               <div class="row">
-                <div class="field"><label>Timeout (s)</label><input type="number" x-model.number="config.ai.ollama.timeout"></div>
-                <div class="field"><label>Confidence-Schwelle</label><input type="number" step="0.05" x-model.number="config.ai.confidence_threshold"><div class="hint">Unter diesem Wert → Pending im Web</div></div>
+                <div class="field">
+                  <label>Fast-Modell (primary)</label>
+                  <input x-model="config.ai.ollama.model" placeholder="qwen2.5:7b-instruct">
+                  <div class="hint">Schnell, 1-2s pro Call. z.B. qwen2.5:7b-instruct, llama3.1:8b</div>
+                </div>
+                <div class="field">
+                  <label>Fallback-Modell (bei Unsicherheit)</label>
+                  <input x-model="config.ai.ollama.fallback_model" placeholder="gemma4:26b (leer = aus)">
+                  <div class="hint">Größeres Modell, läuft nur wenn fast unsicher</div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Timeout (s)</label>
+                  <input type="number" x-model.number="config.ai.ollama.timeout">
+                </div>
+                <div class="field">
+                  <label>Confidence-Schwelle (fast)</label>
+                  <input type="number" step="0.05" min="0" max="1" x-model.number="config.ai.confidence_threshold">
+                  <div class="hint">Darunter → Fallback-Modell wird befragt</div>
+                </div>
+                <div class="field">
+                  <label>Fallback-Schwelle</label>
+                  <input type="number" step="0.05" min="0" max="1" x-model.number="config.ai.fallback_threshold">
+                  <div class="hint">Darunter → Pending (manuell)</div>
+                </div>
               </div>
             </div>
           </div>

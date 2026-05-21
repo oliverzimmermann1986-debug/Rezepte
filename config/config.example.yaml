@@ -48,15 +48,19 @@ ai:
   ollama:
     enabled: true
     url: http://192.168.178.250:11434
-    model: gemma3:12b
-    timeout: 60
+    # Schnelles Modell - läuft zuerst (z.B. qwen2.5:7b-instruct, llama3.1:8b)
+    model: qwen2.5:7b-instruct
+    # Größeres Modell als Fallback wenn fast unsicher (leer = kein Fallback)
+    fallback_model: gemma4:26b
+    timeout: 180
   # OpenAI (Vision-Fallback)
   openai:
     enabled: true
     api_key: sk-...
     model: gpt-4o-mini
-  # Confidence-Schwelle: darunter → Pending im Web
-  confidence_threshold: 0.75
+  # Confidence-Schwellen
+  confidence_threshold: 0.75       # fast-Modell: darunter → fallback-Modell
+  fallback_threshold: 0.5          # fallback-Modell: darunter → Pending
   description_min_length: 20
 
 # Telegram - NUR Benachrichtigungen, KEIN Reply-Handling mehr!
