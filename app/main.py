@@ -39,8 +39,11 @@ logger = logging.getLogger(__name__)
 # Hasht Klartext-Pwd, generiert Secret, blockt admin/changeme.
 migrate_security()
 
-# DB initialisieren
-get_db()
+# DB initialisieren + Stale-Running-Jobs vom letzten Crash/Restart aufräumen
+_db = get_db()
+_stale = _db.reset_stale_running()
+if _stale:
+    logger.warning(f"{_stale} Job(s) waren als 'running' markiert - auf 'error' gesetzt (Crash/Restart-Recovery)")
 
 # -------- FastAPI --------
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).
@@ -181,4 +184,11 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True}
+    """Liveness + DB-Ping. CF-Tunnel/Reverse-Proxy nutzt das als Health-Check."""
+    try:
+        with get_db().conn() as c:
+            c.execute("SELECT 1").fetchone()
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"healthz failed: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)

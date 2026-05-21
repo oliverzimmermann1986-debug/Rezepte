@@ -69,21 +69,46 @@ class VideoDownloader:
 
 class FrameExtractor:
     @staticmethod
-    def extract(video_path: Path, out_path: Optional[Path] = None) -> Optional[Path]:
-        if out_path is None:
-            out_path = video_path.parent / f"frame_{video_path.stem}.jpg"
+    def _run_ffmpeg(cmd: list) -> Optional[subprocess.CompletedProcess]:
         try:
-            result = subprocess.run(
-                [
-                    "ffmpeg", "-y", "-i", str(video_path),
-                    "-vf", "select=eq(n\\,0)", "-frames:v", "1", str(out_path),
-                ],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode != 0 or not out_path.exists():
-                logger.error(f"ffmpeg: {result.stderr[:200]}")
-                return None
-            return out_path
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            logger.error("ffmpeg Timeout")
+            return None
         except Exception as e:
             logger.error(f"ffmpeg Exception: {e}")
             return None
+
+    @staticmethod
+    def extract(video_path: Path, out_path: Optional[Path] = None) -> Optional[Path]:
+        """Extrahiert einen Frame als JPEG.
+
+        Strategie: schneller Seek bei 1s (vor dem Splash), bei Misserfolg
+        Fallback auf Frame 0 ohne Seek (für kurze Videos / kaputte Keyframes).
+        """
+        if out_path is None:
+            out_path = video_path.parent / f"frame_{video_path.stem}.jpg"
+
+        # Versuch 1: fast-seek bei 1s, gute JPEG-Qualität
+        r = FrameExtractor._run_ffmpeg([
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-ss", "1", "-i", str(video_path),
+            "-frames:v", "1", "-q:v", "2",
+            str(out_path),
+        ])
+        if r and r.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
+            return out_path
+
+        # Versuch 2: ohne Seek (für sehr kurze Videos < 1s)
+        r = FrameExtractor._run_ffmpeg([
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", str(video_path),
+            "-frames:v", "1", "-q:v", "2",
+            str(out_path),
+        ])
+        if r and r.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
+            return out_path
+
+        if r:
+            logger.error(f"ffmpeg failed: {r.stderr[:200]}")
+        return None

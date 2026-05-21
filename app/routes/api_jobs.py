@@ -378,6 +378,6 @@ def quick_sync(body: QuickSyncRequest):
         _locks["backup"].release()
         raise HTTPException(400, "remote_path und local_path sind Pflicht")
     job_id = get_db().job_start("quicksync")
-    t = threading.Thread(target=_run_quick_thread, args=(job_id, body.dict()), daemon=True)
+    t = threading.Thread(target=_run_quick_thread, args=(job_id, body.model_dump()), daemon=True)
     t.start()
     return {"ok": True, "job_id": job_id}

@@ -48,7 +48,9 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_kind ON jobs(kind, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, kind);
 CREATE INDEX IF NOT EXISTS idx_pending_status ON pending(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_history_processed ON history(processed_at DESC);
 """
 
 
@@ -57,15 +59,27 @@ class Database:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        with self.conn() as c:
-            c.executescript(_DDL)
+        # Pragmas einmalig auf einer separaten Verbindung setzen (WAL bleibt erhalten).
+        c0 = sqlite3.connect(str(self.path), timeout=10, check_same_thread=False)
+        try:
+            c0.execute("PRAGMA journal_mode=WAL")
+            c0.execute("PRAGMA synchronous=NORMAL")
+            c0.execute("PRAGMA busy_timeout=10000")
+            c0.executescript(_DDL)
+            c0.commit()
+        finally:
+            c0.close()
 
     @contextmanager
     def conn(self):
-        # SQLite: pro-Aufruf Verbindung, dank check_same_thread=False thread-safe genug
+        # SQLite: pro-Aufruf Verbindung, dank check_same_thread=False thread-safe genug.
+        # synchronous=NORMAL ist per-connection und muss jedes Mal gesetzt werden;
+        # journal_mode=WAL ist file-persistent (einmalig in __init__ gesetzt).
         c = sqlite3.connect(str(self.path), timeout=10, check_same_thread=False)
         c.row_factory = sqlite3.Row
         try:
+            c.execute("PRAGMA synchronous=NORMAL")
+            c.execute("PRAGMA foreign_keys=ON")
             yield c
             c.commit()
         finally:
@@ -129,11 +143,20 @@ class Database:
         frame_path: Optional[str] = None,
         ai_suggestion: Optional[Dict] = None,
     ) -> None:
+        """Upsert: bei Konflikt werden nur Description/Pfade/Vorschlag aktualisiert.
+        ``status`` und ``created_at`` bleiben erhalten - sonst würde ein bereits
+        resolved/skipped-Item beim erneuten Auftauchen wieder auf 'pending' springen."""
         with self.conn() as c:
             c.execute(
-                "INSERT OR REPLACE INTO pending "
+                "INSERT INTO pending "
                 "(url, content_type, created_at, description, video_path, frame_path, ai_suggestion, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending') "
+                "ON CONFLICT(url) DO UPDATE SET "
+                "  content_type=excluded.content_type, "
+                "  description=excluded.description, "
+                "  video_path=excluded.video_path, "
+                "  frame_path=excluded.frame_path, "
+                "  ai_suggestion=excluded.ai_suggestion",
                 (
                     url,
                     content_type,
@@ -258,6 +281,29 @@ class Database:
                 (kind,),
             ).fetchone()
             return dict(row) if row else None
+
+    def reset_stale_running(self) -> int:
+        """Beim App-Start: Jobs die noch als 'running' markiert sind
+        können nicht wirklich laufen (Process ist tot). Auf 'error' setzen
+        und Reason in summary stempeln. Liefert Anzahl resetteter Jobs.
+        """
+        now = time.time()
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT id, summary FROM jobs WHERE status='running'"
+            ).fetchall()
+            for r in rows:
+                try:
+                    summary = json.loads(r["summary"] or "{}")
+                except Exception:
+                    summary = {}
+                summary["error"] = summary.get("error") or "App restart while job was running"
+                summary["recovered_at"] = now
+                c.execute(
+                    "UPDATE jobs SET status='error', ended_at=?, summary=? WHERE id=?",
+                    (now, json.dumps(summary, ensure_ascii=False), r["id"]),
+                )
+            return len(rows)
 
 
 _db: Database | None = None

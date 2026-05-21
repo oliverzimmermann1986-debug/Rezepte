@@ -9,10 +9,26 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..auth import require_auth
+from ..config_store import get_config
 from ..db import get_db
 from ..jobs.scraper import ScraperJob
 
 router = APIRouter(prefix="/api/pending", tags=["pending"], dependencies=[Depends(require_auth)])
+
+
+def _is_under_temp(path_str: str) -> bool:
+    """Defense-in-depth: nur Pfade unter temp_dir erlauben."""
+    if not path_str:
+        return False
+    try:
+        p = Path(path_str).resolve()
+        temp_root = Path(
+            get_config().get("paths", "temp_dir", default="/opt/scrapper/temp")
+        ).resolve()
+        p.relative_to(temp_root)
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 @router.get("")
@@ -26,13 +42,14 @@ def preview_file(url: str):
     entry = get_db().pending_get(url)
     if not entry:
         raise HTTPException(404, "Nicht gefunden")
+
     frame = entry.get("frame_path")
-    if frame and Path(frame).exists():
+    if frame and _is_under_temp(frame) and Path(frame).exists():
         return FileResponse(frame, media_type="image/jpeg")
 
     # on-the-fly Frame-Extraktion aus dem Video
     video = entry.get("video_path")
-    if video and Path(video).exists():
+    if video and _is_under_temp(video) and Path(video).exists():
         from ..core.downloader import FrameExtractor
         out = Path(video).parent / f"preview_{Path(video).stem}.jpg"
         FrameExtractor.extract(Path(video), out)
@@ -48,7 +65,7 @@ def video_file(url: str):
     if not entry:
         raise HTTPException(404, "Nicht gefunden")
     video = entry.get("video_path")
-    if not video or not Path(video).exists():
+    if not video or not _is_under_temp(video) or not Path(video).exists():
         raise HTTPException(404, "Video nicht verfügbar")
     return FileResponse(video, media_type="video/mp4")
 
