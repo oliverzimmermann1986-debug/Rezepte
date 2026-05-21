@@ -355,6 +355,60 @@
             </div>
           </div>
 
+
+          <!-- Schedule (Startzeit-Planung) -->
+          <div class="config-section">
+            <div class="head">
+              <span style="flex: 1;">Zeitplan / Schedule</span>
+              <button class="btn" @click="previewSchedule()" :disabled="testing.schedule_preview">
+                <span x-show="!testing.schedule_preview">⌬ Vorschau</span>
+                <span x-show="testing.schedule_preview">… berechnet</span>
+              </button>
+            </div>
+            <div class="body">
+              <div class="hint" style="margin-bottom: 14px;">
+                systemd-OnCalendar-Format. Beispiele:<br>
+                <span class="mono">*:0/30</span> = alle 30 Min &nbsp;·&nbsp;
+                <span class="mono">*-*-* 03:00:00</span> = täglich 03:00 &nbsp;·&nbsp;
+                <span class="mono">Mon..Fri *:0/15</span> = Mo–Fr alle 15 Min &nbsp;·&nbsp;
+                <span class="mono">hourly</span> = stündlich
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Scraper (E-Mails abrufen)</label>
+                  <input class="mono" x-model="scheduleEdit.scraper" placeholder="*:0/30">
+                  <div class="hint">Nächster Lauf: <span class="mono" x-text="schedule.scraper && schedule.scraper.next_run || '—'"></span></div>
+                </div>
+                <div class="field">
+                  <label>Backup (rclone bisync)</label>
+                  <input class="mono" x-model="scheduleEdit.backup" placeholder="*-*-* 03:00:00">
+                  <div class="hint">Nächster Lauf: <span class="mono" x-text="schedule.backup && schedule.backup.next_run || '—'"></span></div>
+                </div>
+              </div>
+
+              <div x-show="schedulePreview" class="test-result ok">
+                <strong>Nächste Termine laut Vorschau:</strong>
+                <template x-for="(info, kind) in (schedulePreview || {})" :key="kind">
+                  <div style="margin-top: 8px;">
+                    <strong x-text="kind"></strong>:
+                    <span x-show="info.ok" class="muted" style="font-size: 11px;">
+                      <template x-for="t in info.next_runs" :key="t">
+                        <div style="margin-left: 12px;" x-text="'· ' + t"></div>
+                      </template>
+                    </span>
+                    <span x-show="!info.ok" style="color: var(--err)" x-text="'✗ ' + info.error"></span>
+                  </div>
+                </template>
+              </div>
+
+              <div style="margin-top: 14px; text-align: right;">
+                <button class="btn btn-primary" @click="saveSchedule()" :disabled="testing.schedule_save">
+                  <span x-show="!testing.schedule_save">💾 Schedule speichern + Timer neu laden</span>
+                  <span x-show="testing.schedule_save">… speichert</span>
+                </button>
+              </div>
+            </div>
+          </div>
           <!-- Mail Recipe -->
           <div class="config-section">
             <div class="head">

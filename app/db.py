@@ -193,6 +193,10 @@ class Database:
             )
             return int(cur.lastrowid)
 
+    def job_set_log_file(self, job_id: int, log_file: str) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE jobs SET log_file=? WHERE id=?", (log_file, job_id))
+
     def job_finish(self, job_id: int, status: str, summary: Dict[str, Any]) -> None:
         with self.conn() as c:
             c.execute(

@@ -172,6 +172,7 @@ function scrapperApp() {
       this.rcloneArgsText = (cfg.backup.rclone_args || []).join('\n');
       this.recipeTypes = cfg.recipe_types || this.recipeTypes;
       this.weddingCategories = cfg.wedding_categories || this.weddingCategories;
+      this.loadSchedule();
     },
     async saveConfig() {
       // rclone-args aus textarea zurück in array
@@ -188,8 +189,12 @@ function scrapperApp() {
       ollama: false, openai: false,
       tg_recipe: false, tg_wedding: false, tg_backup: false,
       rclone: false, paths: false, ytdlp: false,
+      schedule_preview: false, schedule_save: false,
     },
     testResults: {},
+    schedule: { scraper: { oncalendar: '', next_run: null }, backup: { oncalendar: '', next_run: null } },
+    scheduleEdit: { scraper: '', backup: '' },
+    schedulePreview: null,
     isTesting(key) { return this.testing[key] === true; },
     testResult(key) { return this.testResults[key] || null; },
     testResultMsg(key) {
@@ -240,6 +245,43 @@ function scrapperApp() {
     },
     testPaths() { this.runTest('paths', '/api/test/paths'); },
     testYtdlp() { this.runTest('ytdlp', '/api/test/ytdlp'); },
+
+    // ------------- Schedule / Timer -------------
+    async loadSchedule() {
+      try {
+        this.schedule = await this.api('GET', '/api/schedule');
+        this.scheduleEdit.scraper = this.schedule.scraper.oncalendar || '';
+        this.scheduleEdit.backup  = this.schedule.backup.oncalendar  || '';
+      } catch(e) {}
+    },
+    async previewSchedule() {
+      this.testing.schedule_preview = true;
+      try {
+        this.schedulePreview = await this.api('POST', '/api/schedule/preview', {
+          scraper: this.scheduleEdit.scraper,
+          backup:  this.scheduleEdit.backup,
+        });
+      } finally {
+        this.testing.schedule_preview = false;
+      }
+    },
+    async saveSchedule() {
+      this.testing.schedule_save = true;
+      try {
+        const r = await this.api('PUT', '/api/schedule', {
+          scraper: this.scheduleEdit.scraper,
+          backup:  this.scheduleEdit.backup,
+        });
+        if (r && r.ok) {
+          this.showToast('Schedule gespeichert ✓');
+          await this.loadSchedule();
+        } else {
+          this.showToast('Speichern fehlgeschlagen: ' + (r && r.error || ''), 'error');
+        }
+      } finally {
+        this.testing.schedule_save = false;
+      }
+    },
 
     // ------------- Verzeichnis-Browser -------------
     browser: {

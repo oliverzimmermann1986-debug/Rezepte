@@ -79,6 +79,11 @@ cp "$APP_DIR/systemd/scrapper-job.timer"   /etc/systemd/system/
 cp "$APP_DIR/systemd/rclone-sync.service"  /etc/systemd/system/
 cp "$APP_DIR/systemd/rclone-sync.timer"    /etc/systemd/system/
 
+# sudoers-Eintrag damit scrapper Timer-Files schreiben + systemd neuladen darf
+install -m 0440 "$APP_DIR/systemd/sudoers-scrapper" /etc/sudoers.d/scrapper
+chgrp $APP_USER /etc/systemd/system/scrapper-job.timer /etc/systemd/system/rclone-sync.timer
+chmod 0664 /etc/systemd/system/scrapper-job.timer /etc/systemd/system/rclone-sync.timer
+
 systemctl daemon-reload
 
 # 10. Web-Service starten + enablen

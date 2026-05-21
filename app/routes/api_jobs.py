@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -25,27 +26,51 @@ _locks: Dict[str, threading.Lock] = {
 }
 
 
+def _setup_job_logger(job_id: int, kind: str) -> tuple[Path, logging.Handler]:
+    """Liefert einen FileHandler der dieses Job-Lauf-Logs aufzeichnet."""
+    log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"{kind}-{datetime.now():%Y%m%d-%H%M%S}-job{job_id}.log"
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(fh)
+    return log_file, fh
+
+
 def _run_scraper_thread(job_id: int):
     db = get_db()
+    log_file, fh = _setup_job_logger(job_id, "scraper")
+    db.job_set_log_file(job_id, str(log_file))
     try:
+        logger.info(f"=== Scraper-Job {job_id} startet (Web-Trigger) ===")
         summary = scraper_job.run_job()
         db.job_finish(job_id, "ok", summary)
+        logger.info(f"=== Scraper-Job {job_id} OK: {summary} ===")
     except Exception as e:
         logger.exception(f"Scraper-Job {job_id} fehlgeschlagen")
         db.job_finish(job_id, "error", {"error": str(e)})
     finally:
+        logging.getLogger().removeHandler(fh)
+        fh.close()
         _locks["scraper"].release()
 
 
 def _run_backup_thread(job_id: int, dry_run: bool):
     db = get_db()
+    log_file, fh = _setup_job_logger(job_id, "backup")
+    db.job_set_log_file(job_id, str(log_file))
     try:
+        logger.info(f"=== Backup-Job {job_id} startet (Web-Trigger, dry_run={dry_run}) ===")
         summary = rclone_job.run_job(dry_run=dry_run)
         db.job_finish(job_id, "ok", summary)
+        logger.info(f"=== Backup-Job {job_id} OK ===")
     except Exception as e:
         logger.exception(f"Backup-Job {job_id} fehlgeschlagen")
         db.job_finish(job_id, "error", {"error": str(e)})
     finally:
+        logging.getLogger().removeHandler(fh)
+        fh.close()
         _locks["backup"].release()
 
 
