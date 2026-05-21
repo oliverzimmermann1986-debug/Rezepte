@@ -153,6 +153,23 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
     return summary
 
 
+def _parse_rclone_args(value) -> list:
+    """rclone_args kann als String ('--foo --bar=1') oder als Liste gespeichert sein.
+    Liefert immer eine Liste von Token."""
+    if not value:
+        return []
+    if isinstance(value, list):
+        # Liste kann Strings mit Mehrfach-Args enthalten, also nochmal splitten
+        out = []
+        for item in value:
+            if isinstance(item, str):
+                out.extend(item.split())
+        return out
+    if isinstance(value, str):
+        return value.split()
+    return []
+
+
 _ACTIVE_PROCS: list = []  # globale Liste der laufenden subprocess.Popen für Cancel
 _CANCEL_EVENT = None       # threading.Event() — wenn gesetzt → keine neuen Pairs starten
 
@@ -202,7 +219,7 @@ def run_job(dry_run: bool = False, pairs_filter: list = None) -> Dict:
 
     reset_cancel()
 
-    args = backup_cfg.get("rclone_args") or []
+    args = _parse_rclone_args(backup_cfg.get("rclone_args"))
     log_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs")) / "rclone"
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -278,7 +295,7 @@ def run_quick(remote_path: str, local_path: str, direction: str = "bisync",
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", f"{remote_path}-{local_path}")[:80]
     log_file = log_dir / f"quick-{safe_name}-{datetime.now():%Y%m%d-%H%M%S}.log"
 
-    args = (cfg.get("backup", "rclone_args", default="") or "").split()
+    args = _parse_rclone_args(cfg.get("backup", "rclone_args", default=""))
     if extra_args:
         args += extra_args
     if dry_run and "--dry-run" not in args:
