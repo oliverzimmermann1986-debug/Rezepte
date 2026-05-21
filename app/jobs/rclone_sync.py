@@ -65,6 +65,27 @@ def reset_cancel() -> None:
     _CANCEL_EVENT.clear()
 
 
+def _is_remote(path: str) -> bool:
+    """True wenn ``path`` ein rclone-Remote-Pfad ist (z.B. ``pcloud:/foo``).
+
+    rclone-Konvention: 'remotename:relpath' - ohne führenden Slash und mit ':'.
+    Wir nutzen das, um automatisch zwischen lokalen Filesystem-Pfaden und
+    Cloud→Cloud Sync zu unterscheiden, ohne zusätzliches Config-Feld.
+    """
+    if not path:
+        return False
+    if path.startswith("/"):
+        return False
+    return ":" in path
+
+
+def _pair_stats(path: str) -> Tuple[int, str]:
+    """Stats für eine beliebige Seite eines Paars - lokal oder rclone-Remote."""
+    if _is_remote(path):
+        return _rclone_stats_remote(path)
+    return _local_stats(path)
+
+
 def _rclone_stats_remote(remote: str) -> Tuple[int, str]:
     """Return (file_count, size_human). Bei Fehler (0, '?')"""
     try:
@@ -108,11 +129,16 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
     remote = pair["remote"]
     local = pair["local"]
 
-    Path(local).mkdir(parents=True, exist_ok=True)
+    # Nur mkdir wenn die zweite Seite tatsächlich ein lokaler Pfad ist.
+    # Cloud→Cloud-Pairs (z.B. pcloud:/x ↔ gdrive:/y) haben keinen
+    # lokalen Mountpoint, da würde mkdir Müll-Verzeichnisse im cwd anlegen.
+    if not _is_remote(local):
+        Path(local).mkdir(parents=True, exist_ok=True)
+
     log_file = log_dir / f"sync-{name}-{datetime.now():%Y%m%d-%H%M%S}.log"
 
-    cloud_files, cloud_size = _rclone_stats_remote(remote)
-    local_files_before, local_size_before = _local_stats(local)
+    cloud_files, cloud_size = _pair_stats(remote)
+    local_files_before, local_size_before = _pair_stats(local)
 
     cmd = [
         "rclone", "bisync", remote, local,
@@ -188,7 +214,7 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
         summary["error"] = str(e)
         logger.error(f"[{name}] Exception: {e}")
 
-    lf, ls = _local_stats(local)
+    lf, ls = _pair_stats(local)
     summary["local_files_after"] = lf
     summary["local_size_after"] = ls
     if cloud_files != lf:
