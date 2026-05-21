@@ -1,11 +1,11 @@
 """
-Scraper-Job (TikTok/Instagram → Rezepte/Hochzeit Ordner).
+Scraper-Job (TikTok/Instagram -> Rezepte/Hochzeit Ordner).
 
-Neu vs. altem Script:
-  - 2 separate IMAP-Konten (kein Betreff-Klassifizierung)
-  - Pending wird NICHT mehr per Telegram-Reply aufgelöst, sondern im Web-UI
-  - State liegt in SQLite (nicht mehr JSON-Files)
-  - Wird als Funktion gestartet (synchron) - Aufrufer (FastAPI/Timer) startet Thread
+Vereinfachte KI-Cascade (kein Vision-Fallback mehr):
+  Ollama-fast -> Ollama-fallback -> Pending (manuell im Web-UI)
+
+Pending-Items werden im Web-UI über ein <video>-Element angezeigt -
+keine Standbild-Extraktion mehr nötig.
 """
 from __future__ import annotations
 
@@ -16,15 +16,12 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from ..config_store import get_config
 from ..db import get_db
-from ..core.analyzer import (
-    OllamaAnalyzer, OpenAIVisionAnalyzer,
-    RecipeAnalysis, WeddingAnalysis,
-)
-from ..core.downloader import VideoDownloader, FrameExtractor
+from ..core.analyzer import OllamaAnalyzer, RecipeAnalysis, WeddingAnalysis
+from ..core.downloader import VideoDownloader
 from ..core.email_processor import MailAccount, EmailRouter
 from ..core.notifier import TelegramNotifier
 
@@ -46,14 +43,11 @@ def _has_usable_description(text: Optional[str], min_len: int) -> bool:
 
 
 def _save_video_files(target_dir: Path, video_path: Path,
-                       frame_path: Optional[Path], description: Optional[str],
-                       info: Dict) -> None:
+                       description: Optional[str], info: Dict) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     file_base = target_dir.name
     if video_path and video_path.exists():
         shutil.copy2(video_path, target_dir / f"{file_base}{video_path.suffix}")
-    if frame_path and frame_path.exists():
-        shutil.copy2(frame_path, target_dir / f"{file_base}.jpg")
     if description:
         (target_dir / "description.txt").write_text(description, encoding="utf-8")
     with open(target_dir / "info.json", "w", encoding="utf-8") as f:
@@ -72,7 +66,7 @@ class ScraperJob:
         self.temp_dir = Path(cfg.get("paths", "temp_dir", default="/opt/scrapper/temp"))
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
-        # AI
+        # AI: nur Ollama (fast + optional Fallback)
         ollama_cfg = cfg.get("ai", "ollama", default={}) or {}
         self.ollama_enabled = bool(ollama_cfg.get("enabled", True))
         url = ollama_cfg.get("url", "http://localhost:11434")
@@ -80,21 +74,10 @@ class ScraperJob:
         self.ollama = OllamaAnalyzer(
             url, ollama_cfg.get("model", "qwen2.5:7b-instruct"), timeout
         ) if self.ollama_enabled else None
-        fb = ollama_cfg.get("fallback_model", "").strip() if ollama_cfg.get("fallback_model") else ""
+        fb = (ollama_cfg.get("fallback_model") or "").strip()
         self.ollama_fallback = (
             OllamaAnalyzer(url, fb, timeout) if (self.ollama_enabled and fb) else None
         )
-
-        openai_cfg = cfg.get("ai", "openai", default={}) or {}
-        self.vision = None
-        if openai_cfg.get("enabled") and openai_cfg.get("api_key"):
-            try:
-                self.vision = OpenAIVisionAnalyzer(
-                    openai_cfg["api_key"],
-                    openai_cfg.get("model", "gpt-4o-mini"),
-                )
-            except Exception as e:
-                logger.warning(f"OpenAI init: {e}")
 
         self.confidence_threshold = float(cfg.get("ai", "confidence_threshold", default=0.75))
         self.fallback_threshold = float(cfg.get("ai", "fallback_threshold", default=0.5))
@@ -130,87 +113,60 @@ class ScraperJob:
             ))
         self.router = EmailRouter(accounts)
 
-        # Wedding-Spezial: alle Items zwingend in Pending?
         self.wedding_always_pending = bool(
             (mail_cfg.get("wedding") or {}).get("always_pending", False)
         )
 
-        # Kategorien
         self.wedding_categories = cfg.get(
             "wedding_categories",
             default=["Deko", "Foto", "Basteln", "Einladung", "Standesamt", "Sonstiges"],
         )
 
-    # ---------------- Analyse ----------------
-    def _analyze_recipe(self, description: Optional[str], video: Path
-                         ) -> Tuple[RecipeAnalysis, Optional[Path]]:
-        # Cascade: fast Modell → fallback Modell → Vision
-        best = None
+    # ---------------- Analyse (Ollama-only) ----------------
+    def _analyze_recipe(self, description: Optional[str]) -> RecipeAnalysis:
+        """Cascade: fast Modell -> fallback Modell -> bestes Ergebnis (oder Unbekannt)."""
+        best: Optional[RecipeAnalysis] = None
         if self.ollama and _has_usable_description(description, self.min_desc_len):
             r = self.ollama.analyze_recipe(description)
             logger.info(f"Ollama fast: name={r.name} typ={r.type} conf={r.confidence:.2f}")
             if not r.needs_manual_input(self.confidence_threshold):
-                return r, None
+                return r
             best = r
-            # fast unsicher → fallback-Modell
             if self.ollama_fallback:
                 r2 = self.ollama_fallback.analyze_recipe(description)
                 logger.info(f"Ollama fallback: name={r2.name} typ={r2.type} conf={r2.confidence:.2f}")
                 if not r2.needs_manual_input(self.fallback_threshold):
-                    return r2, None
-                if r2.confidence > (best.confidence if best else 0):
+                    return r2
+                if r2.confidence > best.confidence:
                     best = r2
-        # Vision-Fallback wenn beide Ollama-Versuche unsicher
-        if self.vision:
-            frame = FrameExtractor.extract(video)
-            if frame:
-                v = self.vision.analyze_recipe(frame)
-                logger.info(f"Vision: name={v.name} conf={v.confidence:.2f}")
-                if best and best.confidence > v.confidence:
-                    return best, frame
-                return v, frame
         if best:
-            return best, None
-        return RecipeAnalysis("Unbekannt", "Unbekannt", None, 0.0), None
+            return best
+        return RecipeAnalysis("Unbekannt", "Unbekannt", None, 0.0)
 
-    def _analyze_wedding(self, description: Optional[str], video: Path
-                          ) -> Tuple[WeddingAnalysis, Optional[Path]]:
-        best = None
-        # Wenn always_pending konfiguriert ist: KI nur für Vorschlag, aber confidence cap auf 0
-        force_pending = self.wedding_always_pending
+    def _analyze_wedding(self, description: Optional[str]) -> WeddingAnalysis:
+        best: Optional[WeddingAnalysis] = None
         if self.ollama and _has_usable_description(description, self.min_desc_len):
             w = self.ollama.analyze_wedding(description, self.wedding_categories)
             logger.info(f"Ollama fast (wedding): name={w.name} cat={w.category} conf={w.confidence:.2f}")
-            if force_pending:
-                # Vorschlag behalten, aber als unsicher markieren damit es in Pending landet
-                w_keep = WeddingAnalysis(name=w.name, category=w.category, confidence=min(w.confidence, 0.49))
-                return w_keep, None
-            if not w.needs_manual_input(self.confidence_threshold):
-                return w, None
+            if not self.wedding_always_pending and not w.needs_manual_input(self.confidence_threshold):
+                return w
             best = w
             if self.ollama_fallback:
                 w2 = self.ollama_fallback.analyze_wedding(description, self.wedding_categories)
                 logger.info(f"Ollama fallback (wedding): name={w2.name} cat={w2.category} conf={w2.confidence:.2f}")
-                if not w2.needs_manual_input(self.fallback_threshold):
-                    return w2, None
-                if w2.confidence > (best.confidence if best else 0):
+                if not self.wedding_always_pending and not w2.needs_manual_input(self.fallback_threshold):
+                    return w2
+                if w2.confidence > best.confidence:
                     best = w2
-        if self.vision:
-            frame = FrameExtractor.extract(video)
-            if frame:
-                v = self.vision.analyze_wedding(frame, self.wedding_categories)
-                if best and best.confidence > v.confidence:
-                    return best, frame
-                return v, frame
         if best:
-            return best, None
-        return WeddingAnalysis("Unbekannt", None, 0.0), None
+            return best
+        return WeddingAnalysis("Unbekannt", None, 0.0)
 
-    # ---------------- Persistierung ----------------
+    # ---------------- Save ----------------
     def _save_recipe(self, r: RecipeAnalysis, url: str, video: Path,
-                     frame: Optional[Path], description: Optional[str]) -> Path:
+                     description: Optional[str]) -> Path:
         type_n = _sanitize(r.type)
-        cat_n = _sanitize(r.category or "Sonstiges")
+        cat_n = _sanitize(r.category or "Allgemein")
         name_n = _sanitize(r.name)
         target = self.recipe_dir / type_n / cat_n / name_n
         if target.exists():
@@ -221,12 +177,11 @@ class ScraperJob:
             "content_type": "recipe", "description": description,
             "timestamp": datetime.now().isoformat(),
         }
-        _save_video_files(target, video, frame, description, info)
+        _save_video_files(target, video, description, info)
         return target
 
     def _save_wedding(self, w: WeddingAnalysis, url: str, video: Path,
-                      frame: Optional[Path], description: Optional[str],
-                      default_cat: str = "Sonstiges") -> Path:
+                      description: Optional[str], default_cat: str = "Sonstiges") -> Path:
         cat = _sanitize(w.category or default_cat)
         name_n = _sanitize(w.name) if w.name.lower() != "unbekannt" \
             else f"Hochzeit_{datetime.now():%Y%m%d_%H%M%S}"
@@ -239,12 +194,11 @@ class ScraperJob:
             "content_type": "wedding", "description": description,
             "timestamp": datetime.now().isoformat(),
         }
-        _save_video_files(target, video, frame, description, info)
+        _save_video_files(target, video, description, info)
         return target
 
     # ---------------- URL-Verarbeitung ----------------
     def process_url(self, item: Dict) -> Dict:
-        """Verarbeitet eine URL. Return: {'status': 'auto'|'pending'|'error', ...}"""
         url = item["url"]
         content_type = item["type"]
         result: Dict = {"url": url, "type": content_type, "status": "error"}
@@ -257,15 +211,13 @@ class ScraperJob:
 
         try:
             if content_type == "recipe":
-                r, frame = self._analyze_recipe(description, video)
+                r = self._analyze_recipe(description)
                 if r.needs_manual_input(self.confidence_threshold):
-                    # → Pending
-                    pending_video = self._stash_for_pending(video, frame)
+                    pending_video = self._stash_for_pending(video)
                     self.db.pending_add(
                         url=url, content_type="recipe",
                         description=description,
-                        video_path=str(pending_video["video"]) if pending_video.get("video") else None,
-                        frame_path=str(pending_video["frame"]) if pending_video.get("frame") else None,
+                        video_path=str(pending_video) if pending_video else None,
                         ai_suggestion={
                             "name": r.name, "type": r.type,
                             "category": r.category, "confidence": r.confidence,
@@ -280,7 +232,7 @@ class ScraperJob:
                             f"🔗 {url}"
                         )
                 else:
-                    target = self._save_recipe(r, url, video, frame, description)
+                    target = self._save_recipe(r, url, video, description)
                     self.db.history_add(url, content_type="recipe", name=r.name,
                                          target_dir=str(target))
                     result.update({"status": "auto", "name": r.name, "target": str(target)})
@@ -291,14 +243,13 @@ class ScraperJob:
                         )
             else:  # wedding
                 default_cat = item.get("default_category") or "Sonstiges"
-                w, frame = self._analyze_wedding(description, video)
-                if w.needs_manual_input(self.confidence_threshold):
-                    pending_video = self._stash_for_pending(video, frame)
+                w = self._analyze_wedding(description)
+                if w.needs_manual_input(self.confidence_threshold) or self.wedding_always_pending:
+                    pending_video = self._stash_for_pending(video)
                     self.db.pending_add(
                         url=url, content_type="wedding",
                         description=description,
-                        video_path=str(pending_video["video"]) if pending_video.get("video") else None,
-                        frame_path=str(pending_video["frame"]) if pending_video.get("frame") else None,
+                        video_path=str(pending_video) if pending_video else None,
                         ai_suggestion={
                             "name": w.name, "category": w.category or default_cat,
                             "confidence": w.confidence,
@@ -313,7 +264,7 @@ class ScraperJob:
                             f"🔗 {url}"
                         )
                 else:
-                    target = self._save_wedding(w, url, video, frame, description, default_cat)
+                    target = self._save_wedding(w, url, video, description, default_cat)
                     self.db.history_add(url, content_type="wedding", name=w.name,
                                          target_dir=str(target))
                     result.update({"status": "auto", "name": w.name, "target": str(target)})
@@ -323,29 +274,22 @@ class ScraperJob:
                             f"{w.category or default_cat} ({w.confidence:.0%})"
                         )
         finally:
-            # Temp aufräumen, außer Pending hat Files übernommen
             self._cleanup_temp(video)
 
         return result
 
-    def _stash_for_pending(self, video: Path, frame: Optional[Path]) -> Dict[str, Path]:
-        """Kopiert video/frame in temp_dir/pending/ damit sie das Cleanup überleben."""
+    def _stash_for_pending(self, video: Path) -> Optional[Path]:
+        """Kopiert das Video nach temp_dir/pending/ damit es das Cleanup überlebt."""
+        if not video or not video.exists():
+            return None
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         pending_root = self.temp_dir / "pending"
         pending_root.mkdir(parents=True, exist_ok=True)
-        out: Dict[str, Path] = {}
-        if video and video.exists():
-            dst = pending_root / f"{ts}_video{video.suffix}"
-            shutil.copy2(video, dst)
-            out["video"] = dst
-        if frame and frame.exists():
-            dst = pending_root / f"{ts}_frame.jpg"
-            shutil.copy2(frame, dst)
-            out["frame"] = dst
-        return out
+        dst = pending_root / f"{ts}_video{video.suffix}"
+        shutil.copy2(video, dst)
+        return dst
 
     def _cleanup_temp(self, video: Path) -> None:
-        # Lösche nur den Download-Subordner, nicht das ganze temp_dir
         try:
             if video and video.parent.exists() and video.parent.parent == self.temp_dir:
                 shutil.rmtree(video.parent, ignore_errors=True)
@@ -365,9 +309,7 @@ class ScraperJob:
         items = self.router.fetch_all()
         summary["fetched"] = len(items)
 
-        # Pending-URLs überspringen (warten auf Web-Resolve)
         pending_urls = {p["url"] for p in self.db.pending_list("pending")}
-
         new_items = [
             it for it in items
             if not self.db.history_has(it["url"]) and it["url"] not in pending_urls
@@ -398,9 +340,6 @@ class ScraperJob:
     # ---------------- History bearbeiten ----------------
     def move_history_item(self, url: str, *, new_name: str, new_type: str = None,
                             new_category: str = None) -> Dict:
-        """Verschiebt/Umbenennt einen schon einsortierten Eintrag im FS und updated DB.
-        Alter Parent-Ordner wird gelöscht falls leer.
-        """
         entry = self.db.history_get(url)
         if not entry:
             return {"ok": False, "error": "Eintrag nicht in Historie"}
@@ -419,14 +358,11 @@ class ScraperJob:
         else:
             new_dir = self.wedding_dir / _sanitize(new_category or "Sonstiges") / sanitized_name
 
-        # Falls Ziel gleich Quelle, nichts zu tun
         if new_dir.resolve() == old_dir.resolve():
             return {"ok": True, "action": "noop", "target": str(new_dir)}
 
-        # Falls Ziel existiert -> Suffix
         if new_dir.exists():
-            from datetime import datetime as _dt
-            new_dir = new_dir.parent / f"{sanitized_name}_{_dt.now():%Y%m%d_%H%M%S}"
+            new_dir = new_dir.parent / f"{sanitized_name}_{datetime.now():%Y%m%d_%H%M%S}"
 
         new_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(old_dir), str(new_dir))
@@ -450,10 +386,9 @@ class ScraperJob:
             except Exception as e:
                 logger.warning(f"info.json update: {e}")
 
-        # Datei-Basisnamen umbenennen damit zum Ordner passt
-        for ext in (".mp4", ".webm", ".mkv", ".jpg"):
+        # Datei-Basisnamen anpassen
+        for ext in (".mp4", ".webm", ".mkv"):
             for f in new_dir.glob(f"*{ext}"):
-                # Nur die Hauptmedia rename, nicht z.B. preview_*.jpg
                 if f.stem != sanitized_name:
                     target = new_dir / f"{sanitized_name}{ext}"
                     if not target.exists():
@@ -462,16 +397,11 @@ class ScraperJob:
                         except Exception as e:
                             logger.warning(f"rename {f}: {e}")
 
-        # DB updaten
         self.db.history_update(url, name=new_name, target_dir=str(new_dir))
-
-        # Leere Parent-Ordner aufräumen
         self._cleanup_empty_parents(old_dir)
-
         return {"ok": True, "action": "moved", "target": str(new_dir)}
 
     def delete_history_item(self, url: str) -> Dict:
-        """Löscht den Eintrag aus FS und Historie."""
         entry = self.db.history_get(url)
         if not entry:
             return {"ok": False, "error": "Eintrag nicht in Historie"}
@@ -485,19 +415,15 @@ class ScraperJob:
         return {"ok": True, "action": "deleted"}
 
     def _cleanup_empty_parents(self, removed_dir: Path) -> None:
-        """Steigt von removed_dir hoch und löscht leere Verzeichnisse, bis zur Wurzel."""
-        # Begrenze auf recipe_dir/wedding_dir um nicht zu hoch zu steigen
         parent = removed_dir.parent
-        for _ in range(4):  # max 4 Ebenen hoch
+        for _ in range(4):
             try:
                 if not parent.exists():
                     break
-                # Nur unterhalb der bekannten Roots aufräumen
                 rels = [self.recipe_dir, self.wedding_dir]
                 inside = any(str(parent).startswith(str(r)) and str(parent) != str(r) for r in rels)
                 if not inside:
                     break
-                # Versuch zu löschen wenn leer
                 if not any(parent.iterdir()):
                     parent.rmdir()
                     logger.info(f"Leeren Ordner gelöscht: {parent}")
@@ -510,8 +436,6 @@ class ScraperJob:
 
     # ---------------- Pending im Web auflösen ----------------
     def reanalyze_pending(self, url: str) -> Dict:
-        """Lässt ein Pending-Item nochmal durch die Cascade laufen.
-        Bei Erfolg: automatisch einsortieren. Sonst: nur ai_suggestion updaten."""
         entry = self.db.pending_get(url)
         if not entry:
             return {"ok": False, "error": "Pending-Eintrag nicht gefunden"}
@@ -521,19 +445,16 @@ class ScraperJob:
         if not video_path or not video_path.exists():
             return {"ok": False, "error": "Video-Datei fehlt (vermutlich aufgeräumt)"}
 
-        frame_path = Path(entry["frame_path"]) if entry.get("frame_path") else None
         content_type = entry.get("content_type") or "recipe"
 
         if content_type == "recipe":
-            r, new_frame = self._analyze_recipe(description, video_path)
-            frame_to_use = new_frame or frame_path
+            r = self._analyze_recipe(description)
             suggestion = {
                 "name": r.name, "type": r.type,
                 "category": r.category, "confidence": r.confidence,
             }
             if not r.needs_manual_input(self.confidence_threshold):
-                # Direkt einsortieren
-                target = self._save_recipe(r, url, video_path, frame_to_use, description)
+                target = self._save_recipe(r, url, video_path, description)
                 self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
                 self.db.pending_resolve(url, status="resolved")
                 self._remove_pending_files(entry)
@@ -544,19 +465,17 @@ class ScraperJob:
                     )
                 return {"ok": True, "action": "auto_saved", "target": str(target),
                         "analysis": suggestion}
-            # Suggestion aktualisieren
             self.db.pending_update_suggestion(url, suggestion)
             return {"ok": True, "action": "still_pending", "analysis": suggestion}
         else:  # wedding
-            w, new_frame = self._analyze_wedding(description, video_path)
-            frame_to_use = new_frame or frame_path
+            w = self._analyze_wedding(description)
             default_cat = "Sonstiges"
             suggestion = {
                 "name": w.name, "category": w.category or default_cat,
                 "confidence": w.confidence,
             }
             if not w.needs_manual_input(self.confidence_threshold):
-                target = self._save_wedding(w, url, video_path, frame_to_use, description, default_cat)
+                target = self._save_wedding(w, url, video_path, description, default_cat)
                 self.db.history_add(url, content_type="wedding", name=w.name, target_dir=str(target))
                 self.db.pending_resolve(url, status="resolved")
                 self._remove_pending_files(entry)
@@ -571,12 +490,6 @@ class ScraperJob:
             return {"ok": True, "action": "still_pending", "analysis": suggestion}
 
     def resolve_pending(self, url: str, decision: Dict) -> Dict:
-        """
-        decision = {
-          'action': 'save' | 'skip',
-          'name': str, 'type'/'category': str, ...
-        }
-        """
         entry = self.db.pending_get(url)
         if not entry:
             return {"ok": False, "error": "Pending-Eintrag nicht gefunden"}
@@ -588,7 +501,6 @@ class ScraperJob:
             return {"ok": True, "action": "skipped"}
 
         video_path = Path(entry["video_path"]) if entry.get("video_path") else None
-        frame_path = Path(entry["frame_path"]) if entry.get("frame_path") else None
         description = entry.get("description")
 
         if not video_path or not video_path.exists():
@@ -603,7 +515,7 @@ class ScraperJob:
                 confidence=1.0,
                 is_manual=True,
             )
-            target = self._save_recipe(r, url, video_path, frame_path, description)
+            target = self._save_recipe(r, url, video_path, description)
             self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
             if self.recipe_bot.enabled:
                 self.recipe_bot.send(
@@ -617,8 +529,7 @@ class ScraperJob:
                 confidence=1.0,
                 is_manual=True,
             )
-            target = self._save_wedding(w, url, video_path, frame_path, description,
-                                          default_cat="Sonstiges")
+            target = self._save_wedding(w, url, video_path, description, default_cat="Sonstiges")
             self.db.history_add(url, content_type="wedding", name=w.name, target_dir=str(target))
             if self.wedding_bot.enabled:
                 self.wedding_bot.send(
@@ -631,15 +542,13 @@ class ScraperJob:
         return {"ok": True, "action": "saved", "target": str(target)}
 
     def _remove_pending_files(self, entry: Dict) -> None:
-        for key in ("video_path", "frame_path"):
-            p = entry.get(key)
-            if p:
-                try:
-                    Path(p).unlink(missing_ok=True)
-                except Exception:
-                    pass
+        p = entry.get("video_path")
+        if p:
+            try:
+                Path(p).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def run_job() -> Dict:
-    """Entry-Point für systemd oder Web-Trigger."""
     return ScraperJob().run()

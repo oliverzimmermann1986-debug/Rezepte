@@ -48,7 +48,6 @@ MASK_PATHS = [
     ("web", "secret_key"),
     ("mail", "recipe", "password"),
     ("mail", "wedding", "password"),
-    ("ai", "openai", "api_key"),
     ("telegram", "recipe_bot_token"),
     ("telegram", "wedding_bot_token"),
     ("telegram", "backup_bot_token"),

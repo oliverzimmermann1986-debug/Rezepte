@@ -52,9 +52,10 @@ mail:
     # Wenn true: ALLE Hochzeits-Items landen IMMER in Pending (kein Auto-Sortieren)
     always_pending: true
 
-# AI Analyse
+# AI Analyse - läuft nur noch über Ollama (lokal). Vision-Fallback wurde
+# zusammen mit der Frame-Extraktion entfernt. Wenn Ollama unsicher ist,
+# landet das Item in der Pending-Liste zur manuellen Zuordnung.
 ai:
-  # Ollama (lokal, primär)
   ollama:
     enabled: true
     url: http://192.168.178.250:11434
@@ -63,11 +64,6 @@ ai:
     # Größeres Modell als Fallback wenn fast unsicher (leer = kein Fallback)
     fallback_model: gemma4:26b
     timeout: 180
-  # OpenAI (Vision-Fallback)
-  openai:
-    enabled: true
-    api_key: sk-...
-    model: gpt-4o-mini
   # Confidence-Schwellen
   confidence_threshold: 0.75       # fast-Modell: darunter → fallback-Modell
   fallback_threshold: 0.5          # fallback-Modell: darunter → Pending

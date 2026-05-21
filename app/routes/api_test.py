@@ -91,28 +91,8 @@ def test_ollama() -> Dict[str, Any]:
     return {"ok": True, "message": " · ".join(msg_parts), "installed": installed}
 
 
-@router.post("/openai")
-def test_openai() -> Dict[str, Any]:
-    """OpenAI API-Key gültig?"""
-    cfg = get_config().get("ai", "openai", default={}) or {}
-    key = cfg.get("api_key", "")
-    if not cfg.get("enabled"):
-        return {"ok": False, "error": "OpenAI ist in der Config deaktiviert"}
-    if not key or key.startswith("sk-..."):
-        return {"ok": False, "error": "API-Key nicht gesetzt"}
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=key)
-        # Sehr kleiner Request - listet verfügbare Modelle
-        models = client.models.list()
-        names = [m.id for m in list(models)[:10]]
-        return {
-            "ok": True,
-            "message": f"OpenAI OK – {len(names)} Modelle abgerufen",
-            "models_sample": names[:5],
-        }
-    except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+# /openai-Test wurde entfernt: OpenAI Vision (Frame-basiert) ist mit der
+# Frame-Extraktion zusammen rausgenommen worden.
 
 
 class TelegramTestRequest(BaseModel):

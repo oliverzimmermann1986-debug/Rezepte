@@ -1,12 +1,14 @@
-"""KI-Analyse: Ollama (primär, lokal) + OpenAI Vision (Fallback)."""
+"""KI-Analyse: Ollama-only (Fast-Modell + optional Fallback-Modell).
+
+OpenAI Vision wurde entfernt - die Cascade besteht nur noch aus zwei
+Ollama-Calls. Wenn auch der Fallback unsicher ist, landet das Item in
+Pending und der User entscheidet manuell im Web-UI.
+"""
 from __future__ import annotations
 
-import base64
 import json
 import logging
-import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 import requests
@@ -48,10 +50,6 @@ class WeddingAnalysis:
 
     def needs_manual_input(self, threshold: float) -> bool:
         return self.confidence < threshold or self.name.lower() == "unbekannt"
-
-
-def _strip_json_fences(text: str) -> str:
-    return re.sub(r"^```json\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
 
 
 class OllamaAnalyzer:
@@ -102,7 +100,7 @@ class OllamaAnalyzer:
         if not content:
             return RecipeAnalysis("Unbekannt", "Unbekannt", None, 0.0)
         try:
-            return RecipeAnalysis.from_dict(json.loads(_strip_json_fences(content)))
+            return RecipeAnalysis.from_dict(json.loads(content))
         except Exception as e:
             logger.warning(f"Ollama JSON-Parse: {e} | {content[:120]}")
             return RecipeAnalysis("Unbekannt", "Unbekannt", None, 0.0)
@@ -121,7 +119,7 @@ class OllamaAnalyzer:
         if not content:
             return WeddingAnalysis("Unbekannt", None, 0.0)
         try:
-            data = json.loads(_strip_json_fences(content))
+            data = json.loads(content)
             return WeddingAnalysis(
                 name=data.get("name") or "Unbekannt",
                 category=data.get("kategorie") or data.get("category"),
@@ -141,7 +139,7 @@ class OllamaAnalyzer:
         if not content:
             return {"name": name, "type": typ, "category": category}
         try:
-            d = json.loads(_strip_json_fences(content))
+            d = json.loads(content)
             return {
                 "name": d.get("name") or name,
                 "type": d.get("type") or typ,
@@ -149,70 +147,3 @@ class OllamaAnalyzer:
             }
         except Exception:
             return {"name": name, "type": typ, "category": category}
-
-
-class OpenAIVisionAnalyzer:
-    """Nur wenn Beschreibung leer/zu kurz."""
-
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
-        # Lazy import - nur wenn benötigt
-        from openai import OpenAI
-        self.client = OpenAI(api_key=api_key)
-        self.model = model
-
-    @staticmethod
-    def _b64(image_path: Path) -> str:
-        with open(image_path, "rb") as f:
-            return base64.b64encode(f.read()).decode()
-
-    def analyze_recipe(self, image: Path) -> RecipeAnalysis:
-        try:
-            b64 = self._b64(image)
-            r = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": (
-                        'Antworte NUR mit JSON: {"rezeptname":"...","typ":"...",'
-                        '"kategorie":"...","confidence":0.85}')},
-                    {"role": "user", "content": [
-                        {"type": "text", "text": "Was ist das für ein Rezept?"},
-                        {"type": "image_url", "image_url": {
-                            "url": f"data:image/jpeg;base64,{b64}"}},
-                    ]},
-                ],
-                temperature=0.2, max_tokens=150,
-            )
-            txt = _strip_json_fences(r.choices[0].message.content)
-            return RecipeAnalysis.from_dict(json.loads(txt))
-        except Exception as e:
-            logger.error(f"OpenAI Vision Rezept: {e}")
-            return RecipeAnalysis("Unbekannt", "Unbekannt", None, 0.0)
-
-    def analyze_wedding(self, image: Path, categories: list[str]) -> WeddingAnalysis:
-        try:
-            b64 = self._b64(image)
-            cats = ", ".join(categories)
-            r = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": (
-                        f"Hochzeits-Bild analysieren. Kategorien: {cats}. "
-                        'Antworte NUR mit JSON: {"name":"...","kategorie":"...","confidence":0.85}')},
-                    {"role": "user", "content": [
-                        {"type": "text", "text": "Was zeigt dieses Bild?"},
-                        {"type": "image_url", "image_url": {
-                            "url": f"data:image/jpeg;base64,{b64}"}},
-                    ]},
-                ],
-                temperature=0.2, max_tokens=120,
-            )
-            txt = _strip_json_fences(r.choices[0].message.content)
-            d = json.loads(txt)
-            return WeddingAnalysis(
-                name=d.get("name") or "Unbekannt",
-                category=d.get("kategorie") or d.get("category"),
-                confidence=float(d.get("confidence", 0)),
-            )
-        except Exception as e:
-            logger.error(f"OpenAI Vision Hochzeit: {e}")
-            return WeddingAnalysis("Unbekannt", None, 0.0)

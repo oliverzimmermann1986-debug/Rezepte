@@ -36,27 +36,9 @@ def list_pending(status: str = "pending") -> List[Dict[str, Any]]:
     return get_db().pending_list(status=status)
 
 
-@router.get("/preview")
-def preview_file(url: str):
-    """Liefert das Frame-Bild eines Pending-Eintrags zurück."""
-    entry = get_db().pending_get(url)
-    if not entry:
-        raise HTTPException(404, "Nicht gefunden")
-
-    frame = entry.get("frame_path")
-    if frame and _is_under_temp(frame) and Path(frame).exists():
-        return FileResponse(frame, media_type="image/jpeg")
-
-    # on-the-fly Frame-Extraktion aus dem Video
-    video = entry.get("video_path")
-    if video and _is_under_temp(video) and Path(video).exists():
-        from ..core.downloader import FrameExtractor
-        out = Path(video).parent / f"preview_{Path(video).stem}.jpg"
-        FrameExtractor.extract(Path(video), out)
-        if out.exists():
-            return FileResponse(out, media_type="image/jpeg")
-
-    raise HTTPException(404, "Kein Vorschaubild verfügbar")
+# /preview Endpoint wurde entfernt - Frame-Extraktion ist raus.
+# Das Frontend zeigt automatisch den "kein Vorschaubild"-Placeholder,
+# wenn der GET 404 zurückgibt (siehe @error-Handler in index.html).
 
 
 @router.get("/video")
