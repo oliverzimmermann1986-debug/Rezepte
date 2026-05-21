@@ -240,5 +240,127 @@ function scrapperApp() {
     },
     testPaths() { this.runTest('paths', '/api/test/paths'); },
     testYtdlp() { this.runTest('ytdlp', '/api/test/ytdlp'); },
+
+    // ------------- Verzeichnis-Browser -------------
+    browser: {
+      show: false,
+      mode: 'local',          // 'local' | 'rclone'
+      currentPath: '/',
+      entries: [],
+      suggestedRoots: [],
+      parent: null,
+      isRoot: false,
+      loading: false,
+      callback: null,         // (path) => void
+      title: 'Verzeichnis wählen',
+    },
+
+    openLocalBrowser(initialPath, callback, title) {
+      this.browser.mode = 'local';
+      this.browser.callback = callback;
+      this.browser.title = title || 'Lokales Verzeichnis wählen';
+      this.browser.show = true;
+      this.loadBrowserPath(initialPath || '/mnt');
+    },
+    openRcloneBrowser(initialPath, callback, title) {
+      this.browser.mode = 'rclone';
+      this.browser.callback = callback;
+      this.browser.title = title || 'rclone-Pfad wählen';
+      this.browser.show = true;
+      this.loadBrowserPath(initialPath || '');
+    },
+    async loadBrowserPath(path) {
+      this.browser.loading = true;
+      try {
+        const endpoint = this.browser.mode === 'local' ? '/api/browse/local' : '/api/browse/rclone';
+        const r = await this.api('GET', endpoint + '?path=' + encodeURIComponent(path || ''));
+        if (r) {
+          this.browser.currentPath = r.path;
+          this.browser.entries = r.entries || [];
+          this.browser.parent = r.parent;
+          this.browser.isRoot = r.is_root || false;
+          this.browser.suggestedRoots = r.suggested_roots || [];
+        }
+      } catch(e) {
+        this.showToast('Browse-Fehler: ' + e, 'error');
+      } finally {
+        this.browser.loading = false;
+      }
+    },
+    browserPick() {
+      if (this.browser.callback) this.browser.callback(this.browser.currentPath);
+      this.browser.show = false;
+    },
+    browserCancel() {
+      this.browser.show = false;
+      this.browser.callback = null;
+    },
+    async browserMkdir() {
+      const name = prompt('Name des neuen Ordners?');
+      if (!name) return;
+      const newPath = (this.browser.currentPath.replace(/\/$/, '')) + '/' + name;
+      try {
+        await this.api('POST', '/api/browse/local/mkdir', { path: newPath });
+        this.showToast('Ordner erstellt');
+        this.loadBrowserPath(this.browser.currentPath);
+      } catch(e) {
+        this.showToast('Anlegen fehlgeschlagen', 'error');
+      }
+    },
+
+    // ------------- History bearbeiten -------------
+    editingItem: null,
+    openEditItem(item) {
+      this.editingItem = {
+        url: item.url,
+        original: item,
+        name: item.name || '',
+        type: item.type || '',          // wird aus target_dir abgeleitet wenn möglich
+        category: item.category || '',
+        content_type: item.content_type,
+      };
+      // Versuche Typ/Kategorie aus target_dir zu extrahieren
+      if (item.target_dir) {
+        const parts = item.target_dir.split('/').filter(Boolean);
+        // /mnt/rezepte/Typ/Kategorie/Name oder /mnt/hochzeit/Kategorie/Name
+        if (item.content_type === 'recipe' && parts.length >= 4) {
+          this.editingItem.type = parts[parts.length - 3];
+          this.editingItem.category = parts[parts.length - 2];
+        } else if (item.content_type === 'wedding' && parts.length >= 3) {
+          this.editingItem.category = parts[parts.length - 2];
+        }
+      }
+    },
+    cancelEdit() { this.editingItem = null; },
+    async saveEditItem() {
+      const e = this.editingItem;
+      if (!e.name.trim()) { this.showToast('Name fehlt', 'error'); return; }
+      const payload = {
+        url: e.url,
+        name: e.name.trim(),
+        type: e.type ? e.type.trim() : null,
+        category: e.category ? e.category.trim() : null,
+      };
+      try {
+        const r = await this.api('POST', '/api/history/edit', payload);
+        if (r && r.ok) {
+          this.showToast(r.action === 'noop' ? 'Keine Änderung' : 'Gespeichert ✓');
+          this.editingItem = null;
+          await this.loadHistory();
+        } else {
+          this.showToast(r && r.error || 'Fehler', 'error');
+        }
+      } catch (e) { /* api zeigt schon Fehler */ }
+    },
+    async deleteItem(item) {
+      if (!confirm('Wirklich löschen? Datei + Ordner werden entfernt.')) return;
+      try {
+        const r = await this.api('POST', '/api/history/delete', { url: item.url });
+        if (r && r.ok) {
+          this.showToast('Gelöscht');
+          await this.loadHistory();
+        }
+      } catch(e) {}
+    },
   };
 }

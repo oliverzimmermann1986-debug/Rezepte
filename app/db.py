@@ -93,6 +93,31 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def history_get(self, url: str) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute("SELECT * FROM history WHERE url=?", (url,)).fetchone()
+            return dict(row) if row else None
+
+    def history_update(self, url: str, *, name: str = None, target_dir: str = None,
+                        content_type: str = None) -> None:
+        sets = []
+        params = []
+        if name is not None:
+            sets.append("name=?"); params.append(name)
+        if target_dir is not None:
+            sets.append("target_dir=?"); params.append(target_dir)
+        if content_type is not None:
+            sets.append("content_type=?"); params.append(content_type)
+        if not sets:
+            return
+        params.append(url)
+        with self.conn() as c:
+            c.execute(f"UPDATE history SET {', '.join(sets)} WHERE url=?", params)
+
+    def history_delete(self, url: str) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM history WHERE url=?", (url,))
+
     # ---------------- Pending ----------------
     def pending_add(
         self,

@@ -17,7 +17,7 @@ from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, check_credentials,
                     create_session, verify_session)
 from .config_store import get_config
 from .db import get_db
-from .routes import api_config, api_history, api_jobs, api_pending, api_test
+from .routes import api_browse, api_config, api_history, api_jobs, api_pending, api_test
 
 # Logging Setup
 log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
@@ -52,6 +52,7 @@ app.include_router(api_jobs.router)
 app.include_router(api_pending.router)
 app.include_router(api_history.router)
 app.include_router(api_test.router)
+app.include_router(api_browse.router)
 
 
 # -------- Login / Logout --------

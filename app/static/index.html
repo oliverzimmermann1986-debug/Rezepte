@@ -210,7 +210,7 @@
       <div class="card" style="padding: 0; overflow: hidden;">
         <table class="table">
           <thead><tr>
-            <th>Zeit</th><th>Typ</th><th>Name</th><th>Ordner</th><th>URL</th>
+            <th>Zeit</th><th>Typ</th><th>Name</th><th>Ordner</th><th>URL</th><th>Aktion</th>
           </tr></thead>
           <tbody>
             <template x-for="h in history" :key="h.url">
@@ -218,15 +218,64 @@
                 <td x-text="formatTs(h.processed_at)"></td>
                 <td><span class="pill" :class="h.content_type === 'recipe' ? 'warn' : 'running'" x-text="h.content_type"></span></td>
                 <td x-text="h.name"></td>
-                <td x-text="h.target_dir || '—'"></td>
+                <td x-text="h.target_dir || '—'" style="word-break:break-all"></td>
                 <td><a :href="h.url" target="_blank" x-text="shortUrl(h.url)"></a></td>
+                <td style="white-space:nowrap;">
+                  <button class="btn btn-ghost" style="font-size:11px; padding:4px 8px" @click="openEditItem(h)">✎ Bearbeiten</button>
+                  <button class="btn btn-ghost" style="font-size:11px; padding:4px 8px; color:var(--err)" @click="deleteItem(h)">✗</button>
+                </td>
               </tr>
             </template>
             <tr x-show="history.length === 0">
-              <td colspan="5" class="empty">noch nichts verarbeitet</td>
+              <td colspan="6" class="empty">noch nichts verarbeitet</td>
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <!-- Edit-Modal -->
+      <div x-show="editingItem" class="modal-backdrop" @click.self="cancelEdit()">
+        <div class="modal" @click.stop>
+          <div class="modal-head">
+            <h3 x-text="'Eintrag bearbeiten · ' + (editingItem && editingItem.content_type === 'recipe' ? 'Rezept' : 'Hochzeit')"></h3>
+            <button class="btn btn-ghost" @click="cancelEdit()">✗</button>
+          </div>
+          <div class="modal-body" x-show="editingItem">
+            <div class="field">
+              <label>Name</label>
+              <input x-model="editingItem.name" placeholder="Neuer Name">
+            </div>
+            <template x-if="editingItem && editingItem.content_type === 'recipe'">
+              <div class="row" style="gap:12px">
+                <div class="field" style="margin:0">
+                  <label>Typ</label>
+                  <select x-model="editingItem.type">
+                    <option value="">— wählen —</option>
+                    <template x-for="t in recipeTypes" :key="t"><option :value="t" x-text="t"></option></template>
+                  </select>
+                </div>
+                <div class="field" style="margin:0">
+                  <label>Unter-Kategorie</label>
+                  <input x-model="editingItem.category" placeholder="z.B. Pasta">
+                </div>
+              </div>
+            </template>
+            <template x-if="editingItem && editingItem.content_type === 'wedding'">
+              <div class="field">
+                <label>Kategorie</label>
+                <select x-model="editingItem.category">
+                  <option value="">— wählen —</option>
+                  <template x-for="c in weddingCategories" :key="c"><option :value="c" x-text="c"></option></template>
+                </select>
+              </div>
+            </template>
+            <div class="hint" style="margin: 8px 0 16px;">Aktueller Ordner: <span class="mono" x-text="editingItem && editingItem.original.target_dir"></span></div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn" @click="cancelEdit()">Abbrechen</button>
+            <button class="btn btn-primary" @click="saveEditItem()">💾 Speichern + Verschieben</button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -391,12 +440,36 @@
                 </template>
               </div>
               <div class="row">
-                <div class="field"><label>Rezepte</label><input x-model="config.paths.recipe_dir"></div>
-                <div class="field"><label>Hochzeit</label><input x-model="config.paths.wedding_dir"></div>
+                <div class="field">
+                  <label>Rezepte</label>
+                  <div class="input-with-btn">
+                    <input x-model="config.paths.recipe_dir">
+                    <button type="button" class="btn" @click="openLocalBrowser(config.paths.recipe_dir, (p) => config.paths.recipe_dir = p)">📂</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Hochzeit</label>
+                  <div class="input-with-btn">
+                    <input x-model="config.paths.wedding_dir">
+                    <button type="button" class="btn" @click="openLocalBrowser(config.paths.wedding_dir, (p) => config.paths.wedding_dir = p)">📂</button>
+                  </div>
+                </div>
               </div>
               <div class="row">
-                <div class="field"><label>Temp</label><input x-model="config.paths.temp_dir"></div>
-                <div class="field"><label>Logs</label><input x-model="config.paths.logs_dir"></div>
+                <div class="field">
+                  <label>Temp</label>
+                  <div class="input-with-btn">
+                    <input x-model="config.paths.temp_dir">
+                    <button type="button" class="btn" @click="openLocalBrowser(config.paths.temp_dir, (p) => config.paths.temp_dir = p)">📂</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Logs</label>
+                  <div class="input-with-btn">
+                    <input x-model="config.paths.logs_dir">
+                    <button type="button" class="btn" @click="openLocalBrowser(config.paths.logs_dir, (p) => config.paths.logs_dir = p)">📂</button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -538,8 +611,20 @@
                 <div>
                   <div class="row" style="margin-bottom: 8px; align-items: end;">
                     <div class="field" style="margin:0"><label>Name</label><input x-model="p.name"></div>
-                    <div class="field" style="margin:0"><label>Remote</label><input x-model="p.remote"></div>
-                    <div class="field" style="margin:0"><label>Lokal</label><input x-model="p.local"></div>
+                    <div class="field" style="margin:0">
+                      <label>Remote</label>
+                      <div class="input-with-btn">
+                        <input x-model="p.remote">
+                        <button type="button" class="btn" @click="openRcloneBrowser(p.remote, (v) => p.remote = v)">📂</button>
+                      </div>
+                    </div>
+                    <div class="field" style="margin:0">
+                      <label>Lokal</label>
+                      <div class="input-with-btn">
+                        <input x-model="p.local">
+                        <button type="button" class="btn" @click="openLocalBrowser(p.local, (v) => p.local = v)">📂</button>
+                      </div>
+                    </div>
                     <div style="display:flex; gap:6px;">
                       <button class="btn" @click="testRclone(idx)" :disabled="testing['rclone_'+idx]">
                         <span x-show="!testing['rclone_'+idx]">⌬</span>
@@ -592,8 +677,52 @@
   <!-- Toast -->
   <div class="toast" :class="toast.type" x-show="toast.show" x-text="toast.message"></div>
 
-</div>
+  <!-- Verzeichnis-Browser Modal -->
+  <div x-show="browser.show" class="modal-backdrop" @click.self="browserCancel()">
+    <div class="modal modal-wide" @click.stop>
+      <div class="modal-head">
+        <h3 x-text="browser.title"></h3>
+        <button class="btn btn-ghost" @click="browserCancel()">✗</button>
+      </div>
+      <div class="modal-body">
+        <!-- Aktueller Pfad + nav -->
+        <div class="flex" style="margin-bottom: 12px; gap:6px;">
+          <button class="btn" @click="loadBrowserPath(browser.parent)" :disabled="!browser.parent && browser.parent !== ''">⬆ Hoch</button>
+          <input class="mono" :value="browser.currentPath" readonly style="flex:1; background: var(--bg); border:1px solid var(--border); color: var(--fg); padding: 8px; border-radius: var(--radius); font-size: 12px;">
+          <button class="btn" x-show="browser.mode === 'local'" @click="browserMkdir()">+ Ordner</button>
+        </div>
 
+        <!-- Quick-Roots -->
+        <div x-show="browser.suggestedRoots.length" style="margin-bottom: 10px;">
+          <span class="muted" style="font-size:11px;">Schnellzugriff: </span>
+          <template x-for="r in browser.suggestedRoots" :key="r">
+            <button class="btn btn-ghost" style="font-size:11px; padding: 2px 8px;" @click="loadBrowserPath(r)" x-text="r"></button>
+          </template>
+        </div>
+
+        <!-- Liste -->
+        <div class="browser-list">
+          <div x-show="browser.loading" class="muted" style="padding:20px; text-align:center;">lädt…</div>
+          <template x-for="e in browser.entries" :key="e.path">
+            <div class="browser-entry" @dblclick="loadBrowserPath(e.path)" @click="browser.currentPath = e.path">
+              <span class="icon" x-text="e.is_dir ? '📁' : '📄'"></span>
+              <span class="name" x-text="e.name"></span>
+              <span class="muted" style="font-size:11px;" x-show="!e.is_dir && e.size" x-text="Math.round(e.size/1024) + ' KB'"></span>
+            </div>
+          </template>
+          <div x-show="!browser.loading && browser.entries.length === 0" class="muted" style="padding:20px; text-align:center;">leer</div>
+        </div>
+
+        <div class="hint" style="margin-top: 10px;">Doppelklick zum Reingehen · Einfachklick markiert · Übernehmen wählt den aktuellen Pfad.</div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" @click="browserCancel()">Abbrechen</button>
+        <button class="btn btn-primary" @click="browserPick()">✓ Übernehmen</button>
+      </div>
+    </div>
+  </div>
+
+</div>
 <script src="/static/app.js"></script>
 </body>
 </html>

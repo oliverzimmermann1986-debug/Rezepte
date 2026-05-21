@@ -346,6 +346,119 @@ class ScraperJob:
         logger.info(f"Job-Summary: {summary}")
         return summary
 
+    # ---------------- History bearbeiten ----------------
+    def move_history_item(self, url: str, *, new_name: str, new_type: str = None,
+                            new_category: str = None) -> Dict:
+        """Verschiebt/Umbenennt einen schon einsortierten Eintrag im FS und updated DB.
+        Alter Parent-Ordner wird gelöscht falls leer.
+        """
+        entry = self.db.history_get(url)
+        if not entry:
+            return {"ok": False, "error": "Eintrag nicht in Historie"}
+
+        old_dir = Path(entry["target_dir"]) if entry.get("target_dir") else None
+        if not old_dir or not old_dir.exists():
+            return {"ok": False, "error": f"Alter Pfad existiert nicht: {old_dir}"}
+
+        content_type = entry.get("content_type") or "recipe"
+        sanitized_name = _sanitize(new_name)
+
+        if content_type == "recipe":
+            if not new_type:
+                return {"ok": False, "error": "Typ fehlt"}
+            new_dir = self.recipe_dir / _sanitize(new_type) / _sanitize(new_category or "Sonstiges") / sanitized_name
+        else:
+            new_dir = self.wedding_dir / _sanitize(new_category or "Sonstiges") / sanitized_name
+
+        # Falls Ziel gleich Quelle, nichts zu tun
+        if new_dir.resolve() == old_dir.resolve():
+            return {"ok": True, "action": "noop", "target": str(new_dir)}
+
+        # Falls Ziel existiert -> Suffix
+        if new_dir.exists():
+            from datetime import datetime as _dt
+            new_dir = new_dir.parent / f"{sanitized_name}_{_dt.now():%Y%m%d_%H%M%S}"
+
+        new_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old_dir), str(new_dir))
+
+        # info.json updaten
+        info_file = new_dir / "info.json"
+        if info_file.exists():
+            try:
+                with open(info_file, "r", encoding="utf-8") as f:
+                    info = json.load(f)
+                info["name"] = new_name
+                info["is_manual"] = True
+                if content_type == "recipe":
+                    info["type"] = new_type
+                    info["category"] = new_category
+                else:
+                    info["wedding_category"] = new_category
+                info["edited_at"] = datetime.now().isoformat()
+                with open(info_file, "w", encoding="utf-8") as f:
+                    json.dump(info, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                logger.warning(f"info.json update: {e}")
+
+        # Datei-Basisnamen umbenennen damit zum Ordner passt
+        for ext in (".mp4", ".webm", ".mkv", ".jpg"):
+            for f in new_dir.glob(f"*{ext}"):
+                # Nur die Hauptmedia rename, nicht z.B. preview_*.jpg
+                if f.stem != sanitized_name:
+                    target = new_dir / f"{sanitized_name}{ext}"
+                    if not target.exists():
+                        try:
+                            f.rename(target)
+                        except Exception as e:
+                            logger.warning(f"rename {f}: {e}")
+
+        # DB updaten
+        self.db.history_update(url, name=new_name, target_dir=str(new_dir))
+
+        # Leere Parent-Ordner aufräumen
+        self._cleanup_empty_parents(old_dir)
+
+        return {"ok": True, "action": "moved", "target": str(new_dir)}
+
+    def delete_history_item(self, url: str) -> Dict:
+        """Löscht den Eintrag aus FS und Historie."""
+        entry = self.db.history_get(url)
+        if not entry:
+            return {"ok": False, "error": "Eintrag nicht in Historie"}
+        target_dir = entry.get("target_dir")
+        if target_dir:
+            d = Path(target_dir)
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                self._cleanup_empty_parents(d)
+        self.db.history_delete(url)
+        return {"ok": True, "action": "deleted"}
+
+    def _cleanup_empty_parents(self, removed_dir: Path) -> None:
+        """Steigt von removed_dir hoch und löscht leere Verzeichnisse, bis zur Wurzel."""
+        # Begrenze auf recipe_dir/wedding_dir um nicht zu hoch zu steigen
+        parent = removed_dir.parent
+        for _ in range(4):  # max 4 Ebenen hoch
+            try:
+                if not parent.exists():
+                    break
+                # Nur unterhalb der bekannten Roots aufräumen
+                rels = [self.recipe_dir, self.wedding_dir]
+                inside = any(str(parent).startswith(str(r)) and str(parent) != str(r) for r in rels)
+                if not inside:
+                    break
+                # Versuch zu löschen wenn leer
+                if not any(parent.iterdir()):
+                    parent.rmdir()
+                    logger.info(f"Leeren Ordner gelöscht: {parent}")
+                    parent = parent.parent
+                else:
+                    break
+            except Exception as e:
+                logger.warning(f"Cleanup-Parents: {e}")
+                break
+
     # ---------------- Pending im Web auflösen ----------------
     def resolve_pending(self, url: str, decision: Dict) -> Dict:
         """
