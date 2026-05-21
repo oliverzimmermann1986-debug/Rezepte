@@ -1,0 +1,133 @@
+# ============================================================
+# Scrapper / Backup Manager - Konfiguration
+# Diese Datei wird auch über das Web-Interface verwaltet.
+# ============================================================
+
+# Web-Interface Login
+web:
+  username: admin
+  password: changeme
+  bind_host: 0.0.0.0
+  bind_port: 8000
+  secret_key: change-this-to-random-string-32chars-min
+
+# Verzeichnisse
+paths:
+  recipe_dir: /mnt/rezepte
+  wedding_dir: /mnt/hochzeit
+  temp_dir: /opt/scrapper/temp
+  logs_dir: /opt/scrapper/logs
+
+# E-Mail Konten (2 separate Inboxes - kein Betreff-Check mehr nötig!)
+mail:
+  # Konto für Rezepte
+  recipe:
+    enabled: true
+    imap_host: imap.gmail.com
+    imap_port: 993
+    username: rezepte@example.com
+    password: app-passwort-hier
+    folder: INBOX
+    max_mails: 20
+
+  # Konto für Hochzeit
+  wedding:
+    enabled: true
+    imap_host: imap.gmail.com
+    imap_port: 993
+    username: hochzeit@example.com
+    password: app-passwort-hier
+    folder: INBOX
+    max_mails: 20
+    # Default-Kategorie wenn KI keine Zuordnung findet
+    default_category: Sonstiges
+
+# AI Analyse
+ai:
+  # Ollama (lokal, primär)
+  ollama:
+    enabled: true
+    url: http://192.168.178.250:11434
+    model: gemma3:12b
+    timeout: 60
+  # OpenAI (Vision-Fallback)
+  openai:
+    enabled: true
+    api_key: sk-...
+    model: gpt-4o-mini
+  # Confidence-Schwelle: darunter → Pending im Web
+  confidence_threshold: 0.75
+  description_min_length: 20
+
+# Telegram - NUR Benachrichtigungen, KEIN Reply-Handling mehr!
+# Pending-Items werden im Web-Interface verwaltet.
+telegram:
+  enabled: true
+  # Rezept-Benachrichtigungen
+  recipe_bot_token: ""
+  recipe_chat_id: ""
+  # Hochzeit-Benachrichtigungen (optional - sonst Recipe-Bot)
+  wedding_bot_token: ""
+  wedding_chat_id: ""
+  # Backup-Job Benachrichtigungen
+  backup_bot_token: ""
+  backup_chat_id: ""
+
+# yt-dlp
+ytdlp:
+  binary: /opt/scrapper/venv/bin/yt-dlp
+
+# Scheduling (systemd Timer)
+schedule:
+  scraper_interval: "*:0/30"   # alle 30 Minuten
+  backup_interval: "*-*-* 03:00:00"   # täglich 3 Uhr
+
+# Wedding-Kategorien (für KI-Vorschläge + Web-UI Dropdown)
+wedding_categories:
+  - Deko
+  - Foto
+  - Basteln
+  - Einladung
+  - Standesamt
+  - Outfit
+  - Catering
+  - Sonstiges
+
+# Recipe-Typen (für KI-Vorschläge + Web-UI Dropdown)
+recipe_types:
+  - Hauptgericht
+  - Vorspeise
+  - Nachspeise
+  - Snack
+  - Frühstück
+  - Getränk
+  - Beilage
+
+# ============================================================
+# Backup / rclone-sync
+# ============================================================
+backup:
+  enabled: true
+  rclone_remote: pcloud
+  # parallele Sync-Paare
+  pairs:
+    - name: Serien
+      remote: pcloud:/medien/Serien
+      local: /mnt/media-nas/Serien
+    - name: Filme
+      remote: pcloud:/medien/Filme
+      local: /mnt/media-nas/Filme
+    - name: Fotos
+      remote: pcloud:/medien/Fotos
+      local: /mnt/media-nas/Fotos
+    - name: Iphone_backup
+      remote: pcloud:/medien/Iphone_backup
+      local: /mnt/media-nas/Iphone_backup
+
+  rclone_args:
+    - --fast-list
+    - --checkers=16
+    - --transfers=8
+    - --track-renames
+    - --modify-window=2s
+    - --log-level=INFO

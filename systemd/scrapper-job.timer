@@ -1,0 +1,11 @@
+[Unit]
+Description=Scrapper Job Timer (E-Mail abrufen)
+
+[Timer]
+# Alle 30 Minuten
+OnCalendar=*:0/30
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

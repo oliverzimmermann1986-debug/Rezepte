@@ -1,0 +1,26 @@
+[Unit]
+Description=Scrapper Web Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=scrapper
+Group=scrapper
+WorkingDirectory=/opt/scrapper
+Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
+Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
+ExecStart=/opt/scrapper/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/opt/scrapper /mnt/rezepte /mnt/hochzeit /mnt/media-nas
+
+[Install]
+WantedBy=multi-user.target

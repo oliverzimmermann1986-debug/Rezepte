@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# Runtime
+data/*.db
+data/*.db-journal
+data/config.yaml
+logs/
+temp/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store

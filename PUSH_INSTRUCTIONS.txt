@@ -1,0 +1,26 @@
+==============================================
+Repo befüllen — schnellster Weg
+==============================================
+
+# 1. Zip entpacken in einen neuen Ordner:
+unzip Scrappercontainer.zip
+cd scrappercontainer
+
+# 2. Git initialisieren und pushen:
+git init
+git branch -M main
+git remote add origin https://github.com/appear7240/Scrappercontainer.git
+git add .
+git commit -m "Initial: Scrapper + Backup container with Web-UI"
+git push -u origin main
+
+# 3. Auf dem Proxmox Host:
+curl -O https://raw.githubusercontent.com/appear7240/Scrappercontainer/main/proxmox/create-container.sh
+curl -O https://raw.githubusercontent.com/appear7240/Scrappercontainer/main/proxmox/install.sh
+chmod +x *.sh
+./create-container.sh
+pct push 200 install.sh /root/install.sh
+pct exec 200 -- bash /root/install.sh
+
+# 4. Browser:
+http://<container-ip>:8000   →  admin / changeme

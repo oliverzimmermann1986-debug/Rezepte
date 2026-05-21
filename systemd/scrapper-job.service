@@ -1,0 +1,13 @@
+[Unit]
+Description=Scrapper Job (E-Mail + TikTok Download)
+After=network-online.target scrapper-web.service
+
+[Service]
+Type=oneshot
+User=scrapper
+Group=scrapper
+WorkingDirectory=/opt/scrapper
+Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
+Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
+ExecStart=/opt/scrapper/venv/bin/python -m app.jobs.scraper_cli
+TimeoutStartSec=3600

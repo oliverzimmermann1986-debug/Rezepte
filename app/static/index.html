@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Scrapper Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/style.css">
+  <script defer src="https://unpkg.com/[email protected]/dist/cdn.min.js"></script>
+</head>
+<body>
+<div class="app" x-data="scrapperApp()" x-init="init()">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+    <div class="logo">SCRAPPER</div>
+
+    <div class="nav-item" :class="page==='dashboard' && 'active'" @click="page='dashboard'">
+      ▤ Dashboard
+    </div>
+    <div class="nav-item" :class="page==='pending' && 'active'" @click="page='pending'; loadPending()">
+      ⧗ Pending
+      <span class="badge" x-show="status.pending_count > 0" x-text="status.pending_count"></span>
+    </div>
+    <div class="nav-item" :class="page==='history' && 'active'" @click="page='history'; loadHistory()">
+      ⌖ Historie
+    </div>
+    <div class="nav-item" :class="page==='jobs' && 'active'" @click="page='jobs'; loadJobs()">
+      ⏵ Jobs &amp; Logs
+    </div>
+    <div class="nav-item" :class="page==='config' && 'active'" @click="page='config'; loadConfig()">
+      ⚙ Einstellungen
+    </div>
+
+    <div class="foot">
+      <div x-show="status.scraper">
+        <span class="pill running">scraper</span> läuft
+      </div>
+      <div x-show="status.backup">
+        <span class="pill running">backup</span> läuft
+      </div>
+      <div style="margin-top: 12px">v1.0 · <a href="/logout">Logout</a></div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+
+    <!-- ========== DASHBOARD ========== -->
+    <section x-show="page==='dashboard'">
+      <div class="page-head">
+        <div>
+          <h1>Dashboard</h1>
+          <div class="subtitle">Übersicht und Jobs starten</div>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat pending">
+          <div class="label">Pending</div>
+          <div class="value" x-text="status.pending_count || 0"></div>
+          <div class="hint">warten auf Zuordnung</div>
+        </div>
+        <div class="stat accent">
+          <div class="label">Letzter Scraper-Lauf</div>
+          <div class="value" x-text="lastScraper?.summary?.auto ?? '—'"></div>
+          <div class="hint" x-text="lastScraper ? formatTs(lastScraper.started_at) : 'nie'"></div>
+        </div>
+        <div class="stat ok">
+          <div class="label">Letztes Backup</div>
+          <div class="value" x-text="lastBackup?.summary?.ok_count ?? '—'"></div>
+          <div class="hint" x-text="lastBackup ? `${lastBackup.summary?.total_pairs} Paare · ${formatTs(lastBackup.started_at)}` : 'nie'"></div>
+        </div>
+      </div>
+
+      <div class="row" style="grid-template-columns: 1fr 1fr; gap: 18px;">
+        <div class="card">
+          <div class="card-head"><h3>Scraper</h3></div>
+          <p class="muted" style="margin: 0 0 18px;">
+            E-Mails abrufen, TikTok/Instagram-Videos herunterladen, KI-Analyse,
+            in Rezept- bzw. Hochzeit-Ordner einsortieren.
+          </p>
+          <div class="flex">
+            <button class="btn btn-primary" @click="runScraper()" :disabled="status.scraper">
+              <span x-show="!status.scraper">▶ Scraper starten</span>
+              <span x-show="status.scraper">… läuft</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>Backup (rclone bisync)</h3></div>
+          <p class="muted" style="margin: 0 0 18px;">
+            Bidirektionaler Sync zwischen pCloud und lokalem NAS für alle konfigurierten Paare.
+          </p>
+          <div class="flex">
+            <button class="btn btn-primary" @click="runBackup(false)" :disabled="status.backup">
+              <span x-show="!status.backup">▶ Backup starten</span>
+              <span x-show="status.backup">… läuft</span>
+            </button>
+            <button class="btn" @click="runBackup(true)" :disabled="status.backup">
+              🔍 Dry-Run
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== PENDING ========== -->
+    <section x-show="page==='pending'">
+      <div class="page-head">
+        <div>
+          <h1>Pending</h1>
+          <div class="subtitle">Unklare Analysen manuell zuordnen</div>
+        </div>
+        <button class="btn" @click="loadPending()">⟳ Neu laden</button>
+      </div>
+
+      <div class="empty" x-show="pending.length === 0">
+        Keine offenen Items. ✓
+      </div>
+
+      <div class="pending-grid">
+        <template x-for="item in pending" :key="item.url">
+          <div class="pending-item">
+            <div class="preview">
+              <img :src="`/api/pending/preview?url=${encodeURIComponent(item.url)}`"
+                   @error="$el.style.display='none'; $el.nextElementSibling.style.display='flex'">
+              <div class="placeholder" style="display:none">kein Vorschaubild</div>
+              <span class="type-badge"
+                    :class="item.content_type"
+                    x-text="item.content_type === 'recipe' ? 'Rezept' : 'Hochzeit'"></span>
+            </div>
+            <div class="body">
+              <div class="ai-suggest">
+                <div><span class="key">KI-Vorschlag:</span></div>
+                <div><span class="key">Name:</span> <span class="val" x-text="item.ai_suggestion?.name || '—'"></span></div>
+                <template x-if="item.content_type === 'recipe'">
+                  <div>
+                    <div><span class="key">Typ:</span> <span class="val" x-text="item.ai_suggestion?.type || '—'"></span></div>
+                    <div><span class="key">Kategorie:</span> <span class="val" x-text="item.ai_suggestion?.category || '—'"></span></div>
+                  </div>
+                </template>
+                <template x-if="item.content_type === 'wedding'">
+                  <div>
+                    <div><span class="key">Kategorie:</span> <span class="val" x-text="item.ai_suggestion?.category || '—'"></span></div>
+                  </div>
+                </template>
+                <div><span class="key">Confidence:</span> <span class="val" x-text="formatConfidence(item.ai_suggestion?.confidence)"></span></div>
+              </div>
+
+              <details>
+                <summary style="cursor:pointer; font-size:12px; color: var(--fg-dim)">Beschreibung anzeigen</summary>
+                <pre style="white-space:pre-wrap; font-family:var(--mono); font-size:11px; max-height:140px; overflow-y:auto; margin-top:8px; color:var(--fg-dim)" x-text="item.description || '(keine)'"></pre>
+              </details>
+
+              <div class="url-row">
+                <a :href="item.url" target="_blank" x-text="item.url"></a>
+              </div>
+
+              <!-- Inline Resolve-Form -->
+              <div class="field" style="margin: 0">
+                <label>Name</label>
+                <input x-model="item._name" :placeholder="item.ai_suggestion?.name">
+              </div>
+              <template x-if="item.content_type === 'recipe'">
+                <div class="row" style="gap:10px">
+                  <div class="field" style="margin:0">
+                    <label>Typ</label>
+                    <select x-model="item._type">
+                      <option value="">— wählen —</option>
+                      <template x-for="t in recipeTypes"><option :value="t" x-text="t" :selected="t===item.ai_suggestion?.type"></option></template>
+                    </select>
+                  </div>
+                  <div class="field" style="margin:0">
+                    <label>Kategorie</label>
+                    <input x-model="item._category" :placeholder="item.ai_suggestion?.category || 'Pasta'">
+                  </div>
+                </div>
+              </template>
+              <template x-if="item.content_type === 'wedding'">
+                <div class="field" style="margin:0">
+                  <label>Kategorie</label>
+                  <select x-model="item._category">
+                    <option value="">— wählen —</option>
+                    <template x-for="c in weddingCategories"><option :value="c" x-text="c" :selected="c===item.ai_suggestion?.category"></option></template>
+                  </select>
+                </div>
+              </template>
+
+              <div class="actions">
+                <button class="btn btn-primary" @click="resolveItem(item, 'save')">✓ Speichern</button>
+                <button class="btn btn-danger" @click="resolveItem(item, 'skip')">✗ Skip</button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- ========== HISTORY ========== -->
+    <section x-show="page==='history'">
+      <div class="page-head">
+        <div>
+          <h1>Historie</h1>
+          <div class="subtitle">Bereits verarbeitete URLs</div>
+        </div>
+        <button class="btn" @click="loadHistory()">⟳ Neu laden</button>
+      </div>
+
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table class="table">
+          <thead><tr>
+            <th>Zeit</th><th>Typ</th><th>Name</th><th>Ordner</th><th>URL</th>
+          </tr></thead>
+          <tbody>
+            <template x-for="h in history" :key="h.url">
+              <tr>
+                <td x-text="formatTs(h.processed_at)"></td>
+                <td><span class="pill" :class="h.content_type === 'recipe' ? 'warn' : 'running'" x-text="h.content_type"></span></td>
+                <td x-text="h.name"></td>
+                <td x-text="h.target_dir || '—'"></td>
+                <td><a :href="h.url" target="_blank" x-text="shortUrl(h.url)"></a></td>
+              </tr>
+            </template>
+            <tr x-show="history.length === 0">
+              <td colspan="5" class="empty">noch nichts verarbeitet</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== JOBS ========== -->
+    <section x-show="page==='jobs'">
+      <div class="page-head">
+        <div>
+          <h1>Jobs &amp; Logs</h1>
+          <div class="subtitle">Lauf-Historie und Live-Logs</div>
+        </div>
+        <button class="btn" @click="loadJobs()">⟳ Neu laden</button>
+      </div>
+
+      <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 18px;">
+        <table class="table">
+          <thead><tr>
+            <th>Start</th><th>Typ</th><th>Status</th><th>Dauer</th><th>Summary</th><th></th>
+          </tr></thead>
+          <tbody>
+            <template x-for="j in jobs" :key="j.id">
+              <tr>
+                <td x-text="formatTs(j.started_at)"></td>
+                <td><span class="pill" :class="j.kind === 'scraper' ? 'warn' : 'running'" x-text="j.kind"></span></td>
+                <td><span class="pill" :class="statusClass(j.status)" x-text="j.status"></span></td>
+                <td x-text="j.ended_at ? `${Math.round(j.ended_at - j.started_at)}s` : '—'"></td>
+                <td x-text="summarize(j)"></td>
+                <td>
+                  <button class="btn btn-ghost" @click="loadJobLog(j.id)">Log</button>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="jobs.length === 0">
+              <td colspan="6" class="empty">noch keine Jobs</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div x-show="currentLog" class="card">
+        <div class="card-head">
+          <h3>Log <span class="mono muted" x-text="`#${currentLogJob}`"></span></h3>
+          <button class="btn-ghost btn" @click="currentLog = ''">Schließen</button>
+        </div>
+        <pre class="log-view" x-text="currentLog"></pre>
+      </div>
+    </section>
+
+    <!-- ========== CONFIG ========== -->
+    <section x-show="page==='config'">
+      <div class="page-head">
+        <div>
+          <h1>Einstellungen</h1>
+          <div class="subtitle">Wird in <span class="mono">data/config.yaml</span> persistiert</div>
+        </div>
+        <button class="btn btn-primary" @click="saveConfig()">💾 Speichern</button>
+      </div>
+
+      <template x-if="!config.web">
+        <div class="empty">lädt…</div>
+      </template>
+
+      <template x-if="config.web">
+        <div>
+          <!-- Web -->
+          <div class="config-section">
+            <div class="head">Web-Interface</div>
+            <div class="body">
+              <div class="row">
+                <div class="field"><label>Benutzer</label><input x-model="config.web.username"></div>
+                <div class="field"><label>Passwort</label><input type="password" x-model="config.web.password"><div class="hint">leer lassen → unverändert</div></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Host</label><input x-model="config.web.bind_host"></div>
+                <div class="field"><label>Port</label><input type="number" x-model.number="config.web.bind_port"></div>
+              </div>
+              <div class="field"><label>Session Secret</label><input x-model="config.web.secret_key"><div class="hint">mind. 32 Zeichen, zufällig</div></div>
+            </div>
+          </div>
+
+          <!-- Mail Recipe -->
+          <div class="config-section">
+            <div class="head">E-Mail · Rezepte (alle Links → Rezept-Ordner)</div>
+            <div class="body">
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
+                <input type="checkbox" x-model="config.mail.recipe.enabled" id="mr-en">
+                <label for="mr-en">Aktiv</label>
+              </div>
+              <div class="row">
+                <div class="field"><label>IMAP Host</label><input x-model="config.mail.recipe.imap_host"></div>
+                <div class="field"><label>Port</label><input type="number" x-model.number="config.mail.recipe.imap_port"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Benutzer / E-Mail</label><input x-model="config.mail.recipe.username"></div>
+                <div class="field"><label>Passwort / App-Pass</label><input type="password" x-model="config.mail.recipe.password"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Folder</label><input x-model="config.mail.recipe.folder"></div>
+                <div class="field"><label>Max Mails</label><input type="number" x-model.number="config.mail.recipe.max_mails"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Mail Wedding -->
+          <div class="config-section">
+            <div class="head">E-Mail · Hochzeit (alle Links → Hochzeit-Ordner)</div>
+            <div class="body">
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
+                <input type="checkbox" x-model="config.mail.wedding.enabled" id="mw-en">
+                <label for="mw-en">Aktiv</label>
+              </div>
+              <div class="row">
+                <div class="field"><label>IMAP Host</label><input x-model="config.mail.wedding.imap_host"></div>
+                <div class="field"><label>Port</label><input type="number" x-model.number="config.mail.wedding.imap_port"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Benutzer / E-Mail</label><input x-model="config.mail.wedding.username"></div>
+                <div class="field"><label>Passwort / App-Pass</label><input type="password" x-model="config.mail.wedding.password"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Folder</label><input x-model="config.mail.wedding.folder"></div>
+                <div class="field"><label>Default-Kategorie</label><input x-model="config.mail.wedding.default_category"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pfade -->
+          <div class="config-section">
+            <div class="head">Verzeichnisse</div>
+            <div class="body">
+              <div class="row">
+                <div class="field"><label>Rezepte</label><input x-model="config.paths.recipe_dir"></div>
+                <div class="field"><label>Hochzeit</label><input x-model="config.paths.wedding_dir"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Temp</label><input x-model="config.paths.temp_dir"></div>
+                <div class="field"><label>Logs</label><input x-model="config.paths.logs_dir"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- AI -->
+          <div class="config-section">
+            <div class="head">KI · Ollama (lokal, primär)</div>
+            <div class="body">
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
+                <input type="checkbox" x-model="config.ai.ollama.enabled" id="oll-en">
+                <label for="oll-en">Aktiv</label>
+              </div>
+              <div class="row">
+                <div class="field"><label>URL</label><input x-model="config.ai.ollama.url"></div>
+                <div class="field"><label>Modell</label><input x-model="config.ai.ollama.model"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Timeout (s)</label><input type="number" x-model.number="config.ai.ollama.timeout"></div>
+                <div class="field"><label>Confidence-Schwelle</label><input type="number" step="0.05" x-model.number="config.ai.confidence_threshold"><div class="hint">Unter diesem Wert → Pending im Web</div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="config-section">
+            <div class="head">KI · OpenAI Vision (Fallback)</div>
+            <div class="body">
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
+                <input type="checkbox" x-model="config.ai.openai.enabled" id="oai-en">
+                <label for="oai-en">Aktiv</label>
+              </div>
+              <div class="row">
+                <div class="field"><label>API Key</label><input type="password" x-model="config.ai.openai.api_key"></div>
+                <div class="field"><label>Modell</label><input x-model="config.ai.openai.model"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Telegram -->
+          <div class="config-section">
+            <div class="head">Telegram (nur Notifications, kein Reply-Handling mehr)</div>
+            <div class="body">
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
+                <input type="checkbox" x-model="config.telegram.enabled" id="tg-en">
+                <label for="tg-en">Aktiv</label>
+              </div>
+              <div class="row">
+                <div class="field"><label>Rezept Bot Token</label><input type="password" x-model="config.telegram.recipe_bot_token"></div>
+                <div class="field"><label>Rezept Chat ID</label><input x-model="config.telegram.recipe_chat_id"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Hochzeit Bot Token</label><input type="password" x-model="config.telegram.wedding_bot_token"><div class="hint">leer → Rezept-Bot wird verwendet</div></div>
+                <div class="field"><label>Hochzeit Chat ID</label><input x-model="config.telegram.wedding_chat_id"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Backup Bot Token</label><input type="password" x-model="config.telegram.backup_bot_token"></div>
+                <div class="field"><label>Backup Chat ID</label><input x-model="config.telegram.backup_chat_id"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Backup -->
+          <div class="config-section">
+            <div class="head">Backup · rclone</div>
+            <div class="body">
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
+                <input type="checkbox" x-model="config.backup.enabled" id="bk-en">
+                <label for="bk-en">Aktiv</label>
+              </div>
+              <div class="field"><label>rclone Remote</label><input x-model="config.backup.rclone_remote"></div>
+
+              <h4 style="margin: 18px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">Sync-Paare</h4>
+              <template x-for="(p, idx) in config.backup.pairs" :key="idx">
+                <div class="row" style="margin-bottom: 8px; align-items: end;">
+                  <div class="field" style="margin:0"><label>Name</label><input x-model="p.name"></div>
+                  <div class="field" style="margin:0"><label>Remote</label><input x-model="p.remote"></div>
+                  <div class="field" style="margin:0"><label>Lokal</label><input x-model="p.local"></div>
+                  <div><button class="btn btn-danger" @click="config.backup.pairs.splice(idx, 1)">✗</button></div>
+                </div>
+              </template>
+              <button class="btn" @click="config.backup.pairs.push({name:'',remote:'',local:''})">+ Paar hinzufügen</button>
+
+              <h4 style="margin: 22px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">rclone-Args</h4>
+              <textarea x-model="rcloneArgsText" rows="5" style="font-family: var(--mono); width:100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding:10px; border-radius: var(--radius);"></textarea>
+              <div class="hint">eine Option pro Zeile (z.B. <code>--checkers=16</code>)</div>
+            </div>
+          </div>
+
+          <!-- yt-dlp -->
+          <div class="config-section">
+            <div class="head">yt-dlp</div>
+            <div class="body">
+              <div class="field"><label>Binary Path</label><input x-model="config.ytdlp.binary"></div>
+            </div>
+          </div>
+
+          <div style="text-align: right; margin: 20px 0 60px;">
+            <button class="btn btn-primary" @click="saveConfig()">💾 Speichern</button>
+          </div>
+        </div>
+      </template>
+    </section>
+
+  </main>
+
+  <!-- Toast -->
+  <div class="toast" :class="toast.type" x-show="toast.show" x-text="toast.message"></div>
+
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
