@@ -94,57 +94,73 @@ _reanalyze_lock = _threading.Lock()
 def _reanalyze_all_thread(job_id: int):
     """Background-Worker. Schreibt Progress in eine Log-Datei + bei jedem
     Item updaten wir die summary in der jobs-Tabelle damit das Frontend
-    Live-Progress sehen kann."""
+    Live-Progress sehen kann.
+    
+    WICHTIG: ein einziger try/finally umschließt ALLES inkl. Logger-Setup,
+    sonst kann der Lock bei FileHandler-Fehler hängen bleiben.
+    """
     from ..config_store import get_config as _gc
     db = get_db()
-    log_dir = Path(_gc().get("paths", "logs_dir", default="/opt/scrapper/logs"))
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"reanalyze-{_datetime.now():%Y%m%d-%H%M%S}-job{job_id}.log"
-    fh = _logging.FileHandler(log_file, encoding="utf-8")
-    fh.setLevel(_logging.INFO)
-    fh.setFormatter(_logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    _logging.getLogger().addHandler(fh)
-    db.job_set_log_file(job_id, str(log_file))
-
-    job = ScraperJob()
+    fh = None
     summary = {
         "total": 0, "auto_saved": 0, "still_pending": 0, "errors": 0,
         "processed": 0, "current": None,
     }
     try:
-        items = db.pending_list("pending")
-        summary["total"] = len(items)
-        _logger.info(f"=== Pending-Reanalyze {job_id} startet: {summary['total']} Items ===")
-        for item in items:
-            url = item["url"]
-            summary["current"] = url
-            db.job_update_summary(job_id, summary)
-            try:
-                r = job.reanalyze_pending(url)
-                if not r.get("ok"):
-                    summary["errors"] += 1
-                    _logger.warning(f"FEHLER {url}: {r.get('error')}")
-                elif r.get("action") == "auto_saved":
-                    summary["auto_saved"] += 1
-                    _logger.info(f"AUTO-SAVE {url} → {r.get('target')}")
-                else:
-                    summary["still_pending"] += 1
-                    _logger.info(f"STILL-PENDING {url} (conf={(r.get('analysis') or {}).get('confidence')})")
-            except Exception as e:
-                summary["errors"] += 1
-                _logger.exception(f"Exception {url}")
-            summary["processed"] += 1
-            db.job_update_summary(job_id, summary)
+        log_dir = Path(_gc().get("paths", "logs_dir", default="/opt/scrapper/logs"))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"reanalyze-{_datetime.now():%Y%m%d-%H%M%S}-job{job_id}.log"
+        fh = _logging.FileHandler(log_file, encoding="utf-8")
+        fh.setLevel(_logging.INFO)
+        fh.setFormatter(_logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        _logging.getLogger().addHandler(fh)
+        db.job_set_log_file(job_id, str(log_file))
 
-        summary["current"] = None
-        db.job_finish(job_id, "ok", summary)
-        _logger.info(f"=== Pending-Reanalyze {job_id} fertig: {summary} ===")
+        job = ScraperJob()
+        try:
+            items = db.pending_list("pending")
+            summary["total"] = len(items)
+            _logger.info(f"=== Pending-Reanalyze {job_id} startet: {summary['total']} Items ===")
+            for item in items:
+                url = item["url"]
+                summary["current"] = url
+                db.job_update_summary(job_id, summary)
+                try:
+                    r = job.reanalyze_pending(url)
+                    if not r.get("ok"):
+                        summary["errors"] += 1
+                        _logger.warning(f"FEHLER {url}: {r.get('error')}")
+                    elif r.get("action") == "auto_saved":
+                        summary["auto_saved"] += 1
+                        _logger.info(f"AUTO-SAVE {url} → {r.get('target')}")
+                    else:
+                        summary["still_pending"] += 1
+                        _logger.info(f"STILL-PENDING {url} (conf={(r.get('analysis') or {}).get('confidence')})")
+                except Exception:
+                    summary["errors"] += 1
+                    _logger.exception(f"Exception {url}")
+                summary["processed"] += 1
+                db.job_update_summary(job_id, summary)
+
+            summary["current"] = None
+            db.job_finish(job_id, "ok", summary)
+            _logger.info(f"=== Pending-Reanalyze {job_id} fertig: {summary} ===")
+        except Exception as e:
+            _logger.exception("Reanalyze-Job crashed")
+            db.job_finish(job_id, "error", {"error": str(e), **summary})
     except Exception as e:
-        _logger.exception("Reanalyze-Job crashed")
-        db.job_finish(job_id, "error", {"error": str(e), **summary})
+        try:
+            db.job_finish(job_id, "error", {"error": f"setup failed: {e}", **summary})
+        except Exception:
+            pass
+        _logger.exception(f"Reanalyze-Job {job_id}: Setup gescheitert")
     finally:
-        _logging.getLogger().removeHandler(fh)
-        fh.close()
+        if fh is not None:
+            try:
+                _logging.getLogger().removeHandler(fh)
+                fh.close()
+            except Exception:
+                pass
         _reanalyze_lock.release()
 
 

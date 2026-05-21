@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -27,10 +28,33 @@ _locks: Dict[str, threading.Lock] = {
 }
 
 
+def _rotate_old_logs(log_dir: Path, days: int = 30) -> None:
+    """Löscht Job-Log-Files älter als ``days`` Tage. Best-effort, ignoriert Fehler.
+    Wird bei jedem Job-Start aufgerufen, daher amortisierter O(1)."""
+    if not log_dir.exists():
+        return
+    cutoff = time.time() - days * 86400
+    patterns = ["scraper-*.log", "backup-*.log", "quicksync-*.log",
+                "reanalyze-*.log", "sync-*.log", "quick-*.log"]
+    deleted = 0
+    for pat in patterns:
+        for f in log_dir.rglob(pat):
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    deleted += 1
+            except Exception:
+                pass
+    if deleted:
+        logger.info(f"Log-Rotation: {deleted} alte Files gelöscht (>{days} Tage)")
+
+
 def _setup_job_logger(job_id: int, kind: str) -> tuple[Path, logging.Handler]:
-    """Liefert einen FileHandler der dieses Job-Lauf-Logs aufzeichnet."""
+    """Liefert einen FileHandler der dieses Job-Lauf-Logs aufzeichnet.
+    Macht außerdem bei jedem Aufruf eine billige Log-Rotation."""
     log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
+    _rotate_old_logs(log_dir)
     log_file = log_dir / f"{kind}-{datetime.now():%Y%m%d-%H%M%S}-job{job_id}.log"
     fh = logging.FileHandler(log_file, encoding="utf-8")
     fh.setLevel(logging.INFO)
@@ -40,43 +64,69 @@ def _setup_job_logger(job_id: int, kind: str) -> tuple[Path, logging.Handler]:
 
 
 def _run_scraper_thread(job_id: int):
+    """Background-Thread. WICHTIG: ein einziger try/finally umschließt ALLES
+    inkl. Logger-Setup, sonst kann der Lock bei FileHandler-Fehler hängen bleiben."""
     db = get_db()
-    log_file, fh = _setup_job_logger(job_id, "scraper")
-    db.job_set_log_file(job_id, str(log_file))
+    fh = None
     try:
-        logger.info(f"=== Scraper-Job {job_id} startet (Web-Trigger) ===")
-        summary = scraper_job.run_job()
-        db.job_finish(job_id, "ok", summary)
-        logger.info(f"=== Scraper-Job {job_id} OK: {summary} ===")
+        log_file, fh = _setup_job_logger(job_id, "scraper")
+        db.job_set_log_file(job_id, str(log_file))
+        try:
+            logger.info(f"=== Scraper-Job {job_id} startet (Web-Trigger) ===")
+            summary = scraper_job.run_job()
+            db.job_finish(job_id, "ok", summary)
+            logger.info(f"=== Scraper-Job {job_id} OK: {summary} ===")
+        except Exception as e:
+            logger.exception(f"Scraper-Job {job_id} fehlgeschlagen")
+            db.job_finish(job_id, "error", {"error": str(e)})
     except Exception as e:
-        logger.exception(f"Scraper-Job {job_id} fehlgeschlagen")
-        db.job_finish(job_id, "error", {"error": str(e)})
+        # Logger-Setup ist geplatzt: Job direkt als error markieren
+        try:
+            db.job_finish(job_id, "error", {"error": f"setup failed: {e}"})
+        except Exception:
+            pass
+        logger.exception(f"Scraper-Job {job_id}: Setup gescheitert")
     finally:
-        logging.getLogger().removeHandler(fh)
-        fh.close()
+        if fh is not None:
+            try:
+                logging.getLogger().removeHandler(fh)
+                fh.close()
+            except Exception:
+                pass
         _locks["scraper"].release()
 
 
 def _run_backup_thread(job_id: int, dry_run: bool, pairs_filter=None):
     db = get_db()
-    log_file, fh = _setup_job_logger(job_id, "backup")
-    db.job_set_log_file(job_id, str(log_file))
+    fh = None
     try:
-        logger.info(f"=== Backup-Job {job_id} startet (Web-Trigger, dry_run={dry_run}, pairs={pairs_filter}) ===")
-        summary = rclone_job.run_job(dry_run=dry_run, pairs_filter=pairs_filter)
-        # Wenn cancelled, anders markieren
-        status = "ok"
-        if rclone_job.is_cancelled():
-            status = "error"
-            summary["error"] = "Abgebrochen"
-        db.job_finish(job_id, status, summary)
-        logger.info(f"=== Backup-Job {job_id} {status} ===")
+        log_file, fh = _setup_job_logger(job_id, "backup")
+        db.job_set_log_file(job_id, str(log_file))
+        try:
+            logger.info(f"=== Backup-Job {job_id} startet (Web-Trigger, dry_run={dry_run}, pairs={pairs_filter}) ===")
+            summary = rclone_job.run_job(dry_run=dry_run, pairs_filter=pairs_filter)
+            status = "ok"
+            if rclone_job.is_cancelled():
+                status = "error"
+                summary["error"] = "Abgebrochen"
+            db.job_finish(job_id, status, summary)
+            logger.info(f"=== Backup-Job {job_id} {status} ===")
+        except Exception as e:
+            logger.exception(f"Backup-Job {job_id} fehlgeschlagen")
+            db.job_finish(job_id, "error", {"error": str(e)})
     except Exception as e:
-        logger.exception(f"Backup-Job {job_id} fehlgeschlagen")
-        db.job_finish(job_id, "error", {"error": str(e)})
+        try:
+            db.job_finish(job_id, "error", {"error": f"setup failed: {e}"})
+        except Exception:
+            pass
+        logger.exception(f"Backup-Job {job_id}: Setup gescheitert")
     finally:
-        logging.getLogger().removeHandler(fh)
-        fh.close()
+        if fh is not None:
+            try:
+                logging.getLogger().removeHandler(fh)
+                fh.close()
+            except Exception:
+                pass
         _locks["backup"].release()
 
 
@@ -349,23 +399,35 @@ class QuickSyncRequest(BaseModel):
 
 def _run_quick_thread(job_id: int, req: dict):
     db = get_db()
-    log_file, fh = _setup_job_logger(job_id, "quicksync")
-    db.job_set_log_file(job_id, str(log_file))
+    fh = None
     try:
-        logger.info(f"=== Quick-Sync {job_id}: {req['direction']} {req['remote_path']} ⇄ {req['local_path']} ===")
-        summary = rclone_job.run_quick(**req)
-        status = "ok" if summary.get("ok") else "error"
-        if rclone_job.is_cancelled():
-            status = "error"
-            summary["error"] = "Abgebrochen"
-        db.job_finish(job_id, status, summary)
-        logger.info(f"=== Quick-Sync {job_id} {status} ===")
+        log_file, fh = _setup_job_logger(job_id, "quicksync")
+        db.job_set_log_file(job_id, str(log_file))
+        try:
+            logger.info(f"=== Quick-Sync {job_id}: {req['direction']} {req['remote_path']} ⇄ {req['local_path']} ===")
+            summary = rclone_job.run_quick(**req)
+            status = "ok" if summary.get("ok") else "error"
+            if rclone_job.is_cancelled():
+                status = "error"
+                summary["error"] = "Abgebrochen"
+            db.job_finish(job_id, status, summary)
+            logger.info(f"=== Quick-Sync {job_id} {status} ===")
+        except Exception as e:
+            logger.exception(f"Quick-Sync {job_id} crashed")
+            db.job_finish(job_id, "error", {"error": str(e)})
     except Exception as e:
-        logger.exception(f"Quick-Sync {job_id} crashed")
-        db.job_finish(job_id, "error", {"error": str(e)})
+        try:
+            db.job_finish(job_id, "error", {"error": f"setup failed: {e}"})
+        except Exception:
+            pass
+        logger.exception(f"Quick-Sync {job_id}: Setup gescheitert")
     finally:
-        logging.getLogger().removeHandler(fh)
-        fh.close()
+        if fh is not None:
+            try:
+                logging.getLogger().removeHandler(fh)
+                fh.close()
+            except Exception:
+                pass
         _locks["backup"].release()
 
 
