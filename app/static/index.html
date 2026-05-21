@@ -100,6 +100,60 @@
             <button class="btn" @click="runBackup(true)" :disabled="status.backup">
               🔍 Dry-Run
             </button>
+            <button class="btn" @click="showQuickSync = !showQuickSync" :disabled="status.backup">
+              ⚡ Quick-Sync
+            </button>
+          </div>
+
+          <!-- Quick-Sync Panel (Ad-hoc Sync ohne Config) -->
+          <div x-show="showQuickSync" x-transition style="margin-top: 18px; padding: 14px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);">
+            <div class="muted" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px;">
+              ⚡ Einmaliger Sync ohne Speichern als Paar
+            </div>
+            <div class="field">
+              <label>Remote (z.B. pcloud:/medien/Fotos/2024)</label>
+              <div style="display:flex; gap:6px;">
+                <input class="mono" x-model="quickSync.remote_path" placeholder="pcloud:/medien/...">
+                <button class="btn" @click="pickFolderForQuick('remote')" title="rclone-Pfad auswählen">📂</button>
+              </div>
+            </div>
+            <div class="field">
+              <label>Lokal (z.B. /mnt/data/medien/Fotos/2024)</label>
+              <div style="display:flex; gap:6px;">
+                <input class="mono" x-model="quickSync.local_path" placeholder="/mnt/...">
+                <button class="btn" @click="pickFolderForQuick('local')" title="Lokalen Pfad auswählen">📂</button>
+              </div>
+            </div>
+            <div class="row">
+              <div class="field">
+                <label>Richtung</label>
+                <select x-model="quickSync.direction" @change="if (quickSync.direction === 'bisync') { quickSync.mode = 'bisync'; } else if (quickSync.mode === 'bisync') { quickSync.mode = 'copy'; }">
+                  <option value="pull">⬇ Pull · Remote → Lokal</option>
+                  <option value="push">⬆ Push · Lokal → Remote</option>
+                  <option value="bisync">⇄ Bi-Sync · bidirektional</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Modus</label>
+                <select x-model="quickSync.mode" :disabled="quickSync.direction === 'bisync'">
+                  <option value="copy">Copy · nur neue/geänderte (kein Löschen)</option>
+                  <option value="sync">Sync · Mirror (löscht im Ziel!)</option>
+                  <option value="bisync" x-show="quickSync.direction === 'bisync'">Bi-Sync</option>
+                </select>
+                <div class="hint" x-show="quickSync.mode === 'sync'" style="color: var(--err)">⚠ Sync löscht Dateien im Ziel die nicht in Quelle sind!</div>
+              </div>
+            </div>
+            <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+              <input type="checkbox" x-model="quickSync.dry_run" id="qs-dry">
+              <label for="qs-dry" style="text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--fg);">Dry-Run (simulieren, nichts wirklich übertragen)</label>
+            </div>
+            <div style="text-align: right; margin-top: 12px; display: flex; justify-content: flex-end; gap: 8px;">
+              <button class="btn" @click="showQuickSync = false">Abbrechen</button>
+              <button class="btn btn-primary" @click="runQuickSync()" :disabled="quickSync.running || !quickSync.remote_path || !quickSync.local_path">
+                <span x-show="!quickSync.running">▶ Quick-Sync starten</span>
+                <span x-show="quickSync.running">… startet</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>

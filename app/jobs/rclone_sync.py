@@ -262,3 +262,91 @@ def run_job(dry_run: bool = False, pairs_filter: list = None) -> Dict:
         notifier.send("\n".join(lines))
 
     return summary
+
+def run_quick(remote_path: str, local_path: str, direction: str = "bisync",
+              mode: str = "bisync", dry_run: bool = False,
+              extra_args: list = None) -> Dict:
+    """Ad-hoc Sync ohne Config-Paar.
+    direction: 'pull' (remote→local), 'push' (local→remote), 'bisync' (bidir)
+    mode: 'copy' (nur kopieren, kein Löschen), 'sync' (mirror, löscht), 'bisync'
+    """
+    from ..config_store import get_config as _gc
+    cfg = _gc()
+
+    log_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs")) / "rclone"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", f"{remote_path}-{local_path}")[:80]
+    log_file = log_dir / f"quick-{safe_name}-{datetime.now():%Y%m%d-%H%M%S}.log"
+
+    args = (cfg.get("backup", "rclone_args", default="") or "").split()
+    if extra_args:
+        args += extra_args
+    if dry_run and "--dry-run" not in args:
+        args.append("--dry-run")
+
+    reset_cancel()
+    summary = {
+        "direction": direction, "mode": mode,
+        "remote": remote_path, "local": local_path,
+        "dry_run": dry_run, "log_file": str(log_file),
+    }
+
+    # Befehl bauen
+    if direction == "bisync" or mode == "bisync":
+        cmd = ["rclone", "bisync", remote_path, local_path] + args
+        verb = "bisync"
+    else:
+        # rclone copy oder rclone sync
+        rclone_verb = "sync" if mode == "sync" else "copy"
+        if direction == "pull":
+            cmd = ["rclone", rclone_verb, remote_path, local_path] + args
+        else:  # push
+            cmd = ["rclone", rclone_verb, local_path, remote_path] + args
+        verb = f"{rclone_verb} {direction}"
+
+    logger.info(f"[quick] rclone {' '.join(cmd[1:])}")
+    summary["cmd"] = " ".join(cmd)
+    summary["verb"] = verb
+
+    try:
+        if is_cancelled():
+            summary["error"] = "vor Start abgebrochen"
+            summary["ok"] = False
+            return summary
+        with open(log_file, "w") as f:
+            proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT)
+            _ACTIVE_PROCS.append(proc)
+            try:
+                proc.wait(timeout=12 * 3600)
+                rc = proc.returncode
+            finally:
+                if proc in _ACTIVE_PROCS:
+                    _ACTIVE_PROCS.remove(proc)
+        summary["return_code"] = rc
+        log_tail = log_file.read_text(errors="ignore")[-4096:]
+
+        # bisync resync handling
+        if (verb == "bisync" and rc != 0 and
+            ("--resync" in log_tail or "Must run --resync" in log_tail) and
+            not is_cancelled()):
+            logger.info("[quick] auto --resync")
+            cmd_r = cmd + ["--resync"]
+            with open(log_file, "a") as f:
+                f.write("\n\n=== AUTO --resync ===\n\n")
+                proc2 = subprocess.Popen(cmd_r, stdout=f, stderr=subprocess.STDOUT)
+                _ACTIVE_PROCS.append(proc2)
+                try:
+                    proc2.wait(timeout=12 * 3600)
+                    rc = proc2.returncode
+                finally:
+                    if proc2 in _ACTIVE_PROCS:
+                        _ACTIVE_PROCS.remove(proc2)
+            summary["resync_return_code"] = rc
+
+        summary["ok"] = (rc == 0)
+        return summary
+    except Exception as e:
+        logger.exception("quick sync failed")
+        summary["ok"] = False
+        summary["error"] = str(e)
+        return summary

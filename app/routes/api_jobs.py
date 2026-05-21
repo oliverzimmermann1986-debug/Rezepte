@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from ..auth import require_auth
 from ..config_store import get_config
@@ -336,3 +337,47 @@ def status_current():
         "reanalyze": db.job_running("reanalyze"),
         "pending_count": db.pending_count(),
     }
+
+
+class QuickSyncRequest(BaseModel):
+    remote_path: str
+    local_path: str
+    direction: str = "bisync"   # pull | push | bisync
+    mode: str = "bisync"         # copy | sync | bisync
+    dry_run: bool = False
+
+
+def _run_quick_thread(job_id: int, req: dict):
+    db = get_db()
+    log_file, fh = _setup_job_logger(job_id, "quicksync")
+    db.job_set_log_file(job_id, str(log_file))
+    try:
+        logger.info(f"=== Quick-Sync {job_id}: {req['direction']} {req['remote_path']} ⇄ {req['local_path']} ===")
+        summary = rclone_job.run_quick(**req)
+        status = "ok" if summary.get("ok") else "error"
+        if rclone_job.is_cancelled():
+            status = "error"
+            summary["error"] = "Abgebrochen"
+        db.job_finish(job_id, status, summary)
+        logger.info(f"=== Quick-Sync {job_id} {status} ===")
+    except Exception as e:
+        logger.exception(f"Quick-Sync {job_id} crashed")
+        db.job_finish(job_id, "error", {"error": str(e)})
+    finally:
+        logging.getLogger().removeHandler(fh)
+        fh.close()
+        _locks["backup"].release()
+
+
+@router.post("/backup/quick")
+def quick_sync(body: QuickSyncRequest):
+    """One-shot Sync ohne Config-Paar."""
+    if not _locks["backup"].acquire(blocking=False):
+        raise HTTPException(409, "Anderer Backup-Job läuft bereits")
+    if not body.remote_path or not body.local_path:
+        _locks["backup"].release()
+        raise HTTPException(400, "remote_path und local_path sind Pflicht")
+    job_id = get_db().job_start("quicksync")
+    t = threading.Thread(target=_run_quick_thread, args=(job_id, body.dict()), daemon=True)
+    t.start()
+    return {"ok": True, "job_id": job_id}

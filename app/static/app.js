@@ -84,6 +84,9 @@ function scrapperApp() {
       if (j.kind === 'reanalyze') {
         return `${s.auto_saved||0} eingeordnet, ${s.still_pending||0} pending, ${s.errors||0} err (${s.processed||0}/${s.total||0})`;
       }
+      if (j.kind === 'quicksync') {
+        return `${s.verb || s.direction || '?'}: ${s.remote || '?'} ⇄ ${s.local || '?'}${s.dry_run ? ' (dry)' : ''}`;
+      }
       return '';
     },
 
@@ -137,6 +140,32 @@ function scrapperApp() {
       this.showToast(`Backup gestartet${pairs ? ' (' + pairs.join(', ') + ')' : ''}${dryRun ? ' [dry-run]' : ''}`);
       this.refreshStatus();
     },
+    async runQuickSync() {
+      if (!this.quickSync.remote_path || !this.quickSync.local_path) {
+        this.showToast('Remote- und Local-Pfad sind Pflicht', 'error');
+        return;
+      }
+      this.quickSync.running = true;
+      try {
+        const r = await this.api('POST', '/api/jobs/backup/quick', {
+          remote_path: this.quickSync.remote_path,
+          local_path: this.quickSync.local_path,
+          direction: this.quickSync.direction,
+          mode: this.quickSync.mode,
+          dry_run: this.quickSync.dry_run,
+        });
+        if (r && r.job_id) {
+          this.showToast('Quick-Sync gestartet (Job #' + r.job_id + ')');
+          this.refreshStatus();
+          this.showQuickSync = false;
+        }
+      } catch(e) {
+        this.showToast('Fehler: ' + (e.message || e), 'error');
+      } finally {
+        this.quickSync.running = false;
+      }
+    },
+
     async cancelBackup() {
       if (!confirm('Backup wirklich abbrechen? Alle laufenden rclone-Prozesse werden gestoppt.')) return;
       try {
@@ -247,6 +276,15 @@ function scrapperApp() {
     scraperProgress: null,
     reanalyzeProgress: null,
     _progressTimer: null,
+    quickSync: {
+      remote_path: '',
+      local_path: '',
+      direction: 'bisync',
+      mode: 'bisync',
+      dry_run: false,
+      running: false,
+    },
+    showQuickSync: false,
     isTesting(key) { return this.testing[key] === true; },
     testResult(key) { return this.testResults[key] || null; },
     testResultMsg(key) {
