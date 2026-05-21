@@ -38,24 +38,58 @@ def _decode_subject(msg) -> str:
     return out
 
 
+def _html_to_text_and_urls(html: str) -> str:
+    """Zieht aus einer HTML-Mail sowohl den sichtbaren Text als auch die
+    ``href``-Attribute aller ``<a>``-Tags. Letztere werden ans Ende des Texts
+    angehängt - so erwischt das URL-Pattern auch URLs, die in ``<a href="...">``
+    versteckt waren (z.B. „Hier klicken")."""
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        # Fallback: BeautifulSoup nicht installiert -> Roh-HTML zurück
+        return html
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        for s in soup(["script", "style"]):
+            s.decompose()
+        text = soup.get_text(separator="\n")
+        hrefs = [a.get("href", "") for a in soup.find_all("a") if a.get("href")]
+        if hrefs:
+            text += "\n\n" + "\n".join(hrefs)
+        return text
+    except Exception:
+        return html
+
+
 def _extract_body(msg: email.message.Message) -> str:
-    body = ""
+    """Extrahiert den Body als reinen Text. HTML-Parts werden via BeautifulSoup
+    in Text + extrahierte Hrefs umgewandelt, damit auch URLs in
+    ``<a href="...">``-Tags erfasst werden."""
+    text_parts: List[str] = []
+    html_parts: List[str] = []
     for part in msg.walk():
-        if part.get_content_type() == "text/plain":
+        ctype = part.get_content_type()
+        if ctype == "text/plain":
             try:
                 payload = part.get_payload(decode=True)
                 if payload:
-                    body += payload.decode(errors="ignore")
+                    text_parts.append(payload.decode(errors="ignore"))
             except Exception:
                 pass
-        elif part.get_content_type() == "text/html" and not body:
+        elif ctype == "text/html":
             try:
                 payload = part.get_payload(decode=True)
                 if payload:
-                    body += payload.decode(errors="ignore")
+                    html_parts.append(payload.decode(errors="ignore"))
             except Exception:
                 pass
-    return body
+    out = "\n".join(text_parts)
+    # HTML nur dazumergen wenn Plain-Text leer ist ODER zusätzliche URLs
+    # liefert (Newsletter haben oft beides, Hauptinhalt im HTML).
+    if html_parts:
+        html_text = _html_to_text_and_urls("\n".join(html_parts))
+        out = (out + "\n" + html_text) if out.strip() else html_text
+    return out
 
 
 class MailAccount:

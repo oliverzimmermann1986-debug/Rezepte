@@ -343,6 +343,51 @@ class Database:
                 )
             return len(rows)
 
+    def cleanup_old_jobs(self, days: int = 90) -> int:
+        """Löscht Job-Einträge älter als ``days`` Tage. Hindert die jobs-Tabelle
+        am unbegrenzten Wachsen (bei OnCalendar=*:0/30 = 17.500/Jahr)."""
+        cutoff = time.time() - days * 86400
+        with self.conn() as c:
+            cur = c.execute(
+                "DELETE FROM jobs WHERE ended_at IS NOT NULL AND ended_at < ?",
+                (cutoff,),
+            )
+            return cur.rowcount or 0
+
+    def auto_skip_old_pending(self, days: int = 30) -> int:
+        """Markiert pending Items älter als ``days`` Tage als 'auto_skipped'.
+        Hindert die Pending-Liste am Vollstopfen mit toten Items.
+        """
+        cutoff = time.time() - days * 86400
+        with self.conn() as c:
+            cur = c.execute(
+                "UPDATE pending SET status='auto_skipped' "
+                "WHERE status='pending' AND created_at < ?",
+                (cutoff,),
+            )
+            return cur.rowcount or 0
+
+    def backup_to(self, dest_path) -> dict:
+        """Online-Backup der SQLite-DB via PRAGMA-basierte .backup-API.
+        Konsistent auch bei laufenden Writes (keine Locks nötig).
+        Returnt {ok, dest, size_bytes} oder {ok: False, error}.
+        """
+        from pathlib import Path as _P
+        dest = _P(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            src = sqlite3.connect(str(self.path), timeout=10)
+            dst = sqlite3.connect(str(dest), timeout=10)
+            try:
+                with dst:
+                    src.backup(dst)
+            finally:
+                src.close()
+                dst.close()
+            return {"ok": True, "dest": str(dest), "size_bytes": dest.stat().st_size}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
 
 _db: Database | None = None
 _db_lock = threading.Lock()

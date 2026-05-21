@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from ..auth import require_auth
 from ..db import get_db
-from ..jobs.scraper import ScraperJob
+from ..jobs.scraper import get_scraper_job
 
 router = APIRouter(prefix="/api/history", tags=["history"], dependencies=[Depends(require_auth)])
 
@@ -28,7 +28,7 @@ class EditRequest(BaseModel):
 @router.post("/edit")
 def edit_item(req: EditRequest):
     """Item im FS umsortieren/umbenennen + DB updaten + leeren alten Parent entfernen."""
-    return ScraperJob().move_history_item(
+    return get_scraper_job().move_history_item(
         req.url,
         new_name=req.name,
         new_type=req.type,
@@ -42,7 +42,7 @@ def delete_item(payload: dict):
     url = payload.get("url")
     if not url:
         raise HTTPException(400, "url fehlt")
-    return ScraperJob().delete_history_item(url)
+    return get_scraper_job().delete_history_item(url)
 
 
 # /preview Endpoint wurde entfernt - es gibt keine Frame-Thumbnails mehr.

@@ -45,6 +45,15 @@ _stale = _db.reset_stale_running()
 if _stale:
     logger.warning(f"{_stale} Job(s) waren als 'running' markiert - auf 'error' gesetzt (Crash/Restart-Recovery)")
 
+# DB-Hygiene: alte Jobs raus, uralte Pending-Items automatisch skippen.
+# Idempotent + günstig - läuft bei jedem Restart einmal.
+_jobs_purged = _db.cleanup_old_jobs(days=90)
+if _jobs_purged:
+    logger.info(f"DB-Cleanup: {_jobs_purged} Job-Einträge älter 90 Tage gelöscht")
+_pending_skipped = _db.auto_skip_old_pending(days=30)
+if _pending_skipped:
+    logger.info(f"DB-Cleanup: {_pending_skipped} Pending-Items älter 30 Tage auf 'auto_skipped'")
+
 # -------- FastAPI --------
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).
 _enable_docs = os.getenv("SCRAPPER_ENABLE_DOCS", "0") == "1"

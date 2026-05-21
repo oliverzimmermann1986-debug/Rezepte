@@ -57,10 +57,13 @@ class OllamaAnalyzer:
         self.url = url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        # Connection-Reuse: spart pro Call ~20-50ms TCP-Handshake.
+        # Bei 50 URLs × 2 Modelle = 100 Calls/Run macht das spürbar.
+        self.session = requests.Session()
 
     def _call(self, system: str, user: str) -> Optional[str]:
         try:
-            r = requests.post(
+            r = self.session.post(
                 f"{self.url}/api/generate",
                 json={
                     "model": self.model,
@@ -80,7 +83,7 @@ class OllamaAnalyzer:
 
     def health(self) -> bool:
         try:
-            r = requests.get(f"{self.url}/api/tags", timeout=5)
+            r = self.session.get(f"{self.url}/api/tags", timeout=5)
             r.raise_for_status()
             models = [m.get("name", "") for m in r.json().get("models", [])]
             return any(self.model in m for m in models)

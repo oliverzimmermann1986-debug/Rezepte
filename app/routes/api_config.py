@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..auth import hash_password, is_hashed, require_auth
 from ..config_store import get_config
+from ..jobs.scraper import invalidate_scraper_job
 
 router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_auth)])
 
@@ -32,6 +33,9 @@ def update_config(payload: Dict[str, Any]):
         _set(merged, ("web", "password"), hash_password(pw))
     store.replace(merged)
     store.save()
+    # ScraperJob hat 30+ Config-Werte gecached - invalidieren damit der
+    # nächste Resolve/Reanalyze die neuen Settings nutzt.
+    invalidate_scraper_job()
     return {"ok": True}
 
 

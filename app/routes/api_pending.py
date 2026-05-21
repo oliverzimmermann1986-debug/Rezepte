@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from ..auth import require_auth
 from ..config_store import get_config
 from ..db import get_db
-from ..jobs.scraper import ScraperJob
+from ..jobs.scraper import get_scraper_job
 
 router = APIRouter(prefix="/api/pending", tags=["pending"], dependencies=[Depends(require_auth)])
 
@@ -70,7 +70,7 @@ def resolve(body: ResolveBody):
         "type": body.type,
         "category": body.category,
     }
-    return ScraperJob().resolve_pending(body.url, decision)
+    return get_scraper_job().resolve_pending(body.url, decision)
 
 
 class ReanalyzeRequest(BaseModel):
@@ -80,7 +80,7 @@ class ReanalyzeRequest(BaseModel):
 @router.post("/reanalyze")
 def reanalyze(body: ReanalyzeRequest):
     """Lässt ein Pending-Item neu durch die KI-Cascade laufen."""
-    return ScraperJob().reanalyze_pending(body.url)
+    return get_scraper_job().reanalyze_pending(body.url)
 
 
 import logging as _logging
@@ -116,7 +116,7 @@ def _reanalyze_all_thread(job_id: int):
         _logging.getLogger().addHandler(fh)
         db.job_set_log_file(job_id, str(log_file))
 
-        job = ScraperJob()
+        job = get_scraper_job()
         try:
             items = db.pending_list("pending")
             summary["total"] = len(items)

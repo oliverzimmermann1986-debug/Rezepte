@@ -556,4 +556,32 @@ class ScraperJob:
 
 
 def run_job() -> Dict:
-    return ScraperJob().run()
+    return get_scraper_job().run()
+
+
+# ---------------- Singleton-Accessor ----------------
+# ScraperJob() konstruiert 30+ Config-Werte, Ollama-Clients, IMAP-Klassen.
+# Bei vielen UI-Klicks (Resolve, Reanalyze, Edit) summiert sich das auf
+# 200-800 ms pro Call. Singleton cached die Instanz und wird bei Config-
+# Save invalidiert, sodass neue Settings im nächsten Call greifen.
+_job_instance: Optional["ScraperJob"] = None
+_job_lock = threading.Lock()
+
+
+def get_scraper_job() -> "ScraperJob":
+    """Liefert die globale ScraperJob-Instanz. Konstruiert sie lazy."""
+    global _job_instance
+    if _job_instance is None:
+        with _job_lock:
+            if _job_instance is None:
+                _job_instance = ScraperJob()
+    return _job_instance
+
+
+def invalidate_scraper_job() -> None:
+    """Wird von api_config nach jedem Config-Save aufgerufen. Beim nächsten
+    get_scraper_job() wird eine frische Instanz mit den neuen Settings gebaut."""
+    global _job_instance
+    with _job_lock:
+        _job_instance = None
+    logger.info("ScraperJob-Singleton invalidiert (Config-Reload)")
