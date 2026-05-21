@@ -204,6 +204,13 @@ class Database:
         with self.conn() as c:
             c.execute("UPDATE jobs SET log_file=? WHERE id=?", (log_file, job_id))
 
+    def job_update_summary(self, job_id: int, summary: Dict[str, Any]) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE jobs SET summary=? WHERE id=?",
+                (json.dumps(summary, ensure_ascii=False), job_id),
+            )
+
     def job_finish(self, job_id: int, status: str, summary: Dict[str, Any]) -> None:
         with self.conn() as c:
             c.execute(

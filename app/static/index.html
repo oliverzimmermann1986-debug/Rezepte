@@ -105,7 +105,39 @@
       </div>
     </section>
 
-      <!-- Scraper Progress -->
+      <!-- Reanalyze Progress -->
+      <div x-show="reanalyzeProgress && reanalyzeProgress.running" class="card" style="margin-top: 18px;">
+        <div class="card-head">
+          <h3>Pending-Reanalyze läuft</h3>
+          <span class="pill running"
+            x-text="((reanalyzeProgress && reanalyzeProgress.summary && reanalyzeProgress.summary.processed) || 0) + ' / ' + ((reanalyzeProgress && reanalyzeProgress.summary && reanalyzeProgress.summary.total) || 0)"></span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; margin-bottom: 14px;">
+          <div>
+            <div class="muted" style="font-size: 11px; text-transform: uppercase;">Laufzeit</div>
+            <div class="mono" style="font-size: 16px;" x-text="reanalyzeProgress && formatDuration(reanalyzeProgress.elapsed_sec)"></div>
+          </div>
+          <div>
+            <div class="muted" style="font-size: 11px; text-transform: uppercase;">Eingeordnet</div>
+            <div class="mono" style="font-size: 16px; color: var(--ok);" x-text="(reanalyzeProgress && reanalyzeProgress.summary && reanalyzeProgress.summary.auto_saved) || 0"></div>
+          </div>
+          <div>
+            <div class="muted" style="font-size: 11px; text-transform: uppercase;">Weiterhin pending</div>
+            <div class="mono" style="font-size: 16px;" x-text="(reanalyzeProgress && reanalyzeProgress.summary && reanalyzeProgress.summary.still_pending) || 0"></div>
+          </div>
+          <div>
+            <div class="muted" style="font-size: 11px; text-transform: uppercase;">Fehler</div>
+            <div class="mono" style="font-size: 16px; color: var(--err);" x-text="(reanalyzeProgress && reanalyzeProgress.summary && reanalyzeProgress.summary.errors) || 0"></div>
+          </div>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" :style="`width: ${reanalyzeProgress && reanalyzeProgress.summary && reanalyzeProgress.summary.total ? Math.round((reanalyzeProgress.summary.processed||0) / reanalyzeProgress.summary.total * 100) : 0}%`"></div>
+        </div>
+        <div class="hint mono" style="font-size: 11px; margin-top: 8px; word-break: break-all;"
+          x-text="(reanalyzeProgress && reanalyzeProgress.summary && reanalyzeProgress.summary.current) || ''"></div>
+      </div>
+
+            <!-- Scraper Progress -->
       <div x-show="scraperProgress && scraperProgress.running" class="card" style="margin-top: 18px;">
         <div class="card-head">
           <h3>Scraper läuft</h3>

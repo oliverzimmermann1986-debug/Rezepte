@@ -81,6 +81,9 @@ function scrapperApp() {
       if (j.kind === 'backup') {
         return `${s.ok_count||0}/${s.total_pairs||0} Paare${s.dry_run ? ' (dry)' : ''}`;
       }
+      if (j.kind === 'reanalyze') {
+        return `${s.auto_saved||0} eingeordnet, ${s.still_pending||0} pending, ${s.errors||0} err (${s.processed||0}/${s.total||0})`;
+      }
       return '';
     },
 
@@ -109,6 +112,15 @@ function scrapperApp() {
         try { this.scraperProgress = await this.api('GET', '/api/jobs/scraper/progress'); } catch(e) {}
       } else if (this.scraperProgress && this.scraperProgress.running) {
         try { this.scraperProgress = await this.api('GET', '/api/jobs/scraper/progress'); } catch(e) {}
+      }
+      if (this.status && this.status.reanalyze) {
+        try { this.reanalyzeProgress = await this.api('GET', '/api/pending/reanalyze/progress'); } catch(e) {}
+      } else if (this.reanalyzeProgress && this.reanalyzeProgress.running) {
+        try { this.reanalyzeProgress = await this.api('GET', '/api/pending/reanalyze/progress'); } catch(e) {}
+        // Nach Ende: pending neu laden
+        if (this.reanalyzeProgress && !this.reanalyzeProgress.running) {
+          await this.loadPending();
+        }
       }
     },
 
@@ -233,6 +245,7 @@ function scrapperApp() {
     schedulePreview: null,
     backupProgress: null,
     scraperProgress: null,
+    reanalyzeProgress: null,
     _progressTimer: null,
     isTesting(key) { return this.testing[key] === true; },
     testResult(key) { return this.testResults[key] || null; },
@@ -412,18 +425,14 @@ function scrapperApp() {
       }
     },
     async reanalyzeAll() {
-      if (!confirm('Alle ' + this.pending.length + ' Pending-Items neu analysieren? Das kann je nach KI-Modell ein paar Minuten dauern.')) return;
-      this.reanalyzingAll = true;
+      if (!confirm('Alle ' + this.pending.length + ' Pending-Items neu analysieren? Das läuft im Hintergrund als Job.')) return;
       try {
         const r = await this.api('POST', '/api/pending/reanalyze-all', {});
-        if (r) {
-          this.showToast(`Fertig: ${r.auto_saved} eingeordnet, ${r.still_pending} weiterhin pending, ${r.errors} Fehler`);
-          await this.loadPending();
-          await this.refreshStatus();
+        if (r && r.job_id) {
+          this.showToast('Reanalyze-Job gestartet (#' + r.job_id + ')');
+          this.refreshStatus();
         }
-      } catch(e) {} finally {
-        this.reanalyzingAll = false;
-      }
+      } catch(e) {}
     },
 
     // ------------- Schedule Helpers -------------

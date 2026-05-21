@@ -333,5 +333,6 @@ def status_current():
     return {
         "scraper": db.job_running("scraper"),
         "backup": db.job_running("backup"),
+        "reanalyze": db.job_running("reanalyze"),
         "pending_count": db.pending_count(),
     }
