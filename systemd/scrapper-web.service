@@ -10,12 +10,27 @@ Group=scrapper
 WorkingDirectory=/opt/scrapper
 Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
 Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
-ExecStart=/opt/scrapper/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+# WICHTIG: Bindung auf 127.0.0.1. Externer Zugriff erfolgt ausschließlich
+# über Reverse-Proxy / Cloudflare-Tunnel mit Auth davor.
+ExecStart=/opt/scrapper/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
+# Härtung
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/scrapper /mnt
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target

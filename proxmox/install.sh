@@ -65,10 +65,25 @@ chown -R $APP_USER:$APP_USER "$APP_DIR" /mnt/rezepte /mnt/hochzeit
 
 # 8. Default-Config erstellen wenn fehlt
 if [[ ! -f "$APP_DIR/data/config.yaml" ]]; then
-  echo "📝 Erstelle Default-Config..."
+  echo "📝 Erstelle Default-Config mit zufälligem Passwort + Secret..."
   cp "$APP_DIR/config/config.example.yaml" "$APP_DIR/data/config.yaml"
+
+  GEN_PASS=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 20)
+  GEN_SECRET=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 48)
+
+  # Default-Platzhalter durch zufällige Werte ersetzen (sed -i, sauber escaped)
+  sed -i "s|password: changeme|password: ${GEN_PASS}|" "$APP_DIR/data/config.yaml"
+  sed -i "s|secret_key: change-this-to-random-string-32chars-min|secret_key: ${GEN_SECRET}|" "$APP_DIR/data/config.yaml"
+
   chown $APP_USER:$APP_USER "$APP_DIR/data/config.yaml"
   chmod 600 "$APP_DIR/data/config.yaml"
+
+  # Generiertes Passwort separat ablegen, damit es nicht im Terminal-Scrollback hängt
+  echo "$GEN_PASS" > "$APP_DIR/data/.initial-password"
+  chown $APP_USER:$APP_USER "$APP_DIR/data/.initial-password"
+  chmod 600 "$APP_DIR/data/.initial-password"
+
+  INITIAL_PASSWORD="$GEN_PASS"
 fi
 
 # 9. systemd Services installieren
@@ -104,20 +119,32 @@ IP=$(hostname -I | awk '{print $1}')
 
 echo "✅ Installation abgeschlossen!"
 echo ""
-echo "🌐 Web-Interface:    http://$IP:8000"
-echo "👤 Login:            admin / changeme  (in config.yaml ändern!)"
+echo "🌐 Web-Interface (LOKAL):    http://127.0.0.1:8000"
+echo "                              (im Container - extern via Reverse-Proxy/CF-Tunnel)"
+echo "👤 Login:                    admin"
+if [[ -n "${INITIAL_PASSWORD:-}" ]]; then
+  echo "🔑 Initial-Passwort:         $INITIAL_PASSWORD"
+  echo "                              (auch in $APP_DIR/data/.initial-password)"
+else
+  echo "🔑 Passwort:                 siehe data/config.yaml oder via:"
+  echo "                              sudo -u $APP_USER $APP_DIR/venv/bin/python -m app.cli set-password"
+fi
 echo ""
 echo "📁 App-Verzeichnis:  $APP_DIR"
 echo "📝 Config:           $APP_DIR/data/config.yaml"
 echo "📋 Logs:             $APP_DIR/logs/"
 echo ""
 echo "Erste Schritte:"
-echo "  1. Web-UI öffnen, auf 'Einstellungen' gehen"
-echo "  2. E-Mail-Konten, Telegram, Ollama eintragen"
-echo "  3. rclone konfigurieren:   sudo -u $APP_USER rclone config"
-echo "  4. Erster Test-Lauf via Web-UI"
+echo "  1. Reverse-Proxy oder Cloudflare-Tunnel davorstellen (uvicorn lauscht nur auf 127.0.0.1)"
+echo "  2. Web-UI öffnen, auf 'Einstellungen' gehen, Passwort ändern"
+echo "  3. E-Mail-Konten, Telegram, Ollama eintragen"
+echo "  4. rclone konfigurieren:   sudo -u $APP_USER rclone config"
+echo "  5. Erster Test-Lauf via Web-UI"
 echo ""
 echo "Service-Befehle:"
 echo "  systemctl status scrapper-web"
 echo "  systemctl restart scrapper-web"
 echo "  journalctl -u scrapper-web -f"
+echo ""
+echo "Passwort zurücksetzen:"
+echo "  sudo -u $APP_USER $APP_DIR/venv/bin/python -m app.cli set-password"

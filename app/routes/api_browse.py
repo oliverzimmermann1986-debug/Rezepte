@@ -9,37 +9,77 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..auth import require_auth
+from ..config_store import get_config
 
 router = APIRouter(prefix="/api/browse", tags=["browse"], dependencies=[Depends(require_auth)])
 
 
-# Verbotene Root-Pfade (Sicherheits-Whitelist)
-FORBIDDEN_PREFIXES = ("/etc/", "/root/", "/boot/", "/sys/", "/proc/", "/dev/")
-SUGGESTED_ROOTS = ["/mnt", "/opt/scrapper", "/home", "/srv", "/var/data"]
+# Whitelist: nur diese Roots + alles darunter ist erlaubt.
+# /mnt ist der NAS-/Backup-Mountpoint; restliche stammen aus der Config.
+_BASE_ALLOWED = ("/mnt", "/opt/scrapper/data", "/opt/scrapper/logs", "/opt/scrapper/temp")
 
 
-def _safe_path(path: str) -> Path:
+def _allowed_roots() -> List[Path]:
+    """Erlaubte Roots aus Base + Config-Pfaden zusammenstellen."""
+    cfg = get_config()
+    roots = set(_BASE_ALLOWED)
+    paths = cfg.get("paths", default={}) or {}
+    for key in ("recipe_dir", "wedding_dir", "temp_dir", "logs_dir"):
+        v = paths.get(key) if isinstance(paths, dict) else None
+        if isinstance(v, str) and v:
+            roots.add(v)
+    return [Path(r).resolve() for r in roots]
+
+
+def _safe_path(path: str, *, must_be_under_allowed: bool = True) -> Path:
     if not path:
-        path = "/"
+        raise HTTPException(400, "Pfad fehlt")
     p = Path(path).expanduser().resolve()
-    sp = str(p)
-    if any(sp == fp.rstrip("/") or sp.startswith(fp) for fp in FORBIDDEN_PREFIXES):
-        raise HTTPException(403, f"Zugriff auf {p} nicht erlaubt")
-    return p
+    if not must_be_under_allowed:
+        return p
+    allowed = _allowed_roots()
+    for root in allowed:
+        try:
+            p.relative_to(root)
+            return p
+        except ValueError:
+            continue
+        except OSError:
+            continue
+    raise HTTPException(
+        403,
+        f"Zugriff auf {p} nicht erlaubt. Erlaubte Roots: " +
+        ", ".join(str(r) for r in allowed),
+    )
 
 
 @router.get("/local")
-def browse_local(path: str = "/", show_files: bool = False) -> Dict[str, Any]:
-    """Listet Unterverzeichnisse (optional Files) eines lokalen Pfads."""
+def browse_local(path: str = "", show_files: bool = False) -> Dict[str, Any]:
+    """Listet Unterverzeichnisse (optional Files) eines lokalen Pfads.
+
+    Ohne ``path``: gibt die erlaubten Roots zurück.
+    """
+    allowed = _allowed_roots()
+    if not path:
+        return {
+            "path": "",
+            "parent": None,
+            "exists": True,
+            "is_root": True,
+            "entries": [
+                {"name": str(r), "path": str(r), "is_dir": True} for r in allowed
+            ],
+            "suggested_roots": [str(r) for r in allowed],
+        }
+
     p = _safe_path(path)
     if not p.exists():
-        # Nicht existierender Pfad → leerere Antwort mit can_create
         return {
             "path": str(p),
             "parent": str(p.parent),
             "exists": False,
             "entries": [],
-            "suggested_roots": SUGGESTED_ROOTS,
+            "suggested_roots": [str(r) for r in allowed],
         }
     if not p.is_dir():
         raise HTTPException(400, "Kein Verzeichnis")
@@ -65,12 +105,20 @@ def browse_local(path: str = "/", show_files: bool = False) -> Dict[str, Any]:
     except PermissionError:
         raise HTTPException(403, f"Keine Leseberechtigung für {p}")
 
+    # Parent nur zurückgeben, wenn er noch in einem erlaubten Root liegt
+    parent_str = None
+    try:
+        _safe_path(str(p.parent))
+        parent_str = str(p.parent)
+    except HTTPException:
+        parent_str = ""  # signalisiert Root-Liste
+
     return {
         "path": str(p),
-        "parent": str(p.parent) if str(p) != "/" else None,
+        "parent": parent_str,
         "exists": True,
         "entries": entries,
-        "suggested_roots": SUGGESTED_ROOTS,
+        "suggested_roots": [str(r) for r in allowed],
         "writable": os.access(p, os.W_OK),
     }
 
@@ -97,14 +145,17 @@ def browse_rclone(path: str = "") -> Dict[str, Any]:
                 ],
             }
 
-        # Konkreten Pfad listen
-        # Format: "pcloud:/medien/Serien" oder "pcloud:"
+        # Pfad validieren
+        if path.startswith("-"):
+            raise HTTPException(400, "rclone-Pfad darf nicht mit '-' beginnen")
+        if any(c in path for c in ("\n", "\r", "\x00")):
+            raise HTTPException(400, "rclone-Pfad enthält ungültige Zeichen")
         if ":" not in path:
             raise HTTPException(400, "rclone-Pfad muss 'remote:pfad' Format haben")
 
-        # lsjson für strukturierte Daten
+        # lsjson für strukturierte Daten ("--" trennt Optionen vom Argument)
         r = subprocess.run(
-            ["rclone", "lsjson", "--dirs-only", path],
+            ["rclone", "lsjson", "--dirs-only", "--", path],
             capture_output=True, text=True, timeout=60,
         )
         if r.returncode != 0:

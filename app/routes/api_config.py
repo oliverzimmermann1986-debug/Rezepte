@@ -5,7 +5,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..auth import require_auth
+from ..auth import hash_password, is_hashed, require_auth
 from ..config_store import get_config
 
 router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_auth)])
@@ -24,6 +24,12 @@ def update_config(payload: Dict[str, Any]):
     store = get_config()
     current = store.all()
     merged = _unmask(payload, current)
+    # Web-Passwort, falls Klartext, immer bcrypt-hashen
+    pw = _get(merged, ("web", "password"))
+    if isinstance(pw, str) and pw and not is_hashed(pw):
+        if len(pw) < 8:
+            raise HTTPException(400, "Passwort muss mindestens 8 Zeichen haben")
+        _set(merged, ("web", "password"), hash_password(pw))
     store.replace(merged)
     store.save()
     return {"ok": True}

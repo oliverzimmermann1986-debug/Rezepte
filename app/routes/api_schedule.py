@@ -22,6 +22,44 @@ TIMER_FILES = {
     "backup":  "/etc/systemd/system/rclone-sync.timer",
 }
 
+# Erlaubt: systemd-OnCalendar-Zeichen (Buchstaben/Ziffern/: * / , . - Leerzeichen).
+# Newlines/Quotes/Semikolons/Backslash explizit nicht.
+_ONCALENDAR_RE = re.compile(r"^[A-Za-z0-9:*/,.\- ]{1,200}$")
+
+
+def _validate_oncalendar(value: str) -> str:
+    """Validiert + normalisiert. Wirft HTTPException bei ungültiger Eingabe."""
+    if not isinstance(value, str):
+        raise HTTPException(400, "OnCalendar muss String sein")
+    v = value.strip()
+    if not v:
+        raise HTTPException(400, "OnCalendar darf nicht leer sein")
+    if "\n" in v or "\r" in v or "\x00" in v:
+        raise HTTPException(400, "OnCalendar darf keine Zeilenumbrüche enthalten")
+    if not _ONCALENDAR_RE.match(v):
+        raise HTTPException(
+            400,
+            "OnCalendar enthält ungültige Zeichen "
+            "(erlaubt: A-Z a-z 0-9 : * / , . - Leerzeichen)",
+        )
+    # Semantik-Check via systemd-analyze
+    try:
+        r = subprocess.run(
+            ["systemd-analyze", "calendar", v],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode != 0:
+            raise HTTPException(
+                400,
+                f"OnCalendar ungültig: {(r.stderr or r.stdout).strip()[:200]}",
+            )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "systemd-analyze Timeout")
+    except FileNotFoundError:
+        # systemd-analyze fehlt: dann eben nur Regex-Check
+        logger.warning("systemd-analyze nicht gefunden, semantische Prüfung übersprungen")
+    return v
+
 
 def _read_oncalendar(timer_path: str) -> Optional[str]:
     p = Path(timer_path)
@@ -139,11 +177,13 @@ def update_schedule(body: ScheduleUpdate) -> Dict:
     """Aktualisiert OnCalendar und lädt systemd-Timer neu."""
     changes = []
     if body.scraper:
-        _write_oncalendar(TIMER_FILES["scraper"], body.scraper)
-        changes.append(("scraper", body.scraper))
+        clean = _validate_oncalendar(body.scraper)
+        _write_oncalendar(TIMER_FILES["scraper"], clean)
+        changes.append(("scraper", clean))
     if body.backup:
-        _write_oncalendar(TIMER_FILES["backup"], body.backup)
-        changes.append(("backup", body.backup))
+        clean = _validate_oncalendar(body.backup)
+        _write_oncalendar(TIMER_FILES["backup"], clean)
+        changes.append(("backup", clean))
 
     if not changes:
         return {"ok": True, "message": "Nichts zu ändern"}
@@ -182,8 +222,13 @@ def preview_oncalendar(body: ScheduleUpdate) -> Dict:
     for kind, value in [("scraper", body.scraper), ("backup", body.backup)]:
         if not value:
             continue
+        # Vor-Validierung (Regex), damit kein gefährlicher Input an systemd-analyze geht.
+        v = value.strip()
+        if "\n" in v or "\r" in v or "\x00" in v or not _ONCALENDAR_RE.match(v):
+            results[kind] = {"ok": False, "error": "Ungültige Zeichen im Ausdruck"}
+            continue
         r = subprocess.run(
-            ["systemd-analyze", "calendar", "--iterations=5", value],
+            ["systemd-analyze", "calendar", "--iterations=5", v],
             capture_output=True, text=True, timeout=10,
         )
         if r.returncode != 0:

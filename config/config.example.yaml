@@ -1,13 +1,21 @@
 # ============================================================
 # Scrapper / Backup Manager - Konfiguration
 # Diese Datei wird auch über das Web-Interface verwaltet.
+#
+# SECURITY:
+#   - password: kann Klartext sein - wird beim ersten Start auto-bcrypt-gehasht.
+#               Default 'changeme' verhindert den Start (siehe app/auth.py).
+#               Reset jederzeit:  python -m app.cli set-password
+#   - secret_key: wird beim ersten Start automatisch zufällig generiert.
+#                 Manuell rotieren:  python -m app.cli rotate-secret
+#   - bind_host bleibt 127.0.0.1. Externer Zugriff NUR via Reverse-Proxy/Tunnel.
 # ============================================================
 
 # Web-Interface Login
 web:
   username: admin
   password: changeme
-  bind_host: 0.0.0.0
+  bind_host: 127.0.0.1
   bind_port: 8000
   secret_key: change-this-to-random-string-32chars-min
 
