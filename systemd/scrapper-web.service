@@ -16,11 +16,6 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
-# Hardening
-NoNewPrivileges=yes
-ProtectSystem=full
-ProtectHome=yes
-ReadWritePaths=/opt/scrapper /mnt/rezepte /mnt/hochzeit /mnt/media-nas
 
 [Install]
 WantedBy=multi-user.target

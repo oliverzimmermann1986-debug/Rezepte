@@ -181,5 +181,45 @@ function scrapperApp() {
       await this.api('POST', '/api/config/reload', null);
       this.showToast('Konfiguration gespeichert');
     },
+
+    // ------------- Tests -------------
+    testing: {},   // {key: true/false} während Test läuft
+    testResults: {},  // {key: {ok, message, error}}
+
+    async runTest(key, endpoint, body = null) {
+      this.testing[key] = true;
+      this.testResults[key] = null;
+      try {
+        const r = await fetch(endpoint, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: body ? JSON.stringify(body) : null,
+        });
+        const data = await r.json();
+        this.testResults[key] = data;
+        if (data.ok) {
+          this.showToast(data.message || 'Test OK ✓', 'ok');
+        } else {
+          this.showToast('Test fehlgeschlagen: ' + (data.error || 'unbekannt'), 'error');
+        }
+      } catch (e) {
+        this.testResults[key] = { ok: false, error: String(e) };
+        this.showToast('Test-Fehler: ' + e, 'error');
+      } finally {
+        this.testing[key] = false;
+      }
+    },
+    testMail(account) {
+      this.runTest('mail_' + account, '/api/test/mail', { account });
+    },
+    testOllama() { this.runTest('ollama', '/api/test/ollama'); },
+    testOpenAI() { this.runTest('openai', '/api/test/openai'); },
+    testTelegram(bot) { this.runTest('tg_' + bot, '/api/test/telegram', { bot }); },
+    testRclone(pairIndex = null) {
+      const body = pairIndex !== null ? { pair_index: pairIndex } : {};
+      this.runTest(pairIndex !== null ? 'rclone_' + pairIndex : 'rclone', '/api/test/rclone', body);
+    },
+    testPaths() { this.runTest('paths', '/api/test/paths'); },
+    testYtdlp() { this.runTest('ytdlp', '/api/test/ytdlp'); },
   };
 }

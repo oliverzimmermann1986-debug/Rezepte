@@ -476,6 +476,32 @@ input[type="checkbox"] { width: auto !important; }
 }
 .login-card .error { color: var(--err); font-size: 12px; margin: 0; }
 
+/* ---------- Test Results ---------- */
+.test-result {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fg-mute);
+  padding: 10px 14px;
+  font-size: 12px;
+  font-family: var(--mono);
+  border-radius: var(--radius);
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+.test-result.ok { border-left-color: var(--ok); color: var(--fg); }
+.test-result.err { border-left-color: var(--err); color: var(--fg); }
+
+.config-section > .head {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-dim);
+  display: flex; align-items: center; gap: 8px;
+}
+
 /* ---------- Utility ---------- */
 .muted { color: var(--fg-dim); }
 .mono { font-family: var(--mono); }

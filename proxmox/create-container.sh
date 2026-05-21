@@ -16,8 +16,19 @@ SWAP="${SWAP:-512}"
 CORES="${CORES:-2}"
 BRIDGE="${BRIDGE:-vmbr0}"
 IP_ADDR="${IP_ADDR:-dhcp}"             # z.B. "192.168.178.50/24,gw=192.168.178.1"
-TEMPLATE="${TEMPLATE:-debian-12-standard_12.7-1_amd64.tar.zst}"
 TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
+# Template: wenn nicht via Env gesetzt, automatisch neueste Debian-12-Version finden
+TEMPLATE="${TEMPLATE:-}"
+if [[ -z "$TEMPLATE" ]]; then
+  pveam update >/dev/null
+  TEMPLATE=$(pveam available --section system 2>/dev/null \
+    | awk '/debian-12-standard/ {print $2}' | sort -V | tail -n1)
+  if [[ -z "$TEMPLATE" ]]; then
+    echo "❌ Konnte kein debian-12-Template finden. Setze z.B. TEMPLATE=debian-12-standard_12.12-1_amd64.tar.zst" >&2
+    exit 1
+  fi
+  echo "▶️  Template automatisch gewählt: $TEMPLATE"
+fi
 
 # NAS Mount-Point (optional - für rclone-sync)
 NAS_MOUNT_HOST="${NAS_MOUNT_HOST:-/mnt/media-nas}"

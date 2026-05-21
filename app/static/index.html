@@ -5,7 +5,7 @@
   <title>Scrapper Manager</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="/static/style.css">
-  <script defer src="https://unpkg.com/[email protected]/dist/cdn.min.js"></script>
+  <script defer src="/static/alpine.min.js"></script>
 </head>
 <body>
 <div class="app" x-data="scrapperApp()" x-init="init()">
@@ -308,8 +308,17 @@
 
           <!-- Mail Recipe -->
           <div class="config-section">
-            <div class="head">E-Mail · Rezepte (alle Links → Rezept-Ordner)</div>
+            <div class="head">
+              <span style="flex: 1;">E-Mail · Rezepte (alle Links → Rezept-Ordner)</span>
+              <button class="btn" @click="testMail('recipe')" :disabled="testing.mail_recipe">
+                <span x-show="!testing.mail_recipe">⌬ Verbindung testen</span>
+                <span x-show="testing.mail_recipe">… testet</span>
+              </button>
+            </div>
             <div class="body">
+              <div x-show="testResults.mail_recipe" class="test-result" :class="testResults.mail_recipe?.ok ? 'ok' : 'err'">
+                <span x-text="testResults.mail_recipe?.message || testResults.mail_recipe?.error"></span>
+              </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
                 <input type="checkbox" x-model="config.mail.recipe.enabled" id="mr-en">
                 <label for="mr-en">Aktiv</label>
@@ -331,8 +340,17 @@
 
           <!-- Mail Wedding -->
           <div class="config-section">
-            <div class="head">E-Mail · Hochzeit (alle Links → Hochzeit-Ordner)</div>
+            <div class="head">
+              <span style="flex: 1;">E-Mail · Hochzeit (alle Links → Hochzeit-Ordner)</span>
+              <button class="btn" @click="testMail('wedding')" :disabled="testing.mail_wedding">
+                <span x-show="!testing.mail_wedding">⌬ Verbindung testen</span>
+                <span x-show="testing.mail_wedding">… testet</span>
+              </button>
+            </div>
             <div class="body">
+              <div x-show="testResults.mail_wedding" class="test-result" :class="testResults.mail_wedding?.ok ? 'ok' : 'err'">
+                <span x-text="testResults.mail_wedding?.message || testResults.mail_wedding?.error"></span>
+              </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
                 <input type="checkbox" x-model="config.mail.wedding.enabled" id="mw-en">
                 <label for="mw-en">Aktiv</label>
@@ -354,8 +372,24 @@
 
           <!-- Pfade -->
           <div class="config-section">
-            <div class="head">Verzeichnisse</div>
+            <div class="head">
+              <span style="flex: 1;">Verzeichnisse</span>
+              <button class="btn" @click="testPaths()" :disabled="testing.paths">
+                <span x-show="!testing.paths">⌬ Pfade prüfen</span>
+                <span x-show="testing.paths">… prüft</span>
+              </button>
+            </div>
             <div class="body">
+              <div x-show="testResults.paths" class="test-result" :class="testResults.paths?.ok ? 'ok' : 'err'">
+                <template x-for="(p, key) in (testResults.paths?.paths || {})" :key="key">
+                  <div>
+                    <span x-text="key + ': ' + p.path"></span>
+                    <span x-show="p.ok" style="color: var(--ok)">  ✓ ok</span>
+                    <span x-show="!p.exists" style="color: var(--err)">  ✗ existiert nicht</span>
+                    <span x-show="p.exists && !p.writable" style="color: var(--warn)">  ⚠ nicht beschreibbar</span>
+                  </div>
+                </template>
+              </div>
               <div class="row">
                 <div class="field"><label>Rezepte</label><input x-model="config.paths.recipe_dir"></div>
                 <div class="field"><label>Hochzeit</label><input x-model="config.paths.wedding_dir"></div>
@@ -369,8 +403,17 @@
 
           <!-- AI -->
           <div class="config-section">
-            <div class="head">KI · Ollama (lokal, primär)</div>
+            <div class="head">
+              <span style="flex: 1;">KI · Ollama (lokal, primär)</span>
+              <button class="btn" @click="testOllama()" :disabled="testing.ollama">
+                <span x-show="!testing.ollama">⌬ Verbindung testen</span>
+                <span x-show="testing.ollama">… testet</span>
+              </button>
+            </div>
             <div class="body">
+              <div x-show="testResults.ollama" class="test-result" :class="testResults.ollama?.ok ? 'ok' : 'err'">
+                <span x-text="testResults.ollama?.message || testResults.ollama?.error"></span>
+              </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
                 <input type="checkbox" x-model="config.ai.ollama.enabled" id="oll-en">
                 <label for="oll-en">Aktiv</label>
@@ -387,8 +430,17 @@
           </div>
 
           <div class="config-section">
-            <div class="head">KI · OpenAI Vision (Fallback)</div>
+            <div class="head">
+              <span style="flex: 1;">KI · OpenAI Vision (Fallback)</span>
+              <button class="btn" @click="testOpenAI()" :disabled="testing.openai">
+                <span x-show="!testing.openai">⌬ Verbindung testen</span>
+                <span x-show="testing.openai">… testet</span>
+              </button>
+            </div>
             <div class="body">
+              <div x-show="testResults.openai" class="test-result" :class="testResults.openai?.ok ? 'ok' : 'err'">
+                <span x-text="testResults.openai?.message || testResults.openai?.error"></span>
+              </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
                 <input type="checkbox" x-model="config.ai.openai.enabled" id="oai-en">
                 <label for="oai-en">Aktiv</label>
@@ -410,23 +462,71 @@
               </div>
               <div class="row">
                 <div class="field"><label>Rezept Bot Token</label><input type="password" x-model="config.telegram.recipe_bot_token"></div>
-                <div class="field"><label>Rezept Chat ID</label><input x-model="config.telegram.recipe_chat_id"></div>
+                <div class="field">
+                  <label style="display:flex; align-items:center; gap:10px;">
+                    <span>Rezept Chat ID</span>
+                    <button type="button" class="btn" style="font-size:10px; padding: 3px 8px;" @click="testTelegram('recipe')" :disabled="testing.tg_recipe">
+                      <span x-show="!testing.tg_recipe">⌬ Test</span>
+                      <span x-show="testing.tg_recipe">…</span>
+                    </button>
+                  </label>
+                  <input x-model="config.telegram.recipe_chat_id">
+                </div>
+              </div>
+              <div x-show="testResults.tg_recipe" class="test-result" :class="testResults.tg_recipe?.ok ? 'ok' : 'err'">
+                <span x-text="testResults.tg_recipe?.message || testResults.tg_recipe?.error"></span>
               </div>
               <div class="row">
                 <div class="field"><label>Hochzeit Bot Token</label><input type="password" x-model="config.telegram.wedding_bot_token"><div class="hint">leer → Rezept-Bot wird verwendet</div></div>
-                <div class="field"><label>Hochzeit Chat ID</label><input x-model="config.telegram.wedding_chat_id"></div>
+                <div class="field">
+                  <label style="display:flex; align-items:center; gap:10px;">
+                    <span>Hochzeit Chat ID</span>
+                    <button type="button" class="btn" style="font-size:10px; padding: 3px 8px;" @click="testTelegram('wedding')" :disabled="testing.tg_wedding">
+                      <span x-show="!testing.tg_wedding">⌬ Test</span>
+                      <span x-show="testing.tg_wedding">…</span>
+                    </button>
+                  </label>
+                  <input x-model="config.telegram.wedding_chat_id">
+                </div>
+              </div>
+              <div x-show="testResults.tg_wedding" class="test-result" :class="testResults.tg_wedding?.ok ? 'ok' : 'err'">
+                <span x-text="testResults.tg_wedding?.message || testResults.tg_wedding?.error"></span>
               </div>
               <div class="row">
                 <div class="field"><label>Backup Bot Token</label><input type="password" x-model="config.telegram.backup_bot_token"></div>
-                <div class="field"><label>Backup Chat ID</label><input x-model="config.telegram.backup_chat_id"></div>
+                <div class="field">
+                  <label style="display:flex; align-items:center; gap:10px;">
+                    <span>Backup Chat ID</span>
+                    <button type="button" class="btn" style="font-size:10px; padding: 3px 8px;" @click="testTelegram('backup')" :disabled="testing.tg_backup">
+                      <span x-show="!testing.tg_backup">⌬ Test</span>
+                      <span x-show="testing.tg_backup">…</span>
+                    </button>
+                  </label>
+                  <input x-model="config.telegram.backup_chat_id">
+                </div>
+              </div>
+              <div x-show="testResults.tg_backup" class="test-result" :class="testResults.tg_backup?.ok ? 'ok' : 'err'">
+                <span x-text="testResults.tg_backup?.message || testResults.tg_backup?.error"></span>
               </div>
             </div>
           </div>
 
           <!-- Backup -->
           <div class="config-section">
-            <div class="head">Backup · rclone</div>
+            <div class="head">
+              <span style="flex: 1;">Backup · rclone</span>
+              <button class="btn" @click="testRclone()" :disabled="testing.rclone">
+                <span x-show="!testing.rclone">⌬ rclone Remotes testen</span>
+                <span x-show="testing.rclone">… testet</span>
+              </button>
+            </div>
             <div class="body">
+              <div x-show="testResults.rclone" class="test-result" :class="testResults.rclone?.ok ? 'ok' : 'err'">
+                <div x-text="testResults.rclone?.message || testResults.rclone?.error"></div>
+                <div x-show="testResults.rclone?.remotes" class="mono" style="margin-top: 6px; font-size: 11px;">
+                  Verfügbar: <span x-text="(testResults.rclone?.remotes || []).join(', ')"></span>
+                </div>
+              </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
                 <input type="checkbox" x-model="config.backup.enabled" id="bk-en">
                 <label for="bk-en">Aktiv</label>
@@ -435,11 +535,23 @@
 
               <h4 style="margin: 18px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">Sync-Paare</h4>
               <template x-for="(p, idx) in config.backup.pairs" :key="idx">
-                <div class="row" style="margin-bottom: 8px; align-items: end;">
-                  <div class="field" style="margin:0"><label>Name</label><input x-model="p.name"></div>
-                  <div class="field" style="margin:0"><label>Remote</label><input x-model="p.remote"></div>
-                  <div class="field" style="margin:0"><label>Lokal</label><input x-model="p.local"></div>
-                  <div><button class="btn btn-danger" @click="config.backup.pairs.splice(idx, 1)">✗</button></div>
+                <div>
+                  <div class="row" style="margin-bottom: 8px; align-items: end;">
+                    <div class="field" style="margin:0"><label>Name</label><input x-model="p.name"></div>
+                    <div class="field" style="margin:0"><label>Remote</label><input x-model="p.remote"></div>
+                    <div class="field" style="margin:0"><label>Lokal</label><input x-model="p.local"></div>
+                    <div style="display:flex; gap:6px;">
+                      <button class="btn" @click="testRclone(idx)" :disabled="testing['rclone_'+idx]">
+                        <span x-show="!testing['rclone_'+idx]">⌬</span>
+                        <span x-show="testing['rclone_'+idx]">…</span>
+                      </button>
+                      <button class="btn btn-danger" @click="config.backup.pairs.splice(idx, 1)">✗</button>
+                    </div>
+                  </div>
+                  <div x-show="testResults['rclone_'+idx]" class="test-result" :class="testResults['rclone_'+idx]?.ok ? 'ok' : 'err'" style="margin-bottom: 12px;">
+                    <div x-text="testResults['rclone_'+idx]?.message || testResults['rclone_'+idx]?.error"></div>
+                    <div x-show="testResults['rclone_'+idx]?.remote_size_output" class="mono" style="margin-top:4px; font-size: 11px;" x-text="testResults['rclone_'+idx]?.remote_size_output"></div>
+                  </div>
                 </div>
               </template>
               <button class="btn" @click="config.backup.pairs.push({name:'',remote:'',local:''})">+ Paar hinzufügen</button>
@@ -452,8 +564,18 @@
 
           <!-- yt-dlp -->
           <div class="config-section">
-            <div class="head">yt-dlp</div>
+            <div class="head">
+              <span style="flex: 1;">yt-dlp</span>
+              <button class="btn" @click="testYtdlp()" :disabled="testing.ytdlp">
+                <span x-show="!testing.ytdlp">⌬ Version prüfen</span>
+                <span x-show="testing.ytdlp">…</span>
+              </button>
+            </div>
             <div class="body">
+              <div x-show="testResults.ytdlp" class="test-result" :class="testResults.ytdlp?.ok ? 'ok' : 'err'">
+                <span x-show="testResults.ytdlp?.ok" x-text="'Version: ' + testResults.ytdlp?.version"></span>
+                <span x-show="!testResults.ytdlp?.ok" x-text="testResults.ytdlp?.error"></span>
+              </div>
               <div class="field"><label>Binary Path</label><input x-model="config.ytdlp.binary"></div>
             </div>
           </div>
