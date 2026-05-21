@@ -85,9 +85,14 @@ def _run_scraper_thread(job_id: int):
                 log_file, fh = _setup_job_logger(job_id, "scraper")
                 db.job_set_log_file(job_id, str(log_file))
                 logger.info(f"=== Scraper-Job {job_id} startet (Web-Trigger) ===")
+                scraper_job.reset_cancel()
                 summary = scraper_job.run_job()
-                db.job_finish(job_id, "ok", summary)
-                logger.info(f"=== Scraper-Job {job_id} OK: {summary} ===")
+                status = "ok"
+                if summary.get("cancelled"):
+                    status = "error"
+                    summary.setdefault("error", "Abgebrochen")
+                db.job_finish(job_id, status, summary)
+                logger.info(f"=== Scraper-Job {job_id} {status}: {summary} ===")
             except Exception as e:
                 logger.exception(f"Scraper-Job {job_id} fehlgeschlagen")
                 db.job_finish(job_id, "error", {"error": str(e)})
@@ -177,6 +182,16 @@ def cancel_backup():
         return {"ok": False, "error": "Kein laufender Backup-Job"}
     result = rclone_job.cancel_job()
     return result
+
+
+@router.post("/scraper/cancel")
+def cancel_scraper():
+    """Setzt das Cancel-Flag im Scraper. Bricht zwischen URLs ab -
+    eine bereits laufende URL (Download + Analyse) wird komplett verarbeitet,
+    aber keine weitere mehr gestartet."""
+    if not get_db().job_running("scraper"):
+        return {"ok": False, "error": "Kein laufender Scraper-Job"}
+    return scraper_job.cancel_job()
 
 
 @router.get("/list")

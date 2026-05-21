@@ -11,6 +11,7 @@ import email
 import imaplib
 import logging
 import re
+import time
 from contextlib import contextmanager
 from email.header import decode_header
 from typing import Iterable, List, Dict, Optional
@@ -87,38 +88,58 @@ class MailAccount:
     def fetch_urls(self) -> List[Dict]:
         if not self.enabled or not self.username or not self.password:
             return []
+        # 3 Versuche mit exponentiellem Backoff. Gmail wirft sporadisch
+        # "imaplib.error: socket error" oder Auth-Glitches; ein Retry
+        # eliminiert die meisten False-Failures.
+        last_error: Optional[Exception] = None
+        for attempt, sleep_s in enumerate([0, 1, 4], start=1):
+            if sleep_s:
+                logger.info(f"[{self.name}] IMAP-Retry {attempt}/3 nach {sleep_s}s")
+                time.sleep(sleep_s)
+            try:
+                return self._fetch_urls_once()
+            except (imaplib.IMAP4.abort, imaplib.IMAP4.error,
+                    OSError, ConnectionError) as e:
+                last_error = e
+                logger.warning(f"[{self.name}] IMAP-Versuch {attempt} fehlgeschlagen: {e}")
+            except Exception as e:
+                # Unerwartete Exception: nicht retryen, sofort raus
+                logger.error(f"[{self.name}] IMAP-Hardfailure: {e}")
+                return []
+        logger.error(f"[{self.name}] IMAP nach 3 Versuchen aufgegeben: {last_error}")
+        return []
+
+    def _fetch_urls_once(self) -> List[Dict]:
+        """Ein einziger Fetch-Durchgang. Wirft Exceptions, die fetch_urls retryt."""
         results: List[Dict] = []
         seen: set[str] = set()
-        try:
-            with self._connect() as mail:
-                _, data = mail.search(None, "ALL")
-                ids = data[0].split()[-self.max_mails:]
-                logger.info(f"[{self.name}] Verarbeite {len(ids)} Mails")
-                for mid in ids:
-                    try:
-                        _, msg_data = mail.fetch(mid, "(RFC822)")
-                        if not msg_data or not msg_data[0]:
+        with self._connect() as mail:
+            _, data = mail.search(None, "ALL")
+            ids = data[0].split()[-self.max_mails:]
+            logger.info(f"[{self.name}] Verarbeite {len(ids)} Mails")
+            for mid in ids:
+                try:
+                    _, msg_data = mail.fetch(mid, "(RFC822)")
+                    if not msg_data or not msg_data[0]:
+                        continue
+                    msg = email.message_from_bytes(msg_data[0][1])
+                    subject = _decode_subject(msg)
+                    body = _extract_body(msg)
+                    full = f"{subject}\n{body}"
+                    for url in URL_PATTERN.findall(full):
+                        url = url.rstrip(".,);]>'\"")
+                        if url in seen:
                             continue
-                        msg = email.message_from_bytes(msg_data[0][1])
-                        subject = _decode_subject(msg)
-                        body = _extract_body(msg)
-                        full = f"{subject}\n{body}"
-                        for url in URL_PATTERN.findall(full):
-                            url = url.rstrip(".,);]>'\"")
-                            if url in seen:
-                                continue
-                            seen.add(url)
-                            results.append({
-                                "url": url,
-                                "type": self.content_type,
-                                "subject": subject,
-                                "default_category": self.default_category,
-                                "source_account": self.name,
-                            })
-                    except Exception as e:
-                        logger.warning(f"[{self.name}] Mail {mid}: {e}")
-        except Exception as e:
-            logger.error(f"[{self.name}] IMAP: {e}")
+                        seen.add(url)
+                        results.append({
+                            "url": url,
+                            "type": self.content_type,
+                            "subject": subject,
+                            "default_category": self.default_category,
+                            "source_account": self.name,
+                        })
+                except Exception as e:
+                    logger.warning(f"[{self.name}] Mail {mid}: {e}")
         logger.info(f"[{self.name}] {len(results)} URLs gefunden")
         return results
 

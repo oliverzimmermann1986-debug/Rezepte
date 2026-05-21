@@ -1,283 +1,257 @@
 # Scrappercontainer
 
-Proxmox-LXC-Container, der zwei Jobs in einem zusammenfasst:
+Proxmox-LXC-Container mit zwei Jobs in einem:
 
-1. **TikTok/Instagram Scraper** – holt Links aus zwei separaten E-Mail-Inboxen (Rezepte + Hochzeit), lädt die Videos mit `yt-dlp`, lässt sie von Ollama analysieren (mit OpenAI-Vision-Fallback) und sortiert sie in die richtigen Ordner.
-2. **rclone bisync Backup** – synchronisiert pCloud ↔ NAS für alle konfigurierten Paare parallel.
+1. **TikTok/Instagram Scraper** — zieht Links aus zwei separaten E-Mail-Postfächern (Rezepte + Hochzeit), lädt die Videos mit `yt-dlp`, lässt sie von einer **lokalen Ollama-Instanz** klassifizieren und sortiert sie in passende Ordner.
+2. **rclone-Sync (Cloud↔Cloud oder Cloud↔Lokal)** — synchronisiert beliebige rclone-Pairs parallel, mit Cancel-Funktion und Live-Progress.
 
-Beide Jobs werden über ein **Web-Interface** verwaltet (Konfiguration, manuelles Starten, Pending-Auflösung, Logs, Historie).
-
-> Ersetzt die Vorgänger-Scripts `rclone-sync.sh` und `tiktokscript.py` (~1500 Zeilen Python). Telegram-Reply-Mechanik fällt komplett weg – Pending-Items werden direkt im Browser aufgelöst.
+Beide Jobs werden über ein **Web-Interface** verwaltet (Konfiguration, manuelles Starten, Pending-Auflösung, Logs, Historie). Externe Erreichbarkeit ist explizit für **Cloudflare-Tunnel + Cloudflare Access** (MFA-Layer) ausgelegt.
 
 ---
 
-## Was ist neu vs. den alten Scripts?
-
-| Alt | Neu |
-|---|---|
-| Subject-Keyword-Klassifizierung (`#rezept` / `#hochzeit`) | **2 separate IMAP-Konten** – Inbox bestimmt den Typ |
-| Pending wird per Telegram-Reply aufgelöst | **Web-Interface** mit Vorschaubild, Dropdown, Beschreibung |
-| Konfiguration über `credentials.json` + ENV-Variablen | **Web-UI + `config.yaml`** |
-| `nohup` + manuelle Cron-Setups | **systemd Services + Timer** |
-| Status-Files in JSON | **SQLite-Datenbank** |
-| Telegram empfängt Updates und Replies | **Nur Notifications** (Send-only) |
-
----
-
-## Architektur
+## Architektur auf einen Blick
 
 ```
-+---------+    +------------------+    +---------------+
-|   Web   |◄──►|    FastAPI       |◄──►|   SQLite      |
-+---------+    | (Port 8000)      |    +---------------+
-               +─────┬─────┬──────+
-                     │     │
-              ┌──────┘     └──────┐
-              ▼                   ▼
-       ┌───────────┐        ┌─────────────┐
-       │ Scraper   │        │ rclone      │
-       │ (timer:   │        │ (timer:     │
-       │  30 min)  │        │  täglich)   │
-       └─────┬─────┘        └──────┬──────┘
-             │                     │
-       ┌─────┴──────┐         ┌───┴────────┐
-       │ Ollama     │         │  pCloud    │
-       │ OpenAI     │         │  ↕         │
-       │ yt-dlp     │         │  /mnt/nas  │
-       └────────────┘         └────────────┘
+E-Mail-Inbox (Recipe)  ─┐
+E-Mail-Inbox (Wedding) ─┤
+                        ▼
+                  ┌─────────────┐         ┌──────────────────┐
+                  │  IMAP-Fetch │ ──URLs─►│  yt-dlp Download │
+                  └─────────────┘         └─────────┬────────┘
+                                                    ▼
+                                          ┌─────────────────────┐
+                                          │   Ollama-Cascade    │
+                                          │  fast → fallback    │
+                                          └────────┬────────────┘
+                                                   ▼
+                          ┌───────────────────────┴────────────────────┐
+                          │                                            │
+                          ▼ Auto: Confidence hoch                      ▼ Pending: User entscheidet im Web-UI
+                  ┌──────────────────┐                         ┌──────────────────┐
+                  │ FS: recipe_dir/  │                         │  SQLite pending  │
+                  │     wedding_dir/ │                         │  + video in temp │
+                  └──────────────────┘                         └──────────────────┘
 ```
+
+Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Button im Web-UI. File-Locks verhindern doppelte Läufe zwischen Web und CLI.
 
 ---
 
-## Schnellstart (Proxmox)
+## Features
 
-### 1. Auf dem Proxmox-Host
+**Hardened Web-Auth**
+- Bcrypt-Passwort-Hashing (Klartext-PWs werden beim ersten Start automatisch gehasht)
+- Auto-generierter Session-Secret beim Erststart
+- Rate-Limiter auf `/login` (5 Fehlversuche / 10 min → 15 min Block pro IP)
+- Security-Header (CSP, HSTS, X-Frame-Options, …)
+- CLI: `python -m app.cli set-password` / `rotate-secret`
+- App **verweigert den Start** bei aktivem Default-Login `admin/changeme`
+- `/api/docs` standardmäßig **aus** (Opt-in via `SCRAPPER_ENABLE_DOCS=1`)
+
+**Datenintegrität**
+- SQLite mit WAL-Mode + `synchronous=NORMAL` + 10s busy_timeout
+- Indizes auf häufige Queries
+- `pending_add` ist idempotent (Status/Timestamp bleiben bei Re-Insert erhalten)
+- Path-Whitelists auf alle FileResponse-Endpoints (defense in depth)
+- Stale-Job-Recovery beim Start (alte `running`-Jobs werden auf `error` gesetzt)
+
+**Robustheit**
+- File-Lock (`fcntl.flock`) zwischen Web-Trigger und systemd-CLI
+- Log-Rotation aller Job-Logs (älter als 30 Tage werden bei jedem Job-Start aufgeräumt)
+- yt-dlp Failed-Tracking: nach 3 fehlgeschlagenen Versuchen wird die URL als „aufgegeben" gespeichert und nicht mehr probiert
+- IMAP-Retry mit Backoff (3 Versuche, 1s/4s)
+- Ollama-Health-Check beim Job-Start (bricht ab statt 50 sinnlose Pending-Items zu erzeugen)
+- Thread-safe Cancel für **Scraper** und **Backup**
+- Async Telegram raus, alle Notifications nur noch in Web-UI
+
+**Backup**
+- Pairs können `cloud:path ↔ cloud:path`, `cloud:path ↔ local:/path`, oder beide remote sein — wird automatisch detected
+- ThreadPool mit `max_parallel` Cap (Default 3) verhindert API-Drosselung bei vielen Pairs
+- Cancel-Mechanismus killt laufende rclone-Subprozesse sauber
+
+---
+
+## Setup
+
+### 1. Container anlegen
 
 ```bash
-# Scripts holen
-curl -O https://raw.githubusercontent.com/appear7240/Scrappercontainer/main/proxmox/create-container.sh
-curl -O https://raw.githubusercontent.com/appear7240/Scrappercontainer/main/proxmox/install.sh
-chmod +x create-container.sh install.sh
-
-# Container anlegen (Defaults anpassen über Env-Variablen)
-CTID=200 HOSTNAME=scrapper PASSWORD=changeme \
-NAS_MOUNT_HOST=/mnt/media-nas \
-./create-container.sh
-
-# Installations-Script in den Container kopieren und ausführen
-pct push 200 install.sh /root/install.sh
-pct exec 200 -- bash /root/install.sh
+# Auf dem Proxmox-Host:
+bash proxmox/create-container.sh
 ```
 
-Die Default-Werte im `create-container.sh` (anpassbar über Env-Variablen):
+Default: unprivileged LXC, Debian 12, 2 GB RAM, 16 GB Disk. Du wirst nach Container-ID, Storage und Netz gefragt.
 
-| Variable | Default | Bedeutung |
-|---|---|---|
-| `CTID` | `200` | Container-ID |
-| `HOSTNAME` | `scrapper` | Hostname |
-| `STORAGE` | `local-lvm` | Storage für rootfs |
-| `DISK_SIZE` | `16` | GB |
-| `MEMORY` | `2048` | MB |
-| `CORES` | `2` | CPU-Kerne |
-| `IP_ADDR` | `dhcp` | `192.168.x.x/24,gw=…` für statisch |
-| `NAS_MOUNT_HOST` | `/mnt/media-nas` | NAS-Verzeichnis am Host |
-| `MEDIA_MOUNT_HOST` | leer | optional: weiterer Mount |
-
-### 2. Web-UI öffnen
-
-```
-http://<container-ip>:8000
-```
-
-Login: `admin` / `changeme`  → **sofort in den Einstellungen ändern!**
-
-### 3. Einstellungen ausfüllen
-
-Im Tab **Einstellungen** alles eintragen:
-
-- **Web**: neues Passwort + zufälliger Session Secret (32+ Zeichen)
-- **E-Mail Rezepte**: IMAP-Daten der Rezept-Inbox
-- **E-Mail Hochzeit**: IMAP-Daten der Hochzeit-Inbox (+ Default-Kategorie)
-- **Pfade**: Zielordner für Rezepte / Hochzeit
-- **Ollama**: URL (z. B. `http://192.168.x.x:11434`), Modell (z. B. `gemma3:12b`)
-- **OpenAI** (optional): API-Key für Vision-Fallback
-- **Telegram**: Bot-Token + Chat-ID (separat für Recipe/Wedding/Backup, oder fallback auf Recipe-Bot)
-- **Backup**: Sync-Paare anlegen (remote ↔ lokal)
-
-Speichern → `data/config.yaml` wird auf der Platte aktualisiert.
-
-### 4. rclone konfigurieren
+### 2. App installieren
 
 ```bash
-pct exec 200 -- sudo -u scrapper rclone config
+pct enter <ctid>
+cd /opt && git clone https://github.com/appear7240/Scrappercontainer.git scrapper
+cd scrapper
+bash proxmox/install.sh
 ```
 
-Remote anlegen (z. B. `pcloud`), Auth abschließen. Der Remote-Name muss zu `backup.rclone_remote` in der Config passen.
-
-### 5. Erster Test
-
-- Im Web-UI auf **Dashboard** → **Scraper starten** klicken
-- Status oben in der Sidebar zeigt „läuft"
-- Nach dem Lauf: Tab **Jobs & Logs** für Detail-Output
-- Falls KI unsicher: Tab **Pending** – Vorschau, Name/Kategorie wählen, Speichern
-
----
-
-## Verzeichnis-Layout im Container
+Das Install-Script erzeugt automatisch:
+- einen `scrapper`-User
+- ein **zufälliges Initial-Passwort** (gespeichert in `data/.initial-password`)
+- ein **zufälliges `secret_key`** (48 Zeichen)
+- die systemd-Units (`scrapper-web`, `scrapper-job.timer`, `rclone-sync.timer`)
 
 ```
-/opt/scrapper/
-├── app/                 # FastAPI + Job-Code
-├── config/              # config.example.yaml
-├── data/
-│   ├── config.yaml      # ← deine Konfiguration
-│   └── scrapper.db      # SQLite (Pending, History, Jobs)
-├── logs/                # Job-Logs (web.log, scraper-*.log, backup-*.log)
-├── temp/                # yt-dlp Downloads (auto-cleanup)
-│   └── pending/         # Pending-Files (überleben Cleanup)
-├── systemd/             # Unit-Files (in /etc/systemd/system kopiert)
-└── venv/                # Python venv
+🌐 Web-Interface (LOKAL):    http://127.0.0.1:8000
+👤 Login:                    admin
+🔑 Initial-Passwort:         (siehe Ausgabe oder data/.initial-password)
+```
 
-/mnt/rezepte/<Typ>/<Kategorie>/<Name>/
-  ├── <Name>.mp4
-  ├── <Name>.jpg
-  ├── description.txt
-  └── info.json
+Der uvicorn-Bind ist **`127.0.0.1`** — Web-UI ist im LAN nicht direkt erreichbar. Extern-Zugriff erfolgt ausschließlich über Reverse-Proxy oder Cloudflare-Tunnel.
 
-/mnt/hochzeit/<Kategorie>/<Name>/
-  └── (gleich)
+### 3. Cloudflare-Tunnel + Access (empfohlen)
 
-/mnt/media-nas/{Serien,Filme,Fotos,Iphone_backup}/   # NAS-Bind-Mount
+```bash
+# Im Container:
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+dpkg -i cloudflared.deb
+cloudflared tunnel login
+cloudflared tunnel create scrapper
+cloudflared tunnel route dns scrapper scrapper.deine-domain.tld
+```
+
+`~/.cloudflared/config.yml`:
+```yaml
+tunnel: <tunnel-uuid>
+credentials-file: /root/.cloudflared/<uuid>.json
+ingress:
+  - hostname: scrapper.deine-domain.tld
+    service: http://localhost:8000
+  - service: http_status:404
+```
+
+```bash
+cloudflared service install
+```
+
+Im **Cloudflare-Dashboard → Zero Trust → Access**:
+1. Identity Provider hinzufügen (Google / GitHub / Email-OTP)
+2. Application „self-hosted" anlegen, Domain = `scrapper.deine-domain.tld`
+3. Policy: Allow → Include = deine Email, Require = TOTP / Hardware-Key (optional)
+4. Geo-Restriction auf dein Land (optional, schließt 99 % der Welt aus)
+
+Damit hast du MFA vor der App, **ohne** die App selbst anzupassen.
+
+### 4. Konfiguration
+
+Im Web-UI → „Einstellungen":
+- **E-Mail-Konten** (IMAP-App-Passwords für Gmail)
+- **Ollama-URL** und Modell-Namen (Default: `qwen2.5:7b-instruct`, optional `fallback_model`)
+- **Backup-Pairs** (rclone-Remotes mit `pcloud:foo` ↔ `gdrive:bar` oder `pcloud:foo` ↔ `/mnt/local/bar`)
+- **Schedule** (systemd-OnCalendar-Expression für beide Jobs)
+
+rclone muss vorab als `scrapper`-User konfiguriert sein:
+```bash
+sudo -u scrapper rclone config
 ```
 
 ---
 
-## systemd-Services
-
-| Service | Funktion |
-|---|---|
-| `scrapper-web.service` | Web-Interface (uvicorn :8000, immer) |
-| `scrapper-job.service` | Scraper-Lauf (oneshot) |
-| `scrapper-job.timer` | alle 30 Min. |
-| `rclone-sync.service` | Backup-Lauf (oneshot) |
-| `rclone-sync.timer` | täglich 03:00 |
-
-Nützliche Befehle (im Container):
+## CLI
 
 ```bash
-systemctl status scrapper-web              # Web-Server-Status
-systemctl restart scrapper-web             # nach Code-Update
-journalctl -u scrapper-web -f              # Live-Log
+# Passwort zurücksetzen (Reset wenn ausgesperrt)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli set-password
 
-systemctl list-timers                      # alle Timer + nächster Lauf
-systemctl start scrapper-job.service       # manuell triggern
-systemctl start rclone-sync.service        # manuell triggern
-
-# Logs in /opt/scrapper/logs/
-tail -f /opt/scrapper/logs/web.log
-ls -lt /opt/scrapper/logs/scraper-*.log | head
+# Session-Secret rotieren (invalidiert alle aktiven Sessions)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli rotate-secret
 ```
 
----
-
-## Update durchführen
-
-Im Container:
-
 ```bash
-cd /opt/scrapper
-git pull
-sudo -u scrapper venv/bin/pip install -r requirements.txt
+# Service-Befehle
+systemctl status scrapper-web
 systemctl restart scrapper-web
+journalctl -u scrapper-web -f
+
+# Manuell ausführen (respektiert File-Lock)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.jobs.scraper_cli
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.jobs.backup_cli --dry-run
 ```
 
 ---
 
-## Pending-Workflow
+## Konfigurationsstruktur
 
-Wenn die KI sich nicht sicher ist (confidence < 0.75, frei in der Config einstellbar), landet das Video in **Pending**:
+`data/config.yaml` (wird beim Erststart aus `config/config.example.yaml` erzeugt):
 
-1. **Telegram** verschickt einen Hinweis mit Link und KI-Vorschlag (keine Reply nötig).
-2. Im Web-UI unter **Pending** siehst du:
-   - Standbild aus dem Video
-   - KI-Vorschlag (Name, Typ/Kategorie, Confidence)
-   - Original-Beschreibung (aufklappbar)
-   - Eingabe-Felder mit KI-Werten vorausgefüllt
-3. **Speichern** → Datei landet in `/mnt/rezepte/...` bzw. `/mnt/hochzeit/...`
-4. **Skip** → URL wird in der Historie als übersprungen markiert
-5. Während eine URL pending ist, wird sie bei späteren Mail-Läufen ignoriert
+```yaml
+web:
+  username: admin
+  password: $2b$12$...   # bcrypt-Hash, von der App selbst geschrieben
+  secret_key: <48 random chars>
+  bind_host: 127.0.0.1
+  bind_port: 8000
 
----
+paths:
+  recipe_dir: /pfad/zu/rezepten
+  wedding_dir: /pfad/zu/hochzeit
+  temp_dir: /opt/scrapper/temp
+  logs_dir: /opt/scrapper/logs
 
-## API (für Skripte)
+mail:
+  recipe:
+    enabled: true
+    imap_host: imap.gmail.com
+    imap_port: 993
+    username: …
+    password: …      # App-Password, NICHT das Google-Konto-Passwort
+    folder: INBOX
+    max_mails: 20
+  wedding:
+    enabled: true
+    # … wie recipe
+    default_category: Sonstiges
+    always_pending: false
 
-Alle Routen erfordern den Session-Cookie (Login `/login` POST).
+ai:
+  ollama:
+    enabled: true
+    url: http://localhost:11434
+    model: qwen2.5:7b-instruct
+    fallback_model: qwen2.5:14b-instruct  # optional, leer = kein Fallback
+    timeout: 60
+  confidence_threshold: 0.75
+  fallback_threshold: 0.5
+  description_min_length: 20
 
-| Methode | Route | Zweck |
-|---|---|---|
-| GET | `/api/config` | Konfiguration (Passwörter maskiert) |
-| PUT | `/api/config` | Konfiguration setzen |
-| POST | `/api/config/reload` | von Disk neu laden |
-| GET | `/api/pending` | Pending-Items |
-| GET | `/api/pending/preview?url=…` | Frame-Bild |
-| GET | `/api/pending/video?url=…` | Video-Stream |
-| POST | `/api/pending` | Auflösen `{url, action:save\|skip, name, type, category}` |
-| POST | `/api/jobs/scraper/run` | Scraper triggern |
-| POST | `/api/jobs/backup/run?dry_run=true` | Backup triggern |
-| GET | `/api/jobs/list?kind=scraper&limit=50` | Job-Historie |
-| GET | `/api/jobs/{id}/log` | Log-File |
-| GET | `/api/jobs/status/current` | was läuft gerade |
-| GET | `/api/history?limit=200` | verarbeitete URLs |
+ytdlp:
+  binary: /opt/scrapper/venv/bin/yt-dlp
 
-Swagger-UI: `http://<ip>:8000/api/docs`
-
----
-
-## Troubleshooting
-
-**Web-UI nicht erreichbar**
-```bash
-pct exec 200 -- systemctl status scrapper-web
-pct exec 200 -- journalctl -u scrapper-web -n 50
+backup:
+  max_parallel: 3       # parallel rclone-Prozesse
+  rclone_args: "--bwlimit 8M --transfers 4"
+  pairs:
+    - name: rezepte-pcloud-gdrive
+      remote: pcloud:/Rezepte
+      local: gdrive:/Backup/Rezepte
+      direction: bisync   # oder copy/sync
+    - name: hochzeit-pcloud
+      remote: pcloud:/Hochzeit
+      local: /mnt/local/hochzeit
+      direction: copy
 ```
 
-**Scraper sieht keine Mails**
-- IMAP-Daten in `data/config.yaml` korrekt? (Gmail braucht **App-Passwort**, kein Account-PW)
-- Im Web-UI sind beide Mail-Konten als „Aktiv" markiert?
-- Test im Container: `pct exec 200 -- sudo -u scrapper /opt/scrapper/venv/bin/python -m app.jobs.scraper_cli`
-
-**Ollama nicht erreichbar**
-- URL korrekt? Default-Port ist 11434
-- Erreichbar aus dem Container? `pct exec 200 -- curl -s http://192.168.x.x:11434/api/tags`
-- Falsches Modell? Im UI eintragen wie es Ollama listet (z. B. `gemma3:12b`)
-
-**rclone-Backup schlägt fehl**
-- `pct exec 200 -- sudo -u scrapper rclone listremotes` – Remote vorhanden?
-- bisync-Lock-Cleanup macht der Job automatisch
-- Bei "Must run --resync" macht das Script das automatisch beim nächsten Lauf
-
-**Pending-Vorschaubild fehlt**
-- Frame wird on-the-fly aus dem Video gerendert. Falls nicht: video_path/frame_path in der DB prüfen.
-- DB inspizieren: `pct exec 200 -- sqlite3 /opt/scrapper/data/scrapper.db "SELECT url, video_path, frame_path FROM pending;"`
-
-**Passwort vergessen**
-```bash
-pct exec 200 -- nano /opt/scrapper/data/config.yaml
-# unter web: password ändern, speichern
-pct exec 200 -- systemctl restart scrapper-web
-```
+`paths.recipe_dir` und `paths.wedding_dir` müssen **lokal beschreibbar** sein (Scraper macht `shutil.copy2`). Wenn du direkt nach Cloud willst, mount sie vorher per `rclone mount`.
 
 ---
 
-## Sicherheitshinweise
+## Was nicht (mehr) drin ist
 
-- Das Web-UI hat eine simple Username/Passwort-Authentifizierung, gedacht für **interne Netze**.
-- Vor Exposition ins Internet: nginx-Reverse-Proxy mit HTTPS + zusätzlicher Auth davor!
-- `secret_key` in der Config muss zufällig sein (`openssl rand -hex 32`).
-- `data/config.yaml` enthält Klartext-Passwörter (`chmod 600`). Im Web-UI maskiert.
+- **Keine Telegram-Benachrichtigungen** — Status nur im Web-UI
+- **Keine OpenAI Vision** — Klassifizierung nur per Ollama-Cascade. Wenn beide Modelle unter Confidence-Threshold liegen, landet das Item in Pending zur manuellen Auflösung
+- **Keine Frame-Extraktion** — Pending-Items werden als `<video>` im Web-UI angezeigt, `<img>`-Thumbs sind raus
+- **Keine NAS-Annahme** — paths sind generisch konfigurierbar, Backup-Pairs können Cloud↔Cloud sein
 
 ---
 
-## Lizenz
+## Lizenz / Verantwortung
 
-Privater Eigenbedarf. Anpassen wie du magst.
+Self-hosted Setup. Vor produktivem Einsatz: das Hardening-Checklist im `data/config.yaml` durchgehen, Initial-Passwort ändern, Cloudflare-Access (oder ein Äquivalent) davorstellen, regelmäßig `git pull` für Updates.
+
+Bei Fragen / Issues / PRs → GitHub.

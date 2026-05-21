@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import shutil
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,30 @@ from ..core.downloader import VideoDownloader
 from ..core.email_processor import MailAccount, EmailRouter
 
 logger = logging.getLogger(__name__)
+
+
+# Cancel-Flag (modul-global, threading-safe). Wird im Web-Trigger und beim
+# Job-Start reset, vom Cancel-Endpoint gesetzt, im run()-Loop pro URL geprüft.
+_CANCEL_EVENT = threading.Event()
+
+# Max yt-dlp Versuche bevor URL als 'download_failed' in history landet
+MAX_DOWNLOAD_ATTEMPTS = 3
+
+
+def cancel_job() -> dict:
+    """Setzt das Cancel-Flag. Der laufende Scraper bricht beim nächsten
+    URL-Check ab. Nicht-blockierend - kein subprocess wird hier gekillt
+    (yt-dlp läuft, fertige URLs werden komplett verarbeitet)."""
+    _CANCEL_EVENT.set()
+    return {"ok": True}
+
+
+def is_cancelled() -> bool:
+    return _CANCEL_EVENT.is_set()
+
+
+def reset_cancel() -> None:
+    _CANCEL_EVENT.clear()
 
 
 def _sanitize(name: str) -> str:
@@ -192,8 +217,14 @@ class ScraperJob:
 
         video = self.downloader.download(url)
         if not video:
+            # Download-Fehler: Versuch zählen. Nach MAX_DOWNLOAD_ATTEMPTS
+            # wird die URL im run()-Loop als 'aufgegeben' history_add'd.
+            self.db.download_failure_record(url, "yt-dlp Download fehlgeschlagen")
             result["error"] = "download failed"
             return result
+
+        # Download geklappt - falls die URL frühere Fehlversuche hatte, jetzt löschen
+        self.db.download_failure_clear(url)
         description = self.downloader.read_description(video)
 
         try:
@@ -264,10 +295,24 @@ class ScraperJob:
         start = time.time()
         summary = {
             "started_at": datetime.now().isoformat(),
-            "fetched": 0, "new": 0, "auto": 0, "pending": 0, "errors": 0,
+            "fetched": 0, "new": 0, "auto": 0, "pending": 0,
+            "errors": 0, "cancelled": False, "skipped_failed": 0,
             "recipe_auto": 0, "recipe_pending": 0,
             "wedding_auto": 0, "wedding_pending": 0,
         }
+
+        # Ollama-Health-Check vor dem Loop. Wenn Ollama tot ist landen sonst
+        # ALLE URLs in Pending (weil analyze_* leer zurückkommt) - das wollen
+        # wir verhindern und stattdessen den Job sofort als 'error' beenden,
+        # damit keine 50 Pending-Items entstehen und keine Videos sinnlos
+        # gedownloaded werden.
+        if self.ollama_enabled and self.ollama and not self.ollama.health():
+            msg = (f"Ollama nicht erreichbar oder Modell '{self.ollama.model}' fehlt - "
+                   f"Job abgebrochen damit nicht alle URLs in Pending landen")
+            logger.error(msg)
+            summary["error"] = msg
+            summary["duration_sec"] = round(time.time() - start, 1)
+            raise RuntimeError(msg)
 
         items = self.router.fetch_all()
         summary["fetched"] = len(items)
@@ -281,6 +326,24 @@ class ScraperJob:
         logger.info(f"Neue URLs: {len(new_items)}")
 
         for item in new_items:
+            # Cancel zwischen URLs prüfen - laufende process_url-Calls
+            # werden nicht unterbrochen, neue starten aber nicht mehr.
+            if is_cancelled():
+                logger.warning(f"Scraper cancelled - {len([i for i in new_items if i == item]) } URLs übersprungen")
+                summary["cancelled"] = True
+                break
+
+            url = item["url"]
+
+            # yt-dlp Failed-Tracking: nach MAX_DOWNLOAD_ATTEMPTS aufgeben
+            # und URL wie 'resolved' behandeln (kommt nicht wieder durch).
+            attempts = self.db.download_failure_attempts(url)
+            if attempts >= MAX_DOWNLOAD_ATTEMPTS:
+                logger.info(f"Skip {url}: {attempts} Download-Fehlversuche, aufgegeben")
+                self.db.history_add(url, content_type=item["type"], name="(download failed)")
+                summary["skipped_failed"] += 1
+                continue
+
             try:
                 r = self.process_url(item)
                 if r["status"] == "auto":
@@ -292,7 +355,7 @@ class ScraperJob:
                 else:
                     summary["errors"] += 1
             except Exception as e:
-                logger.exception(f"URL fehlgeschlagen {item['url']}: {e}")
+                logger.exception(f"URL fehlgeschlagen {url}: {e}")
                 summary["errors"] += 1
 
         summary["duration_sec"] = round(time.time() - start, 1)

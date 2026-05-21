@@ -174,6 +174,14 @@ function scrapperApp() {
         this.refreshStatus();
       } catch(e) {}
     },
+    async cancelScraper() {
+      if (!confirm('Scraper abbrechen? Die gerade laufende URL wird noch fertig verarbeitet, danach wird gestoppt.')) return;
+      try {
+        await this.api('POST', '/api/jobs/scraper/cancel', {});
+        this.showToast('Cancel-Signal gesendet (laufende URL wird noch fertig)', 'ok');
+        this.refreshStatus();
+      } catch(e) {}
+    },
     async loadJobs() {
       this.jobs = await this.api('GET', '/api/jobs/list?limit=50');
     },

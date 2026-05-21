@@ -10,7 +10,7 @@ from pathlib import Path
 from ..config_store import get_config
 from ..db import get_db
 from .locks import file_lock_or_none
-from .scraper import run_job
+from .scraper import reset_cancel, run_job
 
 
 def main() -> int:
@@ -41,6 +41,7 @@ def main() -> int:
         logger.info(f"Scraper-Job gestartet (ID={job_id}, via CLI)")
 
         try:
+            reset_cancel()
             summary = run_job()
             db.job_finish(job_id, "ok", summary)
             logger.info(f"OK: {json.dumps(summary, ensure_ascii=False)}")

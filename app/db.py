@@ -47,6 +47,14 @@ CREATE TABLE IF NOT EXISTS jobs (
   log_file TEXT
 );
 
+CREATE TABLE IF NOT EXISTS download_failures (
+  url TEXT PRIMARY KEY,
+  first_seen REAL NOT NULL,
+  last_try REAL NOT NULL,
+  attempts INTEGER DEFAULT 1,
+  last_error TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_kind ON jobs(kind, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, kind);
 CREATE INDEX IF NOT EXISTS idx_pending_status ON pending(status, created_at DESC);
@@ -213,6 +221,36 @@ class Database:
                 "SELECT COUNT(*) AS n FROM pending WHERE status='pending'"
             ).fetchone()
             return int(row["n"]) if row else 0
+
+    # ---------------- Download-Failures ----------------
+    def download_failure_record(self, url: str, error: str) -> int:
+        """Zählt einen Download-Fehlversuch. Returnt die neue Versuchszahl."""
+        now = time.time()
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO download_failures (url, first_seen, last_try, attempts, last_error) "
+                "VALUES (?, ?, ?, 1, ?) "
+                "ON CONFLICT(url) DO UPDATE SET "
+                "  last_try=excluded.last_try, "
+                "  attempts=attempts + 1, "
+                "  last_error=excluded.last_error",
+                (url, now, now, (error or "")[:500]),
+            )
+            row = c.execute(
+                "SELECT attempts FROM download_failures WHERE url=?", (url,)
+            ).fetchone()
+            return int(row["attempts"]) if row else 1
+
+    def download_failure_attempts(self, url: str) -> int:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT attempts FROM download_failures WHERE url=?", (url,)
+            ).fetchone()
+            return int(row["attempts"]) if row else 0
+
+    def download_failure_clear(self, url: str) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM download_failures WHERE url=?", (url,))
 
     # ---------------- Jobs ----------------
     def job_start(self, kind: str, log_file: str = "") -> int:
