@@ -440,7 +440,23 @@ function scrapperApp() {
       }
     },
 
-    // ------------- Pending Reanalyze -------------
+    pickFolderForQuick(which) {
+      if (which === 'remote') {
+        this.openRcloneBrowser(
+          this.quickSync.remote_path || '',
+          (path) => { this.quickSync.remote_path = path; },
+          'Remote-Pfad für Quick-Sync'
+        );
+      } else {
+        this.openLocalBrowser(
+          this.quickSync.local_path || '/mnt',
+          (path) => { this.quickSync.local_path = path; },
+          'Lokalen Pfad für Quick-Sync'
+        );
+      }
+    },
+
+        // ------------- Pending Reanalyze -------------
     reanalyzing: {},
     reanalyzingAll: false,
     async reanalyzeOne(item) {
