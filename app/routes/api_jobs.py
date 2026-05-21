@@ -16,6 +16,7 @@ from ..config_store import get_config
 from ..db import get_db
 from ..jobs import scraper as scraper_job
 from ..jobs import rclone_sync as rclone_job
+from ..jobs.locks import file_lock_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -65,20 +66,31 @@ def _setup_job_logger(job_id: int, kind: str) -> tuple[Path, logging.Handler]:
 
 def _run_scraper_thread(job_id: int):
     """Background-Thread. WICHTIG: ein einziger try/finally umschließt ALLES
-    inkl. Logger-Setup, sonst kann der Lock bei FileHandler-Fehler hängen bleiben."""
+    inkl. Logger-Setup, sonst kann der Lock bei FileHandler-Fehler hängen bleiben.
+
+    Holt zusätzlich einen ``file_lock_or_none("scraper")`` als prozessübergreifender
+    Schutz gegen parallelen CLI-Lauf (systemd-Timer).
+    """
     db = get_db()
     fh = None
     try:
-        log_file, fh = _setup_job_logger(job_id, "scraper")
-        db.job_set_log_file(job_id, str(log_file))
-        try:
-            logger.info(f"=== Scraper-Job {job_id} startet (Web-Trigger) ===")
-            summary = scraper_job.run_job()
-            db.job_finish(job_id, "ok", summary)
-            logger.info(f"=== Scraper-Job {job_id} OK: {summary} ===")
-        except Exception as e:
-            logger.exception(f"Scraper-Job {job_id} fehlgeschlagen")
-            db.job_finish(job_id, "error", {"error": str(e)})
+        with file_lock_or_none("scraper") as flock:
+            if flock is None:
+                logger.warning(f"Scraper-Job {job_id}: anderer Prozess (CLI?) hält den Lock - skip")
+                db.job_finish(job_id, "skipped", {
+                    "error": "anderer Scraper-Prozess (CLI?) läuft bereits"
+                })
+                return
+            try:
+                log_file, fh = _setup_job_logger(job_id, "scraper")
+                db.job_set_log_file(job_id, str(log_file))
+                logger.info(f"=== Scraper-Job {job_id} startet (Web-Trigger) ===")
+                summary = scraper_job.run_job()
+                db.job_finish(job_id, "ok", summary)
+                logger.info(f"=== Scraper-Job {job_id} OK: {summary} ===")
+            except Exception as e:
+                logger.exception(f"Scraper-Job {job_id} fehlgeschlagen")
+                db.job_finish(job_id, "error", {"error": str(e)})
     except Exception as e:
         # Logger-Setup ist geplatzt: Job direkt als error markieren
         try:
@@ -100,20 +112,27 @@ def _run_backup_thread(job_id: int, dry_run: bool, pairs_filter=None):
     db = get_db()
     fh = None
     try:
-        log_file, fh = _setup_job_logger(job_id, "backup")
-        db.job_set_log_file(job_id, str(log_file))
-        try:
-            logger.info(f"=== Backup-Job {job_id} startet (Web-Trigger, dry_run={dry_run}, pairs={pairs_filter}) ===")
-            summary = rclone_job.run_job(dry_run=dry_run, pairs_filter=pairs_filter)
-            status = "ok"
-            if rclone_job.is_cancelled():
-                status = "error"
-                summary["error"] = "Abgebrochen"
-            db.job_finish(job_id, status, summary)
-            logger.info(f"=== Backup-Job {job_id} {status} ===")
-        except Exception as e:
-            logger.exception(f"Backup-Job {job_id} fehlgeschlagen")
-            db.job_finish(job_id, "error", {"error": str(e)})
+        with file_lock_or_none("backup") as flock:
+            if flock is None:
+                logger.warning(f"Backup-Job {job_id}: anderer Prozess (CLI?) hält den Lock - skip")
+                db.job_finish(job_id, "skipped", {
+                    "error": "anderer Backup-Prozess (CLI?) läuft bereits"
+                })
+                return
+            try:
+                log_file, fh = _setup_job_logger(job_id, "backup")
+                db.job_set_log_file(job_id, str(log_file))
+                logger.info(f"=== Backup-Job {job_id} startet (Web-Trigger, dry_run={dry_run}, pairs={pairs_filter}) ===")
+                summary = rclone_job.run_job(dry_run=dry_run, pairs_filter=pairs_filter)
+                status = "ok"
+                if rclone_job.is_cancelled():
+                    status = "error"
+                    summary["error"] = "Abgebrochen"
+                db.job_finish(job_id, status, summary)
+                logger.info(f"=== Backup-Job {job_id} {status} ===")
+            except Exception as e:
+                logger.exception(f"Backup-Job {job_id} fehlgeschlagen")
+                db.job_finish(job_id, "error", {"error": str(e)})
     except Exception as e:
         try:
             db.job_finish(job_id, "error", {"error": f"setup failed: {e}"})
@@ -401,20 +420,27 @@ def _run_quick_thread(job_id: int, req: dict):
     db = get_db()
     fh = None
     try:
-        log_file, fh = _setup_job_logger(job_id, "quicksync")
-        db.job_set_log_file(job_id, str(log_file))
-        try:
-            logger.info(f"=== Quick-Sync {job_id}: {req['direction']} {req['remote_path']} ⇄ {req['local_path']} ===")
-            summary = rclone_job.run_quick(**req)
-            status = "ok" if summary.get("ok") else "error"
-            if rclone_job.is_cancelled():
-                status = "error"
-                summary["error"] = "Abgebrochen"
-            db.job_finish(job_id, status, summary)
-            logger.info(f"=== Quick-Sync {job_id} {status} ===")
-        except Exception as e:
-            logger.exception(f"Quick-Sync {job_id} crashed")
-            db.job_finish(job_id, "error", {"error": str(e)})
+        with file_lock_or_none("backup") as flock:
+            if flock is None:
+                logger.warning(f"Quick-Sync {job_id}: anderer Backup-Prozess hält den Lock - skip")
+                db.job_finish(job_id, "skipped", {
+                    "error": "anderer Backup-Prozess (CLI?) läuft bereits"
+                })
+                return
+            try:
+                log_file, fh = _setup_job_logger(job_id, "quicksync")
+                db.job_set_log_file(job_id, str(log_file))
+                logger.info(f"=== Quick-Sync {job_id}: {req['direction']} {req['remote_path']} ⇄ {req['local_path']} ===")
+                summary = rclone_job.run_quick(**req)
+                status = "ok" if summary.get("ok") else "error"
+                if rclone_job.is_cancelled():
+                    status = "error"
+                    summary["error"] = "Abgebrochen"
+                db.job_finish(job_id, status, summary)
+                logger.info(f"=== Quick-Sync {job_id} {status} ===")
+            except Exception as e:
+                logger.exception(f"Quick-Sync {job_id} crashed")
+                db.job_finish(job_id, "error", {"error": str(e)})
     except Exception as e:
         try:
             db.job_finish(job_id, "error", {"error": f"setup failed: {e}"})

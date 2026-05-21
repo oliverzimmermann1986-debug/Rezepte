@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ..config_store import get_config
 from ..db import get_db
+from .locks import file_lock_or_none
 from .rclone_sync import run_job
 
 
@@ -32,19 +33,24 @@ def main() -> int:
     )
     logger = logging.getLogger("backup_cli")
 
-    db = get_db()
-    job_id = db.job_start("backup", log_file=str(log_file))
-    logger.info(f"Backup-Job gestartet (ID={job_id}, dry_run={args.dry_run})")
+    with file_lock_or_none("backup") as flock:
+        if flock is None:
+            logger.info("Backup-Job (CLI): anderer Prozess hält den Lock - skip")
+            return 0
 
-    try:
-        summary = run_job(dry_run=args.dry_run)
-        db.job_finish(job_id, "ok", summary)
-        logger.info(f"OK: {json.dumps(summary, ensure_ascii=False, default=str)[:500]}")
-        return 0
-    except Exception as e:
-        logger.exception("Backup-Job fehlgeschlagen")
-        db.job_finish(job_id, "error", {"error": str(e)})
-        return 1
+        db = get_db()
+        job_id = db.job_start("backup", log_file=str(log_file))
+        logger.info(f"Backup-Job gestartet (ID={job_id}, via CLI, dry_run={args.dry_run})")
+
+        try:
+            summary = run_job(dry_run=args.dry_run)
+            db.job_finish(job_id, "ok", summary)
+            logger.info(f"OK: {json.dumps(summary, ensure_ascii=False, default=str)[:500]}")
+            return 0
+        except Exception as e:
+            logger.exception("Backup-Job fehlgeschlagen")
+            db.job_finish(job_id, "error", {"error": str(e)})
+            return 1
 
 
 if __name__ == "__main__":

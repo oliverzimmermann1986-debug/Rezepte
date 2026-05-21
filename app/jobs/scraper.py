@@ -225,7 +225,7 @@ class ScraperJob:
                     )
                     result.update({"status": "pending", "name": r.name})
                     if self.recipe_bot.enabled:
-                        self.recipe_bot.send(
+                        self.recipe_bot.send_async(
                             f"❓ Unklar – im Web zuordnen\n"
                             f"<b>{r.name}</b>\n"
                             f"{r.type} / {r.category} ({r.confidence:.0%})\n"
@@ -237,7 +237,7 @@ class ScraperJob:
                                          target_dir=str(target))
                     result.update({"status": "auto", "name": r.name, "target": str(target)})
                     if self.recipe_bot.enabled:
-                        self.recipe_bot.send(
+                        self.recipe_bot.send_async(
                             f"✅ Rezept\n<b>{r.name}</b>\n"
                             f"{r.type} / {r.category or 'N/A'} ({r.confidence:.0%})"
                         )
@@ -257,7 +257,7 @@ class ScraperJob:
                     )
                     result.update({"status": "pending", "name": w.name})
                     if self.wedding_bot.enabled:
-                        self.wedding_bot.send(
+                        self.wedding_bot.send_async(
                             f"❓ Hochzeit unklar – im Web zuordnen\n"
                             f"<b>{w.name}</b>\n"
                             f"Kategorie: {w.category or default_cat} ({w.confidence:.0%})\n"
@@ -269,7 +269,7 @@ class ScraperJob:
                                          target_dir=str(target))
                     result.update({"status": "auto", "name": w.name, "target": str(target)})
                     if self.wedding_bot.enabled:
-                        self.wedding_bot.send(
+                        self.wedding_bot.send_async(
                             f"💒 Hochzeit\n<b>{w.name}</b>\n"
                             f"{w.category or default_cat} ({w.confidence:.0%})"
                         )
@@ -459,7 +459,7 @@ class ScraperJob:
                 self.db.pending_resolve(url, status="resolved")
                 self._remove_pending_files(entry)
                 if self.recipe_bot.enabled:
-                    self.recipe_bot.send(
+                    self.recipe_bot.send_async(
                         f"✅ Rezept (KI-Reanalyse)\n<b>{r.name}</b>\n"
                         f"{r.type} / {r.category or 'N/A'} ({r.confidence:.0%})"
                     )
@@ -480,7 +480,7 @@ class ScraperJob:
                 self.db.pending_resolve(url, status="resolved")
                 self._remove_pending_files(entry)
                 if self.wedding_bot.enabled:
-                    self.wedding_bot.send(
+                    self.wedding_bot.send_async(
                         f"💒 Hochzeit (KI-Reanalyse)\n<b>{w.name}</b>\n"
                         f"{w.category or default_cat} ({w.confidence:.0%})"
                     )
@@ -518,7 +518,7 @@ class ScraperJob:
             target = self._save_recipe(r, url, video_path, description)
             self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
             if self.recipe_bot.enabled:
-                self.recipe_bot.send(
+                self.recipe_bot.send_async(
                     f"✅ Rezept manuell zugeordnet\n<b>{r.name}</b>\n"
                     f"{r.type} / {r.category or 'N/A'}"
                 )
@@ -532,7 +532,7 @@ class ScraperJob:
             target = self._save_wedding(w, url, video_path, description, default_cat="Sonstiges")
             self.db.history_add(url, content_type="wedding", name=w.name, target_dir=str(target))
             if self.wedding_bot.enabled:
-                self.wedding_bot.send(
+                self.wedding_bot.send_async(
                     f"💒 Hochzeit manuell zugeordnet\n<b>{w.name}</b>\n"
                     f"{w.category or 'Sonstiges'}"
                 )

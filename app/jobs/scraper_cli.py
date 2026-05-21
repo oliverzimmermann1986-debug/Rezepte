@@ -4,17 +4,16 @@ from __future__ import annotations
 import json
 import logging
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
 from ..config_store import get_config
 from ..db import get_db
+from .locks import file_lock_or_none
 from .scraper import run_job
 
 
 def main() -> int:
-    # Logging vorbereiten
     log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"scraper-{datetime.now():%Y%m%d-%H%M%S}.log"
@@ -29,19 +28,27 @@ def main() -> int:
     )
     logger = logging.getLogger("scraper_cli")
 
-    db = get_db()
-    job_id = db.job_start("scraper", log_file=str(log_file))
-    logger.info(f"Scraper-Job gestartet (ID={job_id})")
+    # Vor dem job_start den File-Lock probieren - wenn der Web-Trigger
+    # gerade den Scraper laufen lässt, sauber rausgehen, nicht doppelt
+    # IMAP-Login + Telegram-Spam machen.
+    with file_lock_or_none("scraper") as flock:
+        if flock is None:
+            logger.info("Scraper-Job (CLI): anderer Prozess hält den Lock - skip")
+            return 0  # exit 0 - kein Fehler, nur "nicht jetzt"
 
-    try:
-        summary = run_job()
-        db.job_finish(job_id, "ok", summary)
-        logger.info(f"OK: {json.dumps(summary, ensure_ascii=False)}")
-        return 0
-    except Exception as e:
-        logger.exception("Scraper-Job fehlgeschlagen")
-        db.job_finish(job_id, "error", {"error": str(e)})
-        return 1
+        db = get_db()
+        job_id = db.job_start("scraper", log_file=str(log_file))
+        logger.info(f"Scraper-Job gestartet (ID={job_id}, via CLI)")
+
+        try:
+            summary = run_job()
+            db.job_finish(job_id, "ok", summary)
+            logger.info(f"OK: {json.dumps(summary, ensure_ascii=False)}")
+            return 0
+        except Exception as e:
+            logger.exception("Scraper-Job fehlgeschlagen")
+            db.job_finish(job_id, "error", {"error": str(e)})
+            return 1
 
 
 if __name__ == "__main__":
