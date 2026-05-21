@@ -379,6 +379,79 @@ function scrapperApp() {
       }
     },
 
+    // ------------- Pending Reanalyze -------------
+    reanalyzing: {},
+    reanalyzingAll: false,
+    async reanalyzeOne(item) {
+      this.reanalyzing[item.url] = true;
+      try {
+        const r = await this.api('POST', '/api/pending/reanalyze', { url: item.url });
+        if (r && r.ok) {
+          if (r.action === 'auto_saved') {
+            this.showToast('Automatisch einsortiert: ' + (r.analysis && r.analysis.name));
+          } else {
+            this.showToast('Neuer Vorschlag: ' + (r.analysis && r.analysis.name) + ' (' + Math.round((r.analysis && r.analysis.confidence || 0) * 100) + '%)');
+          }
+          await this.loadPending();
+          await this.refreshStatus();
+        } else {
+          this.showToast('Reanalyze: ' + (r && r.error || 'Fehler'), 'error');
+        }
+      } catch(e) {} finally {
+        delete this.reanalyzing[item.url];
+      }
+    },
+    async reanalyzeAll() {
+      if (!confirm('Alle ' + this.pending.length + ' Pending-Items neu analysieren? Das kann je nach KI-Modell ein paar Minuten dauern.')) return;
+      this.reanalyzingAll = true;
+      try {
+        const r = await this.api('POST', '/api/pending/reanalyze-all', {});
+        if (r) {
+          this.showToast(`Fertig: ${r.auto_saved} eingeordnet, ${r.still_pending} weiterhin pending, ${r.errors} Fehler`);
+          await this.loadPending();
+          await this.refreshStatus();
+        }
+      } catch(e) {} finally {
+        this.reanalyzingAll = false;
+      }
+    },
+
+    // ------------- Schedule Helpers -------------
+    SCHEDULE_PRESETS_SCRAPER: [
+      { label: 'Alle 15 Min', value: '*:0/15' },
+      { label: 'Alle 30 Min', value: '*:0/30' },
+      { label: 'Stündlich',   value: 'hourly' },
+      { label: 'Alle 2 Std',  value: '*:0/120' },
+      { label: 'Alle 6 Std',  value: '00,06,12,18:00' },
+      { label: 'Täglich 08:00', value: '*-*-* 08:00:00' },
+    ],
+    SCHEDULE_PRESETS_BACKUP: [
+      { label: 'Täglich 02:00', value: '*-*-* 02:00:00' },
+      { label: 'Täglich 03:00', value: '*-*-* 03:00:00' },
+      { label: 'Täglich 04:00', value: '*-*-* 04:00:00' },
+      { label: 'Mo-Fr 03:00', value: 'Mon..Fri *-*-* 03:00:00' },
+      { label: 'Wöchentlich So 02:00', value: 'Sun *-*-* 02:00:00' },
+      { label: 'Alle 6 Std',  value: '00,06,12,18:00' },
+    ],
+    humanCron(cron) {
+      if (!cron) return '—';
+      const map = {
+        'hourly': 'jede Stunde',
+        'daily': 'täglich um Mitternacht',
+        'weekly': 'wöchentlich (Mo 00:00)',
+        'monthly': 'monatlich (1. um 00:00)',
+      };
+      if (map[cron]) return map[cron];
+      let m;
+      if ((m = cron.match(/^\*:0\/(\d+)$/))) return 'alle ' + m[1] + ' Minuten';
+      if ((m = cron.match(/^\*-\*-\*\s+(\d\d):(\d\d):(\d\d)$/))) return 'täglich um ' + m[1] + ':' + m[2];
+      if ((m = cron.match(/^(\w+)\.\.(\w+)\s+\*-\*-\*\s+(\d\d):(\d\d):(\d\d)$/)))
+        return m[1] + '-' + m[2] + ' um ' + m[3] + ':' + m[4];
+      if ((m = cron.match(/^(\w+)\s+\*-\*-\*\s+(\d\d):(\d\d):(\d\d)$/)))
+        return m[1] + ' um ' + m[2] + ':' + m[3];
+      return cron;   // custom
+    },
+
     // ------------- History bearbeiten -------------
     editingItem: null,
     openEditItem(item) {

@@ -177,6 +177,13 @@ class Database:
         with self.conn() as c:
             c.execute("UPDATE pending SET status=? WHERE url=?", (status, url))
 
+    def pending_update_suggestion(self, url: str, suggestion: Dict[str, Any]) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE pending SET ai_suggestion=? WHERE url=?",
+                (json.dumps(suggestion, ensure_ascii=False), url),
+            )
+
     def pending_count(self) -> int:
         with self.conn() as c:
             row = c.execute(

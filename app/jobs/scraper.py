@@ -498,6 +498,67 @@ class ScraperJob:
                 break
 
     # ---------------- Pending im Web auflösen ----------------
+    def reanalyze_pending(self, url: str) -> Dict:
+        """Lässt ein Pending-Item nochmal durch die Cascade laufen.
+        Bei Erfolg: automatisch einsortieren. Sonst: nur ai_suggestion updaten."""
+        entry = self.db.pending_get(url)
+        if not entry:
+            return {"ok": False, "error": "Pending-Eintrag nicht gefunden"}
+
+        description = entry.get("description")
+        video_path = Path(entry["video_path"]) if entry.get("video_path") else None
+        if not video_path or not video_path.exists():
+            return {"ok": False, "error": "Video-Datei fehlt (vermutlich aufgeräumt)"}
+
+        frame_path = Path(entry["frame_path"]) if entry.get("frame_path") else None
+        content_type = entry.get("content_type") or "recipe"
+
+        if content_type == "recipe":
+            r, new_frame = self._analyze_recipe(description, video_path)
+            frame_to_use = new_frame or frame_path
+            suggestion = {
+                "name": r.name, "type": r.type,
+                "category": r.category, "confidence": r.confidence,
+            }
+            if not r.needs_manual_input(self.confidence_threshold):
+                # Direkt einsortieren
+                target = self._save_recipe(r, url, video_path, frame_to_use, description)
+                self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
+                self.db.pending_resolve(url, status="resolved")
+                self._remove_pending_files(entry)
+                if self.recipe_bot.enabled:
+                    self.recipe_bot.send(
+                        f"✅ Rezept (KI-Reanalyse)\n<b>{r.name}</b>\n"
+                        f"{r.type} / {r.category or 'N/A'} ({r.confidence:.0%})"
+                    )
+                return {"ok": True, "action": "auto_saved", "target": str(target),
+                        "analysis": suggestion}
+            # Suggestion aktualisieren
+            self.db.pending_update_suggestion(url, suggestion)
+            return {"ok": True, "action": "still_pending", "analysis": suggestion}
+        else:  # wedding
+            w, new_frame = self._analyze_wedding(description, video_path)
+            frame_to_use = new_frame or frame_path
+            default_cat = "Sonstiges"
+            suggestion = {
+                "name": w.name, "category": w.category or default_cat,
+                "confidence": w.confidence,
+            }
+            if not w.needs_manual_input(self.confidence_threshold):
+                target = self._save_wedding(w, url, video_path, frame_to_use, description, default_cat)
+                self.db.history_add(url, content_type="wedding", name=w.name, target_dir=str(target))
+                self.db.pending_resolve(url, status="resolved")
+                self._remove_pending_files(entry)
+                if self.wedding_bot.enabled:
+                    self.wedding_bot.send(
+                        f"💒 Hochzeit (KI-Reanalyse)\n<b>{w.name}</b>\n"
+                        f"{w.category or default_cat} ({w.confidence:.0%})"
+                    )
+                return {"ok": True, "action": "auto_saved", "target": str(target),
+                        "analysis": suggestion}
+            self.db.pending_update_suggestion(url, suggestion)
+            return {"ok": True, "action": "still_pending", "analysis": suggestion}
+
     def resolve_pending(self, url: str, decision: Dict) -> Dict:
         """
         decision = {

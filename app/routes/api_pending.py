@@ -72,3 +72,36 @@ def resolve(body: ResolveBody):
         "category": body.category,
     }
     return ScraperJob().resolve_pending(body.url, decision)
+
+
+class ReanalyzeRequest(BaseModel):
+    url: str
+
+
+@router.post("/reanalyze")
+def reanalyze(body: ReanalyzeRequest):
+    """Lässt ein Pending-Item neu durch die KI-Cascade laufen."""
+    return ScraperJob().reanalyze_pending(body.url)
+
+
+@router.post("/reanalyze-all")
+def reanalyze_all():
+    """Verarbeitet alle aktuellen Pending-Items neu mit der aktuellen KI-Cascade."""
+    job = ScraperJob()
+    results = {"total": 0, "auto_saved": 0, "still_pending": 0, "errors": 0, "details": []}
+    items = get_db().pending_list("pending")
+    results["total"] = len(items)
+    for item in items:
+        try:
+            r = job.reanalyze_pending(item["url"])
+            if not r.get("ok"):
+                results["errors"] += 1
+            elif r.get("action") == "auto_saved":
+                results["auto_saved"] += 1
+            else:
+                results["still_pending"] += 1
+            results["details"].append({"url": item["url"], **r})
+        except Exception as e:
+            results["errors"] += 1
+            results["details"].append({"url": item["url"], "ok": False, "error": str(e)})
+    return results
