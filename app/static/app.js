@@ -118,10 +118,20 @@ function scrapperApp() {
       this.showToast('Scraper gestartet');
       this.refreshStatus();
     },
-    async runBackup(dryRun) {
-      await this.api('POST', `/api/jobs/backup/run?dry_run=${dryRun}`);
-      this.showToast(`Backup gestartet${dryRun ? ' (dry-run)' : ''}`);
+    async runBackup(dryRun, pairs) {
+      let url = `/api/jobs/backup/run?dry_run=${dryRun}`;
+      if (pairs && pairs.length) url += '&pairs=' + encodeURIComponent(pairs.join(','));
+      await this.api('POST', url);
+      this.showToast(`Backup gestartet${pairs ? ' (' + pairs.join(', ') + ')' : ''}${dryRun ? ' [dry-run]' : ''}`);
       this.refreshStatus();
+    },
+    async cancelBackup() {
+      if (!confirm('Backup wirklich abbrechen? Alle laufenden rclone-Prozesse werden gestoppt.')) return;
+      try {
+        await this.api('POST', '/api/jobs/backup/cancel', {});
+        this.showToast('Cancel-Signal gesendet', 'ok');
+        this.refreshStatus();
+      } catch(e) {}
     },
     async loadJobs() {
       this.jobs = await this.api('GET', '/api/jobs/list?limit=50');

@@ -95,8 +95,21 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
     }
 
     try:
+        if is_cancelled():
+            summary["error"] = "vor Start abgebrochen"
+            return summary
         with open(log_file, "w") as f:
-            res = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, timeout=4 * 3600)
+            proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT)
+            _ACTIVE_PROCS.append(proc)
+            try:
+                proc.wait(timeout=4 * 3600)
+                res_returncode = proc.returncode
+            finally:
+                if proc in _ACTIVE_PROCS:
+                    _ACTIVE_PROCS.remove(proc)
+        class _R: pass
+        res = _R()
+        res.returncode = res_returncode
         # Bei "Must run --resync" automatisch nachholen
         log_content = log_file.read_text(errors="ignore") if log_file.exists() else ""
         if res.returncode != 0 and "Must run --resync" in log_content:
@@ -104,10 +117,19 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
             cmd_resync = ["rclone", "bisync", remote, local, "--resync"] + args
             if dry_run:
                 cmd_resync.append("--dry-run")
+            if is_cancelled():
+                summary["error"] = "abgebrochen vor --resync"
+                return summary
             with open(log_file, "a") as f:
                 f.write("\n\n=== AUTO --resync ===\n\n")
-                res = subprocess.run(cmd_resync, stdout=f, stderr=subprocess.STDOUT,
-                                      timeout=4 * 3600)
+                proc2 = subprocess.Popen(cmd_resync, stdout=f, stderr=subprocess.STDOUT)
+                _ACTIVE_PROCS.append(proc2)
+                try:
+                    proc2.wait(timeout=4 * 3600)
+                    res.returncode = proc2.returncode
+                finally:
+                    if proc2 in _ACTIVE_PROCS:
+                        _ACTIVE_PROCS.remove(proc2)
             log_content = log_file.read_text(errors="ignore")
 
         summary["ok"] = (res.returncode == 0)
@@ -131,7 +153,37 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
     return summary
 
 
-def run_job(dry_run: bool = False) -> Dict:
+_ACTIVE_PROCS: list = []  # globale Liste der laufenden subprocess.Popen für Cancel
+_CANCEL_EVENT = None       # threading.Event() — wenn gesetzt → keine neuen Pairs starten
+
+def cancel_job() -> dict:
+    """Killt alle laufenden rclone-Subprozesse + setzt cancel flag."""
+    import threading
+    global _CANCEL_EVENT
+    if _CANCEL_EVENT is None:
+        _CANCEL_EVENT = threading.Event()
+    _CANCEL_EVENT.set()
+    killed = 0
+    for proc in list(_ACTIVE_PROCS):
+        try:
+            proc.terminate()
+            killed += 1
+        except Exception:
+            pass
+    return {"ok": True, "killed": killed}
+
+
+def is_cancelled() -> bool:
+    return _CANCEL_EVENT is not None and _CANCEL_EVENT.is_set()
+
+
+def reset_cancel():
+    global _CANCEL_EVENT
+    import threading
+    _CANCEL_EVENT = threading.Event()
+
+
+def run_job(dry_run: bool = False, pairs_filter: list = None) -> Dict:
     cfg = get_config()
     backup_cfg = cfg.get("backup", default={}) or {}
     if not backup_cfg.get("enabled", True):
@@ -141,6 +193,14 @@ def run_job(dry_run: bool = False) -> Dict:
     pairs = backup_cfg.get("pairs") or []
     if not pairs:
         return {"enabled": True, "ok": False, "error": "Keine Sync-Paare konfiguriert"}
+
+    if pairs_filter:
+        wanted = set(pairs_filter)
+        pairs = [p for p in pairs if p.get("name") in wanted]
+        if not pairs:
+            return {"enabled": True, "ok": False, "error": f"Keine Paare passen zu Filter: {pairs_filter}"}
+
+    reset_cancel()
 
     args = backup_cfg.get("rclone_args") or []
     log_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs")) / "rclone"

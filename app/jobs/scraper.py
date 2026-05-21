@@ -130,6 +130,11 @@ class ScraperJob:
             ))
         self.router = EmailRouter(accounts)
 
+        # Wedding-Spezial: alle Items zwingend in Pending?
+        self.wedding_always_pending = bool(
+            (mail_cfg.get("wedding") or {}).get("always_pending", False)
+        )
+
         # Kategorien
         self.wedding_categories = cfg.get(
             "wedding_categories",
@@ -171,9 +176,15 @@ class ScraperJob:
     def _analyze_wedding(self, description: Optional[str], video: Path
                           ) -> Tuple[WeddingAnalysis, Optional[Path]]:
         best = None
+        # Wenn always_pending konfiguriert ist: KI nur für Vorschlag, aber confidence cap auf 0
+        force_pending = self.wedding_always_pending
         if self.ollama and _has_usable_description(description, self.min_desc_len):
             w = self.ollama.analyze_wedding(description, self.wedding_categories)
             logger.info(f"Ollama fast (wedding): name={w.name} cat={w.category} conf={w.confidence:.2f}")
+            if force_pending:
+                # Vorschlag behalten, aber als unsicher markieren damit es in Pending landet
+                w_keep = WeddingAnalysis(name=w.name, category=w.category, confidence=min(w.confidence, 0.49))
+                return w_keep, None
             if not w.needs_manual_input(self.confidence_threshold):
                 return w, None
             best = w

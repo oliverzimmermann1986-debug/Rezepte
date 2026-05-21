@@ -149,8 +149,14 @@
               <span class="mono muted" x-text="(pair.speed || '—') + ' · ETA ' + (pair.eta || '—')"></span>
               <span class="mono muted" x-text="(pair.files !== null ? (pair.files + '/' + pair.files_total + ' Dateien') : '') + (pair.errors ? ' · ' + pair.errors + ' err' : '')"></span>
             </div>
+            <!-- Roher rclone-Output falls Stats nicht geparst werden konnten -->
+            <div x-show="pair.raw_stats" class="mono muted" style="font-size: 10px; margin-top: 6px; padding: 6px 8px; background: var(--bg); border-radius: 3px; word-break: break-all;" x-text="pair.raw_stats"></div>
           </div>
         </template>
+        <!-- Cancel-Button für laufenden Backup -->
+        <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); text-align: right;">
+          <button class="btn btn-danger" @click="cancelBackup()">✗ Backup abbrechen</button>
+        </div>
       </div>
 
     <!-- ========== PENDING ========== -->
@@ -588,6 +594,12 @@
                 <div class="field"><label>Folder</label><input x-model="config.mail.wedding.folder"></div>
                 <div class="field"><label>Default-Kategorie</label><input x-model="config.mail.wedding.default_category"></div>
               </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 6px;">
+                <input type="checkbox" x-model="config.mail.wedding.always_pending" id="wd-pending">
+                <label for="wd-pending" style="font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--fg);">
+                  Hochzeit-Items <strong>immer</strong> in Pending – Name/Kategorie manuell vergeben
+                </label>
+              </div>
             </div>
           </div>
 
@@ -822,11 +834,14 @@
                       </div>
                     </div>
                     <div style="display:flex; gap:6px;">
-                      <button class="btn" @click="testRclone(idx)" :disabled="testing['rclone_'+idx]">
+                      <button class="btn" @click="runBackup(false, [p.name])" :disabled="status.backup" title="Nur dieses Paar synchronisieren">
+                        ▶
+                      </button>
+                      <button class="btn" @click="testRclone(idx)" :disabled="testing['rclone_'+idx]" title="Verbindung + Größe testen">
                         <span x-show="!testing['rclone_'+idx]">⌬</span>
                         <span x-show="testing['rclone_'+idx]">…</span>
                       </button>
-                      <button class="btn btn-danger" @click="config.backup.pairs.splice(idx, 1)">✗</button>
+                      <button class="btn btn-danger" @click="config.backup.pairs.splice(idx, 1)" title="Paar löschen">✗</button>
                     </div>
                   </div>
                   <div x-show="testResults['rclone_'+idx]" class="test-result" :class="(testResults['rclone_'+idx] && testResults['rclone_'+idx].ok) ? 'ok' : 'err'" style="margin-bottom: 12px;">

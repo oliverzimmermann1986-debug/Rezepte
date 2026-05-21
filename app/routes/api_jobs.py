@@ -56,15 +56,20 @@ def _run_scraper_thread(job_id: int):
         _locks["scraper"].release()
 
 
-def _run_backup_thread(job_id: int, dry_run: bool):
+def _run_backup_thread(job_id: int, dry_run: bool, pairs_filter=None):
     db = get_db()
     log_file, fh = _setup_job_logger(job_id, "backup")
     db.job_set_log_file(job_id, str(log_file))
     try:
-        logger.info(f"=== Backup-Job {job_id} startet (Web-Trigger, dry_run={dry_run}) ===")
-        summary = rclone_job.run_job(dry_run=dry_run)
-        db.job_finish(job_id, "ok", summary)
-        logger.info(f"=== Backup-Job {job_id} OK ===")
+        logger.info(f"=== Backup-Job {job_id} startet (Web-Trigger, dry_run={dry_run}, pairs={pairs_filter}) ===")
+        summary = rclone_job.run_job(dry_run=dry_run, pairs_filter=pairs_filter)
+        # Wenn cancelled, anders markieren
+        status = "ok"
+        if rclone_job.is_cancelled():
+            status = "error"
+            summary["error"] = "Abgebrochen"
+        db.job_finish(job_id, status, summary)
+        logger.info(f"=== Backup-Job {job_id} {status} ===")
     except Exception as e:
         logger.exception(f"Backup-Job {job_id} fehlgeschlagen")
         db.job_finish(job_id, "error", {"error": str(e)})
@@ -85,13 +90,23 @@ def run_scraper():
 
 
 @router.post("/backup/run")
-def run_backup(dry_run: bool = Query(False)):
+def run_backup(dry_run: bool = Query(False), pairs: Optional[str] = Query(None)):
+    """pairs = kommagetrennte Paar-Namen, sonst alle"""
     if not _locks["backup"].acquire(blocking=False):
         raise HTTPException(409, "Backup läuft bereits")
+    pairs_filter = [p.strip() for p in pairs.split(",")] if pairs else None
     job_id = get_db().job_start("backup")
-    t = threading.Thread(target=_run_backup_thread, args=(job_id, dry_run), daemon=True)
+    t = threading.Thread(target=_run_backup_thread, args=(job_id, dry_run, pairs_filter), daemon=True)
     t.start()
-    return {"ok": True, "job_id": job_id}
+    return {"ok": True, "job_id": job_id, "pairs": pairs_filter}
+
+
+@router.post("/backup/cancel")
+def cancel_backup():
+    if not get_db().job_running("backup"):
+        return {"ok": False, "error": "Kein laufender Backup-Job"}
+    result = rclone_job.cancel_job()
+    return result
 
 
 @router.get("/list")
@@ -137,10 +152,19 @@ def backup_progress():
     log_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs")) / "rclone"
     started = float(running["started_at"])
 
+    # rclone "Transferred:" Zeilen können verschiedene Formen haben:
+    #   Transferred:   1.234 GiB / 5.678 GiB, 22%, 30 MiB/s, ETA 2m15s
+    #   Transferred:   0 B / 0 B, -, 0 B/s, ETA -
+    #   Transferred:   1.2 KiB / 0, -, 0 B/s, ETA -      (ohne Größen-Total beim ersten Listing)
+    # Wir matchen großzügig.
     stats_re = re.compile(
-        r'Transferred:\s+([0-9.]+\s*[KMGT]?i?B)\s*/\s*([0-9.]+\s*[KMGT]?i?B),\s*([0-9.]+)\s*%,\s*([0-9.]+\s*[KMGT]?i?B/s),\s*ETA\s*([\w]+)'
+        r'Transferred:\s*([\d.]+\s*\w*)\s*/\s*([\d.]+\s*\w*)'  # x / y
+        r'(?:,\s*(?:([\d.]+)\s*%|-))?'                                # , Z% oder , -
+        r'(?:,\s*([\d.]+\s*\w*/s))?'                                  # , speed
+        r'(?:,\s*ETA\s*([\w-]+))?'                                     # , ETA
     )
-    files_re = re.compile(r'Transferred:\s*(\d+)\s*/\s*(\d+),\s*([0-9.]+)\s*%')
+    # Datei-Zähler kommen in einer separaten Zeile (ohne "i" in KiB):
+    files_re = re.compile(r'Transferred:\s+(\d+)\s*/\s*(\d+),\s*([\d.]+)\s*%')
     elapsed_re = re.compile(r'Elapsed time:\s*([\w.]+)')
     errors_re = re.compile(r'Errors:\s*(\d+)')
 
@@ -179,26 +203,34 @@ def backup_progress():
 
         if active_log:
             try:
-                # Letzte 8 KB lesen für Stats
+                # Letzte 32 KB lesen für Stats (bisync schreibt viel)
                 with open(active_log, "rb") as f:
                     f.seek(0, 2)
                     size = f.tell()
-                    f.seek(max(0, size - 8192))
+                    f.seek(max(0, size - 32768))
                     tail = f.read().decode("utf-8", errors="ignore")
 
-                # Letzte Stats-Zeilen finden
                 lines = tail.splitlines()
+                last_transferred_line = None
+
                 for line in reversed(lines):
-                    m = stats_re.search(line)
-                    if m and pair_data["transferred"] is None:
-                        pair_data.update({
-                            "transferred": m.group(1).strip(),
-                            "total": m.group(2).strip(),
-                            "percent": float(m.group(3)),
-                            "speed": m.group(4).strip(),
-                            "eta": m.group(5).strip(),
-                            "status": "running",
-                        })
+                    if "Transferred:" in line and pair_data["transferred"] is None:
+                        last_transferred_line = line.strip()
+                        m = stats_re.search(line)
+                        if m:
+                            t = m.group(1).strip() if m.group(1) else None
+                            tot = m.group(2).strip() if m.group(2) else None
+                            pct = float(m.group(3)) if m.group(3) else None
+                            spd = m.group(4).strip() if m.group(4) else None
+                            eta = m.group(5).strip() if m.group(5) else None
+                            # Erst echte Byte-Stats nehmen (mit B oder i im Total),
+                            # nicht Datei-Zähler
+                            if tot and (("B" in tot) or ("i" in tot)):
+                                pair_data.update({
+                                    "transferred": t, "total": tot,
+                                    "percent": pct, "speed": spd, "eta": eta,
+                                    "status": "running",
+                                })
                     if pair_data["files"] is None:
                         m2 = files_re.search(line)
                         if m2:
@@ -212,11 +244,18 @@ def backup_progress():
                     if m4:
                         pair_data["errors"] = max(pair_data["errors"], int(m4.group(1)))
 
-                # Status: wenn das Log "successfully" enthält → done
-                if "Bisync successful" in tail or "completed successfully" in tail.lower():
+                # Status
+                lower = tail.lower()
+                if "bisync successful" in lower or "completed successfully" in lower:
                     pair_data["status"] = "done"
+                elif "bisync critical" in lower or "must run --resync" in lower:
+                    pair_data["status"] = "needs_resync"
                 elif pair_data["status"] == "pending":
-                    pair_data["status"] = "running"  # log existiert, kein finish
+                    pair_data["status"] = "running"
+
+                # Falls Regex nicht griff aber Zeile da war: roh anzeigen
+                if pair_data["transferred"] is None and last_transferred_line:
+                    pair_data["raw_stats"] = last_transferred_line[-180:]
             except Exception as e:
                 logger.warning(f"progress parse {active_log}: {e}")
 

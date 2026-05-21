@@ -41,6 +41,8 @@ mail:
     max_mails: 20
     # Default-Kategorie wenn KI keine Zuordnung findet
     default_category: Sonstiges
+    # Wenn true: ALLE Hochzeits-Items landen IMMER in Pending (kein Auto-Sortieren)
+    always_pending: true
 
 # AI Analyse
 ai:
