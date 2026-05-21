@@ -111,11 +111,11 @@ function scrapperApp() {
     async loadPending() {
       this.pending = await this.api('GET', '/api/pending');
       this.pending.forEach(p => {
-        p._name = p.ai_suggestion?.name && p.ai_suggestion.name !== 'Unbekannt'
+        p._name = (p.ai_suggestion && p.ai_suggestion.name) && p.ai_suggestion.name !== 'Unbekannt'
                   ? p.ai_suggestion.name : '';
-        p._type = p.ai_suggestion?.type && p.ai_suggestion.type !== 'Unbekannt'
+        p._type = (p.ai_suggestion && p.ai_suggestion.type) && p.ai_suggestion.type !== 'Unbekannt'
                   ? p.ai_suggestion.type : '';
-        p._category = p.ai_suggestion?.category && p.ai_suggestion.category !== 'Unbekannt'
+        p._category = (p.ai_suggestion && p.ai_suggestion.category) && p.ai_suggestion.category !== 'Unbekannt'
                       ? p.ai_suggestion.category : '';
       });
     },
@@ -123,7 +123,7 @@ function scrapperApp() {
       const payload = {
         url: item.url,
         action,
-        name: (item._name || item.ai_suggestion?.name || '').trim(),
+        name: (item._name || (item.ai_suggestion && item.ai_suggestion.name) || '').trim(),
         type: (item._type || '').trim() || undefined,
         category: (item._category || '').trim() || undefined,
       };
@@ -137,12 +137,12 @@ function scrapperApp() {
         }
       }
       const r = await this.api('POST', '/api/pending', payload);
-      if (r?.ok) {
+      if ((r && r.ok)) {
         this.showToast(action === 'skip' ? 'Übersprungen' : 'Gespeichert ✓');
         await this.loadPending();
         this.refreshStatus();
       } else {
-        this.showToast(r?.error || 'Fehler', 'error');
+        this.showToast((r && r.error) || 'Fehler', 'error');
       }
     },
 
@@ -183,8 +183,27 @@ function scrapperApp() {
     },
 
     // ------------- Tests -------------
-    testing: {},   // {key: true/false} während Test läuft
-    testResults: {},  // {key: {ok, message, error}}
+    testing: {
+      mail_recipe: false, mail_wedding: false,
+      ollama: false, openai: false,
+      tg_recipe: false, tg_wedding: false, tg_backup: false,
+      rclone: false, paths: false, ytdlp: false,
+    },
+    testResults: {},
+    isTesting(key) { return this.testing[key] === true; },
+    testResult(key) { return this.testResults[key] || null; },
+    testResultMsg(key) {
+      var r = this.testResults[key];
+      if (!r) return '';
+      return r.message || r.error || '';
+    },
+    pathsTestEntries() {
+      var r = this.testResults.paths;
+      if (!r || !r.paths) return [];
+      return Object.keys(r.paths).map(function(k) {
+        return { key: k, info: r.paths[k] };
+      });
+    },
 
     async runTest(key, endpoint, body = null) {
       this.testing[key] = true;

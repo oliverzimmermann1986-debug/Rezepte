@@ -62,13 +62,13 @@
         </div>
         <div class="stat accent">
           <div class="label">Letzter Scraper-Lauf</div>
-          <div class="value" x-text="lastScraper?.summary?.auto ?? '—'"></div>
+          <div class="value" x-text="(lastScraper && lastScraper.summary && lastScraper.summary.auto) || '—'"></div>
           <div class="hint" x-text="lastScraper ? formatTs(lastScraper.started_at) : 'nie'"></div>
         </div>
         <div class="stat ok">
           <div class="label">Letztes Backup</div>
-          <div class="value" x-text="lastBackup?.summary?.ok_count ?? '—'"></div>
-          <div class="hint" x-text="lastBackup ? `${lastBackup.summary?.total_pairs} Paare · ${formatTs(lastBackup.started_at)}` : 'nie'"></div>
+          <div class="value" x-text="(lastBackup && lastBackup.summary && lastBackup.summary.ok_count) || '—'"></div>
+          <div class="hint" x-text="lastBackup ? ((lastBackup.summary && lastBackup.summary.total_pairs) + ' Paare · ' + formatTs(lastBackup.started_at)) : 'nie'"></div>
         </div>
       </div>
 
@@ -123,7 +123,7 @@
         <template x-for="item in pending" :key="item.url">
           <div class="pending-item">
             <div class="preview">
-              <img :src="`/api/pending/preview?url=${encodeURIComponent(item.url)}`"
+              <img :src="'/api/pending/preview?url=' + encodeURIComponent(item.url)"
                    @error="$el.style.display='none'; $el.nextElementSibling.style.display='flex'">
               <div class="placeholder" style="display:none">kein Vorschaubild</div>
               <span class="type-badge"
@@ -133,19 +133,19 @@
             <div class="body">
               <div class="ai-suggest">
                 <div><span class="key">KI-Vorschlag:</span></div>
-                <div><span class="key">Name:</span> <span class="val" x-text="item.ai_suggestion?.name || '—'"></span></div>
+                <div><span class="key">Name:</span> <span class="val" x-text="(item.ai_suggestion && item.ai_suggestion.name) || '—'"></span></div>
                 <template x-if="item.content_type === 'recipe'">
                   <div>
-                    <div><span class="key">Typ:</span> <span class="val" x-text="item.ai_suggestion?.type || '—'"></span></div>
-                    <div><span class="key">Kategorie:</span> <span class="val" x-text="item.ai_suggestion?.category || '—'"></span></div>
+                    <div><span class="key">Typ:</span> <span class="val" x-text="(item.ai_suggestion && item.ai_suggestion.type) || '—'"></span></div>
+                    <div><span class="key">Kategorie:</span> <span class="val" x-text="(item.ai_suggestion && item.ai_suggestion.category) || '—'"></span></div>
                   </div>
                 </template>
                 <template x-if="item.content_type === 'wedding'">
                   <div>
-                    <div><span class="key">Kategorie:</span> <span class="val" x-text="item.ai_suggestion?.category || '—'"></span></div>
+                    <div><span class="key">Kategorie:</span> <span class="val" x-text="(item.ai_suggestion && item.ai_suggestion.category) || '—'"></span></div>
                   </div>
                 </template>
-                <div><span class="key">Confidence:</span> <span class="val" x-text="formatConfidence(item.ai_suggestion?.confidence)"></span></div>
+                <div><span class="key">Confidence:</span> <span class="val" x-text="formatConfidence((item.ai_suggestion && item.ai_suggestion.confidence))"></span></div>
               </div>
 
               <details>
@@ -160,7 +160,7 @@
               <!-- Inline Resolve-Form -->
               <div class="field" style="margin: 0">
                 <label>Name</label>
-                <input x-model="item._name" :placeholder="item.ai_suggestion?.name">
+                <input x-model="item._name" :placeholder="(item.ai_suggestion && item.ai_suggestion.name)">
               </div>
               <template x-if="item.content_type === 'recipe'">
                 <div class="row" style="gap:10px">
@@ -168,12 +168,12 @@
                     <label>Typ</label>
                     <select x-model="item._type">
                       <option value="">— wählen —</option>
-                      <template x-for="t in recipeTypes"><option :value="t" x-text="t" :selected="t===item.ai_suggestion?.type"></option></template>
+                      <template x-for="t in recipeTypes"><option :value="t" x-text="t" :selected="t===(item.ai_suggestion && item.ai_suggestion.type)"></option></template>
                     </select>
                   </div>
                   <div class="field" style="margin:0">
                     <label>Kategorie</label>
-                    <input x-model="item._category" :placeholder="item.ai_suggestion?.category || 'Pasta'">
+                    <input x-model="item._category" :placeholder="(item.ai_suggestion && item.ai_suggestion.category) || 'Pasta'">
                   </div>
                 </div>
               </template>
@@ -182,7 +182,7 @@
                   <label>Kategorie</label>
                   <select x-model="item._category">
                     <option value="">— wählen —</option>
-                    <template x-for="c in weddingCategories"><option :value="c" x-text="c" :selected="c===item.ai_suggestion?.category"></option></template>
+                    <template x-for="c in weddingCategories"><option :value="c" x-text="c" :selected="c===(item.ai_suggestion && item.ai_suggestion.category)"></option></template>
                   </select>
                 </div>
               </template>
@@ -251,7 +251,7 @@
                 <td x-text="formatTs(j.started_at)"></td>
                 <td><span class="pill" :class="j.kind === 'scraper' ? 'warn' : 'running'" x-text="j.kind"></span></td>
                 <td><span class="pill" :class="statusClass(j.status)" x-text="j.status"></span></td>
-                <td x-text="j.ended_at ? `${Math.round(j.ended_at - j.started_at)}s` : '—'"></td>
+                <td x-text="j.ended_at ? Math.round(j.ended_at - j.started_at) + 's' : '—'"></td>
                 <td x-text="summarize(j)"></td>
                 <td>
                   <button class="btn btn-ghost" @click="loadJobLog(j.id)">Log</button>
@@ -267,7 +267,7 @@
 
       <div x-show="currentLog" class="card">
         <div class="card-head">
-          <h3>Log <span class="mono muted" x-text="`#${currentLogJob}`"></span></h3>
+          <h3>Log <span class="mono muted" x-text="'#' + currentLogJob"></span></h3>
           <button class="btn-ghost btn" @click="currentLog = ''">Schließen</button>
         </div>
         <pre class="log-view" x-text="currentLog"></pre>
@@ -316,8 +316,8 @@
               </button>
             </div>
             <div class="body">
-              <div x-show="testResults.mail_recipe" class="test-result" :class="testResults.mail_recipe?.ok ? 'ok' : 'err'">
-                <span x-text="testResults.mail_recipe?.message || testResults.mail_recipe?.error"></span>
+              <div x-show="testResults.mail_recipe" class="test-result" :class="(testResults.mail_recipe && testResults.mail_recipe.ok) ? 'ok' : 'err'">
+                <span x-text="(testResults.mail_recipe && (testResults.mail_recipe.message || testResults.mail_recipe.error))"></span>
               </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
                 <input type="checkbox" x-model="config.mail.recipe.enabled" id="mr-en">
@@ -348,8 +348,8 @@
               </button>
             </div>
             <div class="body">
-              <div x-show="testResults.mail_wedding" class="test-result" :class="testResults.mail_wedding?.ok ? 'ok' : 'err'">
-                <span x-text="testResults.mail_wedding?.message || testResults.mail_wedding?.error"></span>
+              <div x-show="testResults.mail_wedding" class="test-result" :class="(testResults.mail_wedding && testResults.mail_wedding.ok) ? 'ok' : 'err'">
+                <span x-text="(testResults.mail_wedding && (testResults.mail_wedding.message || testResults.mail_wedding.error))"></span>
               </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
                 <input type="checkbox" x-model="config.mail.wedding.enabled" id="mw-en">
@@ -380,13 +380,13 @@
               </button>
             </div>
             <div class="body">
-              <div x-show="testResults.paths" class="test-result" :class="testResults.paths?.ok ? 'ok' : 'err'">
-                <template x-for="(p, key) in (testResults.paths?.paths || {})" :key="key">
+              <div x-show="testResults.paths" class="test-result" :class="(testResults.paths && testResults.paths.ok) ? 'ok' : 'err'">
+                <template x-for="entry in pathsTestEntries()" :key="entry.key">
                   <div>
-                    <span x-text="key + ': ' + p.path"></span>
-                    <span x-show="p.ok" style="color: var(--ok)">  ✓ ok</span>
-                    <span x-show="!p.exists" style="color: var(--err)">  ✗ existiert nicht</span>
-                    <span x-show="p.exists && !p.writable" style="color: var(--warn)">  ⚠ nicht beschreibbar</span>
+                    <span x-text="entry.key + \': \' + entry.info.path"></span>
+                    <span x-show="entry.info.ok" style="color: var(--ok)">  ✓ ok</span>
+                    <span x-show="!entry.info.exists" style="color: var(--err)">  ✗ existiert nicht</span>
+                    <span x-show="entry.info.exists && !entry.info.writable" style="color: var(--warn)">  ⚠ nicht beschreibbar</span>
                   </div>
                 </template>
               </div>
@@ -411,8 +411,8 @@
               </button>
             </div>
             <div class="body">
-              <div x-show="testResults.ollama" class="test-result" :class="testResults.ollama?.ok ? 'ok' : 'err'">
-                <span x-text="testResults.ollama?.message || testResults.ollama?.error"></span>
+              <div x-show="testResults.ollama" class="test-result" :class="(testResults.ollama && testResults.ollama.ok) ? 'ok' : 'err'">
+                <span x-text="(testResults.ollama && (testResults.ollama.message || testResults.ollama.error))"></span>
               </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
                 <input type="checkbox" x-model="config.ai.ollama.enabled" id="oll-en">
@@ -438,8 +438,8 @@
               </button>
             </div>
             <div class="body">
-              <div x-show="testResults.openai" class="test-result" :class="testResults.openai?.ok ? 'ok' : 'err'">
-                <span x-text="testResults.openai?.message || testResults.openai?.error"></span>
+              <div x-show="testResults.openai" class="test-result" :class="(testResults.openai && testResults.openai.ok) ? 'ok' : 'err'">
+                <span x-text="(testResults.openai && (testResults.openai.message || testResults.openai.error))"></span>
               </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
                 <input type="checkbox" x-model="config.ai.openai.enabled" id="oai-en">
@@ -473,8 +473,8 @@
                   <input x-model="config.telegram.recipe_chat_id">
                 </div>
               </div>
-              <div x-show="testResults.tg_recipe" class="test-result" :class="testResults.tg_recipe?.ok ? 'ok' : 'err'">
-                <span x-text="testResults.tg_recipe?.message || testResults.tg_recipe?.error"></span>
+              <div x-show="testResults.tg_recipe" class="test-result" :class="(testResults.tg_recipe && testResults.tg_recipe.ok) ? 'ok' : 'err'">
+                <span x-text="(testResults.tg_recipe && (testResults.tg_recipe.message || testResults.tg_recipe.error))"></span>
               </div>
               <div class="row">
                 <div class="field"><label>Hochzeit Bot Token</label><input type="password" x-model="config.telegram.wedding_bot_token"><div class="hint">leer → Rezept-Bot wird verwendet</div></div>
@@ -489,8 +489,8 @@
                   <input x-model="config.telegram.wedding_chat_id">
                 </div>
               </div>
-              <div x-show="testResults.tg_wedding" class="test-result" :class="testResults.tg_wedding?.ok ? 'ok' : 'err'">
-                <span x-text="testResults.tg_wedding?.message || testResults.tg_wedding?.error"></span>
+              <div x-show="testResults.tg_wedding" class="test-result" :class="(testResults.tg_wedding && testResults.tg_wedding.ok) ? 'ok' : 'err'">
+                <span x-text="(testResults.tg_wedding && (testResults.tg_wedding.message || testResults.tg_wedding.error))"></span>
               </div>
               <div class="row">
                 <div class="field"><label>Backup Bot Token</label><input type="password" x-model="config.telegram.backup_bot_token"></div>
@@ -505,8 +505,8 @@
                   <input x-model="config.telegram.backup_chat_id">
                 </div>
               </div>
-              <div x-show="testResults.tg_backup" class="test-result" :class="testResults.tg_backup?.ok ? 'ok' : 'err'">
-                <span x-text="testResults.tg_backup?.message || testResults.tg_backup?.error"></span>
+              <div x-show="testResults.tg_backup" class="test-result" :class="(testResults.tg_backup && testResults.tg_backup.ok) ? 'ok' : 'err'">
+                <span x-text="(testResults.tg_backup && (testResults.tg_backup.message || testResults.tg_backup.error))"></span>
               </div>
             </div>
           </div>
@@ -521,10 +521,10 @@
               </button>
             </div>
             <div class="body">
-              <div x-show="testResults.rclone" class="test-result" :class="testResults.rclone?.ok ? 'ok' : 'err'">
-                <div x-text="testResults.rclone?.message || testResults.rclone?.error"></div>
-                <div x-show="testResults.rclone?.remotes" class="mono" style="margin-top: 6px; font-size: 11px;">
-                  Verfügbar: <span x-text="(testResults.rclone?.remotes || []).join(', ')"></span>
+              <div x-show="testResults.rclone" class="test-result" :class="(testResults.rclone && testResults.rclone.ok) ? 'ok' : 'err'">
+                <div x-text="(testResults.rclone && (testResults.rclone.message || testResults.rclone.error))"></div>
+                <div x-show="(testResults.rclone && testResults.rclone.remotes)" class="mono" style="margin-top: 6px; font-size: 11px;">
+                  Verfügbar: <span x-text="((testResults.rclone && testResults.rclone.remotes) || []).join(', ')"></span>
                 </div>
               </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
@@ -548,9 +548,9 @@
                       <button class="btn btn-danger" @click="config.backup.pairs.splice(idx, 1)">✗</button>
                     </div>
                   </div>
-                  <div x-show="testResults['rclone_'+idx]" class="test-result" :class="testResults['rclone_'+idx]?.ok ? 'ok' : 'err'" style="margin-bottom: 12px;">
-                    <div x-text="testResults['rclone_'+idx]?.message || testResults['rclone_'+idx]?.error"></div>
-                    <div x-show="testResults['rclone_'+idx]?.remote_size_output" class="mono" style="margin-top:4px; font-size: 11px;" x-text="testResults['rclone_'+idx]?.remote_size_output"></div>
+                  <div x-show="testResults['rclone_'+idx]" class="test-result" :class="(testResults['rclone_'+idx] && testResults['rclone_'+idx].ok) ? 'ok' : 'err'" style="margin-bottom: 12px;">
+                    <div x-text="(testResults['rclone_'+idx] && (testResults['rclone_'+idx].message || testResults['rclone_'+idx].error))"></div>
+                    <div x-show="(testResults['rclone_'+idx] && testResults['rclone_'+idx].remote_size_output)" class="mono" style="margin-top:4px; font-size: 11px;" x-text="(testResults['rclone_'+idx] && testResults['rclone_'+idx].remote_size_output)"></div>
                   </div>
                 </div>
               </template>
@@ -572,9 +572,9 @@
               </button>
             </div>
             <div class="body">
-              <div x-show="testResults.ytdlp" class="test-result" :class="testResults.ytdlp?.ok ? 'ok' : 'err'">
-                <span x-show="testResults.ytdlp?.ok" x-text="'Version: ' + testResults.ytdlp?.version"></span>
-                <span x-show="!testResults.ytdlp?.ok" x-text="testResults.ytdlp?.error"></span>
+              <div x-show="testResults.ytdlp" class="test-result" :class="(testResults.ytdlp && testResults.ytdlp.ok) ? 'ok' : 'err'">
+                <span x-show="(testResults.ytdlp && testResults.ytdlp.ok)" x-text="'Version: ' + (testResults.ytdlp && testResults.ytdlp.version)"></span>
+                <span x-show="!(testResults.ytdlp && testResults.ytdlp.ok)" x-text="(testResults.ytdlp && testResults.ytdlp.error)"></span>
               </div>
               <div class="field"><label>Binary Path</label><input x-model="config.ytdlp.binary"></div>
             </div>
