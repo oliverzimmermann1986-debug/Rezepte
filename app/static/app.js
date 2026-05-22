@@ -22,6 +22,9 @@ function scrapperApp() {
       this.loadRecentJobs();
       this._statusTimer = setInterval(() => this.refreshStatus(), 4000);
       this._progressTimer = setInterval(() => this.refreshProgress(), 3000);
+      // Dashboard-Karten (letzter Scraper-Lauf, letztes Backup) alle 15s
+      // aktualisieren - so sieht der User seinen jüngsten Lauf ohne F5.
+      this._jobsTimer = setInterval(() => this.loadRecentJobs(), 15000);
       this.refreshProgress();
     },
 
@@ -100,7 +103,8 @@ function scrapperApp() {
       try {
         const all = await this.api('GET', '/api/jobs/list?limit=20');
         this.lastScraper = all.find(j => j.kind === 'scraper' && j.status === 'ok');
-        this.lastBackup = all.find(j => j.kind === 'backup' && j.status === 'ok');
+        // Quick-Sync zählt auch als Backup für die Dashboard-Card
+        this.lastBackup = all.find(j => (j.kind === 'backup' || j.kind === 'quicksync') && j.status === 'ok');
       } catch(e) {}
     },
     async refreshProgress() {
