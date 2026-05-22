@@ -419,6 +419,13 @@ function scrapperApp() {
     },
     async loadBrowserPath(path) {
       this.browser.loading = true;
+      // State sofort leeren - sonst zeigt das Modal bei einem API-Fehler
+      // noch die Daten vom vorherigen (z.B. lokalen) Browse-Vorgang.
+      this.browser.entries = [];
+      this.browser.suggestedRoots = [];
+      this.browser.parent = null;
+      this.browser.isRoot = false;
+      this.browser.currentPath = path || '';
       try {
         const endpoint = this.browser.mode === 'local' ? '/api/browse/local' : '/api/browse/rclone';
         const r = await this.api('GET', endpoint + '?path=' + encodeURIComponent(path || ''));

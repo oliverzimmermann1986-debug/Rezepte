@@ -29,7 +29,12 @@ StandardError=journal
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+# ProtectHome=read-only: rclone liest seine Config (und ggf. Cache) aus
+# /home/scrapper/. Mit ProtectHome=true wäre /home komplett unsichtbar
+# (Permission denied), mit 'read-only' kann rclone lesen, aber nicht
+# unter /home schreiben - sein Cache landet via TMPDIR in /tmp (privat
+# pro Service durch PrivateTmp).
+ProtectHome=read-only
 ReadWritePaths=/opt/scrapper /mnt
 ProtectKernelTunables=true
 ProtectKernelModules=true
