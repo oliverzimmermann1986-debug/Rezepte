@@ -542,6 +542,9 @@ input[type="checkbox"] { width: auto !important; }
   display: flex; flex-direction: column;
 }
 .modal-wide { width: 720px; }
+.modal-log { width: min(1100px, 95vw); max-height: 90vh; display:flex; flex-direction:column; }
+.modal-log .modal-body { flex: 1; min-height: 0; }
+.modal-log .log-view { background: #0a0a0a; color: #d4d4d4; font-size: 12px; line-height: 1.5; border: 0; border-radius: 0; }
 .modal-head {
   padding: 16px 22px;
   border-bottom: 1px solid var(--border);

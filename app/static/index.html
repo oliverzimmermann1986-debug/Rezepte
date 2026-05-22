@@ -8,7 +8,7 @@
   <script defer src="/static/alpine.min.js"></script>
 </head>
 <body>
-<div class="app" x-data="scrapperApp()" x-init="init()">
+<div class="app" x-data="scrapperApp()" x-init="init()" @keydown.escape.window="if (currentLog) currentLog = ''">
 
   <!-- ============ SIDEBAR ============ -->
   <aside class="sidebar">
@@ -467,12 +467,21 @@
         </table>
       </div>
 
-      <div x-show="currentLog" class="card">
-        <div class="card-head">
-          <h3>Log <span class="mono muted" x-text="'#' + currentLogJob"></span></h3>
-          <button class="btn-ghost btn" @click="currentLog = ''">Schließen</button>
+      <!-- Log-Viewer als Modal-Popup -->
+      <div x-show="currentLog" class="modal-backdrop" @click.self="currentLog = ''">
+        <div class="modal modal-wide modal-log" @click.stop>
+          <div class="modal-head">
+            <h3>Log <span class="mono muted" x-text="'#' + currentLogJob"></span></h3>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button class="btn btn-ghost" @click="loadJobLog(currentLogJob)" title="Neu laden">↻</button>
+              <button class="btn btn-ghost" @click="copyLog()" title="In Zwischenablage kopieren">⎘ Kopieren</button>
+              <button class="btn btn-ghost" @click="currentLog = ''">✗ Schließen</button>
+            </div>
+          </div>
+          <div class="modal-body" style="padding: 0;">
+            <pre class="log-view" x-text="currentLog" style="margin:0; max-height:70vh; overflow:auto; padding:14px;"></pre>
+          </div>
         </div>
-        <pre class="log-view" x-text="currentLog"></pre>
       </div>
     </section>
 

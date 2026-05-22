@@ -190,6 +190,19 @@ function scrapperApp() {
       this.currentLog = 'lädt…';
       const r = await this.api('GET', `/api/jobs/${id}/log?tail=800`);
       this.currentLog = r.log || '(leer)';
+      // Nach dem Laden ans Ende scrollen (neueste Zeilen)
+      this.$nextTick && this.$nextTick(() => {
+        const pre = document.querySelector('.modal-log pre.log-view');
+        if (pre) pre.scrollTop = pre.scrollHeight;
+      });
+    },
+    async copyLog() {
+      try {
+        await navigator.clipboard.writeText(this.currentLog || '');
+        this.showToast('Log in Zwischenablage kopiert', 'ok');
+      } catch (e) {
+        this.showToast('Kopieren fehlgeschlagen: ' + e.message, 'error');
+      }
     },
 
     // ------------- Pending -------------
