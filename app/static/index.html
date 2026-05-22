@@ -92,7 +92,7 @@
           <p class="muted" style="margin: 0 0 18px;">
             rclone-Sync zwischen den konfigurierten Pairs (Cloud↔Cloud oder Cloud↔Lokal, je nach Konfig).
           </p>
-          <div class="flex">
+          <div class="flex button-row">
             <button class="btn btn-primary" @click="runBackup(false)" :disabled="status.backup">
               <span x-show="!status.backup">▶ Backup starten</span>
               <span x-show="status.backup">… läuft</span>

@@ -684,3 +684,170 @@ input[type="checkbox"] { width: auto !important; }
   border-color: var(--accent);
   font-weight: 600;
 }
+
+/* ==================================================================
+   MOBILE LAYOUT
+   Bricht ab 900px (Tablet-Portrait) und tiefer um:
+   - Sidebar wandert nach unten als sticky Bottom-Nav
+   - Cards stapeln statt nebeneinander
+   - Padding/Schrift kompakter
+   - Modals nehmen fast den ganzen Screen ein
+   - Buttons haben min-height 40px (Touch-Target)
+   ================================================================== */
+@media (max-width: 900px) {
+  /* Grid -> single column */
+  .app {
+    grid-template-columns: 1fr;
+    /* Platz für die Bottom-Nav freihalten */
+    padding-bottom: 64px;
+  }
+
+  /* Sidebar -> fixed Bottom-Nav, horizontal */
+  .sidebar {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    top: auto;
+    height: auto;
+    width: 100%;
+    flex-direction: row;
+    border-right: 0;
+    border-top: 1px solid var(--border);
+    padding: 6px 4px;
+    gap: 2px;
+    z-index: 50;
+    /* Sicherheitsabstand für iOS home-bar */
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .sidebar .logo,
+  .sidebar .foot { display: none; }
+  .nav-item {
+    flex: 1 1 0;
+    min-width: 64px;
+    padding: 8px 4px;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+    text-align: center;
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+  }
+  .nav-item.active {
+    border-left: 0;
+    border-bottom-color: var(--accent);
+  }
+  .nav-item .badge {
+    position: absolute;
+    margin: 0;
+    transform: translate(18px, -6px);
+    font-size: 9px;
+    padding: 1px 4px;
+  }
+
+  /* Main: kompakter */
+  .main {
+    padding: 18px 14px 24px;
+    max-width: 100%;
+  }
+  .page-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 18px;
+    padding-bottom: 12px;
+  }
+  .page-head h1 { font-size: 20px; }
+  .page-head .subtitle { font-size: 12px; }
+
+  /* Cards: weniger padding */
+  .card { padding: 14px; border-radius: 10px; }
+  .card-head { flex-wrap: wrap; gap: 8px; }
+  .card-head h3 { font-size: 15px; }
+
+  /* Dashboard-Summary-Grid: stapeln */
+  .summary-grid {
+    grid-template-columns: 1fr !important;
+    gap: 10px;
+  }
+
+  /* History / Pending-Grid: einspaltig */
+  .pending-grid,
+  .history-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Tabellen: horizontal scrollbar wenn nötig */
+  table { font-size: 12px; }
+  .table-wrap, .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Forms / Felder: stack */
+  .row { grid-template-columns: 1fr !important; gap: 10px; }
+  .field input, .field textarea, .field select {
+    font-size: 16px; /* >=16px verhindert iOS-Auto-Zoom beim Fokus */
+  }
+
+  /* Buttons: Touch-Target */
+  .btn {
+    min-height: 40px;
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+  /* Aber Mini-Buttons innen in Settings dürfen klein bleiben */
+  .btn[style*="font-size: 10px"],
+  .btn[style*="font-size:10px"] { min-height: 28px; }
+
+  /* Modals: fast Fullscreen */
+  .modal-backdrop { padding: 8px; align-items: flex-start; padding-top: 24px; }
+  .modal, .modal-wide, .modal-log {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: calc(100vh - 80px);
+  }
+  .modal-log { max-height: calc(100vh - 80px); }
+  .modal-log .log-view {
+    font-size: 11px;
+    max-height: 75vh !important;
+    padding: 10px !important;
+  }
+  .modal-head { flex-wrap: wrap; gap: 6px; padding: 12px 14px; }
+  .modal-head h3 { font-size: 15px; }
+  .modal-body { padding: 14px; }
+
+  /* Pills / Badges kleiner */
+  .pill { font-size: 10px; padding: 2px 8px; }
+
+  /* Scraper-Progress-Card: cancel-button untendran */
+  .card-head .btn-danger { margin-left: 0 !important; }
+
+  /* Quick-Action-Buttons (Backup starten, Dry-Run, Quick-Sync): stapeln */
+  .card .btn + .btn { margin-left: 0; }
+  .button-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  .button-row .btn { width: 100%; }
+}
+
+/* Sehr kleine Screens (< 380px, alte iPhones) */
+@media (max-width: 380px) {
+  .nav-item { font-size: 10px; padding: 7px 2px; }
+  .nav-item .badge { transform: translate(14px, -4px); }
+  .main { padding: 14px 10px 20px; }
+  .card { padding: 12px; }
+  .page-head h1 { font-size: 18px; }
+}
+
+@media (max-width: 480px) {
+  .login-card {
+    width: 100%;
+    padding: 24px 20px;
+    border-radius: 10px;
+  }
+  .login-card input {
+    font-size: 16px;  /* iOS-Auto-Zoom verhindern */
+    padding: 12px;
+  }
+  .login-card button {
+    min-height: 44px;
+    font-size: 14px;
+  }
+}
