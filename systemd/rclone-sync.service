@@ -9,5 +9,8 @@ Group=scrapper
 WorkingDirectory=/opt/scrapper
 Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
 Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
+Environment="RCLONE_CACHE_DIR=/opt/scrapper/data/.rclone-cache"
+ExecStartPre=/bin/mkdir -p /opt/scrapper/data/.rclone-cache
+ExecStartPre=/bin/chown scrapper:scrapper /opt/scrapper/data/.rclone-cache
 ExecStart=/opt/scrapper/venv/bin/python -m app.jobs.backup_cli
 TimeoutStartSec=14400
