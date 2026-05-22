@@ -22,6 +22,20 @@ from ..config_store import get_config
 logger = logging.getLogger(__name__)
 
 
+# rclone braucht ein beschreibbares Cache-Verzeichnis (bisync legt dort
+# Listing- und Lock-Files an). Mit ProtectHome=read-only in der systemd-Unit
+# wäre der Default ~/.cache/rclone/ nicht beschreibbar. Daher umlenken
+# nach data/ - liegt in ReadWritePaths und survives Restarts.
+RCLONE_CACHE_DIR = "/opt/scrapper/data/.rclone-cache"
+
+
+def _rclone_cache_args() -> List[str]:
+    """Wird vor jeden rclone-Subprocess-Call gehängt damit Cache + bisync-
+    Workdir in unserem beschreibbaren Bereich landen."""
+    Path(RCLONE_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+    return ["--cache-dir", RCLONE_CACHE_DIR]
+
+
 # Globaler State - thread-safe verwaltet
 _ACTIVE_PROCS: List[subprocess.Popen] = []   # laufende rclone-Subprozesse für Cancel
 _ACTIVE_PROCS_LOCK = threading.Lock()
@@ -142,6 +156,7 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
 
     cmd = [
         "rclone", "bisync", remote, local,
+        *_rclone_cache_args(),
         "--stats", "10s", "--stats-one-line",
     ] + args
     if dry_run:
@@ -183,7 +198,8 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
         log_content = log_file.read_text(errors="ignore") if log_file.exists() else ""
         if res.returncode != 0 and "Must run --resync" in log_content:
             logger.info(f"[{name}] auto --resync")
-            cmd_resync = ["rclone", "bisync", remote, local, "--resync"] + args
+            cmd_resync = ["rclone", "bisync", remote, local,
+                          *_rclone_cache_args(), "--resync"] + args
             if dry_run:
                 cmd_resync.append("--dry-run")
             if is_cancelled():
@@ -328,16 +344,17 @@ def run_quick(remote_path: str, local_path: str, direction: str = "bisync",
     }
 
     # Befehl bauen
+    cache_args = _rclone_cache_args()
     if direction == "bisync" or mode == "bisync":
-        cmd = ["rclone", "bisync", remote_path, local_path] + args
+        cmd = ["rclone", "bisync", remote_path, local_path, *cache_args] + args
         verb = "bisync"
     else:
         # rclone copy oder rclone sync
         rclone_verb = "sync" if mode == "sync" else "copy"
         if direction == "pull":
-            cmd = ["rclone", rclone_verb, remote_path, local_path] + args
+            cmd = ["rclone", rclone_verb, remote_path, local_path, *cache_args] + args
         else:  # push
-            cmd = ["rclone", rclone_verb, local_path, remote_path] + args
+            cmd = ["rclone", rclone_verb, local_path, remote_path, *cache_args] + args
         verb = f"{rclone_verb} {direction}"
 
     logger.info(f"[quick] rclone {' '.join(cmd[1:])}")
