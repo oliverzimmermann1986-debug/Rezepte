@@ -89,8 +89,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self'; "
             "img-src 'self' data: blob:; "
             "media-src 'self' blob:; "
-            "style-src 'self' 'unsafe-inline'; "
-            "script-src 'self' 'unsafe-inline'; "
+            # 'unsafe-eval' ist nötig weil Alpine.js intern new Function()
+            # nutzt um x-show/x-text/x-bind/@click-Expressions auszuwerten.
+            # Ohne das zerlegt es das ganze Frontend (Modals öffnen sich
+            # unkontrolliert, Buttons reagieren nicht).
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+            # Google Fonts (für JetBrains Mono + Space Grotesk)
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com data:; "
             "connect-src 'self'; "
             "frame-ancestors 'none'; "
             "base-uri 'self'; "
