@@ -29,11 +29,22 @@ logger = logging.getLogger(__name__)
 RCLONE_CACHE_DIR = "/opt/scrapper/data/.rclone-cache"
 
 
-def _rclone_cache_args() -> List[str]:
+def _rclone_cache_args(verb: str = None) -> List[str]:
     """Wird vor jeden rclone-Subprocess-Call gehängt damit Cache + bisync-
-    Workdir in unserem beschreibbaren Bereich landen."""
+    Workdir in unserem beschreibbaren Bereich landen.
+
+    WICHTIG für bisync: ``--cache-dir`` allein reicht nicht. Die Lock-Datei
+    + Listing-Files landen über den separaten ``--workdir`` (default
+    ``~/.cache/rclone/bisync``, völlig unabhängig von --cache-dir). Daher
+    muss bei bisync-Calls auch ``--workdir`` explizit gesetzt werden.
+    """
     Path(RCLONE_CACHE_DIR).mkdir(parents=True, exist_ok=True)
-    return ["--cache-dir", RCLONE_CACHE_DIR]
+    args = ["--cache-dir", RCLONE_CACHE_DIR]
+    if verb == "bisync":
+        workdir = f"{RCLONE_CACHE_DIR}/bisync"
+        Path(workdir).mkdir(parents=True, exist_ok=True)
+        args += ["--workdir", workdir]
+    return args
 
 
 # Globaler State - thread-safe verwaltet
@@ -156,7 +167,7 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
 
     cmd = [
         "rclone", "bisync", remote, local,
-        *_rclone_cache_args(),
+        *_rclone_cache_args("bisync"),
         "--stats", "10s", "--stats-one-line",
     ] + args
     if dry_run:
@@ -199,7 +210,7 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
         if res.returncode != 0 and "Must run --resync" in log_content:
             logger.info(f"[{name}] auto --resync")
             cmd_resync = ["rclone", "bisync", remote, local,
-                          *_rclone_cache_args(), "--resync"] + args
+                          *_rclone_cache_args("bisync"), "--resync"] + args
             if dry_run:
                 cmd_resync.append("--dry-run")
             if is_cancelled():
@@ -344,8 +355,9 @@ def run_quick(remote_path: str, local_path: str, direction: str = "bisync",
     }
 
     # Befehl bauen
-    cache_args = _rclone_cache_args()
-    if direction == "bisync" or mode == "bisync":
+    is_bisync = direction == "bisync" or mode == "bisync"
+    cache_args = _rclone_cache_args("bisync" if is_bisync else None)
+    if is_bisync:
         cmd = ["rclone", "bisync", remote_path, local_path, *cache_args] + args
         verb = "bisync"
     else:
