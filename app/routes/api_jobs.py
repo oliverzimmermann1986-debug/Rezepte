@@ -178,8 +178,9 @@ def run_backup(dry_run: bool = Query(False), pairs: Optional[str] = Query(None))
 
 @router.post("/backup/cancel")
 def cancel_backup():
-    if not get_db().job_running("backup"):
-        return {"ok": False, "error": "Kein laufender Backup-Job"}
+    db = get_db()
+    if not (db.job_running("backup") or db.job_running("quicksync")):
+        return {"ok": False, "error": "Kein laufender Backup/Quick-Sync"}
     result = rclone_job.cancel_job()
     return result
 
@@ -225,14 +226,18 @@ def job_log(job_id: int, tail: int = 500):
 
 @router.get("/backup/progress")
 def backup_progress():
-    """Live-Progress des laufenden (oder letzten) Backup-Jobs."""
+    """Live-Progress des laufenden (oder letzten) Backup/Quick-Sync-Jobs."""
     import re
     db = get_db()
     cfg = get_config()
-    running = db.job_running("backup")
+    running = db.job_running("backup") or db.job_running("quicksync")
     if not running:
-        last = db.job_list(kind="backup", limit=1)
-        return {"running": False, "last": last[0] if last else None}
+        # Letzten beider Arten holen, den jüngeren zurückgeben
+        last_b = db.job_list(kind="backup", limit=1)
+        last_q = db.job_list(kind="quicksync", limit=1)
+        candidates = [j for j in (last_b + last_q) if j]
+        last = max(candidates, key=lambda j: j.get("started_at", 0)) if candidates else None
+        return {"running": False, "last": last}
 
     log_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs")) / "rclone"
     started = float(running["started_at"])
@@ -413,11 +418,13 @@ def scraper_progress():
 
 @router.get("/status/current")
 def status_current():
-    """Was läuft gerade?"""
+    """Was läuft gerade? Quick-Sync wird als kind='quicksync' gespeichert,
+    teilt sich aber den Backup-Slot im Frontend - beide rclone-Operationen
+    nutzen denselben Lock und Progress-Indikator."""
     db = get_db()
     return {
         "scraper": db.job_running("scraper"),
-        "backup": db.job_running("backup"),
+        "backup": db.job_running("backup") or db.job_running("quicksync"),
         "reanalyze": db.job_running("reanalyze"),
         "pending_count": db.pending_count(),
     }
