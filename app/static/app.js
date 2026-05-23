@@ -20,14 +20,52 @@ function scrapperApp() {
     _statusTimer: null,
 
     init() {
-      this.refreshStatus();
       this.loadRecentJobs();
       this.loadStats();
-      this._statusTimer = setInterval(() => this.refreshStatus(), 4000);
-      this._progressTimer = setInterval(() => this.refreshProgress(), 3000);
+      // Job-/Stats-Karten brauchen weiterhin gelegentliches Reload (kein
+      // Live-Update, da nur Snapshot-Daten)
       this._jobsTimer = setInterval(() => this.loadRecentJobs(), 15000);
       this._statsTimer = setInterval(() => this.loadStats(), 60000);
+      // Live-Status via Server-Sent-Events. Eine offene Connection statt
+      // 2+ req/s Polling. Browser-EventSource reconnected automatisch bei
+      // Drop. Wenn der Endpoint nicht da ist (alte Backend-Version): Fall-
+      // back auf setInterval-Polling.
+      this._startEventStream();
+    },
+    _startEventStream() {
+      try {
+        const es = new EventSource('/api/events');
+        this._eventSource = es;
+        es.addEventListener('status', (e) => {
+          try { this.status = JSON.parse(e.data); } catch(_) {}
+        });
+        es.addEventListener('backup_progress', (e) => {
+          try { this.backupProgress = JSON.parse(e.data); } catch(_) {}
+        });
+        es.addEventListener('scraper_progress', (e) => {
+          try { this.scraperProgress = JSON.parse(e.data); } catch(_) {}
+        });
+        let errors = 0;
+        es.addEventListener('error', () => {
+          errors++;
+          // Nach 3 fehlgeschlagenen Reconnects → fallback Polling.
+          if (errors >= 3) {
+            console.warn('SSE-Stream nicht stabil, fallback auf Polling');
+            es.close();
+            this._eventSource = null;
+            this._startPollingFallback();
+          }
+        });
+      } catch (e) {
+        console.warn('EventSource not supported, falling back to polling', e);
+        this._startPollingFallback();
+      }
+    },
+    _startPollingFallback() {
+      this.refreshStatus();
       this.refreshProgress();
+      this._statusTimer = setInterval(() => this.refreshStatus(), 4000);
+      this._progressTimer = setInterval(() => this.refreshProgress(), 3000);
     },
 
     // ------------- Helpers -------------

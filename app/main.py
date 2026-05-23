@@ -18,7 +18,7 @@ from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, check_credentials,
                     create_session, migrate_security, verify_session)
 from .config_store import get_config
 from .db import get_db
-from .routes import (api_browse, api_config, api_history, api_jobs,
+from .routes import (api_browse, api_config, api_events, api_history, api_jobs,
                      api_metrics, api_pending, api_schedule, api_stats, api_test)
 from .security import SecurityHeadersMiddleware, client_ip, login_limiter
 
@@ -115,6 +115,7 @@ app.include_router(api_browse.router)
 app.include_router(api_schedule.router)
 app.include_router(api_metrics.router)
 app.include_router(api_stats.router)
+app.include_router(api_events.router)
 
 
 # -------- Cookie-Helper --------
