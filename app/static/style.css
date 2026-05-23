@@ -851,3 +851,68 @@ input[type="checkbox"] { width: auto !important; }
     font-size: 14px;
   }
 }
+
+/* ---------- Bulk-Action-Bar + Alters-Badges in Pending ---------- */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+.pending-item { position: relative; }
+.pending-item.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.pending-overlay {
+  position: absolute;
+  top: 8px; left: 8px; right: 8px;
+  z-index: 5;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+}
+.pending-overlay .select-check,
+.pending-overlay .age-badge { pointer-events: auto; }
+.select-check {
+  background: rgba(0,0,0,0.7);
+  border-radius: 4px;
+  padding: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+.select-check input {
+  width: 18px; height: 18px;
+  cursor: pointer;
+  accent-color: var(--accent);
+  margin: 0;
+}
+.age-badge {
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 3px 8px;
+  border-radius: 99px;
+  background: rgba(0,0,0,0.7);
+  border: 1px solid;
+  white-space: nowrap;
+}
+.age-fresh  { color: #9be0a3; border-color: rgba(155,224,163,0.3); }
+.age-recent { color: var(--fg-dim); border-color: var(--border); }
+.age-old    { color: var(--accent-2); border-color: rgba(255,170,80,0.4); }
+.age-stale  { color: var(--err); border-color: rgba(255,100,100,0.5); animation: pulse 2s infinite; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@media (max-width: 900px) {
+  .bulk-bar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+  .bulk-bar > span:not(:first-child) { display: none; }
+  .bulk-bar .btn { flex: 1; }
+}

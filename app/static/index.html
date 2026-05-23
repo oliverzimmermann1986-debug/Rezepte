@@ -254,6 +254,12 @@
           <div class="subtitle">Unklare Analysen manuell zuordnen oder per KI neu analysieren</div>
         </div>
         <div class="flex">
+          <select class="btn" x-model="pendingSort" @change="loadPending()" style="font-family: inherit;">
+            <option value="newest">Neueste zuerst</option>
+            <option value="oldest">Älteste zuerst</option>
+            <option value="confidence_asc">Confidence ↑</option>
+            <option value="confidence_desc">Confidence ↓</option>
+          </select>
           <button class="btn" @click="reanalyzeAll()" :disabled="reanalyzingAll || pending.length === 0">
             <span x-show="!reanalyzingAll">🔄 Alle neu analysieren</span>
             <span x-show="reanalyzingAll">… läuft</span>
@@ -262,13 +268,35 @@
         </div>
       </div>
 
+      <!-- Bulk-Action-Bar (nur sichtbar wenn Items markiert) -->
+      <div x-show="selectedPending.length > 0" x-transition class="bulk-bar">
+        <span><strong x-text="selectedPending.length"></strong> markiert</span>
+        <button class="btn btn-ghost" @click="selectedPending = []">Auswahl aufheben</button>
+        <button class="btn btn-ghost" @click="selectAllPending()">Alle auswählen</button>
+        <span style="flex:1"></span>
+        <button class="btn btn-danger" @click="bulkSkipPending()" :disabled="bulkBusy">
+          <span x-show="!bulkBusy">✗ <span x-text="selectedPending.length"></span> überspringen</span>
+          <span x-show="bulkBusy">… läuft</span>
+        </button>
+      </div>
+
       <div class="empty" x-show="pending.length === 0">
         Keine offenen Items. ✓
       </div>
 
       <div class="pending-grid">
         <template x-for="item in pending" :key="item.url">
-          <div class="pending-item">
+          <div class="pending-item" :class="{ 'is-selected': selectedPending.includes(item.url) }">
+            <!-- Auswahl-Checkbox top-left, Alters-Badge top-right -->
+            <div class="pending-overlay">
+              <label class="select-check">
+                <input type="checkbox"
+                       :checked="selectedPending.includes(item.url)"
+                       @change="togglePendingSelection(item.url)">
+              </label>
+              <span class="age-badge" :class="ageBadgeClass(item.created_at)"
+                    x-text="formatAge(item.created_at)"></span>
+            </div>
             <div class="preview">
               <video :src="'/api/pending/video?url=' + encodeURIComponent(item.url)"
                      preload="metadata" controls muted playsinline

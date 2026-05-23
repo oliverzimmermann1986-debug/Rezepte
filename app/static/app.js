@@ -210,8 +210,23 @@ function scrapperApp() {
     },
 
     // ------------- Pending -------------
+    pendingSort: 'newest',
+    selectedPending: [],
+    bulkBusy: false,
+
     async loadPending() {
-      this.pending = await this.api('GET', '/api/pending');
+      let items = await this.api('GET', '/api/pending');
+      // Client-seitig sortieren (Server liefert nach created_at DESC)
+      const sortFn = {
+        'newest':         (a, b) => (b.created_at || 0) - (a.created_at || 0),
+        'oldest':         (a, b) => (a.created_at || 0) - (b.created_at || 0),
+        'confidence_asc': (a, b) => ((a.ai_suggestion && a.ai_suggestion.confidence) || 0)
+                                  - ((b.ai_suggestion && b.ai_suggestion.confidence) || 0),
+        'confidence_desc':(a, b) => ((b.ai_suggestion && b.ai_suggestion.confidence) || 0)
+                                  - ((a.ai_suggestion && a.ai_suggestion.confidence) || 0),
+      }[this.pendingSort] || ((a, b) => 0);
+      items.sort(sortFn);
+      this.pending = items;
       this.pending.forEach(p => {
         p._name = (p.ai_suggestion && p.ai_suggestion.name) && p.ai_suggestion.name !== 'Unbekannt'
                   ? p.ai_suggestion.name : '';
@@ -220,6 +235,55 @@ function scrapperApp() {
         p._category = (p.ai_suggestion && p.ai_suggestion.category) && p.ai_suggestion.category !== 'Unbekannt'
                       ? p.ai_suggestion.category : '';
       });
+      // Auswahl-State auf existierende URLs eindampfen (Items könnten weg sein)
+      const urls = new Set(this.pending.map(p => p.url));
+      this.selectedPending = this.selectedPending.filter(u => urls.has(u));
+    },
+
+    // ---------------- Bulk-Selection ----------------
+    togglePendingSelection(url) {
+      const i = this.selectedPending.indexOf(url);
+      if (i >= 0) this.selectedPending.splice(i, 1);
+      else this.selectedPending.push(url);
+    },
+    selectAllPending() {
+      this.selectedPending = this.pending.map(p => p.url);
+    },
+    async bulkSkipPending() {
+      const n = this.selectedPending.length;
+      if (n === 0) return;
+      if (!confirm(`${n} Pending-Items wirklich überspringen? Sie landen als '(skipped)' in der History.`)) return;
+      this.bulkBusy = true;
+      try {
+        const r = await this.api('POST', '/api/pending/bulk-skip', { urls: this.selectedPending });
+        this.showToast(`${r.skipped} Items übersprungen` + (r.errors && r.errors.length ? ` (${r.errors.length} Fehler)` : ''), 'ok');
+        this.selectedPending = [];
+        await this.loadPending();
+      } catch(e) {
+        this.showToast('Fehler: ' + e.message, 'error');
+      } finally {
+        this.bulkBusy = false;
+      }
+    },
+
+    // ---------------- Alters-Format ----------------
+    formatAge(ts) {
+      if (!ts) return '';
+      const sec = Math.floor(Date.now() / 1000 - ts);
+      if (sec < 60) return 'gerade eben';
+      if (sec < 3600) return `vor ${Math.floor(sec / 60)} min`;
+      if (sec < 86400) return `vor ${Math.floor(sec / 3600)} h`;
+      if (sec < 86400 * 30) return `vor ${Math.floor(sec / 86400)} Tag${sec >= 86400*2 ? 'en' : ''}`;
+      const months = Math.floor(sec / (86400 * 30));
+      return `vor ${months} Monat${months > 1 ? 'en' : ''}`;
+    },
+    ageBadgeClass(ts) {
+      if (!ts) return '';
+      const days = (Date.now() / 1000 - ts) / 86400;
+      if (days < 1) return 'age-fresh';
+      if (days < 7) return 'age-recent';
+      if (days < 25) return 'age-old';
+      return 'age-stale';   // > 25 Tage: bald auto-skipped (30-Tage-Limit)
     },
     async resolveItem(item, action) {
       const payload = {
