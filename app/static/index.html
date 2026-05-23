@@ -281,6 +281,43 @@
         </div>
       </div>
 
+      <!-- Backup-Paare Statistik -->
+      <div class="card" style="margin-top: 18px;" x-show="stats && stats.perPair && stats.perPair.pairs && stats.perPair.pairs.length > 0">
+        <div class="card-head">
+          <h3>Backup-Paare · letzte 30 Tage</h3>
+        </div>
+        <div class="table-wrap" style="overflow-x:auto;">
+          <table class="data-table" style="width:100%; font-size: 12px;">
+            <thead>
+              <tr>
+                <th style="text-align:left;">Pair</th>
+                <th style="text-align:right;">Runs</th>
+                <th style="text-align:right;">Success</th>
+                <th style="text-align:right;">Ø Dauer</th>
+                <th style="text-align:right;">Transferred</th>
+                <th style="text-align:right;">Letzter Lauf</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="p in (stats && stats.perPair && stats.perPair.pairs || [])" :key="p.name">
+                <tr>
+                  <td><strong x-text="p.name"></strong></td>
+                  <td style="text-align:right;" class="mono" x-text="p.runs"></td>
+                  <td style="text-align:right;" class="mono">
+                    <span :style="`color: ${p.success_rate >= 90 ? 'var(--ok, #22c55e)' : p.success_rate >= 50 ? 'var(--accent-2)' : 'var(--err)'}`"
+                          x-text="p.success_rate + '%'"></span>
+                    <span class="muted" style="font-size:10px;" x-text="' (' + p.ok + '/' + p.runs + ')'"></span>
+                  </td>
+                  <td style="text-align:right;" class="mono muted" x-text="formatDuration(p.avg_duration_sec)"></td>
+                  <td style="text-align:right;" class="mono muted" x-text="formatBytes(p.total_transferred)"></td>
+                  <td style="text-align:right;" class="mono muted" x-text="p.last_run ? formatTs(p.last_run) : '—'"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
     <!-- ========== PENDING ========== -->
     <section x-show="page==='pending'">
       <div class="page-head">

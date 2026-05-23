@@ -99,6 +99,13 @@ function scrapperApp() {
       const h = Math.floor(m / 60);
       return h + 'h ' + (m % 60) + 'm';
     },
+    formatBytes(b) {
+      if (b === null || b === undefined || b === 0) return '—';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      while (b >= 1024 && i < units.length - 1) { b /= 1024; i++; }
+      return b.toFixed(b < 10 ? 1 : 0) + ' ' + units[i];
+    },
     formatTs(ts) {
       if (!ts) return '—';
       const d = typeof ts === 'number' ? new Date(ts*1000) : new Date(ts);
@@ -153,11 +160,12 @@ function scrapperApp() {
     async loadStats() {
       this.statsLoading = true;
       try {
-        const [jobs, conf] = await Promise.all([
+        const [jobs, conf, perPair] = await Promise.all([
           this.api('GET', '/api/stats/jobs-per-day?days=14'),
           this.api('GET', '/api/stats/confidence-histogram?buckets=10'),
+          this.api('GET', '/api/stats/per-pair?days=30'),
         ]);
-        this.stats = { jobs, conf };
+        this.stats = { jobs, conf, perPair };
       } catch(e) {} finally {
         this.statsLoading = false;
       }
