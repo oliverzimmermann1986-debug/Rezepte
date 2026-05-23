@@ -186,11 +186,17 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
     cloud_files, cloud_size = _pair_stats(remote)
     local_files_before, local_size_before = _pair_stats(local)
 
+    # Pro-Pair-Args werden ANGEHÄNGT - rclone akzeptiert duplicate flags
+    # und nutzt den letzten Wert. So kann eine Pair-Config z.B.
+    # --transfers=16 setzen und damit die globalen 8 überschreiben.
+    pair_args = _parse_rclone_args(pair.get("rclone_args"))
+    effective_args = list(args) + pair_args
+
     cmd = [
         "rclone", "bisync", remote, local,
         *_rclone_cache_args("bisync"),
         "--stats", "10s", "--stats-one-line",
-    ] + args
+    ] + effective_args
     if dry_run:
         cmd.append("--dry-run")
 
@@ -231,7 +237,7 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
         if res.returncode != 0 and "Must run --resync" in log_content:
             logger.info(f"[{name}] auto --resync")
             cmd_resync = ["rclone", "bisync", remote, local,
-                          *_rclone_cache_args("bisync"), "--resync"] + args
+                          *_rclone_cache_args("bisync"), "--resync"] + effective_args
             if dry_run:
                 cmd_resync.append("--dry-run")
             if is_cancelled():

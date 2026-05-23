@@ -932,9 +932,28 @@
                     <div x-text="(testResults['rclone_'+idx] && (testResults['rclone_'+idx].message || testResults['rclone_'+idx].error))"></div>
                     <div x-show="(testResults['rclone_'+idx] && testResults['rclone_'+idx].remote_size_output)" class="mono" style="margin-top:4px; font-size: 11px;" x-text="(testResults['rclone_'+idx] && testResults['rclone_'+idx].remote_size_output)"></div>
                   </div>
+                  <!-- Erweiterte Pro-Pair-Optionen (collapsible) -->
+                  <details style="margin-bottom: 14px; font-size: 12px;">
+                    <summary style="cursor:pointer; color: var(--fg-dim); user-select: none;">⚙ Erweiterte Optionen</summary>
+                    <div style="margin-top: 8px; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);">
+                      <div class="hint" style="margin-bottom: 8px;">
+                        Optional - überschreibt die globalen rclone-Args nur für dieses Paar.
+                        Mehrere Args, eine pro Zeile. Beispiele:<br>
+                        <code>--transfers=16</code> (mehr parallele Uploads für Foto-Paare)<br>
+                        <code>--multi-thread-streams=4</code> (parallele Streams pro großem File)<br>
+                        <code>--compare=size,modtime,checksum</code> (für kritische Daten)
+                      </div>
+                      <textarea
+                        x-model="pairArgsText[idx]"
+                        @input="syncPairArgs(idx)"
+                        rows="3"
+                        placeholder="z.B. --transfers=16"
+                        style="font-family: var(--mono); width:100%; background: var(--bg-elev); border: 1px solid var(--border); color: var(--fg); padding:8px; border-radius: var(--radius); font-size: 11px;"></textarea>
+                    </div>
+                  </details>
                 </div>
               </template>
-              <button class="btn" @click="config.backup.pairs.push({name:'',remote:'',local:''})">+ Paar hinzufügen</button>
+              <button class="btn" @click="addBackupPair()">+ Paar hinzufügen</button>
 
               <h4 style="margin: 22px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">rclone-Args</h4>
               <textarea x-model="rcloneArgsText" rows="5" style="font-family: var(--mono); width:100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding:10px; border-radius: var(--radius);"></textarea>

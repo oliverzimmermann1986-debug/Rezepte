@@ -5,6 +5,7 @@ function scrapperApp() {
     config: {},
     rcloneArgsText: '',
     rcloneFilterText: '',
+    pairArgsText: {},      // idx -> textarea content for per-pair args
     filterBusy: false,
     pending: [],
     history: [],
@@ -463,6 +464,11 @@ function scrapperApp() {
       cfg.webhooks ||= [];
       this.config = cfg;
       this.rcloneArgsText = (cfg.backup.rclone_args || []).join('\n');
+      // Pro-Pair-Args ins UI laden
+      this.pairArgsText = {};
+      (cfg.backup.pairs || []).forEach((p, idx) => {
+        this.pairArgsText[idx] = (p.rclone_args || []).join('\n');
+      });
       this.recipeTypes = cfg.recipe_types || this.recipeTypes;
       this.weddingCategories = cfg.wedding_categories || this.weddingCategories;
       this.loadSchedule();
@@ -550,6 +556,26 @@ function scrapperApp() {
     },
     testPaths() { this.runTest('paths', '/api/test/paths'); },
     testYtdlp() { this.runTest('ytdlp', '/api/test/ytdlp'); },
+
+    // ---------------- Backup-Pairs (Pro-Pair-Args) ----------------
+    addBackupPair() {
+      const arr = this.config.backup.pairs;
+      const idx = arr.length;
+      arr.push({ name: '', remote: '', local: '' });
+      this.pairArgsText[idx] = '';
+    },
+    syncPairArgs(idx) {
+      // Textarea -> pair.rclone_args array. Leer = Feld weglassen.
+      const text = (this.pairArgsText[idx] || '').trim();
+      const arr = text.split('\n').map(s => s.trim()).filter(Boolean);
+      const pair = this.config.backup.pairs[idx];
+      if (!pair) return;
+      if (arr.length === 0) {
+        delete pair.rclone_args;
+      } else {
+        pair.rclone_args = arr;
+      }
+    },
 
     // ---------------- rclone Filter-Datei ----------------
     async loadFilterFile() {
