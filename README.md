@@ -103,12 +103,18 @@ Das Install-Script erzeugt automatisch:
 🔑 Initial-Passwort:         (siehe Ausgabe oder data/.initial-password)
 ```
 
-Der uvicorn-Bind ist **`127.0.0.1`** — Web-UI ist im LAN nicht direkt erreichbar. Extern-Zugriff erfolgt ausschließlich über Reverse-Proxy oder Cloudflare-Tunnel.
+Der uvicorn-Bind ist standardmäßig **`0.0.0.0:8000`**, weil die häufigste
+Proxmox-Topologie cloudflared in einem **separaten Container** hat
+(siehe Variante B unten). Wenn du cloudflared im selben Container laufen
+lässt, kannst du auf `--host 127.0.0.1` umstellen — siehe Kommentare in
+`systemd/scrapper-web.service`.
 
 ### 3. Cloudflare-Tunnel + Access (empfohlen)
 
+#### Variante A — cloudflared im selben Container
+
 ```bash
-# Im Container:
+# Im scrapper-Container:
 curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
 dpkg -i cloudflared.deb
 cloudflared tunnel login
@@ -130,11 +136,45 @@ ingress:
 cloudflared service install
 ```
 
-Im **Cloudflare-Dashboard → Zero Trust → Access**:
-1. Identity Provider hinzufügen (Google / GitHub / Email-OTP)
-2. Application „self-hosted" anlegen, Domain = `scrapper.deine-domain.tld`
-3. Policy: Allow → Include = deine Email, Require = TOTP / Hardware-Key (optional)
-4. Geo-Restriction auf dein Land (optional, schließt 99 % der Welt aus)
+Wenn du diese Variante nutzt, kannst du in `systemd/scrapper-web.service`
+auf `--host 127.0.0.1` umstellen — dann ist Port 8000 nur lokal sichtbar.
+
+#### Variante B — cloudflared in eigenem Container (häufiger bei Proxmox)
+
+Du hast bereits einen LXC mit cloudflared (z.B. „Tunnel-Hub" für mehrere
+Services). Im **Cloudflare Zero Trust Dashboard → Tunnels** trägst du dort
+die neue Route ein:
+
+```yaml
+# in der Tunnel-Config des cloudflared-Hosts:
+ingress:
+  # ... bestehende Einträge ...
+  - hostname: scrapper.deine-domain.tld
+    service: http://<scrapper-container-ip>:8000
+  - service: http_status:404
+```
+
+Der `bind_host` in unserer `scrapper-web.service` muss in diesem Fall
+`0.0.0.0` bleiben (Default), damit der cloudflared-Container über LAN
+zugreifen kann. **Wichtig**: setze eine LAN-Firewall (z.B. UFW im
+scrapper-Container) die Port 8000 nur für die cloudflared-Container-IP
+freigibt:
+
+```bash
+apt install -y ufw
+ufw allow from 192.168.1.<cloudflared-ip> to any port 8000 proto tcp
+ufw default deny incoming
+ufw default allow outgoing
+ufw enable
+```
+
+#### Cloudflare Access (für beide Varianten)
+
+Im **Cloudflare Zero Trust Dashboard → Access → Applications**:
+1. **Add an application → Self-hosted**
+2. Application Domain: `scrapper.deine-domain.tld`
+3. **Policy** anlegen: Action=Allow, Include=Email(s), optional Require=TOTP
+4. (Optional) Country-Restriction auf dein Land
 
 Damit hast du MFA vor der App, **ohne** die App selbst anzupassen.
 
@@ -161,18 +201,58 @@ sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli set-password
 
 # Session-Secret rotieren (invalidiert alle aktiven Sessions)
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli rotate-secret
+
+# SQLite-Online-Backup (läuft automatisch via systemd-Timer täglich um 04:00)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-backup [pfad]
 ```
 
 ```bash
 # Service-Befehle
 systemctl status scrapper-web
-systemctl restart scrapper-web
+systemctl restart scrapper-web      # mit Type=notify wartet auf 'ready'-Signal
 journalctl -u scrapper-web -f
 
 # Manuell ausführen (respektiert File-Lock)
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.jobs.scraper_cli
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.jobs.backup_cli --dry-run
+
+# Daily DB-Backup-Timer aktivieren
+systemctl enable --now scrapper-db-backup.timer
+systemctl list-timers scrapper-db-backup
 ```
+
+## Monitoring
+
+Die App stellt mehrere Endpoints für externes Monitoring bereit:
+
+```bash
+# Healthcheck (HTTP 200 wenn ok, 503 wenn DB nicht erreichbar)
+curl -s http://127.0.0.1:8000/healthz
+
+# Tiefer Check (DB + Ollama + Disk + rclone-Config) - immer 200, Details im Body
+curl -s http://127.0.0.1:8000/healthz/deep | jq
+
+# Prometheus-Metriken (für Grafana / Alertmanager)
+curl -s http://127.0.0.1:8000/metrics
+```
+
+Verfügbare Metriken: `scrapper_pending_count`, `scrapper_pending_oldest_seconds`,
+`scrapper_jobs_running{kind=...}`, `scrapper_jobs_24h_total{kind,status}`,
+`scrapper_history_total`, `scrapper_download_failures_total`,
+`scrapper_last_run_age_seconds`, `scrapper_last_run_duration_seconds`.
+
+Prometheus-Scrape-Config:
+```yaml
+scrape_configs:
+  - job_name: scrapper
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['scrapper.lan:8000']
+```
+
+Wenn dein cloudflared im selben Container läuft (`bind_host: 127.0.0.1`),
+scrape Prometheus von einem anderen Container über Cloudflare Access oder
+über das LAN-IP des Container-Bridges.
 
 ---
 
