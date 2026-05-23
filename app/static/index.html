@@ -957,6 +957,14 @@
                 <span x-show="!(testResults.ytdlp && testResults.ytdlp.ok)" x-text="(testResults.ytdlp && testResults.ytdlp.error)"></span>
               </div>
               <div class="field"><label>Binary Path</label><input x-model="config.ytdlp.binary"></div>
+              <div class="field">
+                <label>Cookie-Datei (optional, für private Inhalte)</label>
+                <input x-model="config.ytdlp.cookies_file" placeholder="/opt/scrapper/data/cookies.txt">
+                <div class="hint">
+                  Netscape-Format. Export per Browser-Extension wie „Get cookies.txt LOCALLY".
+                  Leer lassen wenn nur öffentliche Inhalte gescrapet werden.
+                </div>
+              </div>
             </div>
           </div>
 

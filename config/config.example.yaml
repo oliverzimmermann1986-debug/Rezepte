@@ -74,6 +74,11 @@ ai:
 # yt-dlp
 ytdlp:
   binary: /opt/scrapper/venv/bin/yt-dlp
+  # Optionaler Cookie-Jar (Netscape-Format) für private/eingeloggte Inhalte.
+  # Export via Browser-Extension "Get cookies.txt LOCALLY" o.ä.
+  # Datei muss vom scrapper-User lesbar sein (chmod 600 reicht wenn owner).
+  # Leer lassen wenn nur öffentliche TikToks/Instagram-Reels gescrapet werden.
+  cookies_file: ""
 
 # Scheduling (systemd Timer)
 schedule:

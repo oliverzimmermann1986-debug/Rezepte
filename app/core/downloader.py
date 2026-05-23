@@ -16,22 +16,30 @@ logger = logging.getLogger(__name__)
 
 
 class VideoDownloader:
-    def __init__(self, ytdlp_path: str, temp_dir: Path):
+    def __init__(self, ytdlp_path: str, temp_dir: Path, cookies_file: Optional[str] = None):
         self.ytdlp_path = ytdlp_path
         self.temp_dir = temp_dir
+        # Optionaler Cookie-Jar (Netscape-Format, exportiert via Browser-
+        # Extension). Erlaubt yt-dlp Zugriff auf private/eingeloggte Inhalte.
+        self.cookies_file = cookies_file if cookies_file and Path(cookies_file).exists() else None
+        if cookies_file and not self.cookies_file:
+            logger.warning(f"Cookie-Datei konfiguriert aber nicht gefunden: {cookies_file}")
 
     def download(self, url: str) -> Optional[Path]:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         sub = self.temp_dir / uuid.uuid4().hex[:8]
         sub.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            self.ytdlp_path, url,
+            "-o", str(sub / "video.%(ext)s"),
+            "--no-playlist", "--quiet", "--no-warnings",
+            "--write-description",
+        ]
+        if self.cookies_file:
+            cmd += ["--cookies", self.cookies_file]
         try:
             result = subprocess.run(
-                [
-                    self.ytdlp_path, url,
-                    "-o", str(sub / "video.%(ext)s"),
-                    "--no-playlist", "--quiet", "--no-warnings",
-                    "--write-description",
-                ],
+                cmd,
                 capture_output=True, text=True, timeout=180,
             )
             if result.returncode != 0:

@@ -107,10 +107,12 @@ class ScraperJob:
         self.fallback_threshold = float(cfg.get("ai", "fallback_threshold", default=0.5))
         self.min_desc_len = int(cfg.get("ai", "description_min_length", default=20))
 
-        # Downloader
+        # Downloader (mit optionalem Cookie-Jar für private Inhalte)
+        ytdlp_cfg = cfg.get("ytdlp", default={}) or {}
         self.downloader = VideoDownloader(
-            cfg.get("ytdlp", "binary", default="/opt/scrapper/venv/bin/yt-dlp"),
+            ytdlp_cfg.get("binary", "/opt/scrapper/venv/bin/yt-dlp"),
             self.temp_dir,
+            cookies_file=ytdlp_cfg.get("cookies_file") or None,
         )
 
         # E-Mail Konten
