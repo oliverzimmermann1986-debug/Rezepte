@@ -1,0 +1,16 @@
+[Unit]
+Description=Scrapper SQLite Online-Backup
+After=scrapper-web.service
+
+[Service]
+Type=oneshot
+User=scrapper
+Group=scrapper
+WorkingDirectory=/opt/scrapper
+Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
+Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
+# Backup nach data/backups/scrapper-YYYY-MM-DD.db
+ExecStart=/opt/scrapper/venv/bin/python -m app.cli db-backup
+# Backups älter als 30 Tage löschen
+ExecStartPost=/bin/bash -c 'find /opt/scrapper/data/backups -name "scrapper-*.db" -mtime +30 -delete 2>/dev/null || true'
+TimeoutStartSec=300

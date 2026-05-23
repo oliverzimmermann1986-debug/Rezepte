@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Scrapper SQLite Backup
+
+[Timer]
+# Täglich um 04:00 Uhr (mit etwas Jitter damit nicht alle Server gleichzeitig laufen)
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
