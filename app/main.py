@@ -19,7 +19,7 @@ from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, check_credentials,
 from .config_store import get_config
 from .db import get_db
 from .routes import (api_browse, api_config, api_history, api_jobs,
-                     api_metrics, api_pending, api_schedule, api_test)
+                     api_metrics, api_pending, api_schedule, api_stats, api_test)
 from .security import SecurityHeadersMiddleware, client_ip, login_limiter
 
 # -------- Logging --------
@@ -54,6 +54,39 @@ _pending_skipped = _db.auto_skip_old_pending(days=30)
 if _pending_skipped:
     logger.info(f"DB-Cleanup: {_pending_skipped} Pending-Items älter 30 Tage auf 'auto_skipped'")
 
+def _sd_notify(state: str) -> None:
+    """Sendet eine Statusnachricht an systemd, wenn unter Type=notify gestartet.
+    Ohne externe Dependency - direkter Socket-Write zum NOTIFY_SOCKET.
+    No-op wenn $NOTIFY_SOCKET nicht gesetzt ist."""
+    sock_path = os.getenv("NOTIFY_SOCKET")
+    if not sock_path:
+        return
+    try:
+        import socket
+        # Abstract socket (Linux): startet mit \0
+        addr = b"\0" + sock_path[1:].encode() if sock_path.startswith("@") else sock_path
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+            s.sendto(state.encode(), addr)
+    except Exception as e:
+        logger.warning(f"sd_notify failed: {e}")
+
+
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    # READY=1 sobald der App-Startup durch ist (DB-Pings, Routes registriert).
+    # systemd wartet dann auf dieses Signal bevor 'systemctl start' returnt -
+    # damit ist ein 'restart' ohne 502-Lücke am Reverse-Proxy möglich.
+    _sd_notify("READY=1")
+    logger.info("App ready (sd_notify READY=1 sent)")
+    try:
+        yield
+    finally:
+        _sd_notify("STOPPING=1")
+
+
 # -------- FastAPI --------
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).
 _enable_docs = os.getenv("SCRAPPER_ENABLE_DOCS", "0") == "1"
@@ -63,6 +96,7 @@ app = FastAPI(
     docs_url="/api/docs" if _enable_docs else None,
     redoc_url=None,
     openapi_url="/api/openapi.json" if _enable_docs else None,
+    lifespan=_lifespan,
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
@@ -80,6 +114,7 @@ app.include_router(api_test.router)
 app.include_router(api_browse.router)
 app.include_router(api_schedule.router)
 app.include_router(api_metrics.router)
+app.include_router(api_stats.router)
 
 
 # -------- Cookie-Helper --------
