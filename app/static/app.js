@@ -4,6 +4,8 @@ function scrapperApp() {
     page: 'dashboard',
     config: {},
     rcloneArgsText: '',
+    rcloneFilterText: '',
+    filterBusy: false,
     pending: [],
     history: [],
     jobs: [],
@@ -464,6 +466,7 @@ function scrapperApp() {
       this.recipeTypes = cfg.recipe_types || this.recipeTypes;
       this.weddingCategories = cfg.wedding_categories || this.weddingCategories;
       this.loadSchedule();
+      this.loadFilterFile();   // rclone-Filter parallel laden
     },
     async saveConfig() {
       // rclone-args aus textarea zurück in array
@@ -547,6 +550,32 @@ function scrapperApp() {
     },
     testPaths() { this.runTest('paths', '/api/test/paths'); },
     testYtdlp() { this.runTest('ytdlp', '/api/test/ytdlp'); },
+
+    // ---------------- rclone Filter-Datei ----------------
+    async loadFilterFile() {
+      this.filterBusy = true;
+      try {
+        const r = await this.api('GET', '/api/config/filter-file');
+        this.rcloneFilterText = (r && r.content) || '';
+      } catch(e) {
+        // 404/error: leer lassen (Datei existiert noch nicht)
+        this.rcloneFilterText = '';
+      } finally {
+        this.filterBusy = false;
+      }
+    },
+    async saveFilterFile() {
+      this.filterBusy = true;
+      try {
+        const r = await this.api('PUT', '/api/config/filter-file',
+                                 { content: this.rcloneFilterText });
+        this.showToast(`Filter gespeichert (${r.bytes} Bytes)`, 'ok');
+      } catch(e) {
+        this.showToast('Speichern fehlgeschlagen: ' + e, 'error');
+      } finally {
+        this.filterBusy = false;
+      }
+    },
 
     // ---------------- Webhooks ----------------
     addWebhook() {

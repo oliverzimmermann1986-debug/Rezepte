@@ -939,6 +939,38 @@
               <h4 style="margin: 22px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">rclone-Args</h4>
               <textarea x-model="rcloneArgsText" rows="5" style="font-family: var(--mono); width:100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding:10px; border-radius: var(--radius);"></textarea>
               <div class="hint">eine Option pro Zeile (z.B. <code>--checkers=16</code>)</div>
+
+              <div class="field" style="margin-top: 16px;">
+                <label>Bandbreiten-Limit (optional)</label>
+                <input x-model="config.backup.bwlimit" placeholder='leer = unbegrenzt, z.B. "10M" oder "08:00,1M 22:00,off"'>
+                <div class="hint">
+                  Konstant z.B. <code>10M</code>, oder zeitgesteuert
+                  <code>08:00,1M 22:00,off</code> für 1 MB/s tagsüber.
+                </div>
+              </div>
+
+              <h4 style="margin: 22px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">rclone-Filter</h4>
+              <div class="field">
+                <label>Filter-Datei</label>
+                <input x-model="config.backup.filter_file" placeholder="/opt/scrapper/data/rclone-filters.txt">
+              </div>
+              <textarea x-model="rcloneFilterText" rows="10"
+                        style="font-family: var(--mono); width:100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding:10px; border-radius: var(--radius); font-size: 12px;"
+                        placeholder="- .DS_Store
+- Thumbs.db
+- *.tmp"></textarea>
+              <div class="flex" style="margin-top: 8px;">
+                <button class="btn" @click="loadFilterFile()" :disabled="filterBusy">
+                  <span x-show="!filterBusy">⟳ Datei laden</span>
+                  <span x-show="filterBusy">…</span>
+                </button>
+                <button class="btn btn-primary" @click="saveFilterFile()" :disabled="filterBusy">
+                  💾 Filter speichern
+                </button>
+                <span class="hint" style="flex:1;">
+                  Doku: <a href="https://rclone.org/filtering/" target="_blank" rel="noopener">rclone.org/filtering</a>
+                </span>
+              </div>
             </div>
           </div>
 

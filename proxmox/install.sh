@@ -91,6 +91,13 @@ if [[ ! -f "$APP_DIR/data/config.yaml" ]]; then
   INITIAL_PASSWORD="$GEN_PASS"
 fi
 
+# 8b. Default-Filter-Datei für rclone seeden (nur wenn nicht da)
+if [[ ! -f "$APP_DIR/data/rclone-filters.txt" ]]; then
+  cp "$APP_DIR/config/rclone-filters.example.txt" "$APP_DIR/data/rclone-filters.txt"
+  chown $APP_USER:$APP_USER "$APP_DIR/data/rclone-filters.txt"
+  echo "📝 Default rclone-Filter angelegt unter $APP_DIR/data/rclone-filters.txt"
+fi
+
 # 9. systemd Services installieren
 echo "⚙️  Installiere systemd Units..."
 cp "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/

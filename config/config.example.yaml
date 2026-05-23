@@ -128,12 +128,36 @@ backup:
       local: /mnt/media-nas/Iphone_backup
 
   rclone_args:
-    - --fast-list
-    - --checkers=16
-    - --transfers=8
-    - --track-renames
-    - --modify-window=2s
+    # --- Performance ---
+    - --fast-list                 # vorhandene Pages-API für Listings nutzen
+    - --checkers=16               # parallel filechecks
+    - --transfers=8               # parallel uploads
+    - --use-mmap                  # memory-mapped I/O statt heap (großen Files)
+    - --buffer-size=32M           # pro File-Stream Buffer (Default 16M)
+    # --- Stabilität ---
+    - --retries=5                 # transient errors abfedern
+    - --low-level-retries=10      # für jedes einzelne API-Request
+    - --retries-sleep=5s          # zwischen Versuchen warten
+    - --timeout=300s              # für große Files (statt 5min default)
+    - --resilient                 # bisync: weniger schnell aufgeben bei Ungereimtheiten
+    - --max-lock=30m              # bisync Lock-Timeout (Default 10m war zu knapp)
+    # --- Verhalten ---
+    - --track-renames             # rename detection (spart re-upload)
+    - --modify-window=2s          # 2s Toleranz für mtimes (Cloud uneinheitlich)
+    # --- Logging ---
     - --log-level=INFO
+
+  # Bandbreiten-Limit. Leer = unbegrenzt. Beispiele:
+  #   "10M"                  - konstant 10 MByte/s
+  #   "08:00,1M 22:00,off"   - tagsüber 1 MB/s, nachts unbegrenzt
+  #   "Mon-08:00,1M Mon-22:00,off Fri-22:00,off"  - mehrere Zeitslots
+  bwlimit: ""
+
+  # Pfad zu einer rclone-Filter-Datei. Wird automatisch via --filter-from
+  # ergänzt wenn die Datei existiert. Default-Pfad wird beim ersten Start
+  # angelegt mit sinnvollen Exclusions (.DS_Store, Thumbs.db, *.tmp, ...).
+  # Editierbar via Web-UI -> Einstellungen -> rclone Filter.
+  filter_file: /opt/scrapper/data/rclone-filters.txt
 
 # Webhook-Notifications (optional, ersetzt frühere Telegram-Anbindung)
 # Jeder Eintrag bekommt JSON-POST bei den ausgewählten Events.

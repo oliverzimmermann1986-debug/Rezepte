@@ -47,6 +47,27 @@ def _rclone_cache_args(verb: str = None) -> List[str]:
     return args
 
 
+def _backup_extra_args(cfg) -> List[str]:
+    """Liest optionale Backup-Extra-Args aus Config:
+       - filter_file (--filter-from)
+       - bwlimit
+    Wird zusätzlich zu cfg.backup.rclone_args drangehängt."""
+    extra: List[str] = []
+    backup_cfg = cfg.get("backup", default={}) or {}
+    # Filter-Datei: nur dranhängen wenn sie existiert (verhindert rclone-Fehler
+    # wenn der User noch keine angelegt hat)
+    filter_file = backup_cfg.get("filter_file") or ""
+    if filter_file and Path(filter_file).is_file():
+        extra += ["--filter-from", filter_file]
+    elif filter_file:
+        logger.warning(f"filter_file gesetzt aber nicht vorhanden: {filter_file}")
+    # Bandbreiten-Limit
+    bwlimit = (backup_cfg.get("bwlimit") or "").strip()
+    if bwlimit:
+        extra += ["--bwlimit", bwlimit]
+    return extra
+
+
 # Globaler State - thread-safe verwaltet
 _ACTIVE_PROCS: List[subprocess.Popen] = []   # laufende rclone-Subprozesse für Cancel
 _ACTIVE_PROCS_LOCK = threading.Lock()
@@ -286,6 +307,7 @@ def run_job(dry_run: bool = False, pairs_filter: list = None) -> Dict:
     reset_cancel()
 
     args = _parse_rclone_args(backup_cfg.get("rclone_args"))
+    args += _backup_extra_args(cfg)
     log_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs")) / "rclone"
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -351,6 +373,7 @@ def run_quick(remote_path: str, local_path: str, direction: str = "bisync",
     log_file = log_dir / f"quick-{safe_name}-{datetime.now():%Y%m%d-%H%M%S}.log"
 
     args = _parse_rclone_args(cfg.get("backup", "rclone_args", default=""))
+    args += _backup_extra_args(cfg)
     if extra_args:
         args += extra_args
     if dry_run and "--dry-run" not in args:
