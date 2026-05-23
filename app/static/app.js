@@ -10,6 +10,8 @@ function scrapperApp() {
     status: { scraper: null, backup: null, pending_count: 0 },
     lastScraper: null,
     lastBackup: null,
+    stats: null,
+    statsLoading: false,
     currentLog: '',
     currentLogJob: null,
     toast: { show: false, message: '', type: 'ok' },
@@ -20,11 +22,11 @@ function scrapperApp() {
     init() {
       this.refreshStatus();
       this.loadRecentJobs();
+      this.loadStats();
       this._statusTimer = setInterval(() => this.refreshStatus(), 4000);
       this._progressTimer = setInterval(() => this.refreshProgress(), 3000);
-      // Dashboard-Karten (letzter Scraper-Lauf, letztes Backup) alle 15s
-      // aktualisieren - so sieht der User seinen jüngsten Lauf ohne F5.
       this._jobsTimer = setInterval(() => this.loadRecentJobs(), 15000);
+      this._statsTimer = setInterval(() => this.loadStats(), 60000);
       this.refreshProgress();
     },
 
@@ -106,6 +108,92 @@ function scrapperApp() {
         // Quick-Sync zählt auch als Backup für die Dashboard-Card
         this.lastBackup = all.find(j => (j.kind === 'backup' || j.kind === 'quicksync') && j.status === 'ok');
       } catch(e) {}
+    },
+    async loadStats() {
+      this.statsLoading = true;
+      try {
+        const [jobs, conf] = await Promise.all([
+          this.api('GET', '/api/stats/jobs-per-day?days=14'),
+          this.api('GET', '/api/stats/confidence-histogram?buckets=10'),
+        ]);
+        this.stats = { jobs, conf };
+      } catch(e) {} finally {
+        this.statsLoading = false;
+      }
+    },
+    renderJobsChart() {
+      const s = this.stats && this.stats.jobs;
+      if (!s || !s.days || s.days.length === 0) return '<div class="muted" style="padding:20px 0; text-align:center;">keine Daten</div>';
+      const w = 600, h = 140, pad = 24;
+      const days = s.days;
+      const kinds = Object.keys(s.series);
+      const palette = { scraper: '#f97316', backup: '#22c55e', quicksync: '#06b6d4', reanalyze: '#a855f7' };
+      // Max-Wert für Y-Skala
+      let maxVal = 1;
+      kinds.forEach(k => s.series[k].forEach(v => { if (v > maxVal) maxVal = v; }));
+      const barW = (w - pad*2) / days.length;
+      let svg = `<svg viewBox="0 0 ${w} ${h}" style="width:100%; height:140px;">`;
+      // X-Axis labels (jeder 3. Tag)
+      days.forEach((day, i) => {
+        if (i % 3 === 0 || i === days.length-1) {
+          const x = pad + i*barW + barW/2;
+          const label = day.slice(5);  // MM-DD
+          svg += `<text x="${x}" y="${h-4}" fill="#64748b" font-size="9" text-anchor="middle">${label}</text>`;
+        }
+      });
+      // Y-Gridlines
+      [0.25, 0.5, 0.75, 1.0].forEach(p => {
+        const y = h - pad - (h - pad*2) * p;
+        svg += `<line x1="${pad}" y1="${y}" x2="${w-pad}" y2="${y}" stroke="#1e293b" stroke-width="1"/>`;
+      });
+      // Stacked Bars
+      days.forEach((day, i) => {
+        let stackY = h - pad;
+        kinds.forEach(kind => {
+          const v = s.series[kind][i] || 0;
+          if (v === 0) return;
+          const barH = (h - pad*2) * (v / maxVal);
+          stackY -= barH;
+          const color = palette[kind] || '#94a3b8';
+          svg += `<rect x="${pad + i*barW + 1}" y="${stackY}" width="${Math.max(barW-2, 1)}" height="${barH}" fill="${color}" opacity="0.85"><title>${day} · ${kind}: ${v}</title></rect>`;
+        });
+      });
+      // Max-Label
+      svg += `<text x="${pad-4}" y="${pad+4}" fill="#64748b" font-size="9" text-anchor="end">${maxVal}</text>`;
+      svg += `<text x="${pad-4}" y="${h-pad+3}" fill="#64748b" font-size="9" text-anchor="end">0</text>`;
+      svg += '</svg>';
+      return svg;
+    },
+    renderConfChart() {
+      const s = this.stats && this.stats.conf;
+      if (!s || !s.counts || s.counts.length === 0) return '';
+      const w = 600, h = 140, pad = 24;
+      const maxCount = Math.max(...s.counts, 1);
+      const barW = (w - pad*2) / s.counts.length;
+      let svg = `<svg viewBox="0 0 ${w} ${h}" style="width:100%; height:140px;">`;
+      // Y-Gridlines
+      [0.5, 1.0].forEach(p => {
+        const y = h - pad - (h - pad*2) * p;
+        svg += `<line x1="${pad}" y1="${y}" x2="${w-pad}" y2="${y}" stroke="#1e293b" stroke-width="1"/>`;
+      });
+      // Bars
+      s.counts.forEach((v, i) => {
+        const barH = (h - pad*2) * (v / maxCount);
+        const x = pad + i*barW + 1;
+        const y = h - pad - barH;
+        const label = s.buckets[i];
+        // Color-Gradient: rot → orange → grün je nach Confidence
+        const conf = (i + 0.5) / s.counts.length;
+        const color = conf < 0.3 ? '#ef4444' : conf < 0.6 ? '#f97316' : conf < 0.85 ? '#eab308' : '#22c55e';
+        svg += `<rect x="${x}" y="${y}" width="${Math.max(barW-2, 1)}" height="${barH}" fill="${color}" opacity="0.85"><title>${label}: ${v}</title></rect>`;
+        // X-Label (jeden 2.)
+        if (i % 2 === 0) {
+          svg += `<text x="${x + barW/2}" y="${h-4}" fill="#64748b" font-size="9" text-anchor="middle">${label.split('-')[0]}</text>`;
+        }
+      });
+      svg += `<text x="${pad-4}" y="${pad+4}" fill="#64748b" font-size="9" text-anchor="end">${maxCount}</text>`;
+      svg += '</svg>';
+      return svg;
     },
     async refreshProgress() {
       // Nur abfragen wenn Job läuft, sonst Last-Info behalten

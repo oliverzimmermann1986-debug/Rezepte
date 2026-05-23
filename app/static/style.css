@@ -916,3 +916,39 @@ input[type="checkbox"] { width: auto !important; }
   .bulk-bar > span:not(:first-child) { display: none; }
   .bulk-bar .btn { flex: 1; }
 }
+
+/* ---------- Dashboard Stats Charts (Inline SVG) ---------- */
+.stats-block { display: flex; flex-direction: column; gap: 8px; }
+.stats-label {
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--fg-dim);
+}
+.stats-chart {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  min-height: 140px;
+  overflow-x: auto;
+}
+.stats-chart svg { display: block; max-width: 100%; height: auto; }
+.stats-legend {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  font-size: 11px; color: var(--fg-dim);
+}
+.stats-legend-item { display: flex; align-items: center; gap: 5px; }
+.stats-legend-item .dot {
+  width: 10px; height: 10px; border-radius: 99px;
+  display: inline-block;
+}
+.dot-scraper   { background: var(--accent); }
+.dot-backup    { background: #6ab4ff; }
+.dot-quicksync { background: #b76bff; }
+.dot-reanalyze { background: var(--accent-2); }
+.stats-hint { font-size: 11px; color: var(--fg-dim); }
+
+@media (max-width: 900px) {
+  /* Charts: stapeln untereinander */
+  .stats-block .stats-chart { min-height: 100px; }
+}

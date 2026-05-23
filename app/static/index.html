@@ -246,6 +246,41 @@
         </div>
       </div>
 
+      <!-- Stats Charts -->
+      <div class="card" style="margin-top: 18px;">
+        <div class="card-head">
+          <h3>Statistik · letzte 14 Tage</h3>
+          <button class="btn btn-ghost" @click="loadStats()" :disabled="statsLoading">
+            <span x-show="!statsLoading">⟳</span>
+            <span x-show="statsLoading">…</span>
+          </button>
+        </div>
+        <div class="stats-grid">
+          <div class="stats-block">
+            <div class="stats-label">Jobs/Tag (alle Arten)</div>
+            <div class="stats-chart" x-html="renderJobsChart()"></div>
+            <div class="stats-legend" x-show="stats && stats.jobs">
+              <template x-for="(series, kind) in (stats && stats.jobs && stats.jobs.series) || {}" :key="kind">
+                <span class="stats-legend-item">
+                  <span class="dot" :class="'dot-' + kind"></span>
+                  <span x-text="kind"></span>
+                </span>
+              </template>
+            </div>
+          </div>
+          <div class="stats-block">
+            <div class="stats-label">KI-Confidence-Verteilung (Pending)</div>
+            <div class="stats-chart" x-html="renderConfChart()"></div>
+            <div class="stats-hint" x-show="stats && stats.conf && stats.conf.total > 0">
+              <span x-text="stats.conf.total"></span> Pending-Items analysiert
+            </div>
+            <div class="stats-hint muted" x-show="!stats || !stats.conf || stats.conf.total === 0">
+              Keine Pending-Daten zum Anzeigen
+            </div>
+          </div>
+        </div>
+      </div>
+
     <!-- ========== PENDING ========== -->
     <section x-show="page==='pending'">
       <div class="page-head">

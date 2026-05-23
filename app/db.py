@@ -176,10 +176,26 @@ class Database:
                 ),
             )
 
-    def pending_list(self, status: str = "pending") -> List[Dict[str, Any]]:
+    def pending_list(self, status: str = "pending", sort: str = "newest") -> List[Dict[str, Any]]:
+        """Liefert Pending-Items.
+
+        sort:
+          - 'newest' (default): neueste zuerst
+          - 'oldest': älteste zuerst (für Aufräum-Workflow)
+          - 'confidence_asc': niedrigste Confidence zuerst (am unsichersten)
+          - 'confidence_desc': höchste Confidence zuerst (kandidaten für 'reanalyze')
+        """
+        order_by = {
+            "newest": "created_at DESC",
+            "oldest": "created_at ASC",
+            "confidence_asc":
+                "CAST(json_extract(ai_suggestion, '$.confidence') AS REAL) ASC, created_at DESC",
+            "confidence_desc":
+                "CAST(json_extract(ai_suggestion, '$.confidence') AS REAL) DESC, created_at DESC",
+        }.get(sort, "created_at DESC")
         with self.conn() as c:
             rows = c.execute(
-                "SELECT * FROM pending WHERE status=? ORDER BY created_at DESC",
+                f"SELECT * FROM pending WHERE status=? ORDER BY {order_by}",
                 (status,),
             ).fetchall()
             result = []
