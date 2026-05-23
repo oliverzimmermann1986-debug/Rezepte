@@ -134,3 +134,20 @@ backup:
     - --track-renames
     - --modify-window=2s
     - --log-level=INFO
+
+# Webhook-Notifications (optional, ersetzt frühere Telegram-Anbindung)
+# Jeder Eintrag bekommt JSON-POST bei den ausgewählten Events.
+# Funktioniert mit Discord-Webhooks, ntfy.sh, Slack, Teams, n8n, Home Assistant ...
+#
+# events: scraper_done | backup_done | job_failed | pending_high
+#
+# webhooks:
+#   - name: "Discord-Alerts"
+#     url:  "https://discord.com/api/webhooks/XXX/YYY"
+#     enabled: true
+#     events: [scraper_done, backup_done, job_failed]
+#   - name: "ntfy"
+#     url:  "https://ntfy.sh/scrapper-alerts"
+#     enabled: true
+#     events: [job_failed]
+webhooks: []

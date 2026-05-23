@@ -968,6 +968,69 @@
             </div>
           </div>
 
+          <!-- Webhooks -->
+          <div class="card" style="margin-top: 18px;">
+            <div class="card-head">
+              <h3>Webhook-Notifications</h3>
+              <button class="btn" @click="addWebhook()">+ Webhook</button>
+            </div>
+            <p class="muted" style="margin: 0 0 14px; font-size: 12px;">
+              JSON-POST bei Events. Funktioniert mit Discord, ntfy.sh, Slack, Teams, Home Assistant, n8n.
+              Discord-URLs bekommen automatisch ein hübsches Embed-Format.
+            </p>
+            <template x-for="(hook, idx) in (config.webhooks || [])" :key="idx">
+              <div style="border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px;">
+                <div class="row">
+                  <div class="field">
+                    <label>Name</label>
+                    <input x-model="hook.name" placeholder="z.B. Discord-Alerts">
+                  </div>
+                  <div class="field">
+                    <label>Aktiviert</label>
+                    <select x-model.boolean="hook.enabled">
+                      <option :value="true">Ja</option>
+                      <option :value="false">Nein</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>URL</label>
+                  <input x-model="hook.url" placeholder="https://discord.com/api/webhooks/... oder https://ntfy.sh/your-topic">
+                </div>
+                <div class="field">
+                  <label>Events (Mehrfachauswahl)</label>
+                  <div class="flex" style="flex-wrap: wrap; gap: 8px;">
+                    <template x-for="ev in ['scraper_done','backup_done','job_failed','pending_high']" :key="ev">
+                      <label style="display:inline-flex; align-items:center; gap:5px; text-transform:none; letter-spacing:0; font-size:12px; color:var(--fg);">
+                        <input type="checkbox" :value="ev"
+                               :checked="(hook.events || []).includes(ev)"
+                               @change="toggleWebhookEvent(idx, ev, $event.target.checked)">
+                        <span x-text="ev"></span>
+                      </label>
+                    </template>
+                  </div>
+                </div>
+                <div class="flex" style="margin-top: 10px;">
+                  <button class="btn" @click="testWebhook(idx)" :disabled="testing.webhook === idx">
+                    <span x-show="testing.webhook !== idx">⌬ Test senden</span>
+                    <span x-show="testing.webhook === idx">…</span>
+                  </button>
+                  <button class="btn btn-danger" @click="removeWebhook(idx)">✗ Löschen</button>
+                  <div x-show="testResults.webhook && testResults.webhook.idx === idx"
+                       class="test-result"
+                       :class="testResults.webhook.ok ? 'ok' : 'err'"
+                       style="flex:1;">
+                    <span x-text="testResults.webhook && (testResults.webhook.message || testResults.webhook.error)"></span>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <div class="empty" x-show="!config.webhooks || config.webhooks.length === 0"
+                 style="padding: 14px; text-align:center;">
+              Noch keine Webhooks. Klick „+ Webhook" oben rechts.
+            </div>
+          </div>
+
           <div style="text-align: right; margin: 20px 0 60px;">
             <button class="btn btn-primary" @click="saveConfig()">💾 Speichern</button>
           </div>

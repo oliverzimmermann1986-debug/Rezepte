@@ -205,3 +205,15 @@ def test_ytdlp() -> Dict[str, Any]:
         return {"ok": False, "error": f"Binary nicht gefunden: {binary}"}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+class WebhookTestRequest(BaseModel):
+    name: str = "test"
+    url: str
+
+
+@router.post("/webhook")
+def test_webhook(req: WebhookTestRequest) -> Dict[str, Any]:
+    """Sendet eine Test-Nachricht an einen Webhook."""
+    from ..core.webhook import test_webhook as do_test
+    return do_test({"name": req.name, "url": req.url, "enabled": True})

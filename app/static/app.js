@@ -458,6 +458,7 @@ function scrapperApp() {
       cfg.backup.pairs ||= [];
       cfg.backup.rclone_args ||= [];
       cfg.ytdlp ||= {};
+      cfg.webhooks ||= [];
       this.config = cfg;
       this.rcloneArgsText = (cfg.backup.rclone_args || []).join('\n');
       this.recipeTypes = cfg.recipe_types || this.recipeTypes;
@@ -479,6 +480,7 @@ function scrapperApp() {
       ollama: false,
       rclone: false, paths: false, ytdlp: false,
       schedule_preview: false, schedule_save: false,
+      webhook: -1,   // Index des gerade getesteten Webhook (-1 = keiner)
     },
     testResults: {},
     schedule: { scraper: { oncalendar: '', next_run: null }, backup: { oncalendar: '', next_run: null } },
@@ -545,6 +547,46 @@ function scrapperApp() {
     },
     testPaths() { this.runTest('paths', '/api/test/paths'); },
     testYtdlp() { this.runTest('ytdlp', '/api/test/ytdlp'); },
+
+    // ---------------- Webhooks ----------------
+    addWebhook() {
+      if (!this.config.webhooks) this.config.webhooks = [];
+      this.config.webhooks.push({
+        name: '', url: '', enabled: true,
+        events: ['scraper_done', 'backup_done', 'job_failed'],
+      });
+    },
+    removeWebhook(idx) {
+      if (!confirm('Webhook löschen? (Wird beim Speichern endgültig entfernt.)')) return;
+      this.config.webhooks.splice(idx, 1);
+    },
+    toggleWebhookEvent(idx, ev, checked) {
+      const hook = this.config.webhooks[idx];
+      if (!hook.events) hook.events = [];
+      const i = hook.events.indexOf(ev);
+      if (checked && i < 0) hook.events.push(ev);
+      else if (!checked && i >= 0) hook.events.splice(i, 1);
+    },
+    async testWebhook(idx) {
+      const hook = this.config.webhooks[idx];
+      if (!hook || !hook.url || hook.url === '••••••••') {
+        this.showToast('URL leer oder noch nicht gespeichert', 'error');
+        return;
+      }
+      this.testing.webhook = idx;
+      this.testResults.webhook = null;
+      try {
+        const r = await this.api('POST', '/api/test/webhook',
+                                 { name: hook.name || 'test', url: hook.url });
+        this.testResults.webhook = { idx, ...r };
+        this.showToast(r.ok ? 'Webhook-Test ok' : ('Test fail: ' + r.error), r.ok ? 'ok' : 'error');
+      } catch(e) {
+        this.testResults.webhook = { idx, ok: false, error: String(e) };
+        this.showToast('Test fail: ' + e, 'error');
+      } finally {
+        this.testing.webhook = -1;
+      }
+    },
 
     // ------------- Schedule / Timer -------------
     async loadSchedule() {

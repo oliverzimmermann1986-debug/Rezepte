@@ -363,6 +363,22 @@ class ScraperJob:
         summary["duration_sec"] = round(time.time() - start, 1)
         summary["total_pending"] = self.db.pending_count()
         logger.info(f"Job-Summary: {summary}")
+
+        # Webhook-Notifications (asynchron, blockt das Job-Ende nicht)
+        try:
+            from ..core import webhook
+            webhook.notify("scraper_done", summary)
+            # Pending-High-Alarm wenn Schwelle überschritten
+            threshold = int(self.cfg.get("notifications", "pending_high_threshold",
+                                          default=50) or 50)
+            if summary["total_pending"] >= threshold:
+                webhook.notify("pending_high", {
+                    "pending_count": summary["total_pending"],
+                    "threshold": threshold,
+                })
+        except Exception as e:
+            logger.warning(f"webhook.notify failed (non-fatal): {e}")
+
         return summary
 
     # ---------------- History bearbeiten ----------------

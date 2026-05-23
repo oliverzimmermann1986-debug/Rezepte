@@ -324,6 +324,15 @@ def run_job(dry_run: bool = False, pairs_filter: list = None) -> Dict:
         "total_transferred": total_transferred,
     }
 
+    # Webhook-Notify (asynchron). Dry-Runs nicht melden, das ist nur Probelauf.
+    if not dry_run:
+        try:
+            from ..core import webhook
+            event = "backup_done" if ok_count == len(pairs) else "job_failed"
+            webhook.notify(event, summary)
+        except Exception as e:
+            logger.warning(f"webhook.notify failed (non-fatal): {e}")
+
     return summary
 
 def run_quick(remote_path: str, local_path: str, direction: str = "bisync",

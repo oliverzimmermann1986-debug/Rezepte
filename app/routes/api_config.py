@@ -80,6 +80,11 @@ def _mask(cfg: dict) -> dict:
         v = _get(out, path)
         if v:
             _set(out, path, MASKED)
+    # Webhooks sind eine Liste - URL maskieren weil Discord/Slack Tokens enthält
+    if isinstance(out.get("webhooks"), list):
+        for hook in out["webhooks"]:
+            if isinstance(hook, dict) and hook.get("url"):
+                hook["url"] = MASKED
     return out
 
 
@@ -92,4 +97,12 @@ def _unmask(incoming: dict, current: dict) -> dict:
             real = _get(current, path)
             if real is not None:
                 _set(out, path, real)
+    # Webhooks: pro Eintrag prüfen ob die URL noch maskiert ist - dann
+    # aus aktueller Config rückübernehmen (Match per name)
+    cur_hooks = {h.get("name"): h.get("url")
+                 for h in (current.get("webhooks") or []) if isinstance(h, dict)}
+    if isinstance(out.get("webhooks"), list):
+        for hook in out["webhooks"]:
+            if isinstance(hook, dict) and hook.get("url") == MASKED:
+                hook["url"] = cur_hooks.get(hook.get("name"), "")
     return out
