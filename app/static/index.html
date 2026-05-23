@@ -968,6 +968,37 @@
                 </div>
               </div>
 
+              <h4 style="margin: 22px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">Datensicherheit</h4>
+              <div class="field">
+                <label>Backup-Dir (Trash-Ordner für überschriebene/gelöschte Files)</label>
+                <input x-model="config.backup.backup_dir" placeholder='z.B. ".bisync-trash/{date}" - leer = direkt löschen'>
+                <div class="hint">
+                  <code>{date}</code> wird zu Zeitstempel. Relativer Pfad landet unter dem Remote-Root.
+                  Beispiel: <code>.bisync-trash/{date}</code> → <code>pcloud:/Filme/.bisync-trash/2026-05-22T16-00/</code>
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Konflikt-Auflösung</label>
+                  <select x-model="config.backup.conflict_resolve">
+                    <option value="auto">auto · manuell mit .conflict-Files</option>
+                    <option value="newer">newer · jüngeres File behalten</option>
+                    <option value="older">older · älteres File behalten</option>
+                    <option value="larger">larger · größeres File behalten</option>
+                    <option value="path1">path1 · Cloud (Remote) gewinnt</option>
+                    <option value="path2">path2 · Local gewinnt</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Immutable-Mode</label>
+                  <select x-model.boolean="config.backup.immutable">
+                    <option :value="false">aus (Standard)</option>
+                    <option :value="true">an · niemals existierende Files überschreiben</option>
+                  </select>
+                  <div class="hint">Schutz vor manipulierter Cloud / Ransomware</div>
+                </div>
+              </div>
+
               <h4 style="margin: 22px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">rclone-Filter</h4>
               <div class="field">
                 <label>Filter-Datei</label>

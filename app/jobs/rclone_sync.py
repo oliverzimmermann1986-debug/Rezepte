@@ -48,10 +48,14 @@ def _rclone_cache_args(verb: str = None) -> List[str]:
 
 
 def _backup_extra_args(cfg) -> List[str]:
-    """Liest optionale Backup-Extra-Args aus Config:
+    """Liest optionale globale Backup-Extra-Args aus Config:
        - filter_file (--filter-from)
        - bwlimit
-    Wird zusätzlich zu cfg.backup.rclone_args drangehängt."""
+       - conflict_resolve
+       - immutable
+    Wird zusätzlich zu cfg.backup.rclone_args drangehängt.
+    backup_dir wird separat per Paar in _pair_safety_args() gebaut weil
+    es vom pair_root abhängt."""
     extra: List[str] = []
     backup_cfg = cfg.get("backup", default={}) or {}
     # Filter-Datei: nur dranhängen wenn sie existiert (verhindert rclone-Fehler
@@ -65,6 +69,33 @@ def _backup_extra_args(cfg) -> List[str]:
     bwlimit = (backup_cfg.get("bwlimit") or "").strip()
     if bwlimit:
         extra += ["--bwlimit", bwlimit]
+    # Conflict-Resolve (default 'auto' = kein Flag = bisync-Standard mit .conflict-Files)
+    conflict = (backup_cfg.get("conflict_resolve") or "auto").strip()
+    if conflict and conflict != "auto":
+        extra += ["--conflict-resolve", conflict]
+    # Immutable-Mode
+    if backup_cfg.get("immutable"):
+        extra += ["--immutable"]
+    return extra
+
+
+def _pair_safety_args(cfg, pair_root: str) -> List[str]:
+    """Pair-spezifische Sicherheits-Args. Aktuell nur --backup-dir mit
+    {date}-Expansion und pair_root-Prefix bei relativen Pfaden.
+
+    pair_root ist der 'destination'-Pfad, in dem die Trash-Datei landet,
+    typischerweise also der Remote-Side (z.B. 'pcloud:/Filme').
+    """
+    extra: List[str] = []
+    backup_cfg = cfg.get("backup", default={}) or {}
+    backup_dir = (backup_cfg.get("backup_dir") or "").strip()
+    if backup_dir and pair_root:
+        stamp = datetime.now().strftime("%Y-%m-%dT%H-%M")
+        resolved = backup_dir.replace("{date}", stamp)
+        if not _is_remote(resolved) and not resolved.startswith("/"):
+            sep = "" if pair_root.endswith(("/", ":")) else "/"
+            resolved = f"{pair_root}{sep}{resolved}"
+        extra += ["--backup-dir", resolved]
     return extra
 
 
@@ -190,7 +221,13 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
     # und nutzt den letzten Wert. So kann eine Pair-Config z.B.
     # --transfers=16 setzen und damit die globalen 8 überschreiben.
     pair_args = _parse_rclone_args(pair.get("rclone_args"))
-    effective_args = list(args) + pair_args
+    # Pair-Safety-Args (--backup-dir mit Pair-Root für die Trash-Location)
+    # Beim Bisync gilt die Logik symmetrisch in beide Richtungen - rclone
+    # nutzt den --backup-dir Pfad pro Direction. Wir nehmen den 'remote' als
+    # primären Trash-Root (typischerweise die Cloud, hat mehr Platz).
+    from ..config_store import get_config
+    pair_safety = _pair_safety_args(get_config(), remote)
+    effective_args = list(args) + pair_args + pair_safety
 
     cmd = [
         "rclone", "bisync", remote, local,
@@ -380,6 +417,7 @@ def run_quick(remote_path: str, local_path: str, direction: str = "bisync",
 
     args = _parse_rclone_args(cfg.get("backup", "rclone_args", default=""))
     args += _backup_extra_args(cfg)
+    args += _pair_safety_args(cfg, remote_path)
     if extra_args:
         args += extra_args
     if dry_run and "--dry-run" not in args:

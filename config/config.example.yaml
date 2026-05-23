@@ -159,6 +159,27 @@ backup:
   # Editierbar via Web-UI -> Einstellungen -> rclone Filter.
   filter_file: /opt/scrapper/data/rclone-filters.txt
 
+  # ---- Datensicherheit ----
+  #
+  # Gelöschte/überschriebene Files in einen Trash-Ordner statt löschen.
+  # Pfad relativ zum Pair-Root, mit {date} Platzhalter. Empty = kein Trash.
+  # Beispiel: ".bisync-trash/{date}" → pcloud:/Filme/.bisync-trash/2026-05-22T16:00/
+  backup_dir: ""
+
+  # Bisync Conflict-Resolution:
+  #   "auto"   - Default: rclone schreibt zwei .conflict-Files für manuelle Lösung
+  #   "newer"  - automatisch das jüngere File behalten
+  #   "older"  - automatisch das ältere File behalten
+  #   "larger" - größeres File behalten
+  #   "path1"  - Cloud (Remote) gewinnt immer
+  #   "path2"  - Local gewinnt immer
+  conflict_resolve: "auto"
+
+  # Immutable-Mode: rclone schreibt NIE über existierende Files. Schutz
+  # gegen kompromittierte Cloud-Backends oder Ransomware-Mounts. Bei true
+  # gibt es bei Konflikten Fehler statt Überschreibungen.
+  immutable: false
+
 # Webhook-Notifications (optional, ersetzt frühere Telegram-Anbindung)
 # Jeder Eintrag bekommt JSON-POST bei den ausgewählten Events.
 # Funktioniert mit Discord-Webhooks, ntfy.sh, Slack, Teams, n8n, Home Assistant ...
