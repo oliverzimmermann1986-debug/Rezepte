@@ -19,7 +19,7 @@ from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, check_credentials,
 from .config_store import get_config
 from .db import get_db
 from .routes import (api_browse, api_config, api_history, api_jobs,
-                     api_pending, api_schedule, api_test)
+                     api_metrics, api_pending, api_schedule, api_test)
 from .security import SecurityHeadersMiddleware, client_ip, login_limiter
 
 # -------- Logging --------
@@ -79,6 +79,7 @@ app.include_router(api_history.router)
 app.include_router(api_test.router)
 app.include_router(api_browse.router)
 app.include_router(api_schedule.router)
+app.include_router(api_metrics.router)
 
 
 # -------- Cookie-Helper --------
@@ -201,3 +202,76 @@ def healthz():
     except Exception as e:
         logger.error(f"healthz failed: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+
+
+@app.get("/healthz/deep")
+def healthz_deep():
+    """Tiefer Check: DB + Ollama + IMAP + Disk-Space + rclone-Config.
+    Status-Code immer 200, Details im Body. Wir wollen nicht dass eine
+    kaputte IMAP-Config den ganzen Container als 'unhealthy' markiert."""
+    import shutil
+    from .config_store import get_config
+
+    checks = {}
+    cfg = get_config()
+
+    # DB
+    try:
+        with get_db().conn() as c:
+            c.execute("SELECT 1").fetchone()
+        checks["db"] = {"ok": True}
+    except Exception as e:
+        checks["db"] = {"ok": False, "error": str(e)}
+
+    # Ollama
+    try:
+        from .core.analyzer import OllamaAnalyzer
+        ollama_cfg = cfg.get("ai", "ollama", default={}) or {}
+        if ollama_cfg.get("enabled", True):
+            o = OllamaAnalyzer(
+                ollama_cfg.get("url", ""),
+                ollama_cfg.get("model", ""),
+                timeout=5,
+            )
+            checks["ollama"] = {"ok": o.health(), "model": ollama_cfg.get("model")}
+        else:
+            checks["ollama"] = {"ok": True, "disabled": True}
+    except Exception as e:
+        checks["ollama"] = {"ok": False, "error": str(e)}
+
+    # Disk-Space (recipe_dir + temp_dir)
+    for key in ("recipe_dir", "wedding_dir", "temp_dir"):
+        p = cfg.get("paths", key, default=None)
+        if not p:
+            continue
+        try:
+            usage = shutil.disk_usage(p)
+            free_gb = usage.free / (1024 ** 3)
+            checks[f"disk_{key}"] = {
+                "ok": free_gb > 1.0,
+                "path": p,
+                "free_gb": round(free_gb, 2),
+                "warning": "Less than 1 GB free!" if free_gb < 1.0 else None,
+            }
+        except FileNotFoundError:
+            checks[f"disk_{key}"] = {"ok": False, "path": p, "error": "path does not exist"}
+        except Exception as e:
+            checks[f"disk_{key}"] = {"ok": False, "path": p, "error": str(e)}
+
+    # rclone-Config lesbar
+    try:
+        import subprocess
+        r = subprocess.run(["rclone", "listremotes"],
+                            capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            remotes = [x.strip(":") for x in r.stdout.split() if x.strip()]
+            checks["rclone"] = {"ok": True, "remotes": remotes}
+        else:
+            checks["rclone"] = {"ok": False, "error": r.stderr.strip()[:200]}
+    except FileNotFoundError:
+        checks["rclone"] = {"ok": False, "error": "rclone binary not found"}
+    except Exception as e:
+        checks["rclone"] = {"ok": False, "error": str(e)}
+
+    overall = all(v.get("ok", False) for v in checks.values())
+    return {"ok": overall, "checks": checks}

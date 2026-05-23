@@ -58,10 +58,15 @@ python3 -m venv "$APP_DIR/venv"
 # 6. yt-dlp via pip (immer aktuelle Version)
 "$APP_DIR/venv/bin/pip" install -U yt-dlp
 
-# 7. Verzeichnisse anlegen
-mkdir -p "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp"
-mkdir -p /mnt/rezepte /mnt/hochzeit
-chown -R $APP_USER:$APP_USER "$APP_DIR" /mnt/rezepte /mnt/hochzeit
+# 7. Verzeichnisse anlegen.
+# Default-Ablage für sortierte Videos liegt INNERHALB des Containers
+# unter /opt/scrapper/files/. Wenn du z.B. einen Bind-Mount willst,
+# editier nach der Installation einfach data/config.yaml -> paths:
+# und passe das Verzeichnis an deinen Mount an.
+mkdir -p "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" \
+         "$APP_DIR/files/rezepte" "$APP_DIR/files/hochzeit" \
+         "$APP_DIR/data/.rclone-cache"
+chown -R $APP_USER:$APP_USER "$APP_DIR"
 
 # 8. Default-Config erstellen wenn fehlt
 if [[ ! -f "$APP_DIR/data/config.yaml" ]]; then

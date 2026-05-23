@@ -19,10 +19,12 @@ web:
   bind_port: 8000
   secret_key: change-this-to-random-string-32chars-min
 
-# Verzeichnisse
+# Verzeichnisse - hier landen die einsortierten Videos.
+# Defaults zeigen auf Container-interne Pfade. Anpassen wenn du z.B.
+# einen Bind-Mount oder rclone-mount nutzt.
 paths:
-  recipe_dir: /mnt/rezepte
-  wedding_dir: /mnt/hochzeit
+  recipe_dir: /opt/scrapper/files/rezepte
+  wedding_dir: /opt/scrapper/files/hochzeit
   temp_dir: /opt/scrapper/temp
   logs_dir: /opt/scrapper/logs
 

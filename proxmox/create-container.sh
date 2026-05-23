@@ -30,13 +30,15 @@ if [[ -z "$TEMPLATE" ]]; then
   echo "▶️  Template automatisch gewählt: $TEMPLATE"
 fi
 
-# NAS Mount-Point (optional - für rclone-sync)
-NAS_MOUNT_HOST="${NAS_MOUNT_HOST:-/mnt/media-nas}"
-NAS_MOUNT_CT="${NAS_MOUNT_CT:-/mnt/media-nas}"
-
-# Medien-Verzeichnisse (für TikTok Scraper)
-MEDIA_MOUNT_HOST="${MEDIA_MOUNT_HOST:-}"   # z.B. /mnt/pve/medien - leer = nicht mounten
-MEDIA_MOUNT_CT="${MEDIA_MOUNT_CT:-/mnt/medien}"
+# Optionale Bind-Mounts. Standardmäßig läuft die App komplett im Container.
+# Wenn du Host-Verzeichnisse durchreichen willst (z.B. NAS, externe Disk,
+# bestehendes Medien-Verzeichnis), setze diese ENV-Vars vor dem Skript-Aufruf:
+#   MOUNT0_HOST=/path/on/host MOUNT0_CT=/mnt/data ./create-container.sh
+#   MOUNT1_HOST=/another/host MOUNT1_CT=/mnt/foo  ./create-container.sh
+MOUNT0_HOST="${MOUNT0_HOST:-}"
+MOUNT0_CT="${MOUNT0_CT:-/mnt/data}"
+MOUNT1_HOST="${MOUNT1_HOST:-}"
+MOUNT1_CT="${MOUNT1_CT:-/mnt/medien}"
 
 echo "▶️  Erstelle LXC Container $CTID ($HOSTNAME)"
 
@@ -70,15 +72,15 @@ pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$TEMPLATE" \
   --onboot 1 \
   --start 0
 
-# Bind-Mounts (NAS + optional Medien)
-if [[ -d "$NAS_MOUNT_HOST" ]]; then
-  echo "🔗 Bind-Mount: $NAS_MOUNT_HOST → $NAS_MOUNT_CT"
-  pct set "$CTID" -mp0 "$NAS_MOUNT_HOST,mp=$NAS_MOUNT_CT"
+# Optionale Bind-Mounts (nur wenn ENV-Vars gesetzt)
+if [[ -n "$MOUNT0_HOST" ]] && [[ -d "$MOUNT0_HOST" ]]; then
+  echo "🔗 Bind-Mount: $MOUNT0_HOST → $MOUNT0_CT"
+  pct set "$CTID" -mp0 "$MOUNT0_HOST,mp=$MOUNT0_CT"
 fi
 
-if [[ -n "$MEDIA_MOUNT_HOST" ]] && [[ -d "$MEDIA_MOUNT_HOST" ]]; then
-  echo "🔗 Bind-Mount: $MEDIA_MOUNT_HOST → $MEDIA_MOUNT_CT"
-  pct set "$CTID" -mp1 "$MEDIA_MOUNT_HOST,mp=$MEDIA_MOUNT_CT"
+if [[ -n "$MOUNT1_HOST" ]] && [[ -d "$MOUNT1_HOST" ]]; then
+  echo "🔗 Bind-Mount: $MOUNT1_HOST → $MOUNT1_CT"
+  pct set "$CTID" -mp1 "$MOUNT1_HOST,mp=$MOUNT1_CT"
 fi
 
 # Container starten
