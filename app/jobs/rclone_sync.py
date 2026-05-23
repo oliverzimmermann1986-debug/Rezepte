@@ -163,6 +163,49 @@ def _pair_stats(path: str) -> Tuple[int, str]:
     return _local_stats(path)
 
 
+def _remote_reachable(path: str, timeout: int = 15) -> Tuple[bool, str]:
+    """Schneller Health-Check vor dem eigentlichen Sync.
+
+    Für rclone-Remotes: `rclone lsf --max-depth=1` mit 15s Timeout.
+    Für lokale Pfade: existiert das Verzeichnis und ist es lesbar?
+
+    Returns (ok, message). Bei (False, msg) sollte der Sync übersprungen
+    werden, statt minutenlang in einem toten Cloud-Endpoint zu hängen.
+    """
+    if not path:
+        return True, ""  # Tolerant für Edge-Cases
+    if _is_remote(path):
+        try:
+            r = subprocess.run(
+                ["rclone", "lsf", path, "--max-depth", "1",
+                 *_rclone_cache_args()],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            if r.returncode == 0:
+                return True, "ok"
+            # Nicht-Null exit aber kein Crash: häufig "directory not found"
+            # was beim ersten Sync ok ist (rclone legt es an).
+            err = (r.stderr or "")[:200].strip()
+            if "directory not found" in err.lower() or "not found" in err.lower():
+                return True, "directory empty/new"
+            return False, f"rclone lsf exit={r.returncode}: {err}"
+        except subprocess.TimeoutExpired:
+            return False, f"timeout nach {timeout}s - Remote evtl. nicht erreichbar"
+        except FileNotFoundError:
+            return False, "rclone Binary nicht gefunden"
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
+    # Lokaler Pfad: Existenz reicht
+    p = Path(path)
+    if p.exists():
+        return True, "ok"
+    # Existiert nicht ist beim ersten Sync ok - rclone legt es an wenn
+    # mkdir-Permission da ist. Wir prüfen daher die parent-Existenz.
+    if p.parent.exists():
+        return True, "wird beim ersten Sync angelegt"
+    return False, f"weder Pfad noch Parent existiert: {path}"
+
+
 def _rclone_stats_remote(remote: str) -> Tuple[int, str]:
     """Return (file_count, size_human). Bei Fehler (0, '?')"""
     try:
@@ -205,6 +248,19 @@ def _sync_pair(pair: Dict, args: List[str], log_dir: Path, dry_run: bool) -> Dic
     name = pair["name"]
     remote = pair["remote"]
     local = pair["local"]
+
+    # Pre-Health-Check: beide Seiten erreichbar? Spart 5-30 min hängende
+    # Subprozesse bei pCloud-Outage o.ä.
+    rok, rmsg = _remote_reachable(remote)
+    lok, lmsg = _remote_reachable(local)
+    if not rok or not lok:
+        logger.error(f"[{name}] Pre-Check failed: remote={rmsg!r} local={lmsg!r}")
+        return {
+            "name": name, "remote": remote, "local": local,
+            "ok": False,
+            "error": f"Pre-Check fail (remote: {rmsg} / local: {lmsg})",
+            "skipped": True,
+        }
 
     # Nur mkdir wenn die zweite Seite tatsächlich ein lokaler Pfad ist.
     # Cloud→Cloud-Pairs (z.B. pcloud:/x ↔ gdrive:/y) haben keinen
@@ -409,6 +465,14 @@ def run_quick(remote_path: str, local_path: str, direction: str = "bisync",
     """
     from ..config_store import get_config as _gc
     cfg = _gc()
+
+    # Pre-Health-Check: spart Quick-Sync-Jobs die minutenlang in toten
+    # Cloud-Endpoints hängen.
+    rok, rmsg = _remote_reachable(remote_path)
+    lok, lmsg = _remote_reachable(local_path)
+    if not rok or not lok:
+        return {"ok": False, "error": f"Pre-Check fail (remote: {rmsg} / local: {lmsg})",
+                "skipped": True, "remote": remote_path, "local": local_path}
 
     log_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs")) / "rclone"
     log_dir.mkdir(parents=True, exist_ok=True)
