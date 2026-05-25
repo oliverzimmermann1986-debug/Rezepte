@@ -7,6 +7,9 @@ function scrapperApp() {
     rcloneFilterText: '',
     pairArgsText: {},      // idx -> textarea content for per-pair args
     filterBusy: false,
+    maintenance: null,
+    maintBusy: false,
+    maintenanceOutput: '',
     pending: [],
     history: [],
     jobs: [],
@@ -481,6 +484,52 @@ function scrapperApp() {
       this.weddingCategories = cfg.wedding_categories || this.weddingCategories;
       this.loadSchedule();
       this.loadFilterFile();   // rclone-Filter parallel laden
+      this.loadMaintenance();  // Wartungs-Stats parallel
+    },
+    async loadMaintenance() {
+      this.maintBusy = true;
+      try {
+        const [logs, backups] = await Promise.all([
+          this.api('GET', '/api/config/logs/stats'),
+          this.api('GET', '/api/config/backups/list'),
+        ]);
+        this.maintenance = { logs, backups: backups.tiers || {} };
+      } catch(e) {
+        // Endpoint evtl. nicht da (alte Version): kein crash
+      } finally {
+        this.maintBusy = false;
+      }
+    },
+    async runLogCleanup() {
+      if (!confirm('Logs älter als '
+                   + (this.config.paths.log_retention_days || 30)
+                   + ' Tage jetzt löschen?')) return;
+      this.maintBusy = true;
+      this.maintenanceOutput = '';
+      try {
+        const r = await this.api('POST', '/api/config/logs/cleanup');
+        this.maintenanceOutput = (r.stdout || '') + (r.stderr ? '\n[STDERR]\n' + r.stderr : '');
+        this.showToast(r.ok ? 'Log-Cleanup ok' : 'Fehler im Cleanup', r.ok ? 'ok' : 'error');
+        await this.loadMaintenance();
+      } catch(e) {
+        this.showToast('Cleanup-Fehler: ' + e, 'error');
+      } finally {
+        this.maintBusy = false;
+      }
+    },
+    async runBackupNow() {
+      this.maintBusy = true;
+      this.maintenanceOutput = '';
+      try {
+        const r = await this.api('POST', '/api/config/backups/run-now');
+        this.maintenanceOutput = (r.stdout || '') + (r.stderr ? '\n[STDERR]\n' + r.stderr : '');
+        this.showToast(r.ok ? 'Backup ok' : 'Backup-Fehler', r.ok ? 'ok' : 'error');
+        await this.loadMaintenance();
+      } catch(e) {
+        this.showToast('Backup-Fehler: ' + e, 'error');
+      } finally {
+        this.maintBusy = false;
+      }
     },
     async saveConfig() {
       // rclone-args aus textarea zurück in array

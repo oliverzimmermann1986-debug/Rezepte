@@ -153,3 +153,88 @@ def save_filter_file(body: FilterPayload) -> dict:
         return {"ok": True, "path": str(path), "bytes": len(body.content.encode("utf-8"))}
     except Exception as e:
         raise HTTPException(500, f"Schreibfehler: {e}")
+
+
+# ---------------- Log + Backup Management ----------------
+
+@router.get("/logs/stats")
+def logs_stats() -> dict:
+    """Belegung des Logs-Verzeichnisses (Anzahl, Bytes, ältester File)."""
+    cfg = get_config()
+    logs_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs"))
+    if not logs_dir.exists():
+        return {"path": str(logs_dir), "exists": False, "count": 0, "total_bytes": 0}
+    count = 0
+    total = 0
+    oldest = None
+    for p in logs_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        try:
+            st = p.stat()
+            count += 1
+            total += st.st_size
+            if oldest is None or st.st_mtime < oldest:
+                oldest = st.st_mtime
+        except OSError:
+            pass
+    return {
+        "path": str(logs_dir), "exists": True,
+        "count": count, "total_bytes": total,
+        "oldest_age_days": round((__import__('time').time() - oldest) / 86400, 1) if oldest else 0,
+        "retention_days": int(cfg.get("paths", "log_retention_days", default=30) or 30),
+    }
+
+
+@router.post("/logs/cleanup")
+def logs_cleanup(days: int = None) -> dict:
+    """Triggert Log-Cleanup synchron. Optional 'days'-Parameter überschreibt Config."""
+    import subprocess as _sp
+    import sys as _sys
+    cmd = [_sys.executable, "-m", "app.cli", "log-cleanup"]
+    if days is not None:
+        cmd.append(str(days))
+    try:
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=120, cwd="/opt/scrapper")
+        return {"ok": r.returncode == 0, "stdout": r.stdout[-1500:],
+                "stderr": r.stderr[-1500:] if r.stderr else ""}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/backups/list")
+def backups_list() -> dict:
+    """Listet alle vorhandenen DB-Backups gegliedert nach Tier."""
+    cfg = get_config()
+    data_dir = Path(cfg.get("paths", "data_dir", default="/opt/scrapper/data"))
+    backups_root = data_dir / "backups"
+    tiers: dict = {}
+    if backups_root.exists():
+        for tier in ("daily", "weekly", "monthly"):
+            tier_dir = backups_root / tier
+            if not tier_dir.exists():
+                continue
+            files = sorted(tier_dir.glob("scrapper-*.db*"),
+                           key=lambda p: p.stat().st_mtime, reverse=True)
+            tiers[tier] = [{
+                "name": f.name, "path": str(f),
+                "size_bytes": f.stat().st_size,
+                "mtime": f.stat().st_mtime,
+            } for f in files]
+    return {"tiers": tiers, "backups_root": str(backups_root)}
+
+
+@router.post("/backups/run-now")
+def backups_run_now() -> dict:
+    """Triggert ein DB-Backup synchron via CLI."""
+    import subprocess as _sp
+    import sys as _sys
+    try:
+        r = _sp.run(
+            [_sys.executable, "-m", "app.cli", "db-backup"],
+            capture_output=True, text=True, timeout=300, cwd="/opt/scrapper",
+        )
+        return {"ok": r.returncode == 0, "stdout": r.stdout[-2000:],
+                "stderr": r.stderr[-2000:] if r.stderr else ""}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

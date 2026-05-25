@@ -234,6 +234,51 @@ def _cmd_list_backups(args: list) -> int:
     return 0
 
 
+def _cmd_log_cleanup(args: list) -> int:
+    """Löscht Log-Files älter als N Tage. Default: 30.
+    Liest log_retention_days aus config wenn ohne Args."""
+    cfg = get_config()
+    if args and args[0]:
+        try:
+            days = int(args[0])
+        except ValueError:
+            print(f"✗ ungültige Tage-Zahl: {args[0]}", file=sys.stderr)
+            return 1
+    else:
+        days = int(cfg.get("paths", "log_retention_days", default=30) or 30)
+
+    logs_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs"))
+    if not logs_dir.exists():
+        print(f"ℹ Logs-Verzeichnis existiert nicht: {logs_dir}")
+        return 0
+
+    print(f"🧹 Lösche Log-Files älter als {days} Tage in {logs_dir}")
+    cutoff = time.time() - days * 86400
+    removed = 0
+    bytes_freed = 0
+    errors = 0
+
+    for p in logs_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        # Nur Files mit Log-Endungen (Vorsicht falls jemand andere Files reingelegt hat)
+        if p.suffix not in (".log", ".gz", ".txt", ".out"):
+            continue
+        try:
+            if p.stat().st_mtime < cutoff:
+                size = p.stat().st_size
+                p.unlink()
+                removed += 1
+                bytes_freed += size
+        except Exception as e:
+            errors += 1
+            print(f"  ! kann nicht löschen: {p}: {e}", file=sys.stderr)
+
+    mb_freed = bytes_freed / 1024 / 1024
+    print(f"✓ {removed} Files gelöscht, {mb_freed:.1f} MB frei ({errors} Fehler)")
+    return 0
+
+
 def main() -> int:
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help", "help"):
@@ -244,7 +289,8 @@ def main() -> int:
             "  python -m app.cli db-backup [PATH]    # multi-tier wenn ohne PATH\n"
             "  python -m app.cli db-restore PATH     # Service vorher stoppen!\n"
             "  python -m app.cli db-vacuum           # Reclaim Disk-Speicher\n"
-            "  python -m app.cli list-backups",
+            "  python -m app.cli list-backups\n"
+            "  python -m app.cli log-cleanup [DAYS]  # Default aus config (30)",
             file=sys.stderr,
         )
         return 1
@@ -261,6 +307,8 @@ def main() -> int:
         return _cmd_db_vacuum(args[1:])
     if cmd == "list-backups":
         return _cmd_list_backups(args[1:])
+    if cmd == "log-cleanup":
+        return _cmd_log_cleanup(args[1:])
     print(f"Unbekanntes Kommando: {cmd}", file=sys.stderr)
     return 1
 

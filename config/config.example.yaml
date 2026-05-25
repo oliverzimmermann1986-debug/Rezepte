@@ -27,6 +27,9 @@ paths:
   wedding_dir: /opt/scrapper/files/hochzeit
   temp_dir: /opt/scrapper/temp
   logs_dir: /opt/scrapper/logs
+  # Log-Files älter als N Tage werden täglich (via Timer) gelöscht.
+  # 0 = nie löschen.
+  log_retention_days: 30
 
 # E-Mail Konten (2 separate Inboxes - kein Betreff-Check mehr nötig!)
 mail:

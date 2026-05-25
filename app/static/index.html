@@ -1150,6 +1150,69 @@
             </div>
           </div>
 
+          <!-- Wartung: Logs + Backups -->
+          <div class="card" style="margin-top: 18px;">
+            <div class="card-head">
+              <h3>Wartung</h3>
+              <button class="btn btn-ghost" @click="loadMaintenance()" :disabled="maintBusy">
+                <span x-show="!maintBusy">⟳</span>
+                <span x-show="maintBusy">…</span>
+              </button>
+            </div>
+
+            <!-- Logs -->
+            <h4 style="margin: 8px 0; font-size:12px; color: var(--fg-dim); text-transform: uppercase">Logs</h4>
+            <div class="row">
+              <div class="field">
+                <label>Aufbewahrung (Tage)</label>
+                <input type="number" min="0" max="365" x-model.number="config.paths.log_retention_days" placeholder="30">
+                <div class="hint">0 = nie löschen. Cleanup läuft täglich um 04:00 mit Backup.</div>
+              </div>
+              <div class="field">
+                <label>Aktueller Verbrauch</label>
+                <div class="value" style="padding: 8px 0;">
+                  <span x-show="maintenance && maintenance.logs"
+                        x-text="maintenance && maintenance.logs ? (formatBytes(maintenance.logs.total_bytes) + ' · ' + maintenance.logs.count + ' Files · ältester: ' + maintenance.logs.oldest_age_days + ' Tage') : '—'"></span>
+                  <span x-show="!maintenance">…</span>
+                </div>
+              </div>
+            </div>
+            <div style="margin-top: 6px;">
+              <button class="btn" @click="runLogCleanup()" :disabled="maintBusy">🧹 Logs jetzt aufräumen</button>
+            </div>
+
+            <!-- DB Backups -->
+            <h4 style="margin: 22px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">DB-Backups</h4>
+            <div style="margin-bottom: 12px;">
+              <button class="btn btn-primary" @click="runBackupNow()" :disabled="maintBusy">💾 Backup jetzt erstellen</button>
+              <span class="hint" style="margin-left: 8px;">
+                Multi-Tier: täglich (7 T) · wöchentlich (4 W) · monatlich (12 M)
+              </span>
+            </div>
+            <template x-for="tier in ['daily','weekly','monthly']" :key="tier">
+              <div x-show="maintenance && maintenance.backups && maintenance.backups[tier] && maintenance.backups[tier].length > 0"
+                   style="margin-bottom: 10px;">
+                <div style="font-size: 11px; color: var(--fg-dim); text-transform: uppercase; margin-bottom: 4px;"
+                     x-text="tier + ' (' + (maintenance && maintenance.backups && maintenance.backups[tier] ? maintenance.backups[tier].length : 0) + ' Backups)'"></div>
+                <div class="mono" style="font-size: 11px; max-height: 110px; overflow-y: auto; background: var(--bg); padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px;">
+                  <template x-for="b in (maintenance && maintenance.backups && maintenance.backups[tier] || [])" :key="b.name">
+                    <div x-text="formatTs(b.mtime) + '  ' + (b.size_bytes/1024/1024).toFixed(2) + ' MB  ' + b.name"
+                         style="padding: 2px 0;"></div>
+                  </template>
+                </div>
+              </div>
+            </template>
+            <div x-show="maintenance && maintenance.backups && !maintenance.backups.daily && !maintenance.backups.weekly && !maintenance.backups.monthly"
+                 class="muted" style="font-size: 12px;">
+              Noch keine Backups vorhanden. Klick „Backup jetzt erstellen" oder warte auf den nächsten Timer-Run um 04:00.
+            </div>
+
+            <!-- Output vom letzten Cleanup/Backup -->
+            <div x-show="maintenanceOutput" class="mono"
+                 style="margin-top: 14px; font-size: 11px; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; max-height: 200px; overflow-y: auto; white-space: pre-wrap;"
+                 x-text="maintenanceOutput"></div>
+          </div>
+
           <div style="text-align: right; margin: 20px 0 60px;">
             <button class="btn btn-primary" @click="saveConfig()">💾 Speichern</button>
           </div>

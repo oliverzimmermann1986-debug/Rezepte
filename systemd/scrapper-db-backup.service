@@ -1,5 +1,5 @@
 [Unit]
-Description=Scrapper SQLite Online-Backup
+Description=Scrapper SQLite Online-Backup + VACUUM + Log-Cleanup
 After=scrapper-web.service
 
 [Service]
@@ -9,8 +9,11 @@ Group=scrapper
 WorkingDirectory=/opt/scrapper
 Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
 Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
-# Backup nach data/backups/scrapper-YYYY-MM-DD.db
+# 1. Backup nach data/backups/{daily,weekly,monthly}/scrapper-*.db.gz
 ExecStart=/opt/scrapper/venv/bin/python -m app.cli db-backup
-# Backups älter als 30 Tage löschen
-ExecStartPost=/bin/bash -c 'find /opt/scrapper/data/backups -name "scrapper-*.db" -mtime +30 -delete 2>/dev/null || true'
-TimeoutStartSec=300
+# 2. Log-Cleanup nach paths.log_retention_days
+ExecStart=/opt/scrapper/venv/bin/python -m app.cli log-cleanup
+# 3. VACUUM nur sonntags (um Mehraufwand zu beschränken; das gleiche Timer
+#    feuert täglich, aber VACUUM einmal pro Woche reicht)
+ExecStart=/bin/bash -c '[ "$(date +%%u)" = "7" ] && /opt/scrapper/venv/bin/python -m app.cli db-vacuum || true'
+TimeoutStartSec=600
