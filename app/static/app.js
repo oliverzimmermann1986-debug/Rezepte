@@ -352,6 +352,8 @@ function scrapperApp() {
     // ------------- Pending -------------
     pendingSort: 'newest',
     selectedPending: [],
+    failedDownloads: [],
+    retryingUrl: null,
     bulkBusy: false,
 
     async loadPending() {
@@ -849,6 +851,45 @@ function scrapperApp() {
         delete this.reanalyzing[item.url];
       }
     },
+
+    // ---------------- Failed Downloads (Email Recovery) ----------------
+    async loadFailedDownloads() {
+      try {
+        this.failedDownloads = await this.api('GET', '/api/pending/failed') || [];
+      } catch(e) {
+        // Endpoint evtl. nicht da (alte Backend-Version)
+        this.failedDownloads = [];
+      }
+    },
+    async retryFailed(url) {
+      this.retryingUrl = url;
+      try {
+        const r = await this.api('POST', '/api/pending/failed/'
+                                   + encodeURIComponent(url) + '/retry');
+        if (r && r.ok) {
+          this.showToast('Counter zurückgesetzt - URL wird beim nächsten Mail-Sync neu versucht', 'ok');
+          await this.loadFailedDownloads();
+        } else {
+          this.showToast('Reset fehlgeschlagen', 'error');
+        }
+      } catch(e) {
+        this.showToast('Fehler: ' + e, 'error');
+      } finally {
+        this.retryingUrl = null;
+      }
+    },
+    async clearAllFailed() {
+      const n = this.failedDownloads.length;
+      if (!confirm('Alle ' + n + ' Failure-Counter zurücksetzen? Die URLs werden beim nächsten Mail-Sync nochmal versucht (sofern noch in einer Mail vorhanden).')) return;
+      try {
+        const r = await this.api('POST', '/api/pending/failed/clear-all');
+        this.showToast((r && r.cleared || n) + ' Counter zurückgesetzt', 'ok');
+        await this.loadFailedDownloads();
+      } catch(e) {
+        this.showToast('Fehler: ' + e, 'error');
+      }
+    },
+
     async reanalyzeAll() {
       if (!confirm('Alle ' + this.pending.length + ' Pending-Items neu analysieren? Das läuft im Hintergrund als Job.')) return;
       try {

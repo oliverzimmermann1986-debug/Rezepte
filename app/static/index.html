@@ -17,7 +17,7 @@
     <div class="nav-item" :class="page==='dashboard' && 'active'" @click="page='dashboard'">
       ▤ Dashboard
     </div>
-    <div class="nav-item" :class="page==='pending' && 'active'" @click="page='pending'; loadPending()">
+    <div class="nav-item" :class="page==='pending' && 'active'" @click="page='pending'; loadPending(); loadFailedDownloads()">
       ⧗ Pending
       <span class="badge" x-show="status.pending_count > 0" x-text="status.pending_count"></span>
     </div>
@@ -447,6 +447,62 @@
             </div>
           </div>
         </template>
+      </div>
+
+      <!-- ========== Fehlgeschlagene Downloads ========== -->
+      <div class="card" style="margin-top: 24px;">
+        <div class="card-head">
+          <h3>
+            Wiederholbare Fehler
+            <span class="muted" style="font-weight: normal; font-size: 12px;"
+                  x-show="failedDownloads.length > 0"
+                  x-text="'· ' + failedDownloads.length + ' URLs'"></span>
+          </h3>
+          <div class="flex">
+            <button class="btn" @click="loadFailedDownloads()">⟳</button>
+            <button class="btn btn-danger" @click="clearAllFailed()"
+                    x-show="failedDownloads.length > 0">
+              ↻ Alle zurücksetzen
+            </button>
+          </div>
+        </div>
+        <p class="muted" style="font-size: 12px; margin: 0 0 12px;">
+          URLs deren Download mehrfach gescheitert ist (yt-dlp Fehler nach 3 Versuchen).
+          Beim Zurücksetzen werden sie beim nächsten Mail-Sync nochmal versucht -
+          aber nur wenn sie noch in einer Email vorhanden sind.
+        </p>
+        <div x-show="failedDownloads.length === 0" class="muted" style="text-align:center; padding: 12px;">
+          Keine fehlgeschlagenen Downloads.
+        </div>
+        <div x-show="failedDownloads.length > 0" class="table-wrap" style="overflow-x: auto;">
+          <table class="data-table" style="width:100%; font-size: 12px;">
+            <thead>
+              <tr>
+                <th style="text-align:left;">URL</th>
+                <th style="text-align:right;">Versuche</th>
+                <th style="text-align:right;">Letzter Fehler</th>
+                <th style="text-align:right;">Letzter Versuch</th>
+                <th style="text-align:right;">Aktion</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="f in failedDownloads" :key="f.url">
+                <tr>
+                  <td class="mono" style="font-size: 11px; word-break: break-all;" x-text="f.url"></td>
+                  <td style="text-align:right;" class="mono" x-text="f.attempts"></td>
+                  <td class="muted" style="font-size: 11px; max-width: 280px; word-break: break-word;" x-text="(f.last_error || '—').slice(0, 100)"></td>
+                  <td style="text-align:right;" class="mono muted" x-text="formatTs(f.last_try)"></td>
+                  <td style="text-align:right;">
+                    <button class="btn" @click="retryFailed(f.url)" :disabled="retryingUrl === f.url">
+                      <span x-show="retryingUrl !== f.url">↻ Reset</span>
+                      <span x-show="retryingUrl === f.url">…</span>
+                    </button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
 

@@ -269,6 +269,24 @@ class Database:
         with self.conn() as c:
             c.execute("DELETE FROM download_failures WHERE url=?", (url,))
 
+    def download_failures_list(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Liste aller URLs die mehrfach fehlgeschlagen sind. Für Re-Process-UI."""
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT url, first_seen, last_try, attempts, last_error "
+                "FROM download_failures "
+                "ORDER BY last_try DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def download_failures_clear_all(self) -> int:
+        """Alle Failure-Einträge löschen damit URLs beim nächsten Mail-Sync
+        nochmal versucht werden. Returnt Anzahl gelöschter Zeilen."""
+        with self.conn() as c:
+            cur = c.execute("DELETE FROM download_failures")
+            return cur.rowcount
+
     # ---------------- Jobs ----------------
     def job_start(self, kind: str, log_file: str = "") -> int:
         with self.conn() as c:

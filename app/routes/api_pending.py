@@ -243,3 +243,38 @@ def reanalyze_progress():
         "elapsed_sec": round(_t.time() - float(running["started_at"])),
         "summary": running.get("summary") or {},
     }
+
+
+# ---------------- Failed Downloads (Email Recovery) ----------------
+
+@router.get("/failed")
+def list_failed_downloads(limit: int = 100) -> List[Dict[str, Any]]:
+    """Liste aller URLs, deren Download mehrfach fehlgeschlagen ist.
+
+    Werden vom Scraper nach MAX_DOWNLOAD_ATTEMPTS (default 3) übersprungen.
+    Diese Liste zeigt sie, damit der User entscheiden kann was tun:
+    - Retry-Counter zurücksetzen (URL wird beim nächsten Mail-Sync neu versucht)
+    - Komplett aus dem Failed-Tracking löschen
+    """
+    return get_db().download_failures_list(limit=limit)
+
+
+@router.post("/failed/{url:path}/retry")
+def retry_failed(url: str) -> Dict[str, Any]:
+    """Setzt Failure-Counter für diese URL zurück.
+
+    Hinweis: Damit der Sync sie tatsächlich nochmal versucht, muss die
+    URL noch in einer Email vorhanden sein. Wenn die Mail bereits weg
+    ist, hilft auch Reset nicht - dann muss die URL manuell in eine
+    neue Email gestellt und der Scraper getriggert werden.
+    """
+    get_db().download_failure_clear(url)
+    return {"ok": True, "url": url, "reset": True}
+
+
+@router.post("/failed/clear-all")
+def clear_all_failed() -> Dict[str, Any]:
+    """Alle Failure-Counter löschen. Bei nächstem Mail-Sync werden alle
+    noch in Mails enthaltenen URLs nochmal versucht."""
+    count = get_db().download_failures_clear_all()
+    return {"ok": True, "cleared": count}

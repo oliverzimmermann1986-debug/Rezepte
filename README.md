@@ -202,8 +202,23 @@ sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli set-password
 # Session-Secret rotieren (invalidiert alle aktiven Sessions)
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli rotate-secret
 
-# SQLite-Online-Backup (läuft automatisch via systemd-Timer täglich um 04:00)
+# SQLite-Online-Backup mit gzip + integrity-check + multi-tier retention
+# (läuft automatisch via systemd-Timer täglich um 04:00)
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-backup [pfad]
+
+# Restore aus einem Backup. Service vorher stoppen!
+sudo systemctl stop scrapper-web
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-restore /opt/scrapper/data/backups/daily/scrapper-2026-05-22.db.gz
+sudo systemctl start scrapper-web
+
+# Alle Backups auflisten gegliedert nach Tier
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli list-backups
+
+# SQLite-Speicher reclaimen (läuft automatisch sonntags)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-vacuum
+
+# Logs aufräumen (älter als paths.log_retention_days)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli log-cleanup [days]
 ```
 
 ```bash
@@ -216,10 +231,95 @@ journalctl -u scrapper-web -f
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.jobs.scraper_cli
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.jobs.backup_cli --dry-run
 
-# Daily DB-Backup-Timer aktivieren
+# Daily DB-Backup-Timer aktivieren (läuft 04:00, macht auch log-cleanup + sonntags vacuum)
 systemctl enable --now scrapper-db-backup.timer
 systemctl list-timers scrapper-db-backup
 ```
+
+## Disaster Recovery
+
+Wenn Container/VM/Disk weg ist - so kommst du zurück. Voraussetzung ist
+ein Backup unter `/opt/scrapper/data/backups/` (existiert wenn der DB-
+Backup-Timer mindestens einmal lief).
+
+### 1. Backups regelmäßig off-site sichern
+
+Die täglichen Backups landen in `data/backups/daily/scrapper-YYYY-MM-DD.db.gz`.
+Sichere die idealerweise **außerhalb** des Containers. Optionen:
+
+```bash
+# Variante A: rclone in eine Cloud schieben (das gleiche pCloud das du eh nutzt)
+sudo -u scrapper rclone copy /opt/scrapper/data/backups/ pcloud:/scrapper-backups/
+
+# Variante B: cron-Job der das täglich nach 04:30 macht
+cat > /etc/cron.d/scrapper-offsite-backup <<'EOF'
+30 4 * * * scrapper rclone copy /opt/scrapper/data/backups/ pcloud:/scrapper-backups/ --max-age 25h
+EOF
+
+# Variante C: Proxmox-Backup vom kompletten Container (vzdump)
+# Auf dem Proxmox-Host: einmal pro Tag automatisch
+```
+
+Plus die `config.yaml` separat sichern (enthält Mail-Passwörter, Webhook-URLs).
+
+### 2. Restore-Playbook
+
+Wenn der Container weg ist und du in einer neuen Umgebung neu aufbauen musst:
+
+```bash
+# Schritt 1: Neuen LXC anlegen + Repo klonen + install.sh
+pct create <neuer-ctid> ... (siehe Setup-Block oben)
+pct enter <neuer-ctid>
+cd /opt
+git clone https://github.com/appear7240/Scrappercontainer.git scrapper
+cd scrapper
+bash proxmox/install.sh
+
+# Schritt 2: Backup zurückspielen
+sudo systemctl stop scrapper-web
+# - DB-Backup nach Container kopieren (z.B. via rclone aus der Off-Site-Kopie)
+sudo -u scrapper rclone copy pcloud:/scrapper-backups/daily/scrapper-2026-05-22.db.gz \
+    /opt/scrapper/data/backups/daily/
+# - Restore
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-restore \
+    /opt/scrapper/data/backups/daily/scrapper-2026-05-22.db.gz
+
+# Schritt 3: Config zurückspielen
+# Sichere config.yaml aus dem letzten Off-Site-Backup übertragen
+sudo cp /tmp/backup-config.yaml /opt/scrapper/data/config.yaml
+sudo chown scrapper:scrapper /opt/scrapper/data/config.yaml
+sudo chmod 600 /opt/scrapper/data/config.yaml
+
+# Schritt 4: rclone-Config (für die Cloud-Sync-Pairs)
+# /home/scrapper/.rclone.conf rüberkopieren oder neu mit 'rclone config' aufbauen
+
+# Schritt 5: Service starten + healthz prüfen
+sudo systemctl start scrapper-web
+curl -s http://127.0.0.1:8000/healthz/deep | jq
+
+# Schritt 6: Im Web-UI einloggen, Test-Buttons drücken (Mail, Ollama, rclone-Pairs)
+```
+
+### 3. Was nicht im Backup ist
+
+- **rclone-Config** (`/home/scrapper/.rclone.conf`) - separat sichern
+- **yt-dlp Cookies-Datei** (falls konfiguriert)
+- **Bereits einsortierte Videos** in den Recipe/Wedding-Folders (sind ja in pCloud bzw. lokalen Pfaden, idealerweise eh per rclone gesynced)
+- **systemd-Customizations** (falls du die Unit-Files manuell angepasst hast - normalerweise nicht nötig da `cp systemd/* /etc/systemd/system/` reicht)
+
+### 4. Failed-Email-Recovery
+
+Wenn yt-dlp eine URL nicht runterladen kann, wird der Versuch in der DB
+getrackt. Nach `MAX_DOWNLOAD_ATTEMPTS=3` Fehlversuchen wird die URL beim
+nächsten Mail-Sync übersprungen.
+
+Im UI unter **Pending → Wiederholbare Fehler** siehst du diese URLs mit
+Versuchszahl + letztem Fehler. Reset-Button setzt den Counter zurück -
+beim nächsten Mail-Sync wird die URL nochmal versucht (sofern noch in
+einer Email vorhanden). Häufige Ursachen für Failures:
+- Video privat/gelöscht → Cookies-Datei kann helfen (siehe yt-dlp-Config)
+- yt-dlp veraltet → `pip install -U yt-dlp` im scrapper-venv
+- Cloudflare-Block → User-Agent ändern oder Cookies setzen
 
 ## Monitoring
 
