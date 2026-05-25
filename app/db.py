@@ -7,6 +7,7 @@ Persistente Speicherung für:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -383,24 +384,91 @@ class Database:
             )
             return cur.rowcount or 0
 
-    def backup_to(self, dest_path) -> dict:
+    def backup_to(self, dest_path, *, compress: bool = False, verify: bool = True) -> dict:
         """Online-Backup der SQLite-DB via PRAGMA-basierte .backup-API.
         Konsistent auch bei laufenden Writes (keine Locks nötig).
-        Returnt {ok, dest, size_bytes} oder {ok: False, error}.
+
+        Args:
+            dest_path: Zielpfad. Bei compress=True wird '.gz' angehängt falls noch nicht da.
+            compress:  Backup mit gzip komprimieren (~60-80% kleiner).
+            verify:    Nach Backup PRAGMA integrity_check ausführen.
+
+        Returnt {ok, dest, size_bytes, compressed, verified} oder {ok: False, error}.
         """
         from pathlib import Path as _P
+        import gzip
+        import shutil
+
         dest = _P(dest_path)
+        if compress and not str(dest).endswith(".gz"):
+            dest = _P(str(dest) + ".gz")
         dest.parent.mkdir(parents=True, exist_ok=True)
+
+        # Erst nach temp-Datei schreiben, dann atomic move/gzip - so kein
+        # halb-fertiges Backup im Ziel-Verzeichnis bei Crash mittendrin.
+        tmp_db = dest.parent / f".tmp-{dest.name}.{os.getpid()}.db"
         try:
+            # Schritt 1: Online-Backup nach tmp-Datei (immer unkomprimiert,
+            # damit wir verify und compress separat machen können).
             src = sqlite3.connect(str(self.path), timeout=10)
-            dst = sqlite3.connect(str(dest), timeout=10)
+            dst = sqlite3.connect(str(tmp_db), timeout=10)
             try:
                 with dst:
                     src.backup(dst)
             finally:
                 src.close()
                 dst.close()
-            return {"ok": True, "dest": str(dest), "size_bytes": dest.stat().st_size}
+
+            # Schritt 2: Integrity-Check der Kopie
+            verified = None
+            if verify:
+                check = sqlite3.connect(str(tmp_db), timeout=10)
+                try:
+                    row = check.execute("PRAGMA integrity_check").fetchone()
+                    verified = (row and row[0] == "ok")
+                    if not verified:
+                        return {"ok": False, "error": f"integrity_check failed: {row}",
+                                "dest": str(dest)}
+                finally:
+                    check.close()
+
+            # Schritt 3: Compress oder Move ins finale Ziel
+            if compress:
+                with open(tmp_db, "rb") as fin, gzip.open(dest, "wb", compresslevel=6) as fout:
+                    shutil.copyfileobj(fin, fout)
+                tmp_db.unlink(missing_ok=True)
+            else:
+                tmp_db.replace(dest)
+
+            return {
+                "ok": True,
+                "dest": str(dest),
+                "size_bytes": dest.stat().st_size,
+                "compressed": bool(compress),
+                "verified": verified,
+            }
+        except Exception as e:
+            try:
+                tmp_db.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return {"ok": False, "error": str(e)}
+
+    def vacuum(self) -> dict:
+        """SQLite-Speicher reclaimen nach vielen Deletes. Schreibt die DB neu
+        und nimmt nur die genutzten Seiten - kann je nach Auslese 10-30%
+        kleiner werden. Sollte gelegentlich (z.B. 1x pro Woche) laufen."""
+        try:
+            with self.conn() as c:
+                size_before = self.path.stat().st_size
+                c.execute("VACUUM")
+                size_after = self.path.stat().st_size
+            return {
+                "ok": True,
+                "size_before": size_before,
+                "size_after": size_after,
+                "reclaimed_bytes": max(0, size_before - size_after),
+            }
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
