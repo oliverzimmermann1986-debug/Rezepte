@@ -23,6 +23,25 @@ URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Attachment-Filename-Endungen die wir verarbeiten. Alles andere wird
+# ignoriert (PDFs für Rezept-Karten/Hochzeitspläne, JPGs für Fotos).
+ATTACHMENT_EXTS = {".pdf", ".jpg", ".jpeg", ".png"}
+
+
+def _decode_filename(part) -> str:
+    """Filename aus Content-Disposition oder Content-Type ziehen + dekodieren."""
+    raw = part.get_filename()
+    if not raw:
+        return ""
+    parts = decode_header(raw)
+    out = ""
+    for p, charset in parts:
+        if isinstance(p, bytes):
+            out += p.decode(charset or "utf-8", errors="ignore")
+        else:
+            out += p
+    return out
+
 
 def _decode_subject(msg) -> str:
     s = msg.get("Subject", "")
@@ -120,8 +139,14 @@ class MailAccount:
                 pass
 
     def fetch_urls(self) -> List[Dict]:
+        """Holt URLs aus Mails (Bestandsverhalten)."""
+        result = self.fetch_all()
+        return result.get("urls", [])
+
+    def fetch_all(self) -> Dict[str, List[Dict]]:
+        """Holt URLs UND Attachments. Returnt {'urls': [...], 'attachments': [...]}."""
         if not self.enabled or not self.username or not self.password:
-            return []
+            return {"urls": [], "attachments": []}
         # 3 Versuche mit exponentiellem Backoff. Gmail wirft sporadisch
         # "imaplib.error: socket error" oder Auth-Glitches; ein Retry
         # eliminiert die meisten False-Failures.
@@ -131,7 +156,7 @@ class MailAccount:
                 logger.info(f"[{self.name}] IMAP-Retry {attempt}/3 nach {sleep_s}s")
                 time.sleep(sleep_s)
             try:
-                return self._fetch_urls_once()
+                return self._fetch_all_once()
             except (imaplib.IMAP4.abort, imaplib.IMAP4.error,
                     OSError, ConnectionError) as e:
                 last_error = e
@@ -139,14 +164,17 @@ class MailAccount:
             except Exception as e:
                 # Unerwartete Exception: nicht retryen, sofort raus
                 logger.error(f"[{self.name}] IMAP-Hardfailure: {e}")
-                return []
+                return {"urls": [], "attachments": []}
         logger.error(f"[{self.name}] IMAP nach 3 Versuchen aufgegeben: {last_error}")
-        return []
+        return {"urls": [], "attachments": []}
 
-    def _fetch_urls_once(self) -> List[Dict]:
-        """Ein einziger Fetch-Durchgang. Wirft Exceptions, die fetch_urls retryt."""
-        results: List[Dict] = []
-        seen: set[str] = set()
+    def _fetch_all_once(self) -> Dict[str, List[Dict]]:
+        """Ein Fetch-Durchgang. Liest URLs aus Body + Attachments aus PDF/JPG."""
+        urls: List[Dict] = []
+        attachments: List[Dict] = []
+        seen_urls: set[str] = set()
+        seen_attach: set[str] = set()   # (mail-msgid, filename) Tupel-Hash
+
         with self._connect() as mail:
             _, data = mail.search(None, "ALL")
             ids = data[0].split()[-self.max_mails:]
@@ -160,22 +188,66 @@ class MailAccount:
                     subject = _decode_subject(msg)
                     body = _extract_body(msg)
                     full = f"{subject}\n{body}"
+                    msg_id = (msg.get("Message-ID") or "").strip() or f"mid-{mid.decode() if isinstance(mid, bytes) else mid}"
+
+                    # 1. URLs aus Body
                     for url in URL_PATTERN.findall(full):
                         url = url.rstrip(".,);]>'\"")
-                        if url in seen:
+                        if url in seen_urls:
                             continue
-                        seen.add(url)
-                        results.append({
+                        seen_urls.add(url)
+                        urls.append({
                             "url": url,
                             "type": self.content_type,
                             "subject": subject,
                             "default_category": self.default_category,
                             "source_account": self.name,
                         })
+
+                    # 2. Attachments (PDF/JPG/PNG)
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            ctype = part.get_content_type()
+                            disp = (part.get("Content-Disposition") or "").lower()
+                            if "attachment" not in disp and "inline" not in disp:
+                                continue
+                            fname = _decode_filename(part)
+                            if not fname:
+                                continue
+                            ext = "." + fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+                            if ext not in ATTACHMENT_EXTS:
+                                continue
+                            payload = part.get_payload(decode=True)
+                            if not payload:
+                                continue
+                            # Dedupe via msg_id+filename
+                            dedupe_key = f"{msg_id}::{fname}"
+                            if dedupe_key in seen_attach:
+                                continue
+                            seen_attach.add(dedupe_key)
+                            attachments.append({
+                                "msg_id": msg_id,
+                                "filename": fname,
+                                "ext": ext,
+                                "content_type": ctype,
+                                "data": payload,             # bytes
+                                "size": len(payload),
+                                "type": self.content_type,   # 'recipe' | 'wedding'
+                                "subject": subject,
+                                "body_excerpt": body[:500],  # Hinweis für die KI
+                                "default_category": self.default_category,
+                                "source_account": self.name,
+                            })
+
                 except Exception as e:
                     logger.warning(f"[{self.name}] Mail {mid}: {e}")
-        logger.info(f"[{self.name}] {len(results)} URLs gefunden")
-        return results
+
+        logger.info(f"[{self.name}] {len(urls)} URLs + {len(attachments)} Attachments gefunden")
+        return {"urls": urls, "attachments": attachments}
+
+    # Bestands-Methode für Backwards-Compat (von Tests / CLI aufgerufen)
+    def _fetch_urls_once(self) -> List[Dict]:
+        return self._fetch_all_once().get("urls", [])
 
 
 class EmailRouter:
@@ -185,6 +257,7 @@ class EmailRouter:
         self.accounts = list(accounts)
 
     def fetch_all(self) -> List[Dict]:
+        """Bestandsverhalten: alle URLs aus allen Konten (deduped per URL)."""
         out: List[Dict] = []
         seen: set[str] = set()
         for acc in self.accounts:
@@ -194,3 +267,24 @@ class EmailRouter:
                 seen.add(item["url"])
                 out.append(item)
         return out
+
+    def fetch_all_with_attachments(self) -> Dict[str, List[Dict]]:
+        """Sammelt URLs + Attachments. URLs deduped via Set, Attachments via msg_id+filename."""
+        urls: List[Dict] = []
+        attachments: List[Dict] = []
+        seen_urls: set[str] = set()
+        seen_attach: set[str] = set()
+        for acc in self.accounts:
+            r = acc.fetch_all()
+            for item in r.get("urls", []):
+                if item["url"] in seen_urls:
+                    continue
+                seen_urls.add(item["url"])
+                urls.append(item)
+            for att in r.get("attachments", []):
+                key = f"{att['msg_id']}::{att['filename']}"
+                if key in seen_attach:
+                    continue
+                seen_attach.add(key)
+                attachments.append(att)
+        return {"urls": urls, "attachments": attachments}

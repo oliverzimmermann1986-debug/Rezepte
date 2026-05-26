@@ -294,7 +294,234 @@ class ScraperJob:
 
         return result
 
-    def _stash_for_pending(self, video: Path) -> Optional[Path]:
+    # ---------------- Mail-Attachments (PDF + JPG/PNG) ----------------
+
+    def _extract_pdf_text(self, pdf_bytes: bytes) -> Optional[str]:
+        """PDF -> Text. Versucht pdfplumber zuerst (besseres Layout-Handling),
+        fällt auf pypdf zurück wenn pdfplumber nicht installiert ist."""
+        try:
+            import pdfplumber
+            from io import BytesIO
+            text_parts = []
+            with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+                # Erste 5 Seiten reichen meist - Rezepte/Hochzeitspläne sind kurz
+                for page in pdf.pages[:5]:
+                    t = page.extract_text() or ""
+                    if t:
+                        text_parts.append(t)
+            return "\n".join(text_parts).strip() or None
+        except ImportError:
+            pass
+        try:
+            import pypdf
+            from io import BytesIO
+            reader = pypdf.PdfReader(BytesIO(pdf_bytes))
+            return "\n".join(p.extract_text() or "" for p in reader.pages[:5]).strip() or None
+        except ImportError:
+            logger.warning("Weder pdfplumber noch pypdf installiert - PDF-Text-Extract nicht möglich")
+            return None
+        except Exception as e:
+            logger.warning(f"PDF-Extract fail: {e}")
+            return None
+
+    def _analyze_image_via_openai(self, image_bytes: bytes, mime: str,
+                                    content_type: str, subject: str,
+                                    categories: list = None):
+        """Bei OpenAI-Provider: Vision-API für JPG/PNG. Schickt das Bild
+        als base64 mit. Returnt RecipeAnalysis oder WeddingAnalysis.
+
+        Nur wenn ai.provider == 'openai' (sonst kann Ollama keine Bilder).
+        """
+        if self.ai_provider != "openai" or not self.ollama:
+            return None
+
+        import base64
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        data_url = f"data:{mime};base64,{b64}"
+
+        if content_type == "recipe":
+            system = (
+                "Du analysierst Bilder von Rezept-Karten oder Food-Fotos. "
+                "Erkenne Rezeptname, Typ (Hauptgericht, Vorspeise, Nachspeise, Snack, "
+                "Frühstück, Getränk, Beilage) und Unterkategorie (Pasta, Fleisch, Fisch, "
+                "Vegetarisch, Vegan, Kuchen, Suppe). Antworte AUSSCHLIESSLICH mit gültigem JSON: "
+                '{"rezeptname":"...","typ":"...","kategorie":"...","confidence":0.85}. '
+                "Bei Unsicherheit nutze 'Unbekannt'."
+            )
+        else:
+            cats = ", ".join(categories or [])
+            system = (
+                "Du analysierst Bilder von Hochzeits-Content "
+                f"(Deko, Foto, Basteln, Einladung, etc.). Mögliche Kategorien: {cats}. "
+                "Erstelle einen kurzen deutschen Namen (max 5 Wörter) UND wähle die passendste "
+                "Kategorie aus der Liste. Antworte AUSSCHLIESSLICH mit gültigem JSON: "
+                '{"name":"Kurzer Name","kategorie":"Deko","confidence":0.85}. '
+            )
+
+        user_content = [
+            {"type": "text", "text": f"Mail-Subject: {subject}"},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]
+
+        try:
+            import requests
+            r = self.ollama.session.post(
+                f"{self.ollama.base_url}/chat/completions",
+                json={
+                    "model": self.ollama.model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_content},
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.2,
+                    "max_tokens": 300,
+                },
+                timeout=self.ollama.timeout,
+            )
+            r.raise_for_status()
+            content = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "")
+            if not content:
+                return None
+            data = json.loads(content)
+            if content_type == "recipe":
+                return RecipeAnalysis.from_dict(data)
+            return WeddingAnalysis(
+                name=data.get("name") or "Unbekannt",
+                category=data.get("kategorie") or data.get("category"),
+                confidence=float(data.get("confidence", 0)),
+            )
+        except Exception as e:
+            logger.warning(f"OpenAI Vision fail: {e}")
+            return None
+
+    def _save_attachment_file(self, target_dir: Path, attachment_data: bytes,
+                                ext: str, info: Dict, source_text: Optional[str] = None) -> None:
+        """Schreibt die Attachment-Datei + info.json + optional die extrahierte
+        Text-Description in den target_dir."""
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_base = target_dir.name
+        (target_dir / f"{file_base}{ext}").write_bytes(attachment_data)
+        if source_text:
+            (target_dir / "description.txt").write_text(source_text, encoding="utf-8")
+        with open(target_dir / "info.json", "w", encoding="utf-8") as f:
+            json.dump(info, f, indent=2, ensure_ascii=False)
+
+    def process_attachment(self, att: Dict, synth_url: str) -> Dict:
+        """Verarbeitet ein Mail-Attachment (PDF/JPG/PNG):
+
+        - PDF: Text via pdfplumber/pypdf extrahieren, durch Text-Analyzer
+        - JPG/PNG: bei OpenAI-Provider via Vision-API; sonst Subject-Fallback
+        - Ergebnis wie Video-Pipeline: Auto-Save bei hoher Confidence, sonst Pending
+        """
+        ext = att["ext"]
+        content_type = att["type"]
+        data = att["data"]
+        subject = att.get("subject", "")
+        body_excerpt = att.get("body_excerpt", "")
+        default_cat = att.get("default_category") or "Sonstiges"
+        result: Dict = {"url": synth_url, "type": content_type, "status": "error"}
+
+        # Description bestimmen
+        if ext == ".pdf":
+            description = self._extract_pdf_text(data) or f"{subject}\n\n{body_excerpt}"
+        else:  # .jpg / .jpeg / .png
+            description = f"{subject}\n\n{body_excerpt}".strip()
+
+        if not description and ext != ".pdf":
+            # Kein Text greifbar
+            description = subject or "(kein Subject)"
+
+        try:
+            if content_type == "recipe":
+                # Bei JPG/PNG + OpenAI-Provider: Vision-Call
+                analysis = None
+                if ext in (".jpg", ".jpeg", ".png"):
+                    mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+                    analysis = self._analyze_image_via_openai(data, mime, "recipe", subject)
+                if not analysis:
+                    analysis = self._analyze_recipe(description)
+
+                if analysis.needs_manual_input(self.confidence_threshold):
+                    self.db.pending_add(
+                        url=synth_url, content_type="recipe",
+                        description=description[:5000],
+                        video_path=None,   # kein Video bei Attachments
+                        ai_suggestion={
+                            "name": analysis.name, "type": analysis.type,
+                            "category": analysis.category, "confidence": analysis.confidence,
+                            "source": "mail-attachment", "filename": att["filename"],
+                        },
+                    )
+                    result.update({"status": "pending", "name": analysis.name})
+                else:
+                    type_n = _sanitize(analysis.type)
+                    cat_n = _sanitize(analysis.category or "Allgemein")
+                    name_n = _sanitize(analysis.name)
+                    target = self.recipe_dir / type_n / cat_n / name_n
+                    if target.exists():
+                        target = target.parent / f"{name_n}_{datetime.now():%Y%m%d_%H%M%S}"
+                    info = {
+                        "url": synth_url, "name": analysis.name, "type": analysis.type,
+                        "category": analysis.category, "confidence": analysis.confidence,
+                        "content_type": "recipe", "source": "mail-attachment",
+                        "filename": att["filename"], "mail_subject": subject,
+                        "description": description[:5000],
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    self._save_attachment_file(target, data, ext, info, description)
+                    self.db.history_add(synth_url, content_type="recipe",
+                                        name=analysis.name, target_dir=str(target))
+                    result.update({"status": "auto", "name": analysis.name, "target": str(target)})
+
+            else:  # wedding
+                analysis = None
+                if ext in (".jpg", ".jpeg", ".png"):
+                    mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+                    analysis = self._analyze_image_via_openai(
+                        data, mime, "wedding", subject,
+                        categories=self.wedding_categories,
+                    )
+                if not analysis:
+                    analysis = self._analyze_wedding(description)
+
+                if analysis.needs_manual_input(self.confidence_threshold) or self.wedding_always_pending:
+                    self.db.pending_add(
+                        url=synth_url, content_type="wedding",
+                        description=description[:5000],
+                        video_path=None,
+                        ai_suggestion={
+                            "name": analysis.name, "category": analysis.category or default_cat,
+                            "confidence": analysis.confidence,
+                            "source": "mail-attachment", "filename": att["filename"],
+                        },
+                    )
+                    result.update({"status": "pending", "name": analysis.name})
+                else:
+                    cat = _sanitize(analysis.category or default_cat)
+                    name_n = _sanitize(analysis.name) if analysis.name.lower() != "unbekannt" \
+                        else f"Mail_{datetime.now():%Y%m%d_%H%M%S}"
+                    target = self.wedding_dir / cat / name_n
+                    if target.exists():
+                        target = target.parent / f"{name_n}_{datetime.now():%Y%m%d_%H%M%S}"
+                    info = {
+                        "url": synth_url, "name": analysis.name,
+                        "wedding_category": analysis.category or default_cat,
+                        "confidence": analysis.confidence,
+                        "content_type": "wedding", "source": "mail-attachment",
+                        "filename": att["filename"], "mail_subject": subject,
+                        "description": description[:5000],
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    self._save_attachment_file(target, data, ext, info, description)
+                    self.db.history_add(synth_url, content_type="wedding",
+                                        name=analysis.name, target_dir=str(target))
+                    result.update({"status": "auto", "name": analysis.name, "target": str(target)})
+        except Exception as e:
+            logger.exception(f"process_attachment fail {att.get('filename')}: {e}")
+            result["error"] = str(e)
+
+        return result
         """Kopiert das Video nach temp_dir/pending/ damit es das Cleanup überlebt."""
         if not video or not video.exists():
             return None
@@ -336,16 +563,20 @@ class ScraperJob:
             summary["duration_sec"] = round(time.time() - start, 1)
             raise RuntimeError(msg)
 
-        items = self.router.fetch_all()
-        summary["fetched"] = len(items)
+        # Mails holen: URLs + Attachments in einem Pass
+        fetched = self.router.fetch_all_with_attachments()
+        url_items = fetched["urls"]
+        attach_items = fetched["attachments"]
+        summary["fetched"] = len(url_items)
+        summary["attachments_fetched"] = len(attach_items)
 
         pending_urls = {p["url"] for p in self.db.pending_list("pending")}
         new_items = [
-            it for it in items
+            it for it in url_items
             if not self.db.history_has(it["url"]) and it["url"] not in pending_urls
         ]
         summary["new"] = len(new_items)
-        logger.info(f"Neue URLs: {len(new_items)}")
+        logger.info(f"Neue URLs: {len(new_items)}, Attachments: {len(attach_items)}")
 
         for item in new_items:
             # Cancel zwischen URLs prüfen - laufende process_url-Calls
@@ -378,6 +609,34 @@ class ScraperJob:
                     summary["errors"] += 1
             except Exception as e:
                 logger.exception(f"URL fehlgeschlagen {url}: {e}")
+                summary["errors"] += 1
+
+        # Attachments verarbeiten (PDF + JPG)
+        summary["attach_auto"] = 0
+        summary["attach_pending"] = 0
+        summary["attach_skipped"] = 0
+        for att in attach_items:
+            if is_cancelled():
+                summary["cancelled"] = True
+                break
+            # Synthetic-URL für Dedupe: msg_id::filename. Wenn schon
+            # in History oder Pending, skip.
+            synth_url = f"mail-attachment://{att['msg_id']}::{att['filename']}"
+            if self.db.history_has(synth_url) or synth_url in pending_urls:
+                summary["attach_skipped"] += 1
+                continue
+            try:
+                r = self.process_attachment(att, synth_url)
+                if r.get("status") == "auto":
+                    summary["attach_auto"] += 1
+                    summary[f"{att['type']}_auto"] += 1
+                elif r.get("status") == "pending":
+                    summary["attach_pending"] += 1
+                    summary[f"{att['type']}_pending"] += 1
+                else:
+                    summary["errors"] += 1
+            except Exception as e:
+                logger.exception(f"Attachment fehlgeschlagen {att.get('filename')}: {e}")
                 summary["errors"] += 1
 
         summary["duration_sec"] = round(time.time() - start, 1)
