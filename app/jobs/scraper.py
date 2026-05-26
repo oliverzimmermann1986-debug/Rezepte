@@ -550,14 +550,19 @@ class ScraperJob:
             "wedding_auto": 0, "wedding_pending": 0,
         }
 
-        # Ollama-Health-Check vor dem Loop. Wenn Ollama tot ist landen sonst
+        # AI-Health-Check vor dem Loop. Wenn der Analyzer tot ist landen sonst
         # ALLE URLs in Pending (weil analyze_* leer zurückkommt) - das wollen
         # wir verhindern und stattdessen den Job sofort als 'error' beenden,
         # damit keine 50 Pending-Items entstehen und keine Videos sinnlos
         # gedownloaded werden.
         if self.ollama_enabled and self.ollama and not self.ollama.health():
-            msg = (f"Ollama nicht erreichbar oder Modell '{self.ollama.model}' fehlt - "
-                   f"Job abgebrochen damit nicht alle URLs in Pending landen")
+            if self.ai_provider == "openai":
+                msg = (f"OpenAI nicht erreichbar oder Modell '{self.ollama.model}' nicht verfügbar - "
+                       f"Details im Server-Log (api_key gültig? Internet vom Container? Billing aktiv?). "
+                       f"Job abgebrochen damit nicht alle URLs in Pending landen")
+            else:
+                msg = (f"Ollama nicht erreichbar oder Modell '{self.ollama.model}' fehlt - "
+                       f"Job abgebrochen damit nicht alle URLs in Pending landen")
             logger.error(msg)
             summary["error"] = msg
             summary["duration_sec"] = round(time.time() - start, 1)

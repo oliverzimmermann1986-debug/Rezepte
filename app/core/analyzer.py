@@ -225,11 +225,30 @@ class OpenAIAnalyzer:
             return None
 
     def health(self) -> bool:
-        """Pingt GET /v1/models. 401 = Key falsch, 200 = ok."""
+        """Pingt GET /v1/models. 401 = Key falsch, 200 = ok.
+        Loggt den konkreten Grund bei Fehler - sonst sieht der User nur
+        'AI nicht erreichbar' ohne zu wissen ob Key, Netz oder Account-Problem."""
         try:
-            r = self.session.get(f"{self.base_url}/models", timeout=5)
-            return r.status_code == 200
-        except Exception:
+            r = self.session.get(f"{self.base_url}/models", timeout=15)
+            if r.status_code == 200:
+                return True
+            if r.status_code == 401:
+                logger.error("OpenAI health: API-Key ungültig (HTTP 401)")
+            elif r.status_code == 403:
+                logger.error("OpenAI health: Zugriff verweigert (HTTP 403) - Account/Billing prüfen")
+            elif r.status_code == 429:
+                logger.error("OpenAI health: Rate limit (HTTP 429)")
+            else:
+                logger.error(f"OpenAI health: HTTP {r.status_code} - {r.text[:200]}")
+            return False
+        except requests.exceptions.Timeout:
+            logger.error(f"OpenAI health: Timeout (15s) gegen {self.base_url}/models - Internet vom Container aus?")
+            return False
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"OpenAI health: keine Verbindung zu {self.base_url}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"OpenAI health: unerwarteter Fehler: {e}")
             return False
 
     def analyze_recipe(self, description: str) -> RecipeAnalysis:
