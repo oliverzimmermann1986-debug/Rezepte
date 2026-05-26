@@ -48,6 +48,12 @@ class ConfigStore:
                 if not isinstance(cur, dict) or k not in cur:
                     return default
                 cur = cur[k]
+            # Explizites null im YAML wie 'ai.fallback_threshold:' (Key
+            # existiert, Wert ist None) soll als 'nicht gesetzt' behandelt
+            # werden, sonst kracht's bei float()/int()-Konvertierungen am
+            # Verwendungsort. Default vorziehen.
+            if cur is None:
+                return default
             # Path-Werte automatisch von leading/trailing whitespace befreien.
             # Tippfehler beim manuellen YAML-Editieren ("/mnt/data/rezepte ")
             # haben sonst zu /healthz-Failures und 'path does not exist' geführt.
