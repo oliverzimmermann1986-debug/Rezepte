@@ -469,7 +469,9 @@ function scrapperApp() {
       cfg.mail.recipe ||= {};
       cfg.mail.wedding ||= {};
       cfg.ai ||= {};
+      cfg.ai.provider ||= 'ollama';
       cfg.ai.ollama ||= {};
+      cfg.ai.openai ||= { api_key: '', model: 'gpt-4o-mini', base_url: '', timeout: 30 };
       cfg.backup ||= {};
       cfg.backup.pairs ||= [];
       cfg.backup.rclone_args ||= [];
@@ -568,7 +570,7 @@ function scrapperApp() {
     // ------------- Tests -------------
     testing: {
       mail_recipe: false, mail_wedding: false,
-      ollama: false,
+      ollama: false, openai: false,
       rclone: false, paths: false, ytdlp: false,
       schedule_preview: false, schedule_save: false,
       webhook: -1,   // Index des gerade getesteten Webhook (-1 = keiner)
@@ -632,6 +634,7 @@ function scrapperApp() {
       this.runTest('mail_' + account, '/api/test/mail', { account });
     },
     testOllama() { this.runTest('ollama', '/api/test/ollama'); },
+    testOpenAI() { this.runTest('openai', '/api/test/openai'); },
     testRclone(pairIndex = null) {
       const body = pairIndex !== null ? { pair_index: pairIndex } : {};
       this.runTest(pairIndex !== null ? 'rclone_' + pairIndex : 'rclone', '/api/test/rclone', body);

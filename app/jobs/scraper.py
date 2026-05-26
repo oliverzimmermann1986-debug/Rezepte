@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 
 from ..config_store import get_config
 from ..db import get_db
-from ..core.analyzer import OllamaAnalyzer, RecipeAnalysis, WeddingAnalysis
+from ..core.analyzer import OllamaAnalyzer, RecipeAnalysis, WeddingAnalysis, build_analyzer
 from ..core.downloader import VideoDownloader
 from ..core.email_processor import MailAccount, EmailRouter
 
@@ -90,22 +90,42 @@ class ScraperJob:
         self.temp_dir = Path(cfg.get("paths", "temp_dir", default="/opt/scrapper/temp"))
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
-        # AI: nur Ollama (fast + optional Fallback)
-        ollama_cfg = cfg.get("ai", "ollama", default={}) or {}
-        self.ollama_enabled = bool(ollama_cfg.get("enabled", True))
-        url = ollama_cfg.get("url", "http://localhost:11434")
-        timeout = int(ollama_cfg.get("timeout", 60))
-        self.ollama = OllamaAnalyzer(
-            url, ollama_cfg.get("model", "qwen2.5:7b-instruct"), timeout
-        ) if self.ollama_enabled else None
-        fb = (ollama_cfg.get("fallback_model") or "").strip()
-        self.ollama_fallback = (
-            OllamaAnalyzer(url, fb, timeout) if (self.ollama_enabled and fb) else None
-        )
+        # AI-Provider: 'ollama' (default) oder 'openai'.
+        # build_analyzer() liefert je nach Config eine OllamaAnalyzer- oder
+        # OpenAIAnalyzer-Instanz mit identischem Interface (analyze_recipe,
+        # analyze_wedding, spellcheck, health).
+        ai_cfg = cfg.get("ai", default={}) or {}
+        provider = (ai_cfg.get("provider") or "ollama").lower().strip()
+        self.ai_provider = provider
 
-        self.confidence_threshold = float(cfg.get("ai", "confidence_threshold", default=0.75))
-        self.fallback_threshold = float(cfg.get("ai", "fallback_threshold", default=0.5))
-        self.min_desc_len = int(cfg.get("ai", "description_min_length", default=20))
+        # Primary-Analyzer
+        try:
+            self.ollama = build_analyzer(ai_cfg)   # name 'ollama' historisch, ist jetzt Provider-agnostisch
+            self.ollama_enabled = True
+        except Exception as e:
+            logger.error(f"AI-Analyzer Init fehlgeschlagen ({provider}): {e}")
+            self.ollama = None
+            self.ollama_enabled = False
+
+        # Fallback-Analyzer: nur bei Ollama sinnvoll (zweites lokales Modell).
+        # Für OpenAI macht ein 'Fallback-Model' keinen Sinn - GPT-4o-mini ist
+        # schon das günstige Modell. Wer Cascade will: ollama-fast → openai.
+        # Das ist aber komplex und selten gefragt - skip für jetzt.
+        self.ollama_fallback = None
+        if provider == "ollama":
+            ollama_cfg = ai_cfg.get("ollama") or {}
+            fb_model = (ollama_cfg.get("fallback_model") or "").strip()
+            if fb_model and self.ollama_enabled:
+                from ..core.analyzer import OllamaAnalyzer
+                self.ollama_fallback = OllamaAnalyzer(
+                    (ollama_cfg.get("url") or "http://localhost:11434").strip(),
+                    fb_model,
+                    int(ollama_cfg.get("timeout") or 60),
+                )
+
+        self.confidence_threshold = float(cfg.get("ai", "confidence_threshold", default=0.75) or 0.75)
+        self.fallback_threshold = float(cfg.get("ai", "fallback_threshold", default=0.5) or 0.5)
+        self.min_desc_len = int(cfg.get("ai", "description_min_length", default=20) or 20)
 
         # Downloader (mit optionalem Cookie-Jar für private Inhalte)
         ytdlp_cfg = cfg.get("ytdlp", default={}) or {}

@@ -61,6 +61,8 @@ mail:
 # zusammen mit der Frame-Extraktion entfernt. Wenn Ollama unsicher ist,
 # landet das Item in der Pending-Liste zur manuellen Zuordnung.
 ai:
+  # Provider: 'ollama' (lokal, default) oder 'openai' (Cloud)
+  provider: ollama
   ollama:
     enabled: true
     url: http://192.168.178.250:11434
@@ -69,8 +71,15 @@ ai:
     # Größeres Modell als Fallback wenn fast unsicher (leer = kein Fallback)
     fallback_model: gemma4:26b
     timeout: 180
+  # OpenAI als Alternative zu Ollama (Cloud-LLM, kostet ~$0.0001 pro Item).
+  # Nur aktiv wenn provider: openai oben gesetzt ist.
+  openai:
+    api_key: ""               # sk-... aus platform.openai.com/api-keys
+    model: gpt-4o-mini        # Empfehlung: gpt-4o-mini (günstig + ausreichend)
+    base_url: ""              # leer = api.openai.com; gesetzt für Azure / OpenRouter / etc.
+    timeout: 30
   # Confidence-Schwellen
-  confidence_threshold: 0.75       # fast-Modell: darunter → fallback-Modell
+  confidence_threshold: 0.75       # primary-Modell: darunter → fallback (nur Ollama)
   fallback_threshold: 0.5          # fallback-Modell: darunter → Pending
   description_min_length: 20
 

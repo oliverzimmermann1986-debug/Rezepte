@@ -54,6 +54,7 @@ MASK_PATHS = [
     ("web", "secret_key"),
     ("mail", "recipe", "password"),
     ("mail", "wedding", "password"),
+    ("ai", "openai", "api_key"),
 ]
 
 

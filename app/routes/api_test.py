@@ -90,8 +90,45 @@ def test_ollama() -> Dict[str, Any]:
     return {"ok": True, "message": " · ".join(msg_parts), "installed": installed}
 
 
-# /openai-Test wurde entfernt: OpenAI Vision (Frame-basiert) ist mit der
-# Frame-Extraktion zusammen rausgenommen worden.
+@router.post("/openai")
+def test_openai() -> Dict[str, Any]:
+    """OpenAI API-Key gültig? GET /v1/models pingen + Model verfügbar."""
+    cfg = get_config().get("ai", "openai", default={}) or {}
+    api_key = (cfg.get("api_key") or "").strip()
+    model = (cfg.get("model") or "gpt-4o-mini").strip()
+    base_url = (cfg.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+    if not api_key or api_key.startswith("•"):
+        return {"ok": False, "error": "Kein API-Key konfiguriert"}
+
+    import requests
+    try:
+        r = requests.get(
+            f"{base_url}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10,
+        )
+        if r.status_code == 401:
+            return {"ok": False, "error": "API-Key ungültig (HTTP 401)"}
+        if r.status_code == 403:
+            return {"ok": False, "error": "Zugriff verweigert (HTTP 403) - Account-Status prüfen"}
+        r.raise_for_status()
+        models = [m.get("id", "") for m in r.json().get("data", [])]
+    except requests.exceptions.HTTPError as e:
+        return {"ok": False, "error": f"HTTP {e.response.status_code if e.response else '?'}: {str(e)[:200]}"}
+    except Exception as e:
+        return {"ok": False, "error": f"Nicht erreichbar: {e}"}
+
+    found = model in models
+    if not found:
+        # Bei Aliases wie 'gpt-4o-mini' können Vollnamen 'gpt-4o-mini-2024-07-18' sein
+        partial = [m for m in models if model in m]
+        if partial:
+            return {"ok": True, "message": f"Modell-Variante '{partial[0]}' ✓",
+                    "model_count": len(models)}
+        return {"ok": False, "error": f"Modell '{model}' nicht verfügbar (für deinen Account)"}
+    return {"ok": True, "message": f"Modell '{model}' ✓", "model_count": len(models)}
+
+
 # /telegram-Test wurde entfernt: Telegram-Benachrichtigungen sind raus.
 
 

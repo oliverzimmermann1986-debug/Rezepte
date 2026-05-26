@@ -912,8 +912,28 @@
             </div>
           </div>
 
-          <!-- AI · Ollama -->
+          <!-- AI · Provider Auswahl -->
           <div class="config-section">
+            <div class="head">
+              <span style="flex: 1;">KI-Provider</span>
+            </div>
+            <div class="body">
+              <div class="field">
+                <label>Provider</label>
+                <select x-model="config.ai.provider">
+                  <option value="ollama">Ollama · lokal (Default)</option>
+                  <option value="openai">OpenAI · Cloud (kostet ~$0.0001/Item)</option>
+                </select>
+                <div class="hint">
+                  Ollama braucht ein lokales LLM-Backend.
+                  OpenAI braucht einen API-Key, ist aber meist genauer und schneller.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- AI · Ollama -->
+          <div class="config-section" x-show="(config.ai && config.ai.provider || 'ollama') === 'ollama'">
             <div class="head">
               <span style="flex: 1;">KI · Ollama (Cascade: fast → fallback)</span>
               <button class="btn" @click="testOllama()" :disabled="testing.ollama">
@@ -964,8 +984,63 @@
             </div>
           </div>
 
-          <!-- KI · OpenAI Vision Block wurde entfernt: Frame-Extraktion ist raus,
-               Vision-Analyse nicht mehr möglich. -->
+          <!-- AI · OpenAI -->
+          <div class="config-section" x-show="(config.ai && config.ai.provider) === 'openai'">
+            <div class="head">
+              <span style="flex: 1;">KI · OpenAI API</span>
+              <button class="btn" @click="testOpenAI()" :disabled="testing.openai">
+                <span x-show="!testing.openai">⌬ API-Key testen</span>
+                <span x-show="testing.openai">… testet</span>
+              </button>
+            </div>
+            <div class="body">
+              <div x-show="testResults.openai" class="test-result" :class="(testResults.openai && testResults.openai.ok) ? 'ok' : 'err'">
+                <span x-text="(testResults.openai && (testResults.openai.message || testResults.openai.error))"></span>
+              </div>
+              <div class="field">
+                <label>API-Key</label>
+                <input type="password" x-model="config.ai.openai.api_key" placeholder="sk-...">
+                <div class="hint">
+                  Aus <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com/api-keys</a>.
+                  Wird verschlüsselt gespeichert und im UI maskiert (••••).
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Modell</label>
+                  <input x-model="config.ai.openai.model" placeholder="gpt-4o-mini">
+                  <div class="hint">
+                    Empfohlen: <code>gpt-4o-mini</code> ($0.15/M tokens, sehr günstig).
+                    Größer: <code>gpt-4o</code>.
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Timeout (s)</label>
+                  <input type="number" x-model.number="config.ai.openai.timeout" placeholder="30">
+                </div>
+              </div>
+              <div class="field">
+                <label>Base-URL (optional)</label>
+                <input x-model="config.ai.openai.base_url" placeholder="leer = api.openai.com">
+                <div class="hint">
+                  Nur setzen für Azure-OpenAI, OpenRouter, lokale Proxies (LM-Studio etc.) -
+                  alles mit OpenAI-kompatibler API.
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Confidence-Schwelle</label>
+                  <input type="number" step="0.05" min="0" max="1" x-model.number="config.ai.confidence_threshold">
+                  <div class="hint">Darunter → Pending (OpenAI hat keinen Fallback)</div>
+                </div>
+                <div class="field">
+                  <label>Fallback-Schwelle (ungenutzt)</label>
+                  <input type="number" step="0.05" min="0" max="1" x-model.number="config.ai.fallback_threshold" disabled>
+                  <div class="hint">Nur bei Ollama relevant</div>
+                </div>
+              </div>
+            </div>
+          </div>
 
           <!-- Telegram-Block entfernt: Benachrichtigungen sind raus. -->
 
