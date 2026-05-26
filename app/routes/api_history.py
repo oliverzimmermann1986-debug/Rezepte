@@ -50,14 +50,17 @@ def delete_item(payload: dict):
 class ReanalyzeOneRequest(BaseModel):
     url: str
     dry_run: bool = False
+    auto_move: bool = False
 
 
 @router.post("/reanalyze")
 def reanalyze_one(req: ReanalyzeOneRequest):
     """Holt Description via yt-dlp neu, schickt durch aktuellen AI-Provider,
     aktualisiert DB falls Confidence > threshold und Ergebnis abweicht.
-    Files werden nicht angefasst."""
-    return get_scraper_job().reanalyze_history_one(req.url, dry_run=req.dry_run)
+    Mit auto_move=True werden Files auch in den neuen target_dir verschoben."""
+    return get_scraper_job().reanalyze_history_one(
+        req.url, dry_run=req.dry_run, auto_move=req.auto_move,
+    )
 
 
 # Lock damit nur ein All-Run gleichzeitig läuft
@@ -65,7 +68,7 @@ import threading as _th
 _history_reanalyze_lock = _th.Lock()
 
 
-def _reanalyze_history_all_thread(job_id: int, dry_run: bool, limit: int):
+def _reanalyze_history_all_thread(job_id: int, dry_run: bool, limit: int, auto_move: bool):
     """Background-Thread - schreibt in jobs-Tabelle damit der UI-Status-Poll
     Progress sehen kann."""
     from ..db import get_db
@@ -73,7 +76,9 @@ def _reanalyze_history_all_thread(job_id: int, dry_run: bool, limit: int):
     db = get_db()
     reset_cancel()
     try:
-        summary = get_scraper_job().reanalyze_history_all(dry_run=dry_run, limit=limit)
+        summary = get_scraper_job().reanalyze_history_all(
+            dry_run=dry_run, limit=limit, auto_move=auto_move,
+        )
         db.job_finish(job_id, "ok", summary)
     except Exception as e:
         db.job_finish(job_id, "error", {"error": str(e)})
@@ -88,11 +93,13 @@ def _reanalyze_history_all_thread(job_id: int, dry_run: bool, limit: int):
 def reanalyze_all(payload: dict = None):
     """Startet einen Background-Job der alle History-Items reanalysiert.
 
-    Body: {dry_run: bool, limit: int} - default dry_run=false, limit=1000
+    Body: {dry_run: bool, limit: int, auto_move: bool}
+      auto_move=True: Files in den neuen target_dir verschieben (Filesystem-Cleanup)
     """
     payload = payload or {}
     dry_run = bool(payload.get("dry_run", False))
     limit = int(payload.get("limit", 1000))
+    auto_move = bool(payload.get("auto_move", False))
 
     if not _history_reanalyze_lock.acquire(blocking=False):
         raise HTTPException(409, "History-Reanalyze läuft bereits")
@@ -100,11 +107,19 @@ def reanalyze_all(payload: dict = None):
     job_id = get_db().job_start("reanalyze")
     t = _th.Thread(
         target=_reanalyze_history_all_thread,
-        args=(job_id, dry_run, limit),
+        args=(job_id, dry_run, limit, auto_move),
         daemon=True,
     )
     t.start()
-    return {"ok": True, "job_id": job_id, "dry_run": dry_run, "limit": limit}
+    return {"ok": True, "job_id": job_id, "dry_run": dry_run, "limit": limit,
+            "auto_move": auto_move}
+
+
+@router.get("/junk")
+def list_junk():
+    """Findet History-Items deren Klassifikation 'Müll' aussieht. Reine Lese-
+    Operation; ändert nichts. Zeigt Auto-Detection-Heuristiken pro Item."""
+    return get_scraper_job().cleanup_junk_items(dry_run=True)
 
 
 # /preview Endpoint wurde entfernt - es gibt keine Frame-Thumbnails mehr.

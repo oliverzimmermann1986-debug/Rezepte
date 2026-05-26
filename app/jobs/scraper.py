@@ -424,17 +424,21 @@ class ScraperJob:
             logger.error(f"yt-dlp metadata exception {url}: {e}")
             return None
 
-    def reanalyze_history_one(self, url: str, *, dry_run: bool = False) -> Dict:
+    def reanalyze_history_one(self, url: str, *, dry_run: bool = False,
+                                auto_move: bool = False) -> Dict:
         """Holt die Description neu (via yt-dlp), schickt durch den aktuellen
         Analyzer, aktualisiert in der DB wenn Confidence ausreichend ist.
 
-        Files werden NICHT verschoben - der User kann das manuell entscheiden
-        wenn er die Klassifikation deutlich anders findet.
+        Args:
+            dry_run:    Nichts in DB/Filesystem ändern, nur was-passieren-würde.
+            auto_move:  Files in den neuen target_dir verschieben wenn die
+                        Klassifikation deutlich anders ist. Default False -
+                        nur DB-Name wird aktualisiert, File bleibt wo es ist.
 
         Returns:
-          {ok, url, action: 'updated'|'unchanged'|'skipped'|'fail',
-           old: {name, content_type},
-           new: {name, type, category, confidence}}
+          {ok, url, action: 'updated'|'moved'|'unchanged'|'low_confidence'|'fail',
+           old: {name, content_type, target_dir},
+           new: {name, type, category, confidence, target_dir(if moved)}}
         """
         entry = self.db.history_get(url)
         if not entry:
@@ -445,6 +449,7 @@ class ScraperJob:
 
         content_type = entry.get("content_type") or "recipe"
         old_name = entry.get("name") or ""
+        old_target = entry.get("target_dir") or ""
 
         description = self._fetch_description_via_ytdlp(url)
         if not description:
@@ -466,22 +471,72 @@ class ScraperJob:
         if unchanged or payload["confidence"] < self.confidence_threshold:
             return {"ok": True, "url": url,
                     "action": "unchanged" if unchanged else "low_confidence",
-                    "old": {"name": old_name, "content_type": content_type},
+                    "old": {"name": old_name, "content_type": content_type,
+                            "target_dir": old_target},
                     "new": payload}
 
+        # Updaten
+        if auto_move and old_target and Path(old_target).exists():
+            # File-Move: nutzt move_history_item das die ganze Logik (mkdir,
+            # info.json updaten, rename, empty-parents cleanup) kapselt.
+            if dry_run:
+                # Simulieren: target-Pfad berechnen ohne move
+                if content_type == "recipe":
+                    new_dir = self.recipe_dir / _sanitize(r.type) / _sanitize(r.category or "Allgemein") / _sanitize(r.name)
+                else:
+                    new_dir = self.wedding_dir / _sanitize(w.category or "Sonstiges") / _sanitize(w.name)
+                payload["target_dir"] = str(new_dir)
+                return {"ok": True, "url": url, "action": "moved",
+                        "old": {"name": old_name, "content_type": content_type,
+                                "target_dir": old_target},
+                        "new": payload, "dry_run": True}
+
+            try:
+                if content_type == "recipe":
+                    move_res = self.move_history_item(
+                        url, new_name=new_name,
+                        new_type=r.type, new_category=r.category or "Allgemein",
+                    )
+                else:
+                    move_res = self.move_history_item(
+                        url, new_name=new_name,
+                        new_category=w.category or "Sonstiges",
+                    )
+                if move_res.get("ok"):
+                    payload["target_dir"] = move_res.get("target", "")
+                    return {"ok": True, "url": url, "action": "moved",
+                            "old": {"name": old_name, "content_type": content_type,
+                                    "target_dir": old_target},
+                            "new": payload}
+                return {"ok": False, "url": url, "action": "fail",
+                        "error": f"Move fehlgeschlagen: {move_res.get('error')}"}
+            except Exception as e:
+                logger.exception(f"Auto-Move fail {url}: {e}")
+                return {"ok": False, "url": url, "action": "fail",
+                        "error": f"Move-Exception: {e}"}
+
+        # Kein Auto-Move: nur DB-Name updaten
         if not dry_run:
             self.db.history_update(url, name=new_name)
 
         return {"ok": True, "url": url, "action": "updated",
-                "old": {"name": old_name, "content_type": content_type},
+                "old": {"name": old_name, "content_type": content_type,
+                        "target_dir": old_target},
                 "new": payload, "dry_run": dry_run}
 
     def reanalyze_history_all(self, *, dry_run: bool = False,
-                                limit: int = 1000) -> Dict:
+                                limit: int = 1000,
+                                auto_move: bool = False) -> Dict:
         """Iteriert über alle History-Items und versucht eine Reanalyse.
-        Sehr langsam (yt-dlp pro Item) - sollte als Background-Job laufen."""
+        Sehr langsam (yt-dlp pro Item) - sollte als Background-Job laufen.
+
+        auto_move=True verschiebt Files in den neuen target_dir wenn die
+        Klassifikation sich ändert. Wichtig: das aktualisiert sowohl DB
+        als auch das Filesystem.
+        """
         items = self.db.history_list(limit=limit)
         updated = 0
+        moved = 0
         unchanged = 0
         low_conf = 0
         failed = 0
@@ -493,15 +548,22 @@ class ScraperJob:
                 break
             url = entry["url"]
             try:
-                res = self.reanalyze_history_one(url, dry_run=dry_run)
-                if res.get("action") == "updated":
+                res = self.reanalyze_history_one(url, dry_run=dry_run, auto_move=auto_move)
+                action = res.get("action")
+                if action == "moved":
+                    moved += 1
+                    details.append({"url": url, "action": "moved",
+                                    "from": res["old"]["name"],
+                                    "to": res["new"]})
+                elif action == "updated":
                     updated += 1
-                    details.append({"url": url, "from": res["old"]["name"], "to": res["new"]})
-                elif res.get("action") in ("unchanged", "low_confidence"):
-                    if res["action"] == "low_confidence":
-                        low_conf += 1
-                    else:
-                        unchanged += 1
+                    details.append({"url": url, "action": "updated",
+                                    "from": res["old"]["name"],
+                                    "to": res["new"]})
+                elif action == "unchanged":
+                    unchanged += 1
+                elif action == "low_confidence":
+                    low_conf += 1
                 else:
                     failed += 1
             except Exception as e:
@@ -511,12 +573,60 @@ class ScraperJob:
         return {
             "total": len(items),
             "updated": updated,
+            "moved": moved,
             "unchanged": unchanged,
             "low_confidence": low_conf,
             "failed": failed,
             "dry_run": dry_run,
-            "details": details[:50],   # Cap damit Summary klein bleibt
+            "auto_move": auto_move,
+            "details": details[:50],
         }
+
+    def cleanup_junk_items(self, *, dry_run: bool = True) -> Dict:
+        """Findet History-Items deren Klassifikation 'Müll' aussieht und
+        listet sie auf. Heuristiken:
+        - name == 'Unbekannt' (case-insensitive)
+        - name == content_type (z.B. 'Hochzeit' als Name)
+        - name fängt mit 'Hochzeit_YYYYMMDD' an (Auto-Fallback)
+        - name kürzer als 3 Zeichen
+        - target_dir-Parent endet auf 'Sonstiges' UND name beginnt mit 'TikTok' o.ä.
+
+        Returns Liste der gefundenen Junk-Items. Schreibt nichts bei dry_run=True
+        (Default). User entscheidet manuell ob er sie löscht/reanalysiert.
+        """
+        items = self.db.history_list(limit=10000)
+        junk = []
+        for entry in items:
+            name = (entry.get("name") or "").strip()
+            ct = entry.get("content_type") or ""
+            target = entry.get("target_dir") or ""
+
+            reasons = []
+            if name.lower() in ("unbekannt", "unknown", ""):
+                reasons.append("name=Unbekannt/leer")
+            if name.lower() == ct.lower():
+                reasons.append(f"name=content_type ({ct})")
+            if re.match(r"^Hochzeit_\d{8}", name):
+                reasons.append("auto-fallback-Name")
+            if 0 < len(name) < 3:
+                reasons.append(f"name zu kurz ({len(name)} chars)")
+            if name.lower().startswith(("tiktok", "instagram", "video")):
+                reasons.append("default-Plattform-Name")
+            if "/Sonstiges/" in target and name.lower() in ("hochzeit", "rezept"):
+                reasons.append("nur Default-Kategorie")
+
+            if reasons:
+                junk.append({
+                    "url": entry["url"],
+                    "name": name,
+                    "content_type": ct,
+                    "target_dir": target,
+                    "processed_at": entry.get("processed_at"),
+                    "reasons": reasons,
+                })
+
+        return {"total_history": len(items), "junk_count": len(junk),
+                "items": junk, "dry_run": dry_run}
     def move_history_item(self, url: str, *, new_name: str, new_type: str = None,
                             new_category: str = None) -> Dict:
         entry = self.db.history_get(url)

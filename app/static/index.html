@@ -513,15 +513,78 @@
           <h1>Historie</h1>
           <div class="subtitle">Bereits verarbeitete URLs</div>
         </div>
-        <div class="flex">
+        <div class="flex" style="align-items: center; gap: 12px;">
+          <label class="flex" style="align-items: center; gap: 6px; font-size: 12px; cursor: pointer;"
+                 title="Files auch verschieben wenn die KI eine andere Kategorie/Typ vorschlägt">
+            <input type="checkbox" x-model="historyAutoMove">
+            <span>Auto-Move (Files mitverschieben)</span>
+          </label>
+          <button class="btn" @click="loadJunkItems()" :disabled="junkLoading"
+                  title="Findet History-Items mit verdächtigen Namen (Unbekannt, Default-Kat, etc.)">
+            🗑️ Junk finden
+          </button>
           <button class="btn" @click="reanalyzeHistoryAll(true)" :disabled="historyReanalyzing">
-            🔍 Dry-Run (zeigt nur was sich ändern würde)
+            🔍 Dry-Run
           </button>
           <button class="btn btn-primary" @click="reanalyzeHistoryAll(false)" :disabled="historyReanalyzing">
             <span x-show="!historyReanalyzing">🔄 Alle neu analysieren</span>
             <span x-show="historyReanalyzing">… läuft</span>
           </button>
           <button class="btn" @click="loadHistory()">⟳ Neu laden</button>
+        </div>
+      </div>
+
+      <!-- Junk-Detection-Card -->
+      <div x-show="junkItems" class="card" style="margin-bottom: 16px;">
+        <div class="card-head">
+          <h3>
+            Junk-Detection
+            <span class="muted" style="font-weight: normal; font-size: 12px;"
+                  x-show="junkItems"
+                  x-text="' · ' + (junkItems && junkItems.junk_count || 0) + ' verdächtig von ' + (junkItems && junkItems.total_history || 0)"></span>
+          </h3>
+          <div class="flex">
+            <button class="btn"
+                    x-show="junkItems && junkItems.items && junkItems.items.length > 0"
+                    @click="reanalyzeJunkOnly()"
+                    :disabled="historyReanalyzing">
+              🔄 Nur diese neu analysieren
+            </button>
+            <button class="btn btn-ghost" @click="junkItems = null">✗ Schließen</button>
+          </div>
+        </div>
+        <div x-show="junkItems && (!junkItems.items || junkItems.items.length === 0)"
+             class="muted" style="text-align:center; padding: 12px;">
+          Keine verdächtigen Items gefunden.
+        </div>
+        <div x-show="junkItems && junkItems.items && junkItems.items.length > 0"
+             style="max-height: 320px; overflow-y: auto;">
+          <table class="table" style="font-size: 12px;">
+            <thead><tr>
+              <th>Name</th><th>Typ</th><th>Ordner</th><th>Gründe</th><th>Aktion</th>
+            </tr></thead>
+            <tbody>
+              <template x-for="j in (junkItems && junkItems.items || [])" :key="j.url">
+                <tr>
+                  <td x-text="j.name || '—'" style="font-weight: 600;"></td>
+                  <td><span class="pill" :class="j.content_type === 'recipe' ? 'warn' : 'running'" x-text="j.content_type"></span></td>
+                  <td class="mono muted" style="font-size: 11px; max-width: 220px; word-break: break-all;" x-text="j.target_dir || '—'"></td>
+                  <td>
+                    <template x-for="r in j.reasons" :key="r">
+                      <span class="pill" style="background:#fef3c7; color:#92400e; font-size:10px; margin:1px;" x-text="r"></span>
+                    </template>
+                  </td>
+                  <td style="white-space: nowrap;">
+                    <button class="btn btn-ghost" style="font-size: 11px; padding: 4px 8px;"
+                            @click="reanalyzeHistoryOne({url: j.url}, true)"
+                            :disabled="reanalyzingHistoryUrl === j.url">
+                      🔄
+                    </button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
         </div>
       </div>
 

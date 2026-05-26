@@ -16,6 +16,9 @@ function scrapperApp() {
     historyReanalyzeStatus: null,
     historyReanalyzePollTimer: null,
     reanalyzingHistoryUrl: null,
+    historyAutoMove: false,
+    junkItems: null,
+    junkLoading: false,
     jobs: [],
     status: { scraper: null, backup: null, pending_count: 0 },
     lastScraper: null,
@@ -462,19 +465,25 @@ function scrapperApp() {
     async loadHistory() {
       this.history = await this.api('GET', '/api/history?limit=300');
     },
-    async reanalyzeHistoryOne(item) {
+    async reanalyzeHistoryOne(item, fromJunk = false) {
       this.reanalyzingHistoryUrl = item.url;
       try {
         const r = await this.api('POST', '/api/history/reanalyze',
-                                  { url: item.url, dry_run: false });
+                                  { url: item.url, dry_run: false,
+                                    auto_move: this.historyAutoMove });
         if (!r.ok) {
           this.showToast('Reanalyze fail: ' + (r.error || 'unbekannt'), 'error');
           return;
         }
         const action = r.action;
-        if (action === 'updated') {
+        if (action === 'moved') {
+          this.showToast(`Verschoben: "${r.old.name}" → "${r.new.name}" (${r.new.target_dir})`, 'ok');
+          await this.loadHistory();
+          if (fromJunk) await this.loadJunkItems();
+        } else if (action === 'updated') {
           this.showToast(`Aktualisiert: "${r.old.name}" → "${r.new.name}" (conf ${Math.round(r.new.confidence * 100)}%)`, 'ok');
           await this.loadHistory();
+          if (fromJunk) await this.loadJunkItems();
         } else if (action === 'unchanged') {
           this.showToast('Klassifikation unverändert', 'ok');
         } else if (action === 'low_confidence') {
@@ -489,14 +498,19 @@ function scrapperApp() {
       }
     },
     async reanalyzeHistoryAll(dry_run) {
+      const moveHint = this.historyAutoMove
+        ? '\n\n⚠️ Auto-Move ist aktiv - Files werden in neue Ordner verschoben!'
+        : '\n\nNur DB wird aktualisiert, Files bleiben wo sie sind.';
       const msg = dry_run
-        ? 'Dry-Run starten? Liest alle History-URLs neu via yt-dlp und schickt durch den AI-Provider. Zeigt nur was sich ändern WÜRDE, kein DB-Write.'
-        : 'Alle History-URLs neu analysieren? Aktualisiert die Klassifikation, wenn der neue Provider sicher ist. Files werden NICHT verschoben.\n\nDas kann je nach History-Größe ein paar Minuten dauern.';
+        ? 'Dry-Run starten? Liest alle History-URLs neu via yt-dlp und schickt durch den AI-Provider. Zeigt nur was sich ändern WÜRDE, kein DB-/FS-Write.' + moveHint
+        : 'Alle History-URLs neu analysieren? Aktualisiert die Klassifikation, wenn der neue Provider sicher ist.' + moveHint
+          + '\n\nDas kann je nach History-Größe ein paar Minuten dauern.';
       if (!confirm(msg)) return;
       try {
         this.historyReanalyzing = true;
         const r = await this.api('POST', '/api/history/reanalyze-all',
-                                  { dry_run, limit: 1000 });
+                                  { dry_run, limit: 1000,
+                                    auto_move: this.historyAutoMove });
         if (!r.ok) {
           this.showToast('Start fail: ' + (r.error || 'unbekannt'), 'error');
           this.historyReanalyzing = false;
@@ -510,6 +524,45 @@ function scrapperApp() {
         this.showToast('Start fail: ' + e, 'error');
         this.historyReanalyzing = false;
       }
+    },
+    async loadJunkItems() {
+      this.junkLoading = true;
+      try {
+        this.junkItems = await this.api('GET', '/api/history/junk');
+      } catch(e) {
+        this.showToast('Junk-Liste fail: ' + e, 'error');
+      } finally {
+        this.junkLoading = false;
+      }
+    },
+    async reanalyzeJunkOnly() {
+      if (!this.junkItems || !this.junkItems.items || this.junkItems.items.length === 0) return;
+      const n = this.junkItems.items.length;
+      const moveHint = this.historyAutoMove
+        ? ' Auto-Move ist aktiv - Files werden in neue Ordner verschoben.'
+        : ' Nur DB-Updates, Files bleiben.';
+      if (!confirm(`${n} Junk-Items einzeln re-analysieren?${moveHint}`)) return;
+
+      this.historyReanalyzing = true;
+      let updated = 0, moved = 0, unchanged = 0, lowConf = 0, failed = 0;
+      for (const j of this.junkItems.items) {
+        try {
+          const r = await this.api('POST', '/api/history/reanalyze',
+                                    { url: j.url, dry_run: false,
+                                      auto_move: this.historyAutoMove });
+          if (r.action === 'moved') moved++;
+          else if (r.action === 'updated') updated++;
+          else if (r.action === 'unchanged') unchanged++;
+          else if (r.action === 'low_confidence') lowConf++;
+          else failed++;
+        } catch(e) {
+          failed++;
+        }
+      }
+      this.historyReanalyzing = false;
+      this.showToast(`Junk-Cleanup fertig: ${moved} moved, ${updated} updated, ${unchanged} unverändert, ${lowConf} unsicher, ${failed} fail`, 'ok');
+      await this.loadHistory();
+      await this.loadJunkItems();
     },
     async pollHistoryReanalyze() {
       // Wir nutzen den /api/pending/reanalyze/progress Endpoint -
