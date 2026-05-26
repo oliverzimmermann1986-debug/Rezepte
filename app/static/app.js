@@ -762,6 +762,10 @@ function scrapperApp() {
     },
     testOllama() { this.runTest('ollama', '/api/test/ollama'); },
     async testOpenAI() {
+      // Defensiv: testing-state immer auf false zurücksetzen damit der Button
+      // nicht 'stuck' bleibt nach einem alten Fehler
+      this.testing.openai = false;
+
       // Aktuelle UI-Werte mitschicken, damit der User nicht erst speichern muss.
       const oai = (this.config && this.config.ai && this.config.ai.openai) || {};
       const body = {
@@ -769,13 +773,34 @@ function scrapperApp() {
         model: oai.model || '',
         base_url: oai.base_url || '',
       };
+
+      // Frühe Sicherheitsprüfung damit der User sofort sieht wenn der Key
+      // noch maskiert ist (also nie wirklich getippt wurde)
+      if (!body.api_key) {
+        this.testResults.openai = { ok: false, error: 'Kein API-Key im Feld - bitte eintragen' };
+        this.showToast('Kein API-Key im Feld', 'error');
+        return;
+      }
+      if (body.api_key.startsWith('•')) {
+        // Gespeicherter Key wird ••• gemaskt zurückgegeben. Backend liest dann
+        // aus Config. Wir senden den ••• mit und das Backend behandelt das.
+        // Trotzdem warnen wenn die Maske kommt aber nichts gespeichert ist.
+      }
+
       this.testing.openai = true;
       this.testResults.openai = null;
       try {
         const r = await this.api('POST', '/api/test/openai', body);
-        this.testResults.openai = r;
+        const result = r || { ok: false, error: 'Leere Antwort vom Server' };
+        this.testResults.openai = result;
+        if (result.ok) {
+          this.showToast('OpenAI: ' + (result.message || 'Verbindung ok'), 'ok');
+        } else {
+          this.showToast('OpenAI-Test fail: ' + (result.error || 'unbekannt'), 'error');
+        }
       } catch(e) {
         this.testResults.openai = { ok: false, error: String(e) };
+        this.showToast('Test-Aufruf fehlgeschlagen: ' + e, 'error');
       } finally {
         this.testing.openai = false;
       }
