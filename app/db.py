@@ -389,6 +389,15 @@ class Database:
             )
             return cur.rowcount or 0
 
+    def jobs_delete_failed(self) -> int:
+        """Löscht ALLE Jobs mit Status='error'. Sinnvoll zum Aufräumen
+        nach einer Reihe von Crashes (z.B. AI-Provider war down). Daten
+        gehen nicht verloren - Jobs sind reine Log-Einträge.
+        Returnt Anzahl gelöschter Zeilen."""
+        with self.conn() as c:
+            cur = c.execute("DELETE FROM jobs WHERE status='error'")
+            return cur.rowcount or 0
+
     def auto_skip_old_pending(self, days: int = 30) -> int:
         """Markiert pending Items älter als ``days`` Tage als 'auto_skipped'.
         Hindert die Pending-Liste am Vollstopfen mit toten Items.

@@ -336,6 +336,17 @@ function scrapperApp() {
     async loadJobs() {
       this.jobs = await this.api('GET', '/api/jobs/list?limit=50');
     },
+    async cleanupFailedJobs() {
+      const n = this.jobs.filter(j => j.status === 'error').length;
+      if (!confirm(`${n} Failed-Jobs aus der Liste entfernen?\n\nDas löscht nur die Log-Einträge - History und Pending bleiben unverändert.`)) return;
+      try {
+        const r = await this.api('POST', '/api/jobs/cleanup-failed');
+        this.showToast(`${r.deleted || 0} Failed-Jobs gelöscht`, 'ok');
+        await this.loadJobs();
+      } catch(e) {
+        this.showToast('Cleanup fail: ' + e, 'error');
+      }
+    },
     async loadJobLog(id) {
       this.currentLogJob = id;
       this.currentLog = 'lädt…';

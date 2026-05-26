@@ -200,6 +200,14 @@ def list_jobs(kind: Optional[str] = None, limit: int = 50):
     return get_db().job_list(kind=kind, limit=limit)
 
 
+@router.post("/cleanup-failed")
+def cleanup_failed_jobs():
+    """Löscht alle Job-Einträge mit Status='error'. Nur Log-Cleanup -
+    es wird nichts in History oder Pending verändert."""
+    deleted = get_db().jobs_delete_failed()
+    return {"ok": True, "deleted": deleted}
+
+
 @router.get("/{job_id}")
 def job_detail(job_id: int):
     j = get_db().job_get(job_id)
