@@ -513,24 +513,45 @@
           <h1>Historie</h1>
           <div class="subtitle">Bereits verarbeitete URLs</div>
         </div>
-        <div class="flex" style="align-items: center; gap: 12px;">
-          <label class="flex" style="align-items: center; gap: 6px; font-size: 12px; cursor: pointer;"
-                 title="Files auch verschieben wenn die KI eine andere Kategorie/Typ vorschlägt">
+        <button class="btn" @click="loadHistory()">⟳ Neu laden</button>
+      </div>
+
+      <!-- Cleanup-Banner: One-Click Aufräum-Flow für die häufigste Aufgabe -->
+      <div class="card" style="margin-bottom: 16px; border-left: 4px solid #f59e0b;">
+        <h3 style="margin-top: 0;">🧹 Filesystem aufräumen mit OpenAI</h3>
+        <p style="color: var(--fg-dim); font-size: 13px; margin: 4px 0 12px;">
+          Findet alle Items mit verdächtigen Namen ("Unbekannt", Auto-Fallback-Namen wie
+          "Hochzeit_20260512", Items in /Sonstiges/, etc.), lädt deren Beschreibung neu via
+          yt-dlp und klassifiziert mit dem aktuellen Provider (OpenAI). Mit Auto-Move werden
+          die Files auch in den richtigen Zielordner verschoben.
+        </p>
+        <div class="flex" style="align-items: center; gap: 16px; flex-wrap: wrap;">
+          <label class="flex" style="align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
             <input type="checkbox" x-model="historyAutoMove">
-            <span>Auto-Move (Files mitverschieben)</span>
+            <span><strong>Auto-Move</strong> — Files in neue Ordner verschieben</span>
           </label>
-          <button class="btn" @click="loadJunkItems()" :disabled="junkLoading"
-                  title="Findet History-Items mit verdächtigen Namen (Unbekannt, Default-Kat, etc.)">
-            🗑️ Junk finden
+          <button class="btn" @click="loadJunkItems()" :disabled="junkLoading">
+            <span x-show="!junkLoading">🗑️ Erstmal Junk finden</span>
+            <span x-show="junkLoading">… sucht</span>
           </button>
-          <button class="btn" @click="reanalyzeHistoryAll(true)" :disabled="historyReanalyzing">
-            🔍 Dry-Run
-          </button>
-          <button class="btn btn-primary" @click="reanalyzeHistoryAll(false)" :disabled="historyReanalyzing">
-            <span x-show="!historyReanalyzing">🔄 Alle neu analysieren</span>
+          <button class="btn btn-primary" @click="cleanupAllJunk()"
+                  :disabled="historyReanalyzing"
+                  title="Findet Junk und räumt sofort auf - one-click">
+            <span x-show="!historyReanalyzing">🧹 Jetzt aufräumen</span>
             <span x-show="historyReanalyzing">… läuft</span>
           </button>
-          <button class="btn" @click="loadHistory()">⟳ Neu laden</button>
+          <span style="margin-left: auto;">
+            <button class="btn btn-ghost" @click="reanalyzeHistoryAll(true)"
+                    :disabled="historyReanalyzing" style="font-size: 12px;"
+                    title="Reanalysiert ALLE History-Items (nicht nur Junk) als Dry-Run - zeigt was sich ändern würde">
+              🔍 Dry-Run alle
+            </button>
+            <button class="btn btn-ghost" @click="reanalyzeHistoryAll(false)"
+                    :disabled="historyReanalyzing" style="font-size: 12px;"
+                    title="Reanalysiert ALLE History-Items echt">
+              🔄 Alle neu
+            </button>
+          </span>
         </div>
       </div>
 
@@ -1533,6 +1554,6 @@
   </div>
 
 </div>
-<script src="/static/app.js?v=2026-05-26-jobs"></script>
+<script src="/static/app.js?v=2026-05-26-cleanup"></script>
 </body>
 </html>

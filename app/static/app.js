@@ -575,6 +575,75 @@ function scrapperApp() {
       await this.loadHistory();
       await this.loadJunkItems();
     },
+    async cleanupAllJunk() {
+      // One-Click: Junk finden + sofort aufräumen mit der aktuellen Auto-Move-Einstellung.
+      const moveWarn = this.historyAutoMove
+        ? '\n\n⚠️ Auto-Move ist AN - Files werden physisch in andere Ordner verschoben.'
+        : '\n\nAuto-Move ist AUS - nur die DB-Namen werden aktualisiert, Files bleiben wo sie sind.';
+      if (!confirm('Junk-Cleanup starten?' + moveWarn
+                   + '\n\nDas läuft in 2 Schritten:\n'
+                   + '1. Verdächtige Items finden (Unbekannt, Auto-Fallback-Namen, etc.)\n'
+                   + '2. Jedes mit OpenAI neu klassifizieren (yt-dlp + KI pro Item)\n\n'
+                   + 'Je nach Anzahl 1-10 Minuten.')) return;
+
+      this.historyReanalyzing = true;
+      this.junkLoading = true;
+      try {
+        // Schritt 1: Junk-Liste holen
+        this.junkItems = await this.api('GET', '/api/history/junk');
+        const n = this.junkItems.items.length;
+        if (n === 0) {
+          this.showToast('Kein Junk gefunden - History sieht sauber aus.', 'ok');
+          return;
+        }
+        this.showToast(`${n} verdächtige Items gefunden - starte Reanalyze…`, 'ok');
+
+        // Schritt 2: Alle nacheinander re-analysieren
+        let updated = 0, moved = 0, unchanged = 0, lowConf = 0, failed = 0;
+        const details = [];
+        for (const j of this.junkItems.items) {
+          try {
+            const r = await this.api('POST', '/api/history/reanalyze',
+                                      { url: j.url, dry_run: false,
+                                        auto_move: this.historyAutoMove });
+            if (r.action === 'moved') {
+              moved++;
+              details.push({ from: r.old.name, to: r.new && r.new.name });
+            } else if (r.action === 'updated') {
+              updated++;
+              details.push({ from: r.old.name, to: r.new && r.new.name });
+            } else if (r.action === 'unchanged') unchanged++;
+            else if (r.action === 'low_confidence') lowConf++;
+            else failed++;
+          } catch(e) {
+            failed++;
+          }
+        }
+
+        this.showToast(
+          `Cleanup fertig: ${moved} verschoben · ${updated} umbenannt · ${unchanged} ok · ${lowConf} unsicher · ${failed} fail`,
+          'ok',
+        );
+
+        // Summary-Card mit Details anzeigen (nutzt das bestehende Status-Panel)
+        this.historyReanalyzeStatus = {
+          running: false,
+          summary: {
+            total: n, updated, moved, unchanged, low_confidence: lowConf,
+            failed, dry_run: false, auto_move: this.historyAutoMove,
+            details: details.slice(0, 50),
+          },
+        };
+
+        await this.loadHistory();
+        await this.loadJunkItems();
+      } catch(e) {
+        this.showToast('Cleanup fail: ' + e, 'error');
+      } finally {
+        this.historyReanalyzing = false;
+        this.junkLoading = false;
+      }
+    },
     async pollHistoryReanalyze() {
       // Wir nutzen den /api/pending/reanalyze/progress Endpoint -
       // der trackt 'reanalyze'-kind Jobs (gleicher Kind, wir teilen den Slot)
