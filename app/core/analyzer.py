@@ -337,8 +337,21 @@ def build_analyzer(ai_cfg: dict):
 
     if provider == "openai":
         oa = ai_cfg.get("openai") or {}
+        api_key = (oa.get("api_key") or "").strip()
+        # Defensiver Check: wenn das Mask-Konstante "********" o.ä. aus der
+        # Config kommt (Konfigurations-Bug), nicht versuchen damit einen
+        # Analyzer zu bauen - das gibt sonst beim ersten Call HTTP 401 von
+        # OpenAI und der Scraper bricht ab.
+        if api_key == "********" or set(api_key) <= {"*", "•"}:
+            raise ValueError(
+                "OpenAI api_key in Config sieht wie die UI-Maske aus "
+                "('********' oder ähnlich) - bitte echten Key eintragen "
+                "und speichern. Beim nächsten Page-Reload zeigt die UI "
+                "den Key wieder maskiert an, das ist nur die Anzeige - "
+                "die Config hat aber den echten Wert."
+            )
         return OpenAIAnalyzer(
-            api_key=(oa.get("api_key") or "").strip(),
+            api_key=api_key,
             model=(oa.get("model") or "gpt-4o-mini").strip(),
             base_url=(oa.get("base_url") or "").strip() or None,
             timeout=int(oa.get("timeout") or 30),

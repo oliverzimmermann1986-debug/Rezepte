@@ -114,8 +114,15 @@ def test_openai(req: OpenAITestRequest = None) -> Dict[str, Any]:
         model = (req.model or "").strip()
         base_url = (req.base_url or "").strip()
 
-    # Aus Config nachladen falls Body leer (oder nur Frontend-Maske '•••')
-    if not api_key or api_key.startswith("•"):
+    # Aus Config nachladen falls Body leer (oder noch die Mask-Konstante).
+    # Die UI bekommt den gespeicherten Key beim Page-Load als "********" zurück
+    # (siehe MASKED in api_config.py). Wenn der User dann nichts ändert und
+    # auf "Testen" klickt, käme die Maske hier an - die wollen wir nicht 1:1
+    # an OpenAI schicken (sonst 401). Erkennen und durch echten Wert ersetzen.
+    if (not api_key
+            or api_key == "********"        # Mask-Konstante aus api_config.py
+            or api_key.startswith("•")      # Frontend zeigt evtl. Bullets
+            or set(api_key) <= {"*", "•"}): # nur Maskenzeichen
         api_key = (cfg.get("api_key") or "").strip()
     if not model:
         model = (cfg.get("model") or "gpt-4o-mini").strip()
@@ -124,7 +131,7 @@ def test_openai(req: OpenAITestRequest = None) -> Dict[str, Any]:
     else:
         base_url = base_url.rstrip("/")
 
-    if not api_key or api_key.startswith("•"):
+    if not api_key or api_key == "********" or set(api_key) <= {"*", "•"}:
         return {"ok": False, "error": "Kein API-Key - eintragen oder vorher speichern"}
 
     import requests
