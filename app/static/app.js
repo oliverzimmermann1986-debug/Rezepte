@@ -12,6 +12,10 @@ function scrapperApp() {
     maintenanceOutput: '',
     pending: [],
     history: [],
+    historyReanalyzing: false,
+    historyReanalyzeStatus: null,
+    historyReanalyzePollTimer: null,
+    reanalyzingHistoryUrl: null,
     jobs: [],
     status: { scraper: null, backup: null, pending_count: 0 },
     lastScraper: null,
@@ -458,6 +462,76 @@ function scrapperApp() {
     async loadHistory() {
       this.history = await this.api('GET', '/api/history?limit=300');
     },
+    async reanalyzeHistoryOne(item) {
+      this.reanalyzingHistoryUrl = item.url;
+      try {
+        const r = await this.api('POST', '/api/history/reanalyze',
+                                  { url: item.url, dry_run: false });
+        if (!r.ok) {
+          this.showToast('Reanalyze fail: ' + (r.error || 'unbekannt'), 'error');
+          return;
+        }
+        const action = r.action;
+        if (action === 'updated') {
+          this.showToast(`Aktualisiert: "${r.old.name}" → "${r.new.name}" (conf ${Math.round(r.new.confidence * 100)}%)`, 'ok');
+          await this.loadHistory();
+        } else if (action === 'unchanged') {
+          this.showToast('Klassifikation unverändert', 'ok');
+        } else if (action === 'low_confidence') {
+          this.showToast(`Niedrige Confidence (${Math.round(r.new.confidence * 100)}%), nichts geändert`, 'error');
+        } else {
+          this.showToast('Fehler: ' + (r.error || action), 'error');
+        }
+      } catch(e) {
+        this.showToast('Reanalyze fail: ' + e, 'error');
+      } finally {
+        this.reanalyzingHistoryUrl = null;
+      }
+    },
+    async reanalyzeHistoryAll(dry_run) {
+      const msg = dry_run
+        ? 'Dry-Run starten? Liest alle History-URLs neu via yt-dlp und schickt durch den AI-Provider. Zeigt nur was sich ändern WÜRDE, kein DB-Write.'
+        : 'Alle History-URLs neu analysieren? Aktualisiert die Klassifikation, wenn der neue Provider sicher ist. Files werden NICHT verschoben.\n\nDas kann je nach History-Größe ein paar Minuten dauern.';
+      if (!confirm(msg)) return;
+      try {
+        this.historyReanalyzing = true;
+        const r = await this.api('POST', '/api/history/reanalyze-all',
+                                  { dry_run, limit: 1000 });
+        if (!r.ok) {
+          this.showToast('Start fail: ' + (r.error || 'unbekannt'), 'error');
+          this.historyReanalyzing = false;
+          return;
+        }
+        this.historyReanalyzeStatus = { running: true, job_id: r.job_id, elapsed_sec: 0 };
+        // Polling für Status
+        if (this.historyReanalyzePollTimer) clearInterval(this.historyReanalyzePollTimer);
+        this.historyReanalyzePollTimer = setInterval(() => this.pollHistoryReanalyze(), 3000);
+      } catch(e) {
+        this.showToast('Start fail: ' + e, 'error');
+        this.historyReanalyzing = false;
+      }
+    },
+    async pollHistoryReanalyze() {
+      // Wir nutzen den /api/pending/reanalyze/progress Endpoint -
+      // der trackt 'reanalyze'-kind Jobs (gleicher Kind, wir teilen den Slot)
+      try {
+        const r = await this.api('GET', '/api/pending/reanalyze/progress');
+        if (r.running) {
+          this.historyReanalyzeStatus = { running: true, ...r };
+        } else {
+          // Fertig
+          this.historyReanalyzeStatus = { running: false, last: r.last,
+                                          summary: (r.last && r.last.summary) || null };
+          this.historyReanalyzing = false;
+          clearInterval(this.historyReanalyzePollTimer);
+          this.historyReanalyzePollTimer = null;
+          // History neu laden damit die Updates sichtbar sind
+          await this.loadHistory();
+        }
+      } catch(e) {
+        // Poll-Fehler ignorieren, beim nächsten Tick neuer Versuch
+      }
+    },
 
     // ------------- Config -------------
     async loadConfig() {
@@ -634,7 +708,25 @@ function scrapperApp() {
       this.runTest('mail_' + account, '/api/test/mail', { account });
     },
     testOllama() { this.runTest('ollama', '/api/test/ollama'); },
-    testOpenAI() { this.runTest('openai', '/api/test/openai'); },
+    async testOpenAI() {
+      // Aktuelle UI-Werte mitschicken, damit der User nicht erst speichern muss.
+      const oai = (this.config && this.config.ai && this.config.ai.openai) || {};
+      const body = {
+        api_key: oai.api_key || '',
+        model: oai.model || '',
+        base_url: oai.base_url || '',
+      };
+      this.testing.openai = true;
+      this.testResults.openai = null;
+      try {
+        const r = await this.api('POST', '/api/test/openai', body);
+        this.testResults.openai = r;
+      } catch(e) {
+        this.testResults.openai = { ok: false, error: String(e) };
+      } finally {
+        this.testing.openai = false;
+      }
+    },
     testRclone(pairIndex = null) {
       const body = pairIndex !== null ? { pair_index: pairIndex } : {};
       this.runTest(pairIndex !== null ? 'rclone_' + pairIndex : 'rclone', '/api/test/rclone', body);

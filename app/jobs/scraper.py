@@ -401,7 +401,122 @@ class ScraperJob:
 
         return summary
 
-    # ---------------- History bearbeiten ----------------
+    # ---------------- History neu analysieren ----------------
+
+    def _fetch_description_via_ytdlp(self, url: str) -> Optional[str]:
+        """Lädt nur die Description einer URL (skip-download). Nutzt das
+        existing yt-dlp Binary + Cookie-Datei, kein File-Download."""
+        import subprocess
+        binary = self.downloader.ytdlp_path
+        cmd = [binary, "--skip-download", "--no-warnings", "--no-playlist",
+               "--print", "%(description)s\n%(title)s"]
+        if self.downloader.cookies_file:
+            cmd += ["--cookies", self.downloader.cookies_file]
+        cmd.append(url)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if r.returncode != 0:
+                logger.warning(f"yt-dlp metadata fail {url}: {r.stderr.strip()[:200]}")
+                return None
+            text = r.stdout.strip()
+            return text if text else None
+        except Exception as e:
+            logger.error(f"yt-dlp metadata exception {url}: {e}")
+            return None
+
+    def reanalyze_history_one(self, url: str, *, dry_run: bool = False) -> Dict:
+        """Holt die Description neu (via yt-dlp), schickt durch den aktuellen
+        Analyzer, aktualisiert in der DB wenn Confidence ausreichend ist.
+
+        Files werden NICHT verschoben - der User kann das manuell entscheiden
+        wenn er die Klassifikation deutlich anders findet.
+
+        Returns:
+          {ok, url, action: 'updated'|'unchanged'|'skipped'|'fail',
+           old: {name, content_type},
+           new: {name, type, category, confidence}}
+        """
+        entry = self.db.history_get(url)
+        if not entry:
+            return {"ok": False, "error": "Nicht in History"}
+
+        if not self.ollama_enabled:
+            return {"ok": False, "error": "AI-Analyzer nicht initialisiert"}
+
+        content_type = entry.get("content_type") or "recipe"
+        old_name = entry.get("name") or ""
+
+        description = self._fetch_description_via_ytdlp(url)
+        if not description:
+            return {"ok": False, "url": url, "action": "fail",
+                    "error": "Description konnte nicht geladen werden (Video offline?)"}
+
+        if content_type == "recipe":
+            r = self._analyze_recipe(description)
+            new_name = f"{r.name} ({r.type})" if r.type and r.type.lower() != "unbekannt" else r.name
+            payload = {"name": r.name, "type": r.type, "category": r.category,
+                       "confidence": r.confidence}
+            unchanged = (new_name == old_name or r.name.lower() == "unbekannt")
+        else:  # wedding
+            w = self._analyze_wedding(description)
+            new_name = w.name
+            payload = {"name": w.name, "category": w.category, "confidence": w.confidence}
+            unchanged = (new_name == old_name or w.name.lower() == "unbekannt")
+
+        if unchanged or payload["confidence"] < self.confidence_threshold:
+            return {"ok": True, "url": url,
+                    "action": "unchanged" if unchanged else "low_confidence",
+                    "old": {"name": old_name, "content_type": content_type},
+                    "new": payload}
+
+        if not dry_run:
+            self.db.history_update(url, name=new_name)
+
+        return {"ok": True, "url": url, "action": "updated",
+                "old": {"name": old_name, "content_type": content_type},
+                "new": payload, "dry_run": dry_run}
+
+    def reanalyze_history_all(self, *, dry_run: bool = False,
+                                limit: int = 1000) -> Dict:
+        """Iteriert über alle History-Items und versucht eine Reanalyse.
+        Sehr langsam (yt-dlp pro Item) - sollte als Background-Job laufen."""
+        items = self.db.history_list(limit=limit)
+        updated = 0
+        unchanged = 0
+        low_conf = 0
+        failed = 0
+        details = []
+
+        for i, entry in enumerate(items, 1):
+            if is_cancelled():
+                logger.info(f"Reanalyze-History abgebrochen bei {i}/{len(items)}")
+                break
+            url = entry["url"]
+            try:
+                res = self.reanalyze_history_one(url, dry_run=dry_run)
+                if res.get("action") == "updated":
+                    updated += 1
+                    details.append({"url": url, "from": res["old"]["name"], "to": res["new"]})
+                elif res.get("action") in ("unchanged", "low_confidence"):
+                    if res["action"] == "low_confidence":
+                        low_conf += 1
+                    else:
+                        unchanged += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                logger.exception(f"Reanalyze-History fail {url}: {e}")
+                failed += 1
+
+        return {
+            "total": len(items),
+            "updated": updated,
+            "unchanged": unchanged,
+            "low_confidence": low_conf,
+            "failed": failed,
+            "dry_run": dry_run,
+            "details": details[:50],   # Cap damit Summary klein bleibt
+        }
     def move_history_item(self, url: str, *, new_name: str, new_type: str = None,
                             new_category: str = None) -> Dict:
         entry = self.db.history_get(url)

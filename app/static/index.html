@@ -513,7 +513,61 @@
           <h1>Historie</h1>
           <div class="subtitle">Bereits verarbeitete URLs</div>
         </div>
-        <button class="btn" @click="loadHistory()">⟳ Neu laden</button>
+        <div class="flex">
+          <button class="btn" @click="reanalyzeHistoryAll(true)" :disabled="historyReanalyzing">
+            🔍 Dry-Run (zeigt nur was sich ändern würde)
+          </button>
+          <button class="btn btn-primary" @click="reanalyzeHistoryAll(false)" :disabled="historyReanalyzing">
+            <span x-show="!historyReanalyzing">🔄 Alle neu analysieren</span>
+            <span x-show="historyReanalyzing">… läuft</span>
+          </button>
+          <button class="btn" @click="loadHistory()">⟳ Neu laden</button>
+        </div>
+      </div>
+
+      <!-- Reanalyze-Progress + Summary -->
+      <div x-show="historyReanalyzeStatus" class="card" style="margin-bottom: 16px;">
+        <div class="card-head">
+          <h3>History-Reanalyze
+            <span class="muted" style="font-weight: normal; font-size: 12px;"
+                  x-show="historyReanalyzeStatus && historyReanalyzeStatus.running"
+                  x-text="' · läuft seit ' + (historyReanalyzeStatus.elapsed_sec || 0) + 's'"></span>
+            <span class="muted" style="font-weight: normal; font-size: 12px;"
+                  x-show="historyReanalyzeStatus && !historyReanalyzeStatus.running && historyReanalyzeStatus.last"
+                  x-text="' · ' + (historyReanalyzeStatus.last.status || '?')"></span>
+          </h3>
+          <button class="btn btn-ghost" @click="historyReanalyzeStatus = null" x-show="!historyReanalyzing">✗ Schließen</button>
+        </div>
+        <div x-show="historyReanalyzeStatus && historyReanalyzeStatus.summary" class="mono"
+             style="font-size: 12px; padding: 8px; background: var(--bg); border-radius: 6px;">
+          <div>Total: <strong x-text="(historyReanalyzeStatus.summary && historyReanalyzeStatus.summary.total) || 0"></strong></div>
+          <div style="color: #22c55e;">Updated: <strong x-text="(historyReanalyzeStatus.summary && historyReanalyzeStatus.summary.updated) || 0"></strong></div>
+          <div style="color: #94a3b8;">Unchanged: <strong x-text="(historyReanalyzeStatus.summary && historyReanalyzeStatus.summary.unchanged) || 0"></strong></div>
+          <div style="color: #eab308;">Low-Confidence: <strong x-text="(historyReanalyzeStatus.summary && historyReanalyzeStatus.summary.low_confidence) || 0"></strong></div>
+          <div style="color: #ef4444;">Failed: <strong x-text="(historyReanalyzeStatus.summary && historyReanalyzeStatus.summary.failed) || 0"></strong></div>
+          <div x-show="historyReanalyzeStatus.summary && historyReanalyzeStatus.summary.dry_run"
+               class="muted" style="margin-top: 6px;">
+            (Dry-Run - keine DB-Änderungen)
+          </div>
+        </div>
+        <div x-show="historyReanalyzeStatus && historyReanalyzeStatus.summary && historyReanalyzeStatus.summary.details && historyReanalyzeStatus.summary.details.length > 0"
+             style="margin-top: 10px; max-height: 250px; overflow-y: auto;">
+          <div style="font-size: 11px; color: var(--fg-dim); text-transform: uppercase; margin-bottom: 4px;">
+            Erste 50 Änderungen
+          </div>
+          <template x-for="d in (historyReanalyzeStatus.summary && historyReanalyzeStatus.summary.details || [])"
+                    :key="d.url">
+            <div class="mono" style="font-size: 11px; padding: 4px; border-bottom: 1px solid var(--border);">
+              <div x-text="d.url" style="color: var(--fg-dim); word-break: break-all;"></div>
+              <div>
+                <span style="color: #94a3b8;" x-text="d.from || '—'"></span>
+                <span style="color: var(--fg-dim);">→</span>
+                <span style="color: #22c55e;" x-text="(d.to && d.to.name) || '?'"></span>
+                <span class="muted" x-text="' (conf=' + Math.round((d.to && d.to.confidence || 0) * 100) + '%)'"></span>
+              </div>
+            </div>
+          </template>
+        </div>
       </div>
 
       <div class="card" style="padding: 0; overflow: hidden;">
@@ -530,6 +584,13 @@
                 <td x-text="h.target_dir || '—'" style="word-break:break-all"></td>
                 <td><a :href="h.url" target="_blank" x-text="shortUrl(h.url)"></a></td>
                 <td style="white-space:nowrap;">
+                  <button class="btn btn-ghost" style="font-size:11px; padding:4px 8px"
+                          @click="reanalyzeHistoryOne(h)"
+                          :disabled="reanalyzingHistoryUrl === h.url"
+                          title="Description neu via yt-dlp ziehen + KI re-klassifizieren">
+                    <span x-show="reanalyzingHistoryUrl !== h.url">🔄</span>
+                    <span x-show="reanalyzingHistoryUrl === h.url">…</span>
+                  </button>
                   <button class="btn btn-ghost" style="font-size:11px; padding:4px 8px" @click="openEditItem(h)">✎ Bearbeiten</button>
                   <button class="btn btn-ghost" style="font-size:11px; padding:4px 8px; color:var(--err)" @click="deleteItem(h)">✗</button>
                 </td>

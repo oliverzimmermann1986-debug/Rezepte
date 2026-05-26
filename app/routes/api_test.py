@@ -90,15 +90,42 @@ def test_ollama() -> Dict[str, Any]:
     return {"ok": True, "message": " · ".join(msg_parts), "installed": installed}
 
 
+class OpenAITestRequest(BaseModel):
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+    base_url: Optional[str] = None
+
+
 @router.post("/openai")
-def test_openai() -> Dict[str, Any]:
-    """OpenAI API-Key gültig? GET /v1/models pingen + Model verfügbar."""
+def test_openai(req: OpenAITestRequest = None) -> Dict[str, Any]:
+    """OpenAI API-Key gültig? GET /v1/models pingen + Model verfügbar.
+
+    Body-Param erlaubt das Testen ohne vorher zu speichern - das Frontend
+    schickt die aktuell eingetippten Werte mit. Fallback: aus Config lesen
+    wenn nichts mitgeschickt wurde.
+    """
     cfg = get_config().get("ai", "openai", default={}) or {}
-    api_key = (cfg.get("api_key") or "").strip()
-    model = (cfg.get("model") or "gpt-4o-mini").strip()
-    base_url = (cfg.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+    api_key = ""
+    model = ""
+    base_url = ""
+
+    if req:
+        api_key = (req.api_key or "").strip()
+        model = (req.model or "").strip()
+        base_url = (req.base_url or "").strip()
+
+    # Aus Config nachladen falls Body leer (oder nur Frontend-Maske '•••')
     if not api_key or api_key.startswith("•"):
-        return {"ok": False, "error": "Kein API-Key konfiguriert"}
+        api_key = (cfg.get("api_key") or "").strip()
+    if not model:
+        model = (cfg.get("model") or "gpt-4o-mini").strip()
+    if not base_url:
+        base_url = (cfg.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+    else:
+        base_url = base_url.rstrip("/")
+
+    if not api_key or api_key.startswith("•"):
+        return {"ok": False, "error": "Kein API-Key - eintragen oder vorher speichern"}
 
     import requests
     try:
