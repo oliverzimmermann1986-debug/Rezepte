@@ -280,6 +280,9 @@ def healthz_deep():
         p = cfg.get("paths", key, default=None)
         if not p:
             continue
+        # Whitespace im YAML-Value abräumen - sehr leichter Tippfehler beim
+        # manuellen Editieren, und führt sonst zu 'path does not exist'.
+        p = p.strip() if isinstance(p, str) else p
         try:
             usage = shutil.disk_usage(p)
             free_gb = usage.free / (1024 ** 3)

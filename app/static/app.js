@@ -537,6 +537,29 @@ function scrapperApp() {
       // rclone-args aus textarea zurück in array
       this.config.backup.rclone_args = this.rcloneArgsText
         .split('\n').map(s => s.trim()).filter(Boolean);
+      // Pfad-Werte trimmen damit nicht versehentlich Leerzeichen reinrutschen
+      // (führt sonst zu 'path does not exist' beim healthz/deep)
+      if (this.config.paths) {
+        ['recipe_dir', 'wedding_dir', 'temp_dir', 'logs_dir'].forEach(k => {
+          if (typeof this.config.paths[k] === 'string') {
+            this.config.paths[k] = this.config.paths[k].trim();
+          }
+        });
+      }
+      if (this.config.backup) {
+        ['filter_file', 'backup_dir', 'bwlimit'].forEach(k => {
+          if (typeof this.config.backup[k] === 'string') {
+            this.config.backup[k] = this.config.backup[k].trim();
+          }
+        });
+      }
+      if (this.config.ytdlp) {
+        ['binary', 'cookies_file'].forEach(k => {
+          if (typeof this.config.ytdlp[k] === 'string') {
+            this.config.ytdlp[k] = this.config.ytdlp[k].trim();
+          }
+        });
+      }
       await this.api('PUT', '/api/config', this.config);
       await this.api('POST', '/api/config/reload', null);
       this.showToast('Konfiguration gespeichert');

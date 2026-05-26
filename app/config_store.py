@@ -48,6 +48,17 @@ class ConfigStore:
                 if not isinstance(cur, dict) or k not in cur:
                     return default
                 cur = cur[k]
+            # Path-Werte automatisch von leading/trailing whitespace befreien.
+            # Tippfehler beim manuellen YAML-Editieren ("/mnt/data/rezepte ")
+            # haben sonst zu /healthz-Failures und 'path does not exist' geführt.
+            # Wir greifen nur auf Pfad-ähnlichen Sub-Trees ein (paths.* + alles
+            # was auf '_dir' / '_path' endet), um nicht versehentlich Werte wie
+            # Passwörter zu mangeln.
+            if (isinstance(cur, str)
+                    and len(keys) >= 1
+                    and (keys[0] == "paths"
+                         or (keys[-1].endswith("_dir") or keys[-1].endswith("_path") or keys[-1].endswith("_file")))):
+                return cur.strip()
             return cur
 
     def set(self, *keys_and_value) -> None:
