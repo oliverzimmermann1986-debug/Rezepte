@@ -1742,12 +1742,33 @@
               </div>
             </div>
 
-            <!-- Kochen-Button -->
-            <button class="btn btn-primary" style="width: 100%; margin-top: 12px;" @click="cookRecipe()"
-                    :disabled="!(recipeDetail.data?.ingredients?.length) || recipeDetail.cooking">
-              <span x-show="!recipeDetail.cooking">🛒 Kochen — Zutaten in den Einkaufskorb</span>
-              <span x-show="recipeDetail.cooking">…</span>
-            </button>
+            <!-- Kochen-Button mit Portionen-Skalierung -->
+            <div class="cook-block">
+              <div class="cook-multiplier">
+                <span class="muted">Portionen:</span>
+                <template x-for="m in [0.5, 1, 2, 4]" :key="m">
+                  <button type="button" class="chip"
+                          :class="recipeDetail.multiplier === m && 'on'"
+                          @click="recipeDetail.multiplier = m"
+                          x-text="'× ' + (Number.isInteger(m) ? m : m.toString().replace('.',','))"></button>
+                </template>
+                <input type="number" step="0.5" min="0.1" max="20"
+                       x-model.number="recipeDetail.multiplier"
+                       class="cook-custom" title="Eigener Faktor" />
+              </div>
+              <div class="cook-hint muted" x-show="recipeDetail.data?.servings && recipeDetail.multiplier !== 1">
+                Original für <span x-text="recipeDetail.data?.servings"></span> →
+                gerechnet für <span x-text="Math.round(recipeDetail.data.servings * recipeDetail.multiplier * 10) / 10"></span> Portion(en)
+              </div>
+              <button class="btn btn-primary" style="width: 100%;" @click="cookRecipe()"
+                      :disabled="!(recipeDetail.data?.ingredients?.length) || recipeDetail.cooking">
+                <span x-show="!recipeDetail.cooking">
+                  🛒 Kochen — Zutaten in den Einkaufskorb
+                  <span x-show="recipeDetail.multiplier !== 1" x-text="'(× ' + _formatMultiplier(recipeDetail.multiplier) + ')'"></span>
+                </span>
+                <span x-show="recipeDetail.cooking">…</span>
+              </button>
+            </div>
 
             <!-- Zutaten -->
             <div class="recipe-detail-section">

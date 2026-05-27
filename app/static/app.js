@@ -52,6 +52,7 @@ function scrapperApp() {
     recipeDetail: {
       show: false, data: null, newTag: '',
       cooking: false, extracting: false,
+      multiplier: 1,    // Portionen-Skalierung beim Kochen
     },
     // Per-Schritt-Timer (key = step.id, value = {status, remaining, intervalId})
     // Bewusst auf scrapperApp-Top-Level damit Alpine reactivity trackt.
@@ -1590,6 +1591,7 @@ function scrapperApp() {
       this.recipeDetail.show = true;
       this.recipeDetail.data = null;
       this.recipeDetail.newTag = '';
+      this.recipeDetail.multiplier = 1;
       const r = await this.api('GET', '/api/recipes/' + id);
       if (r) this.recipeDetail.data = r;
     },
@@ -1633,16 +1635,24 @@ function scrapperApp() {
       if (!this.recipeDetail.data || this.recipeDetail.cooking) return;
       this.recipeDetail.cooking = true;
       try {
-        const r = await this.api('POST', `/api/cart/cook/${this.recipeDetail.data.id}`);
+        const mult = Number(this.recipeDetail.multiplier) || 1;
+        const r = await this.api('POST', `/api/cart/cook/${this.recipeDetail.data.id}`,
+                                  { multiplier: mult });
         if (r && r.ok) {
-          const msg = `+ ${r.added} neu, ${r.merged} summiert`;
+          const factor = mult !== 1 ? ` (× ${this._formatMultiplier(mult)})` : '';
+          const msg = `+ ${r.added} neu, ${r.merged} summiert${factor}`;
           this.showToast('🛒 ' + msg);
-          // Cart im Hintergrund neu laden damit Badge sofort aktuell ist
           this.loadCart();
         }
       } finally {
         this.recipeDetail.cooking = false;
       }
+    },
+
+    _formatMultiplier(m) {
+      // 0.5 → "0,5", 2 → "2", 1.5 → "1,5"
+      if (Number.isInteger(m)) return String(m);
+      return (Math.round(m * 100) / 100).toString().replace('.', ',');
     },
 
     async extractIngredients() {

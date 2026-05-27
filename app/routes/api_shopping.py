@@ -72,14 +72,22 @@ def _format_line(item: dict) -> str:
 
 # ── Kochen-Button ───────────────────────────────────────────────────────
 
+class CookPayload(BaseModel):
+    """Optional. Wenn nichts geschickt wird, ist multiplier=1.0 (original).
+    Frontend schickt z.B. {multiplier: 2.0} um die Mengen zu verdoppeln."""
+    multiplier: float = 1.0
+
+
 @router.post("/cook/{recipe_id}")
-def cook_recipe(recipe_id: int):
-    """Lädt alle Zutaten des Rezepts in den Einkaufskorb (mit Smart-Merge)."""
+def cook_recipe(recipe_id: int, payload: Optional[CookPayload] = None):
+    """Lädt alle Zutaten des Rezepts in den Einkaufskorb (mit Smart-Merge).
+    Optional mit multiplier zur Portionen-Skalierung."""
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
-    counters = add_recipe_to_cart(db, recipe_id)
-    return {"ok": True, **counters}
+    multiplier = payload.multiplier if payload else 1.0
+    counters = add_recipe_to_cart(db, recipe_id, multiplier=multiplier)
+    return {"ok": True, "multiplier": multiplier, **counters}
 
 
 # ── Manuelles Hinzufügen ────────────────────────────────────────────────

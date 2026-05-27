@@ -63,10 +63,25 @@ def display_amount(amount: Optional[float], unit: Optional[str]) -> Tuple[Option
     return amount, unit
 
 
-def add_recipe_to_cart(db, recipe_id: int) -> Dict[str, int]:
+def add_recipe_to_cart(db, recipe_id: int, multiplier: float = 1.0) -> Dict[str, int]:
     """Fügt ALLE Zutaten eines Rezepts dem Einkaufskorb hinzu (mit Merge).
-       Rückgabe: Counters {"added": n_neu, "merged": n_summiert, "skipped": n_uebersprungen}.
+
+    multiplier: Skalierungs-Faktor für die Mengen. Default 1.0 = original.
+      Beispiele: 0.5 = halbieren, 2.0 = verdoppeln, 3.0 = verdreifachen.
+      Wird auf jede Zutat-Menge VOR der Base-Unit-Konvertierung angewendet.
+      Bei amount=None (z.B. "Prise Salz") bleibt es None — Skalierung von
+      Nichts ist immer noch Nichts.
+
+    Rückgabe: Counters {"added": n_neu, "merged": n_summiert, "skipped": n_uebersprungen}.
     """
+    # Sanity: negativer oder 0er multiplier macht keinen Sinn, fallback auf 1
+    try:
+        multiplier = float(multiplier)
+    except (TypeError, ValueError):
+        multiplier = 1.0
+    if multiplier <= 0 or multiplier > 100:
+        multiplier = 1.0
+
     ingredients = db.recipe_ingredients_get(recipe_id)
     counters = {"added": 0, "merged": 0, "skipped": 0}
     for ing in ingredients:
@@ -80,6 +95,8 @@ def add_recipe_to_cart(db, recipe_id: int) -> Dict[str, int]:
             continue
 
         amount = ing.get("amount")
+        if amount is not None and multiplier != 1.0:
+            amount = amount * multiplier
         unit = normalize_unit(ing.get("unit"))
         base_unit, base_amount = to_base(unit, amount)
 
