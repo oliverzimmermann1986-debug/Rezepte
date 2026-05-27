@@ -1700,3 +1700,160 @@ input[type="checkbox"] { width: auto !important; }
   border-radius: 4px;
   margin-left: 8px;
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   Mobile-Overhaul (feat: mobile improvements)
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Nav-Items: Icon + Label nebeneinander auf Desktop, gestackt im Footer */
+.nav-icon { margin-right: 6px; }
+.nav-label { }
+
+/* === Desktop-Sidebar nutzt Icon+Label inline === */
+@media (min-width: 901px) {
+  .nav-icon { display: inline; }
+  .nav-label { display: inline; }
+}
+
+/* === Bottom-Nav auf Mobile: stacked Icon über Label === */
+@media (max-width: 900px) {
+  .nav-icon { margin-right: 0; font-size: 18px; line-height: 1; display: block; }
+  .nav-label { font-size: 11px; display: block; }
+}
+
+/* === Sehr kleine Phones: NUR Icons, mehr Items passen rein === */
+@media (max-width: 500px) {
+  .nav-label { display: none; }
+  .nav-icon { font-size: 20px; }
+  .sidebar { padding: 4px 2px; padding-bottom: max(4px, env(safe-area-inset-bottom)); }
+  .nav-item {
+    min-width: 36px;
+    padding: 8px 2px;
+  }
+}
+
+/* ── Filter-Sidebar auf Mobile als Slide-in-Drawer ──────────────────── */
+.recipes-filter-btn { display: none; }
+.recipes-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.recipes-filters-head { display: none; }
+.recipes-filters-backdrop { display: none; }
+
+@media (max-width: 900px) {
+  /* Filter standardmäßig versteckt — Toggle-Button im Header ist sichtbar */
+  .recipes-filter-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    position: relative;
+  }
+  .recipes-filter-btn .badge {
+    background: var(--accent);
+    color: #fff;
+    border-radius: 10px;
+    padding: 1px 6px;
+    font-size: 10px;
+    min-width: 14px;
+    text-align: center;
+  }
+  .recipes-filters-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Layout: kein 2-col-Grid mehr — Drawer absolut positioniert */
+  .recipes-layout { grid-template-columns: 1fr; gap: 0; }
+  .recipes-filters {
+    /* Drawer-Verhalten: von links rein-sliden */
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 64px;            /* Bottom-Nav-Höhe freihalten */
+    width: min(320px, 88vw);
+    max-height: none;
+    z-index: 100;
+    border-radius: 0;
+    border-right: 1px solid var(--border);
+    transform: translateX(-100%);
+    transition: transform .2s ease;
+    box-shadow: 6px 0 24px rgba(0, 0, 0, .25);
+  }
+  .recipes-filters.open { transform: translateX(0); }
+
+  .recipes-filters-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .5);
+    z-index: 99;
+  }
+}
+
+/* ── Recipe-Cards: 1-spaltig auf sehr engen Screens ─────────────────── */
+@media (max-width: 600px) {
+  .recipes-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  /* Bilder dürfen volle Breite haben + ordentliche Höhe (16:9) */
+  .recipe-card { display: flex; flex-direction: column; }
+  .recipe-card img,
+  .recipe-card .recipe-thumb {
+    width: 100%;
+    aspect-ratio: 16/9;
+    object-fit: cover;
+  }
+  .recipe-meta { padding: 12px; }
+  .recipe-name { font-size: 15px; font-weight: 600; }
+}
+
+/* ── Modal Sticky-Bottom-Bar (Mobile only) ──────────────────────────── */
+.modal-action-bar { display: none; }
+
+@media (max-width: 768px) {
+  .modal-action-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 14px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    background: var(--card);
+    border-top: 1px solid var(--border);
+    position: sticky;
+    bottom: 0;
+  }
+  .action-bar-mult {
+    display: flex;
+    gap: 6px;
+    flex-wrap: nowrap;
+    justify-content: center;
+  }
+  .action-bar-mult .chip {
+    flex: 1;
+    min-height: 32px;
+    justify-content: center;
+    padding: 4px 8px;
+  }
+  .action-bar-cook {
+    width: 100%;
+    min-height: 48px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  /* Den Inline-Cook-Block im Body verbergen — die Sticky-Bar übernimmt */
+  .recipe-detail-body .cook-block {
+    display: none;
+  }
+
+  /* Modal-Body braucht Bottom-Padding damit nichts hinter der Sticky-Bar verschwindet */
+  .recipe-detail-body { padding-bottom: 8px; }
+}

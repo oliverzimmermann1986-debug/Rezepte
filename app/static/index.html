@@ -14,33 +14,33 @@
   <aside class="sidebar">
     <div class="logo">SCRAPPER</div>
 
-    <div class="nav-item" :class="page==='dashboard' && 'active'" @click="page='dashboard'">
-      ▤ Dashboard
+    <div class="nav-item" :class="page==='dashboard' && 'active'" @click="page='dashboard'" title="Dashboard">
+      <span class="nav-icon">▤</span><span class="nav-label">Dashboard</span>
     </div>
-    <div class="nav-item" :class="page==='pending' && 'active'" @click="page='pending'; loadPending(); loadFailedDownloads()">
-      ⧗ Pending
+    <div class="nav-item" :class="page==='pending' && 'active'" @click="page='pending'; loadPending(); loadFailedDownloads()" title="Pending">
+      <span class="nav-icon">⧗</span><span class="nav-label">Pending</span>
       <span class="badge" x-show="status.pending_count > 0" x-text="status.pending_count"></span>
     </div>
-    <div class="nav-item" :class="page==='history' && 'active'" @click="page='history'; loadHistory()">
-      ⌖ Historie
+    <div class="nav-item" :class="page==='history' && 'active'" @click="page='history'; loadHistory()" title="Historie">
+      <span class="nav-icon">⌖</span><span class="nav-label">Historie</span>
     </div>
-    <div class="nav-item" :class="page==='jobs' && 'active'" @click="page='jobs'; loadJobs()">
-      ⏵ Jobs &amp; Logs
+    <div class="nav-item" :class="page==='jobs' && 'active'" @click="page='jobs'; loadJobs()" title="Jobs & Logs">
+      <span class="nav-icon">⏵</span><span class="nav-label">Jobs &amp; Logs</span>
     </div>
-    <div class="nav-item" :class="page==='config' && 'active'" @click="page='config'; loadConfig()">
-      ⚙ Einstellungen
+    <div class="nav-item" :class="page==='config' && 'active'" @click="page='config'; loadConfig()" title="Einstellungen">
+      <span class="nav-icon">⚙</span><span class="nav-label">Einstellungen</span>
     </div>
 
-    <div class="nav-item" :class="page==='recipes' && 'active'" @click="page='recipes'; loadRecipes(); loadFacets()">
-      🍳 Rezepte
+    <div class="nav-item" :class="page==='recipes' && 'active'" @click="page='recipes'; loadRecipes(); loadFacets()" title="Rezepte">
+      <span class="nav-icon">🍳</span><span class="nav-label">Rezepte</span>
       <span class="badge" x-show="recipes.extractionPending > 0" x-text="recipes.extractionPending" title="Zutaten werden gerade extrahiert"></span>
     </div>
-    <div class="nav-item" :class="page==='cart' && 'active'" @click="page='cart'; loadCart()">
-      🛒 Einkaufskorb
+    <div class="nav-item" :class="page==='cart' && 'active'" @click="page='cart'; loadCart()" title="Einkaufskorb">
+      <span class="nav-icon">🛒</span><span class="nav-label">Einkaufskorb</span>
       <span class="badge" x-show="cart.items.length > 0" x-text="cart.items.length"></span>
     </div>
-    <div class="nav-item" :class="page==='audit' && 'active'" @click="page='audit'; loadAudit()">
-      🔍 Audit
+    <div class="nav-item" :class="page==='audit' && 'active'" @click="page='audit'; loadAudit()" title="Audit">
+      <span class="nav-icon">🔍</span><span class="nav-label">Audit</span>
       <span class="badge badge-warn" x-show="audit.summary && (audit.summary.exact_groups + audit.summary.similar_clusters + audit.summary.bad_count) > 0"
             x-text="(audit.summary?.exact_groups || 0) + (audit.summary?.similar_clusters || 0) + (audit.summary?.bad_count || 0)"></span>
     </div>
@@ -1545,8 +1545,17 @@
     <!-- ========== REZEPTE ========== -->
     <section x-show="page==='recipes'" class="recipes-page">
       <div class="recipes-layout">
-        <!-- Filter-Sidebar -->
-        <aside class="recipes-filters">
+        <!-- Filter-Drawer-Backdrop (nur Mobile, beim Tippen schließen) -->
+        <div class="recipes-filters-backdrop" x-show="recipes.filterDrawerOpen"
+             @click="recipes.filterDrawerOpen = false" x-transition.opacity></div>
+
+        <!-- Filter-Sidebar / Drawer -->
+        <aside class="recipes-filters" :class="recipes.filterDrawerOpen && 'open'">
+          <div class="recipes-filters-head">
+            <strong>Filter</strong>
+            <button class="btn-icon" @click="recipes.filterDrawerOpen = false"
+                    title="Filter schließen">✕</button>
+          </div>
           <div class="filter-block">
             <label>Suche</label>
             <input type="text" x-model.debounce.300ms="recipes.filters.search" @input="loadRecipes()" placeholder="Name, Beschreibung…" />
@@ -1613,9 +1622,16 @@
             <h2 style="margin: 0">Rezepte
               <span class="muted" x-text="recipes.total + ' insgesamt'"></span>
             </h2>
-            <div class="recipes-info" x-show="recipes.extractionRunning">
-              <span class="pill running">KI</span>
-              <span>Extrahiere Zutaten… <span x-text="recipes.extractionStats.pending || 0"></span> übrig</span>
+            <div class="recipes-header-actions">
+              <button class="btn btn-secondary recipes-filter-btn"
+                      @click="recipes.filterDrawerOpen = true">
+                ☰ Filter
+                <span class="badge" x-show="activeFilterCount() > 0" x-text="activeFilterCount()"></span>
+              </button>
+              <div class="recipes-info" x-show="recipes.extractionRunning">
+                <span class="pill running">KI</span>
+                <span>Extrahiere Zutaten… <span x-text="recipes.extractionStats.pending || 0"></span> übrig</span>
+              </div>
             </div>
           </div>
 
@@ -2089,6 +2105,25 @@
             </div>
           </div>
         </div>
+      </div>
+      <!-- Sticky-Bottom-Bar (Mobile only — Desktop hat den cook-block inline) -->
+      <div class="modal-action-bar" x-show="recipeDetail.data && !recipeDetail.cookMode">
+        <div class="action-bar-mult">
+          <template x-for="m in [0.5, 1, 2, 4]" :key="m">
+            <button type="button" class="chip"
+                    :class="recipeDetail.multiplier === m && 'on'"
+                    @click="recipeDetail.multiplier = m"
+                    x-text="'× ' + (Number.isInteger(m) ? m : m.toString().replace('.',','))"></button>
+          </template>
+        </div>
+        <button class="btn btn-primary action-bar-cook" @click="cookRecipe()"
+                :disabled="!(recipeDetail.data?.ingredients?.length) || recipeDetail.cooking">
+          <span x-show="!recipeDetail.cooking">
+            🛒 Kochen
+            <span x-show="recipeDetail.multiplier !== 1" x-text="'× ' + _formatMultiplier(recipeDetail.multiplier)"></span>
+          </span>
+          <span x-show="recipeDetail.cooking">…</span>
+        </button>
       </div>
     </div>
   </div>

@@ -41,6 +41,7 @@ function scrapperApp() {
     recipes: {
       items: [], total: 0, loading: false,
       filters: { search: '', type: '', category: '', tag_ids: [], ingredients: [], limit: 60, offset: 0 },
+      filterDrawerOpen: false,  // nur auf Mobile sichtbar: Filter als Drawer statt Sidebar
       facets: { types: [], categories: [], tags: [], ingredients: [] },
       extractionRunning: false, extractionPending: 0,
       extractionStats: {}, _pollTimer: null,
@@ -1607,6 +1608,19 @@ function scrapperApp() {
       if (i >= 0) arr.splice(i, 1); else arr.push(id);
       this.recipes.filters.offset = 0;
       this.loadRecipes();
+    },
+
+    // Zählt aktive Filter — für den "Filter"-Button-Badge auf Mobile, sodass
+    // der User sieht ob Filter gesetzt sind ohne den Drawer öffnen zu müssen.
+    activeFilterCount() {
+      const f = this.recipes.filters;
+      let n = 0;
+      if (f.search) n++;
+      if (f.type) n++;
+      if (f.category) n++;
+      n += (f.tag_ids || []).length;
+      n += (f.ingredients || []).length;
+      return n;
     },
 
     toggleIngredientFilter(canonicalName) {
