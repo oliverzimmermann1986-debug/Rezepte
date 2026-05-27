@@ -156,8 +156,9 @@ class OpenAIAnalyzer:
                 if len(txt) >= 20:
                     logger.info(f"PDF-Text extrahiert: {p.name} ({len(txt)} chars)")
                     return txt
-                logger.info(f"PDF {p.name}: kein extrahierbarer Text (vermutlich Scan)")
-                return None
+                # PDF hat keinen Text-Layer (Scan) → render zu PNG + Vision-Call
+                logger.info(f"PDF {p.name}: kein Text-Layer, Vision-Fallback")
+                return self._extract_pdf_via_vision(p)
             except Exception as e:
                 logger.warning(f"pdfplumber-Fehler bei {p}: {e}")
                 return None
@@ -225,6 +226,63 @@ class OpenAIAnalyzer:
         except Exception as e:
             logger.error(f"OpenAI Vision Call: {e}")
             return None
+
+    def _extract_pdf_via_vision(self, pdf_path) -> Optional[str]:
+        """Render gescanntes PDF (kein Text-Layer) zu PNG und schick die Seiten
+        einzeln an Vision. Pure-Python via PyMuPDF — kein poppler-utils nötig.
+
+        Limit: max. 3 Seiten. Rezepte sind selten länger; Multi-Page-Kochbücher
+        in einem Folder sind eh ein anderer Use-Case (sollten gesplittet sein).
+        Bei 150 DPI ist 1 Seite ~700KB PNG → ~30KB base64-tokens → ~$0.003 pro
+        Seite mit gpt-4o-mini Vision.
+        """
+        try:
+            import pymupdf
+        except ImportError:
+            logger.error(
+                "pymupdf nicht installiert — PDF-Vision-Fallback nicht möglich. "
+                "Im Container ausführen: pip install pymupdf"
+            )
+            return None
+        import base64
+        try:
+            doc = pymupdf.open(str(pdf_path))
+        except Exception as e:
+            logger.warning(f"PyMuPDF kann {pdf_path} nicht öffnen: {e}")
+            return None
+
+        max_pages = min(len(doc), 3)
+        parts = []
+        try:
+            for i in range(max_pages):
+                page = doc[i]
+                pix = page.get_pixmap(dpi=150)
+                png_bytes = pix.tobytes(output="png")
+                b64 = base64.b64encode(png_bytes).decode()
+                prompt = (
+                    f"Du siehst Seite {i+1} eines gescannten Rezept-PDFs. "
+                    "Lies allen lesbaren Text raus und gib eine zusammenhängende "
+                    "deutsche Rezept-Beschreibung mit Zutaten (mit Mengen falls "
+                    "lesbar) und Zubereitungs-Schritten zurück. "
+                    "Wenn die Seite nichts Rezept-Artiges zeigt, antworte exakt: "
+                    "KEINE_REZEPT_DATEN"
+                )
+                txt = self._call_vision(b64, "png", prompt)
+                if txt and "KEINE_REZEPT_DATEN" not in txt:
+                    parts.append(txt.strip())
+        finally:
+            doc.close()
+
+        if not parts:
+            return None
+        full = "\n\n".join(parts)
+        if len(full) < 20:
+            return None
+        logger.info(
+            f"PDF-Vision-Extract: {pdf_path.name} "
+            f"({len(full)} chars, {len(parts)}/{max_pages} Seiten)"
+        )
+        return full
 
     def health(self) -> bool:
         """Pingt GET /v1/models. 401 = Key falsch, 200 = ok.
