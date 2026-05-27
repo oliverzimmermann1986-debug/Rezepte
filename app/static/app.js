@@ -1432,6 +1432,64 @@ function scrapperApp() {
       return h + ':' + String(mm).padStart(2, '0') + ':' + String(r).padStart(2, '0');
     },
 
+    // ── Caption-Renderer ────────────────────────────────────────────
+    // Zerlegt einen Beschreibungstext in Segmente:
+    //   {type: 'text', value: '...'}     — normaler Text, Newlines bleiben
+    //   {type: 'hashtag', value: '#tag'} — #vegan, #pasta etc.
+    //   {type: 'mention', value: '@user'}— @chefkoch
+    //   {type: 'url', value: 'http://…'} — anklickbare Links
+    //
+    // Single-pass-Regex: alternations matchen in der Reihenfolge ihrer
+    // Spezifität. URLs zuerst, dann Hashtag/Mention (sonst würde z.B.
+    // ein '@' inside einer URL als Mention erkannt).
+    formatCaption(text) {
+      if (!text) return [];
+      // \p{L} matched alle Unicode-Letters (inkl. ä,ö,ü,ß) — moderne Browser.
+      const RE = /(https?:\/\/\S+|#[\p{L}\p{N}_\-]+|@[\p{L}\p{N}_.\-]+)/gu;
+      const out = [];
+      let last = 0;
+      let m;
+      while ((m = RE.exec(text)) !== null) {
+        if (m.index > last) {
+          out.push({ type: 'text', value: text.slice(last, m.index) });
+        }
+        const tok = m[0];
+        let type;
+        if (tok.startsWith('#')) type = 'hashtag';
+        else if (tok.startsWith('@')) type = 'mention';
+        else type = 'url';
+        out.push({ type, value: tok });
+        last = m.index + tok.length;
+      }
+      if (last < text.length) {
+        out.push({ type: 'text', value: text.slice(last) });
+      }
+      return out;
+    },
+
+    // Klick auf Hashtag im Caption-Render: wenn das System einen passenden
+    // Tag in den Facets findet, Filter setzen und zur Rezepte-Page springen.
+    // Sonst Toast — der Hashtag ist nur in der Caption, kein Filter-Tag.
+    clickCaptionHashtag(hashtagText) {
+      const name = hashtagText.replace(/^#/, '').toLowerCase().trim();
+      if (!name) return;
+      const found = (this.recipes.facets.tags || []).find(
+        t => (t.name || '').toLowerCase() === name
+      );
+      if (!found) {
+        this.showToast(`Kein Tag "${name}" — Hashtag nur in Caption`);
+        return;
+      }
+      // Filter setzen + zur Liste — und das Modal schließen, sonst sieht
+      // der User nichts vom angewendeten Filter.
+      this.closeRecipeDetail();
+      this.recipes.filters.tag_ids = [found.id];
+      this.recipes.filters.offset = 0;
+      this.page = 'recipes';
+      this.loadRecipes();
+      this.showToast(`Filter: Tag "${found.name}"`);
+    },
+
     // ── Stoppuhr pro Schritt ─────────────────────────────────────────
     startStepTimer(step) {
       if (!step || !step.timer_seconds) return;

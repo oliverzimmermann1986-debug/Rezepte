@@ -1202,6 +1202,49 @@ input[type="checkbox"] { width: auto !important; }
   overflow-y: auto;
 }
 
+/* Rich-Caption: collapsible mit Mehr/Weniger-Button. Standard zeigt nur
+   eine kurze Vorschau (~6 Zeilen via max-height), expanded zeigt alles. */
+.recipe-description.rich-caption {
+  max-height: 110px;
+  overflow: hidden;
+  position: relative;
+  /* Klartext-Rendering: ein <div> mit pre-wrap statt <pre> — Hashtag- und
+     URL-Links rendern inline mit dem umgebenden Text. */
+  font-family: inherit;
+}
+.recipe-description.rich-caption:not(.expanded)::after {
+  /* Fade-Out am unteren Rand wenn zugeklappt — Hinweis dass noch was kommt */
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 32px;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+}
+.recipe-description.rich-caption.expanded {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.caption-hashtag {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+  font-weight: 500;
+}
+.caption-hashtag:hover { text-decoration: underline; }
+.caption-mention {
+  color: #a855f7;
+  font-weight: 500;
+  /* Mentions sind plattform-spezifisch (TikTok/Instagram), wir wissen den
+     Provider nicht zwingend → nicht klickbar, nur visuell hervorgehoben. */
+}
+.caption-url {
+  color: var(--accent);
+  text-decoration: underline;
+  word-break: break-all;
+}
+.caption-url:hover { opacity: .85; }
+
 .ingredient-list {
   display: flex;
   flex-direction: column;

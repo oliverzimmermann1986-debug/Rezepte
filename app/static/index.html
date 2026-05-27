@@ -2057,11 +2057,36 @@
               </ol>
             </div>
 
-            <!-- Beschreibung -->
-            <details class="recipe-detail-section">
-              <summary><strong>Beschreibung</strong></summary>
-              <pre class="recipe-description" x-text="recipeDetail.data?.description || '— keine —'"></pre>
-            </details>
+            <!-- Beschreibung mit Rich-Rendering (Hashtags, Mentions, URLs) -->
+            <div class="recipe-detail-section" x-data="{ expanded: false }"
+                 x-show="recipeDetail.data?.description">
+              <h4 style="display:flex; align-items:center; justify-content: space-between;">
+                <span>Beschreibung</span>
+                <button class="btn btn-secondary btn-sm"
+                        x-show="(recipeDetail.data?.description || '').length > 280"
+                        @click="expanded = !expanded">
+                  <span x-show="!expanded">▾ Mehr</span>
+                  <span x-show="expanded">▴ Weniger</span>
+                </button>
+              </h4>
+              <div class="recipe-description rich-caption"
+                   :class="expanded && 'expanded'">
+                <template x-for="(seg, idx) in formatCaption(recipeDetail.data?.description || '')" :key="idx">
+                  <template x-if="seg.type === 'text'"><span x-text="seg.value"></span></template>
+                  <template x-if="seg.type === 'hashtag'">
+                    <a class="caption-hashtag" @click.prevent="clickCaptionHashtag(seg.value)"
+                       :href="'#' + seg.value" x-text="seg.value"></a>
+                  </template>
+                  <template x-if="seg.type === 'mention'">
+                    <span class="caption-mention" x-text="seg.value"></span>
+                  </template>
+                  <template x-if="seg.type === 'url'">
+                    <a class="caption-url" :href="seg.value" target="_blank"
+                       rel="noopener noreferrer" x-text="seg.value"></a>
+                  </template>
+                </template>
+              </div>
+            </div>
           </div>
         </div>
       </div>
