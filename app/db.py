@@ -750,10 +750,19 @@ class Database:
             return int(c.execute(sql, params).fetchone()["n"])
 
     def recipes_pending_extraction(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Alle pending Rezepte für den Worker. KEIN description-Filter hier —
+        früher war 'AND length(description) >= 20' drin, was zu einem Counter-
+        Mismatch führte: pending_count zählte ohne Filter, Worker-Batch mit
+        Filter → bei 4 Rezepten ohne Description sah der Counter 'pending=4',
+        der Worker fand 0 und endete sofort. ensure_extraction_running() sah
+        wieder 'pending=4' und startete den Worker erneut → Endless-Loop.
+
+        Statt zwei verschiedenen Queries: Worker pickt alle pending, und
+        _extract_for_recipe() setzt Rezepte mit zu kurzer description selbst
+        auf 'skipped'. Dadurch konsistent."""
         with self.conn() as c:
             rows = c.execute(
                 "SELECT * FROM recipes WHERE ingredients_status='pending' "
-                "AND description IS NOT NULL AND length(description) >= 20 "
                 "ORDER BY COALESCE(source_added_at, indexed_at) DESC LIMIT ?",
                 (limit,),
             ).fetchall()
