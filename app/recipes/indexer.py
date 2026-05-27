@@ -61,7 +61,7 @@ def sync_filesystem(db: Optional[Database] = None) -> dict:
         logger.warning(f"sync_filesystem: recipe_dir existiert nicht: {recipe_root}")
         return {"scanned": 0, "added": 0, "updated": 0, "skipped": 0, "error": "recipe_dir missing"}
 
-    counters = {"scanned": 0, "added": 0, "updated": 0, "skipped": 0}
+    counters = {"scanned": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
 
     # Layout: /mnt/rezepte/<Typ>/<Kategorie>/<Name>/{name.mp4, name.jpg, info.json, description.txt}
     # Wir gehen 3 Ebenen tief.
@@ -77,8 +77,20 @@ def sync_filesystem(db: Optional[Database] = None) -> dict:
                 if not recipe_dir.is_dir():
                     continue
                 counters["scanned"] += 1
-                result = _index_one(db, recipe_dir, type_name, cat_name)
-                counters[result] = counters.get(result, 0) + 1
+                # try/except um _index_one — sonst bricht ein einzelner Crash
+                # (z.B. UNIQUE constraint auf folder_path bei manuell duplizierten
+                # Foldern, oder defekte info.json) den GANZEN Sync ab und nur
+                # die ersten paar Rezepte landen in der DB. Mit try/except wird
+                # der Folder geskippt, der Sync läuft weiter.
+                try:
+                    result = _index_one(db, recipe_dir, type_name, cat_name)
+                    counters[result] = counters.get(result, 0) + 1
+                except Exception as e:
+                    counters["errors"] += 1
+                    logger.warning(
+                        f"sync_filesystem: _index_one({recipe_dir}) crashed: "
+                        f"{type(e).__name__}: {e}"
+                    )
 
     logger.info(f"sync_filesystem: {counters}")
     return counters
