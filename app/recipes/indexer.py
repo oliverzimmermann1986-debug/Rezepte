@@ -1,0 +1,244 @@
+"""Indexer + Background-Extraction für den Recipe-Browser.
+
+Zwei separate Aufgaben:
+
+1. **FS→DB-Sync** (`sync_filesystem`):
+   Scannt `/mnt/rezepte/*/*/<Name>/` und legt für jeden Ordner mit info.json +
+   description.txt eine `recipes`-Zeile an. Idempotent — bestehende Einträge
+   werden upserted, keine neu-Extraktion. Source-of-Truth bleibt das Filesystem.
+
+   Aufruf: passiert bei jedem `/api/recipes` GET (lazy), und/oder explizit
+   per `/api/recipes/sync` Button im Frontend.
+
+2. **Background-Extraction** (`run_extraction_loop`):
+   Pickt sich pro Schleifen-Iteration N Rezepte mit `ingredients_status='pending'`,
+   schickt deren `description` durch den AI-Analyzer, schreibt Zutaten in
+   `recipe_ingredients`, setzt Status auf 'ok' (oder 'error' bei Fehler).
+
+   Läuft als Thread, gestartet beim ersten `/api/recipes` mit pending-Bestand
+   (siehe ensure_extraction_running). Stoppt selbständig wenn keine pending
+   mehr da sind.
+
+Wir verwenden KEINEN systemd-Timer dafür — der Job ist UI-getrieben (User
+öffnet Browser → Job läuft an), und stoppt von selbst.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import threading
+import time
+from pathlib import Path
+from typing import Optional
+
+from ..core.analyzer import build_analyzer
+from ..config_store import get_config
+from ..db import Database, get_db
+from .canonical import canonical_name as _canonical
+from .units import normalize_unit
+
+logger = logging.getLogger(__name__)
+
+# Globaler Singleton für den Extraction-Worker.
+_worker_lock = threading.Lock()
+_worker_thread: Optional[threading.Thread] = None
+_worker_stop = threading.Event()
+
+
+# ════════════════════════════════════════════════════════════════════════
+# FS → DB Sync
+# ════════════════════════════════════════════════════════════════════════
+
+def sync_filesystem(db: Optional[Database] = None) -> dict:
+    """Scannt die Recipe-Roots und legt fehlende `recipes`-Einträge an.
+
+    Returns: {"scanned": n, "added": n, "updated": n, "skipped": n}
+    """
+    db = db or get_db()
+    cfg = get_config()
+    recipe_root = Path(cfg.get("paths", "recipe_dir", default="/mnt/rezepte"))
+    if not recipe_root.exists():
+        logger.warning(f"sync_filesystem: recipe_dir existiert nicht: {recipe_root}")
+        return {"scanned": 0, "added": 0, "updated": 0, "skipped": 0, "error": "recipe_dir missing"}
+
+    counters = {"scanned": 0, "added": 0, "updated": 0, "skipped": 0}
+
+    # Layout: /mnt/rezepte/<Typ>/<Kategorie>/<Name>/{name.mp4, name.jpg, info.json, description.txt}
+    # Wir gehen 3 Ebenen tief.
+    for type_dir in _safe_iterdir(recipe_root):
+        if not type_dir.is_dir():
+            continue
+        type_name = type_dir.name
+        for cat_dir in _safe_iterdir(type_dir):
+            if not cat_dir.is_dir():
+                continue
+            cat_name = cat_dir.name
+            for recipe_dir in _safe_iterdir(cat_dir):
+                if not recipe_dir.is_dir():
+                    continue
+                counters["scanned"] += 1
+                result = _index_one(db, recipe_dir, type_name, cat_name)
+                counters[result] = counters.get(result, 0) + 1
+
+    logger.info(f"sync_filesystem: {counters}")
+    return counters
+
+
+def _safe_iterdir(p: Path):
+    """iterdir() das PermissionError + nicht-existierende Pfade toleriert."""
+    try:
+        return list(p.iterdir())
+    except (PermissionError, FileNotFoundError, OSError) as e:
+        logger.warning(f"iterdir({p}): {e}")
+        return []
+
+
+def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str:
+    """Legt EINEN Recipe-Ordner als DB-Zeile an oder aktualisiert ihn.
+    Returns: 'added' | 'updated' | 'skipped'."""
+    info_file = folder / "info.json"
+    desc_file = folder / "description.txt"
+
+    info = {}
+    if info_file.exists():
+        try:
+            info = json.loads(info_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"info.json kaputt in {folder}: {e}")
+
+    description = None
+    if desc_file.exists():
+        try:
+            description = desc_file.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.warning(f"description.txt unlesbar in {folder}: {e}")
+
+    name = info.get("name") or folder.name
+    url = info.get("url")
+    # processed_at aus info.json wenn vorhanden, sonst mtime des Ordners
+    source_added_at = info.get("processed_at")
+    if source_added_at is None:
+        try:
+            source_added_at = folder.stat().st_mtime
+        except OSError:
+            source_added_at = None
+
+    # Thumb + Video raussuchen — Pattern: gleicher Stamm wie folder.name
+    thumb = None
+    video = None
+    for f in _safe_iterdir(folder):
+        if not f.is_file():
+            continue
+        suffix = f.suffix.lower()
+        if suffix in (".jpg", ".jpeg", ".png", ".webp"):
+            thumb = f.name
+        elif suffix in (".mp4", ".webm", ".mov", ".mkv"):
+            video = f.name
+
+    existed = db.recipe_get_by_folder(str(folder))
+    db.recipe_upsert(
+        url=url,
+        name=name,
+        type=type_name,
+        category=cat_name,
+        folder_path=str(folder),
+        description=description,
+        thumb_filename=thumb,
+        video_filename=video,
+        source_added_at=source_added_at,
+    )
+    return "updated" if existed else "added"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Background Extraction Worker
+# ════════════════════════════════════════════════════════════════════════
+
+def ensure_extraction_running() -> bool:
+    """Startet den Worker-Thread, falls er noch nicht läuft UND es pending
+    Rezepte gibt. Wird vom /api/recipes-Endpoint aufgerufen — idempotent."""
+    global _worker_thread
+    with _worker_lock:
+        if _worker_thread and _worker_thread.is_alive():
+            return False
+        db = get_db()
+        stats = db.recipes_extraction_stats()
+        if not stats.get("pending"):
+            return False  # nichts zu tun
+        _worker_stop.clear()
+        _worker_thread = threading.Thread(target=_extraction_loop, name="recipe-extractor", daemon=True)
+        _worker_thread.start()
+        logger.info(f"Recipe-Extraction-Worker gestartet ({stats.get('pending', 0)} pending)")
+        return True
+
+
+def stop_extraction() -> None:
+    """Signalisiert dem Worker zu stoppen. Aufruf bei Shutdown."""
+    _worker_stop.set()
+
+
+def is_extraction_running() -> bool:
+    return bool(_worker_thread and _worker_thread.is_alive())
+
+
+def _extraction_loop() -> None:
+    """Worker-Hauptschleife. Stoppt von selbst wenn keine pending mehr sind."""
+    db = get_db()
+    cfg = get_config()
+    ai_cfg = cfg.get("ai", default={}) or {}
+
+    try:
+        analyzer = build_analyzer(ai_cfg)
+    except Exception as e:
+        logger.error(f"Extraction-Worker: kann Analyzer nicht bauen: {e}")
+        return
+
+    batch_size = 5  # KI-Calls sind teuer, aber DB-Updates billig — kleine Batches sind ok
+    idle_loops = 0
+    while not _worker_stop.is_set():
+        batch = db.recipes_pending_extraction(limit=batch_size)
+        if not batch:
+            # 3x in Folge leer = wirklich nichts mehr, beenden
+            idle_loops += 1
+            if idle_loops >= 3:
+                logger.info("Extraction-Worker: keine pending Rezepte mehr, beende Loop")
+                return
+            time.sleep(2)
+            continue
+        idle_loops = 0
+        for recipe in batch:
+            if _worker_stop.is_set():
+                return
+            _extract_for_recipe(db, analyzer, recipe)
+
+
+def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
+    """Holt Zutaten für EIN Rezept und schreibt sie ins DB. Niemals raised —
+    Fehler werden auf 'error'-Status gesetzt, sodass die Schleife weiterläuft."""
+    rid = recipe["id"]
+    desc = recipe.get("description") or ""
+    if len(desc.strip()) < 20:
+        db.recipe_set_extraction_result(rid, status="skipped", ingredients=[])
+        logger.debug(f"Rezept #{rid} '{recipe.get('name')}': description zu kurz, skipped")
+        return
+
+    try:
+        items = analyzer.analyze_ingredients(desc)
+    except Exception as e:
+        logger.warning(f"Rezept #{rid}: KI-Call failed: {e}")
+        db.recipe_set_extraction_result(rid, status="error", ingredients=[])
+        return
+
+    # canonical_name + unit-normalize beim Insert mit dranhängen
+    prepared = []
+    for it in items:
+        prepared.append({
+            "name": it.get("name") or "",
+            "canonical_name": _canonical(it.get("name") or ""),
+            "amount": it.get("amount"),
+            "unit": normalize_unit(it.get("unit")),
+            "raw": it.get("raw"),
+        })
+
+    db.recipe_set_extraction_result(rid, status="ok", ingredients=prepared)
+    logger.info(f"Rezept #{rid} '{recipe.get('name')}': {len(prepared)} Zutaten extrahiert")

@@ -37,6 +37,23 @@ function scrapperApp() {
     weddingCategories: ['Deko','Foto','Basteln','Einladung','Standesamt','Outfit','Catering','Sonstiges'],
     _statusTimer: null,
 
+    // ── Recipe-Browser + Einkaufskorb (feat/recipe-browser-and-cart) ─────
+    recipes: {
+      items: [], total: 0, loading: false,
+      filters: { search: '', type: '', category: '', tag_ids: [], ingredients: [], limit: 60, offset: 0 },
+      facets: { types: [], categories: [], tags: [], ingredients: [] },
+      extractionRunning: false, extractionPending: 0,
+      extractionStats: {}, _pollTimer: null,
+    },
+    cart: {
+      items: [],
+      add: { name: '', amount: null, unit: '' },
+    },
+    recipeDetail: {
+      show: false, data: null, newTag: '',
+      cooking: false, extracting: false,
+    },
+
     init() {
       this.loadRecentJobs();
       this.loadStats();
@@ -1376,6 +1393,254 @@ function scrapperApp() {
           await this.loadHistory();
         }
       } catch(e) {}
+    },
+
+    // ════════════════════════════════════════════════════════════════════
+    // Rezept-Browser + Einkaufskorb
+    // ════════════════════════════════════════════════════════════════════
+
+    // ── Helpers ───────────────────────────────────────────────────────
+    formatAmount(n) {
+      if (n === null || n === undefined) return '';
+      if (Number.isInteger(n)) return String(n);
+      // max 2 Nachkomma, trailing zeros weg, mit deutschem Komma
+      const s = (Math.round(n * 100) / 100).toString();
+      return s.replace('.', ',');
+    },
+
+    _buildRecipeQuery() {
+      const f = this.recipes.filters;
+      const params = new URLSearchParams();
+      if (f.search) params.set('search', f.search);
+      if (f.type) params.set('type', f.type);
+      if (f.category) params.set('category', f.category);
+      f.tag_ids.forEach(id => params.append('tag_id', id));
+      f.ingredients.forEach(name => params.append('ingredient', name));
+      params.set('limit', f.limit);
+      params.set('offset', f.offset);
+      return params.toString();
+    },
+
+    // ── Recipe-Liste + Facets ─────────────────────────────────────────
+    async loadRecipes() {
+      this.recipes.loading = true;
+      try {
+        const r = await this.api('GET', '/api/recipes?' + this._buildRecipeQuery());
+        if (!r) return;
+        this.recipes.items = r.items || [];
+        this.recipes.total = r.total || 0;
+        this.recipes.extractionRunning = !!r.extraction_running;
+        // Wenn die Extraction läuft, periodisch refreshen (Status + Liste)
+        this._scheduleExtractionPoll();
+      } finally {
+        this.recipes.loading = false;
+      }
+    },
+
+    async loadFacets() {
+      const r = await this.api('GET', '/api/recipes/facets');
+      if (!r) return;
+      this.recipes.facets = r;
+    },
+
+    resetFilters() {
+      this.recipes.filters = {
+        search: '', type: '', category: '', tag_ids: [], ingredients: [],
+        limit: 60, offset: 0,
+      };
+      this.loadRecipes();
+    },
+
+    toggleTagFilter(id) {
+      const arr = this.recipes.filters.tag_ids;
+      const i = arr.indexOf(id);
+      if (i >= 0) arr.splice(i, 1); else arr.push(id);
+      this.recipes.filters.offset = 0;
+      this.loadRecipes();
+    },
+
+    toggleIngredientFilter(canonicalName) {
+      const arr = this.recipes.filters.ingredients;
+      const i = arr.indexOf(canonicalName);
+      if (i >= 0) arr.splice(i, 1); else arr.push(canonicalName);
+      this.recipes.filters.offset = 0;
+      this.loadRecipes();
+    },
+
+    async syncRecipes() {
+      this.showToast('Synchronisiere…');
+      const r = await this.api('POST', '/api/recipes/sync');
+      if (!r) return;
+      this.showToast(`✓ ${r.scanned || 0} gescannt, ${r.added || 0} neu`);
+      await this.loadRecipes();
+      await this.loadFacets();
+    },
+
+    // ── Extraction-Polling ────────────────────────────────────────────
+    _scheduleExtractionPoll() {
+      // Idempotent: einen Timer für die Background-Extraction-Status-Updates
+      if (this.recipes._pollTimer) return;
+      const tick = async () => {
+        try {
+          const s = await this.api('GET', '/api/recipes/extraction/status');
+          if (!s) return;
+          this.recipes.extractionRunning = !!s.running;
+          this.recipes.extractionStats = s.stats || {};
+          this.recipes.extractionPending = s.stats?.pending || 0;
+          if (!s.running) {
+            // Worker fertig — Liste + Facets nachladen damit Zutaten-Filter
+            // jetzt belegt ist, und Polling stoppen
+            clearInterval(this.recipes._pollTimer);
+            this.recipes._pollTimer = null;
+            if (this.page === 'recipes') {
+              this.loadRecipes();
+              this.loadFacets();
+            }
+          }
+        } catch(e) {}
+      };
+      tick();  // sofort einmal
+      this.recipes._pollTimer = setInterval(tick, 5000);
+    },
+
+    // ── Detail-Modal ──────────────────────────────────────────────────
+    async openRecipe(id) {
+      this.recipeDetail.show = true;
+      this.recipeDetail.data = null;
+      this.recipeDetail.newTag = '';
+      const r = await this.api('GET', '/api/recipes/' + id);
+      if (r) this.recipeDetail.data = r;
+    },
+
+    closeRecipeDetail() {
+      this.recipeDetail.show = false;
+      this.recipeDetail.data = null;
+    },
+
+    async addTagToRecipe() {
+      const name = (this.recipeDetail.newTag || '').trim();
+      if (!name || !this.recipeDetail.data) return;
+      const tags = (this.recipeDetail.data.tags || []).map(t => t.name);
+      if (tags.includes(name)) { this.recipeDetail.newTag = ''; return; }
+      tags.push(name);
+      const r = await this.api('PUT', `/api/recipes/${this.recipeDetail.data.id}/tags`, { tags });
+      if (r && r.ok) {
+        this.recipeDetail.data.tags = r.tags;
+        this.recipeDetail.newTag = '';
+        this.loadFacets();  // Tag-Count in Sidebar aktualisieren
+      }
+    },
+
+    async removeTagFromRecipe(tagName) {
+      if (!this.recipeDetail.data) return;
+      const tags = (this.recipeDetail.data.tags || []).map(t => t.name).filter(n => n !== tagName);
+      const r = await this.api('PUT', `/api/recipes/${this.recipeDetail.data.id}/tags`, { tags });
+      if (r && r.ok) {
+        this.recipeDetail.data.tags = r.tags;
+        this.loadFacets();
+      }
+    },
+
+    async cookRecipe() {
+      if (!this.recipeDetail.data || this.recipeDetail.cooking) return;
+      this.recipeDetail.cooking = true;
+      try {
+        const r = await this.api('POST', `/api/cart/cook/${this.recipeDetail.data.id}`);
+        if (r && r.ok) {
+          const msg = `+ ${r.added} neu, ${r.merged} summiert`;
+          this.showToast('🛒 ' + msg);
+          // Cart im Hintergrund neu laden damit Badge sofort aktuell ist
+          this.loadCart();
+        }
+      } finally {
+        this.recipeDetail.cooking = false;
+      }
+    },
+
+    async extractIngredients() {
+      if (!this.recipeDetail.data || this.recipeDetail.extracting) return;
+      this.recipeDetail.extracting = true;
+      try {
+        const id = this.recipeDetail.data.id;
+        const r = await this.api('POST', `/api/recipes/${id}/extract`);
+        if (r && r.ok) {
+          this.showToast(`✓ ${r.count || 0} Zutaten extrahiert`);
+          // Frisch laden um Zutatenliste im Modal zu aktualisieren
+          const fresh = await this.api('GET', '/api/recipes/' + id);
+          if (fresh) this.recipeDetail.data = fresh;
+          this.loadFacets();
+        }
+      } finally {
+        this.recipeDetail.extracting = false;
+      }
+    },
+
+    // ── Einkaufskorb ──────────────────────────────────────────────────
+    async loadCart() {
+      const r = await this.api('GET', '/api/cart');
+      if (r) this.cart.items = r.items || [];
+    },
+
+    async addToCart() {
+      const name = (this.cart.add.name || '').trim();
+      if (!name) { this.showToast('Zutat-Name fehlt', 'error'); return; }
+      const r = await this.api('POST', '/api/cart/add', {
+        name,
+        amount: this.cart.add.amount,
+        unit: this.cart.add.unit || null,
+      });
+      if (r && r.ok) {
+        this.cart.add = { name: '', amount: null, unit: '' };
+        this.loadCart();
+      }
+    },
+
+    async toggleCartItem(id, checked) {
+      await this.api('PATCH', '/api/cart/' + id, { checked });
+      // Lokal sofort updaten damit UI snappy ist; full reload nur bei größeren
+      // Änderungen
+      const it = this.cart.items.find(x => x.id === id);
+      if (it) it.checked = checked;
+    },
+
+    async deleteCartItem(id) {
+      await this.api('DELETE', '/api/cart/' + id);
+      this.cart.items = this.cart.items.filter(x => x.id !== id);
+    },
+
+    async clearCart() {
+      if (!confirm('Den ganzen Einkaufskorb leeren?')) return;
+      const r = await this.api('POST', '/api/cart/clear', { only_checked: false });
+      if (r && r.ok) { this.cart.items = []; this.showToast('Gelöscht'); }
+    },
+
+    async clearCheckedFromCart() {
+      const r = await this.api('POST', '/api/cart/clear', { only_checked: true });
+      if (r && r.ok) {
+        this.showToast(`${r.deleted} erledigt-Posten gelöscht`);
+        this.loadCart();
+      }
+    },
+
+    async exportCart() {
+      // Plain-Text-Endpoint liefert die Liste, wir öffnen sie in einem Popup
+      try {
+        const resp = await fetch('/api/cart/export.txt', { credentials: 'include' });
+        const text = await resp.text();
+        // Versuche Clipboard, sonst Download
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          this.showToast('In die Zwischenablage kopiert');
+        } else {
+          const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'einkaufsliste.txt';
+          a.click();
+        }
+      } catch(e) {
+        this.showToast('Export fehlgeschlagen', 'error');
+      }
     },
   };
 }

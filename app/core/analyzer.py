@@ -151,6 +151,66 @@ class OllamaAnalyzer:
         except Exception:
             return {"name": name, "type": typ, "category": category}
 
+    def analyze_ingredients(self, description: str) -> list[dict]:
+        """Extrahiert Zutaten aus einer Rezept-Beschreibung.
+
+        Rückgabe-Format: Liste von Dicts mit Keys `name`, `amount`, `unit`, `raw`.
+        - `amount` kann null sein bei "Prise Salz", "nach Geschmack", etc.
+        - `unit` aus festem Vokabular (g/kg/ml/l/TL/EL/Stück/Prise/Bund/Zehe/Scheibe/Blatt/Pck/Dose).
+          Unbekannte Einheiten → null (besser als halluzinierte Werte).
+        - `raw` ist die wörtliche Snippet-Zeile aus der Beschreibung.
+        Bei keinen erkennbaren Zutaten oder JSON-Parse-Fehler: leere Liste.
+        """
+        system = (
+            "Du extrahierst Zutaten mit Mengen aus deutschsprachigen Rezept-Beschreibungen "
+            "von TikTok/Instagram-Videos. Antworte AUSSCHLIESSLICH mit gültigem JSON.\n"
+            "Format:\n"
+            '{"ingredients":[\n'
+            '  {"name":"Tomaten","amount":2,"unit":"Stück","raw":"2 große Tomaten"},\n'
+            '  {"name":"Olivenöl","amount":3,"unit":"EL","raw":"3 EL Olivenöl"},\n'
+            '  {"name":"Salz","amount":null,"unit":null,"raw":"Salz nach Geschmack"}\n'
+            "]}\n\n"
+            "Regeln:\n"
+            "- amount: Zahl oder null. Bei Bereichen ('2-3 Eier') Mittel oder Untergrenze.\n"
+            "- unit: nur aus dieser Liste: g, kg, ml, l, TL, EL, Stück, Prise, Bund, Zehe, "
+            "Scheibe, Blatt, Pck, Dose, Tasse, Flasche, Glas. Sonst null.\n"
+            "- name: nur die Zutat selbst (ohne 'frisch', 'groß', etc.).\n"
+            "- raw: der genaue Text-Snippet aus der Beschreibung.\n"
+            "- Bei keinen erkennbaren Zutaten (z.B. reiner Reklame-Text): "
+            '{"ingredients":[]}.'
+        )
+        content = self._call(system, f"Beschreibung:\n\n{description[:4000]}")
+        if not content:
+            return []
+        try:
+            data = json.loads(content)
+            items = data.get("ingredients") or []
+            if not isinstance(items, list):
+                return []
+            out = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                name = (it.get("name") or "").strip()
+                if not name:
+                    continue
+                amount = it.get("amount")
+                if amount is not None:
+                    try:
+                        amount = float(amount)
+                    except (TypeError, ValueError):
+                        amount = None
+                out.append({
+                    "name": name,
+                    "amount": amount,
+                    "unit": (it.get("unit") or None),
+                    "raw": (it.get("raw") or "").strip() or None,
+                })
+            return out
+        except Exception as e:
+            logger.warning(f"Ollama Ingredients JSON-Parse: {e} | {content[:200]}")
+            return []
+
 
 class OpenAIAnalyzer:
     """OpenAI-API als Alternative zu Ollama.
@@ -311,6 +371,58 @@ class OpenAIAnalyzer:
             }
         except Exception:
             return {"name": name, "type": typ, "category": category}
+
+    def analyze_ingredients(self, description: str) -> list[dict]:
+        """Wie OllamaAnalyzer.analyze_ingredients — identisches Interface,
+        identisches JSON-Schema. Siehe dort für Details."""
+        system = (
+            "Du extrahierst Zutaten mit Mengen aus deutschsprachigen Rezept-Beschreibungen "
+            "von TikTok/Instagram-Videos. Antworte AUSSCHLIESSLICH mit gültigem JSON.\n"
+            "Format:\n"
+            '{"ingredients":[\n'
+            '  {"name":"Tomaten","amount":2,"unit":"Stück","raw":"2 große Tomaten"},\n'
+            '  {"name":"Olivenöl","amount":3,"unit":"EL","raw":"3 EL Olivenöl"},\n'
+            '  {"name":"Salz","amount":null,"unit":null,"raw":"Salz nach Geschmack"}\n'
+            "]}\n\n"
+            "Regeln:\n"
+            "- amount: Zahl oder null. Bei Bereichen Mittel oder Untergrenze.\n"
+            "- unit: nur aus: g, kg, ml, l, TL, EL, Stück, Prise, Bund, Zehe, "
+            "Scheibe, Blatt, Pck, Dose, Tasse, Flasche, Glas. Sonst null.\n"
+            "- name: nur die Zutat (ohne 'frisch', 'groß', etc.).\n"
+            "- raw: genauer Text-Snippet aus der Beschreibung.\n"
+            '- Bei keinen erkennbaren Zutaten: {"ingredients":[]}.'
+        )
+        content = self._call(system, f"Beschreibung:\n\n{description[:4000]}")
+        if not content:
+            return []
+        try:
+            data = json.loads(content)
+            items = data.get("ingredients") or []
+            if not isinstance(items, list):
+                return []
+            out = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                name = (it.get("name") or "").strip()
+                if not name:
+                    continue
+                amount = it.get("amount")
+                if amount is not None:
+                    try:
+                        amount = float(amount)
+                    except (TypeError, ValueError):
+                        amount = None
+                out.append({
+                    "name": name,
+                    "amount": amount,
+                    "unit": (it.get("unit") or None),
+                    "raw": (it.get("raw") or "").strip() or None,
+                })
+            return out
+        except Exception as e:
+            logger.warning(f"OpenAI Ingredients JSON-Parse: {e} | {content[:200]}")
+            return []
 
 
 def build_analyzer(ai_cfg: dict):

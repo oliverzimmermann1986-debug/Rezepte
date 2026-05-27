@@ -31,6 +31,15 @@
       ⚙ Einstellungen
     </div>
 
+    <div class="nav-item" :class="page==='recipes' && 'active'" @click="page='recipes'; loadRecipes(); loadFacets()">
+      🍳 Rezepte
+      <span class="badge" x-show="recipes.extractionPending > 0" x-text="recipes.extractionPending" title="Zutaten werden gerade extrahiert"></span>
+    </div>
+    <div class="nav-item" :class="page==='cart' && 'active'" @click="page='cart'; loadCart()">
+      🛒 Einkaufskorb
+      <span class="badge" x-show="cart.items.length > 0" x-text="cart.items.length"></span>
+    </div>
+
     <div class="foot">
       <div x-show="status.scraper">
         <span class="pill running">scraper</span> läuft
@@ -1601,7 +1610,260 @@
       </template>
     </section>
 
+    <!-- ========== REZEPTE ========== -->
+    <section x-show="page==='recipes'" class="recipes-page">
+      <div class="recipes-layout">
+        <!-- Filter-Sidebar -->
+        <aside class="recipes-filters">
+          <div class="filter-block">
+            <label>Suche</label>
+            <input type="text" x-model.debounce.300ms="recipes.filters.search" @input="loadRecipes()" placeholder="Name, Beschreibung…" />
+          </div>
+
+          <div class="filter-block">
+            <label>Typ</label>
+            <select x-model="recipes.filters.type" @change="loadRecipes()">
+              <option value="">— alle —</option>
+              <template x-for="t in recipes.facets.types" :key="t">
+                <option :value="t" x-text="t"></option>
+              </template>
+            </select>
+          </div>
+
+          <div class="filter-block">
+            <label>Kategorie</label>
+            <select x-model="recipes.filters.category" @change="loadRecipes()">
+              <option value="">— alle —</option>
+              <template x-for="c in recipes.facets.categories" :key="c">
+                <option :value="c" x-text="c"></option>
+              </template>
+            </select>
+          </div>
+
+          <div class="filter-block">
+            <label>Tags <span class="muted" x-text="recipes.filters.tag_ids.length ? '('+recipes.filters.tag_ids.length+' aktiv)' : ''"></span></label>
+            <div class="chip-list">
+              <template x-for="t in recipes.facets.tags" :key="t.id">
+                <span class="chip" :class="recipes.filters.tag_ids.includes(t.id) && 'on'"
+                      @click="toggleTagFilter(t.id)">
+                  <span x-text="t.name"></span>
+                  <span class="muted">·<span x-text="t.n"></span></span>
+                </span>
+              </template>
+              <span x-show="recipes.facets.tags.length === 0" class="muted">— keine Tags —</span>
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <label>Zutaten <span class="muted" x-text="recipes.filters.ingredients.length ? '('+recipes.filters.ingredients.length+' aktiv)' : ''"></span></label>
+            <div class="chip-list">
+              <template x-for="i in recipes.facets.ingredients" :key="i.canonical_name">
+                <span class="chip" :class="recipes.filters.ingredients.includes(i.canonical_name) && 'on'"
+                      @click="toggleIngredientFilter(i.canonical_name)">
+                  <span x-text="i.display_name"></span>
+                  <span class="muted">·<span x-text="i.n"></span></span>
+                </span>
+              </template>
+              <span x-show="recipes.facets.ingredients.length === 0" class="muted">
+                <span x-show="recipes.extractionPending > 0">Zutaten werden noch extrahiert…</span>
+                <span x-show="recipes.extractionPending === 0">— keine Zutaten —</span>
+              </span>
+            </div>
+          </div>
+
+          <button class="btn btn-secondary" @click="resetFilters()" style="width: 100%; margin-top: 12px;">Filter zurücksetzen</button>
+          <button class="btn btn-secondary" @click="syncRecipes()" style="width: 100%; margin-top: 6px;" title="Filesystem neu scannen">↻ FS-Sync</button>
+        </aside>
+
+        <!-- Grid -->
+        <div class="recipes-main">
+          <div class="recipes-header">
+            <h2 style="margin: 0">Rezepte
+              <span class="muted" x-text="recipes.total + ' insgesamt'"></span>
+            </h2>
+            <div class="recipes-info" x-show="recipes.extractionRunning">
+              <span class="pill running">KI</span>
+              <span>Extrahiere Zutaten… <span x-text="recipes.extractionStats.pending || 0"></span> übrig</span>
+            </div>
+          </div>
+
+          <div class="recipes-grid">
+            <template x-for="r in recipes.items" :key="r.id">
+              <div class="recipe-card" @click="openRecipe(r.id)">
+                <div class="recipe-thumb">
+                  <img :src="'/api/recipes/'+r.id+'/thumb'" loading="lazy" @error="$el.style.display='none'" alt="" />
+                  <div class="recipe-thumb-placeholder">🎬</div>
+                </div>
+                <div class="recipe-meta">
+                  <div class="recipe-name" x-text="r.name"></div>
+                  <div class="recipe-tags">
+                    <span class="pill" x-text="r.type" x-show="r.type"></span>
+                    <span class="pill muted" x-text="r.category" x-show="r.category"></span>
+                  </div>
+                  <div class="recipe-status muted" style="font-size: 11px; margin-top: 6px;">
+                    <span x-show="r.ingredients_status === 'pending'">⏳ wartet auf KI</span>
+                    <span x-show="r.ingredients_status === 'ok'">✓ Zutaten</span>
+                    <span x-show="r.ingredients_status === 'error'">⚠ Fehler</span>
+                    <span x-show="r.ingredients_status === 'skipped'">— keine Beschreibung</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <div x-show="recipes.items.length === 0 && !recipes.loading" class="empty-state">
+              Keine Rezepte gefunden.
+            </div>
+          </div>
+
+          <div class="pagination" x-show="recipes.total > recipes.filters.limit">
+            <button class="btn btn-secondary" :disabled="recipes.filters.offset === 0" @click="recipes.filters.offset = Math.max(0, recipes.filters.offset - recipes.filters.limit); loadRecipes()">← Vorherige</button>
+            <span class="muted">
+              <span x-text="recipes.filters.offset + 1"></span>
+              –
+              <span x-text="Math.min(recipes.filters.offset + recipes.filters.limit, recipes.total)"></span>
+              / <span x-text="recipes.total"></span>
+            </span>
+            <button class="btn btn-secondary" :disabled="recipes.filters.offset + recipes.filters.limit >= recipes.total" @click="recipes.filters.offset += recipes.filters.limit; loadRecipes()">Nächste →</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== EINKAUFSKORB ========== -->
+    <section x-show="page==='cart'" class="cart-page">
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 16px;">
+          <h2 style="margin:0">🛒 Einkaufskorb <span class="muted" x-text="'('+cart.items.length+' Posten)'"></span></h2>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-secondary" @click="exportCart()" :disabled="cart.items.length === 0">Als Text exportieren</button>
+            <button class="btn btn-secondary" @click="clearCheckedFromCart()" :disabled="!cart.items.some(i => i.checked)">Erledigte löschen</button>
+            <button class="btn btn-danger" @click="clearCart()" :disabled="cart.items.length === 0">Alles löschen</button>
+          </div>
+        </div>
+
+        <!-- Manuell hinzufügen -->
+        <div class="cart-add">
+          <input type="text" x-model="cart.add.name" placeholder="Zutat" />
+          <input type="number" step="any" x-model.number="cart.add.amount" placeholder="Menge" style="width: 90px;" />
+          <input type="text" x-model="cart.add.unit" placeholder="Einheit" style="width: 80px;" />
+          <button class="btn btn-primary" @click="addToCart()">＋ Hinzufügen</button>
+        </div>
+
+        <!-- Liste -->
+        <div class="cart-list" x-show="cart.items.length > 0">
+          <template x-for="it in cart.items" :key="it.id">
+            <div class="cart-item" :class="it.checked && 'checked'">
+              <input type="checkbox" :checked="it.checked" @change="toggleCartItem(it.id, $event.target.checked)" />
+              <div class="cart-item-name">
+                <span x-text="it.name"></span>
+              </div>
+              <div class="cart-item-amount">
+                <span x-show="it.amount !== null" x-text="formatAmount(it.amount)"></span>
+                <span class="muted" x-text="it.unit || ''"></span>
+              </div>
+              <div class="cart-item-source muted" x-show="it.source_recipe_ids.length > 0"
+                   :title="'aus '+it.source_recipe_ids.length+' Rezept(en)'">
+                <span x-text="it.source_recipe_ids.length"></span>×
+              </div>
+              <button class="btn-icon" @click="deleteCartItem(it.id)" title="Entfernen">✕</button>
+            </div>
+          </template>
+        </div>
+        <div x-show="cart.items.length === 0" class="empty-state">
+          Einkaufskorb ist leer. Klick im Rezept-Tab auf „Kochen" um Zutaten hinzuzufügen.
+        </div>
+      </div>
+    </section>
+
   </main>
+
+  <!-- Rezept-Detail-Modal -->
+  <div x-show="recipeDetail.show" class="modal-backdrop" @click.self="closeRecipeDetail()">
+    <div class="modal modal-wide" @click.stop x-show="recipeDetail.data">
+      <div class="modal-header">
+        <h3 x-text="recipeDetail.data?.name || ''"></h3>
+        <button class="btn-icon" @click="closeRecipeDetail()">✕</button>
+      </div>
+      <div class="modal-body recipe-detail-body" x-show="recipeDetail.data">
+        <div class="recipe-detail-grid">
+          <div class="recipe-detail-video">
+            <video x-show="recipeDetail.data?.video_filename" controls preload="metadata"
+                   :src="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/video' : ''"
+                   style="max-width: 100%; max-height: 60vh; background: #000;"></video>
+            <div x-show="!recipeDetail.data?.video_filename" class="muted">Kein Video.</div>
+            <div class="recipe-detail-meta muted" style="margin-top: 8px; font-size: 12px;">
+              <div><span x-text="recipeDetail.data?.type"></span> · <span x-text="recipeDetail.data?.category"></span></div>
+              <div x-show="recipeDetail.data?.url"><a :href="recipeDetail.data?.url" target="_blank" rel="noopener" x-text="recipeDetail.data?.url"></a></div>
+              <div x-text="recipeDetail.data?.folder_path"></div>
+            </div>
+          </div>
+
+          <div class="recipe-detail-right">
+            <!-- Tags -->
+            <div class="recipe-detail-section">
+              <h4>Tags</h4>
+              <div class="chip-list">
+                <template x-for="t in recipeDetail.data?.tags || []" :key="t.id">
+                  <span class="chip on">
+                    <span x-text="t.name"></span>
+                    <button class="chip-x" @click="removeTagFromRecipe(t.name)" title="Entfernen">×</button>
+                  </span>
+                </template>
+              </div>
+              <div style="display:flex; gap:6px; margin-top: 6px;">
+                <input type="text" x-model="recipeDetail.newTag" @keydown.enter="addTagToRecipe()" placeholder="Neuer Tag…" style="flex:1;" />
+                <button class="btn btn-secondary" @click="addTagToRecipe()">+</button>
+              </div>
+            </div>
+
+            <!-- Kochen-Button -->
+            <button class="btn btn-primary" style="width: 100%; margin-top: 12px;" @click="cookRecipe()"
+                    :disabled="!(recipeDetail.data?.ingredients?.length) || recipeDetail.cooking">
+              <span x-show="!recipeDetail.cooking">🛒 Kochen — Zutaten in den Einkaufskorb</span>
+              <span x-show="recipeDetail.cooking">…</span>
+            </button>
+
+            <!-- Zutaten -->
+            <div class="recipe-detail-section">
+              <h4>
+                Zutaten
+                <span class="muted" x-text="'('+(recipeDetail.data?.ingredients?.length || 0)+')'"></span>
+                <button class="btn btn-secondary btn-sm" style="float:right;" @click="extractIngredients()"
+                        :disabled="recipeDetail.extracting"
+                        :title="recipeDetail.data?.ingredients?.length ? 'Neu extrahieren (überschreibt manuelle Änderungen)' : 'KI-Extraktion starten'">
+                  <span x-show="!recipeDetail.extracting">⟳ <span x-text="recipeDetail.data?.ingredients?.length ? 'Neu' : 'Extrahieren'"></span></span>
+                  <span x-show="recipeDetail.extracting">…</span>
+                </button>
+              </h4>
+              <div class="ingredient-list">
+                <template x-for="(ing, idx) in recipeDetail.data?.ingredients || []" :key="idx">
+                  <div class="ingredient-item">
+                    <span class="ingredient-amount" x-show="ing.amount !== null">
+                      <span x-text="formatAmount(ing.amount)"></span>
+                      <span x-text="ing.unit || ''"></span>
+                    </span>
+                    <span class="ingredient-name" x-text="ing.name"></span>
+                    <span class="ingredient-raw muted" x-text="ing.raw" x-show="ing.raw && ing.raw !== ing.name"></span>
+                  </div>
+                </template>
+                <div x-show="(recipeDetail.data?.ingredients?.length || 0) === 0" class="muted">
+                  <span x-show="recipeDetail.data?.ingredients_status === 'pending'">⏳ Wartet auf KI-Extraktion…</span>
+                  <span x-show="recipeDetail.data?.ingredients_status === 'error'">⚠ Extraktion fehlgeschlagen — klick „Neu" zum Erneut-Versuchen.</span>
+                  <span x-show="recipeDetail.data?.ingredients_status === 'skipped'">Beschreibung zu kurz für KI.</span>
+                  <span x-show="recipeDetail.data?.ingredients_status === 'ok'">— keine Zutaten erkannt —</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Beschreibung -->
+            <details class="recipe-detail-section">
+              <summary><strong>Beschreibung</strong></summary>
+              <pre class="recipe-description" x-text="recipeDetail.data?.description || '— keine —'"></pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Toast -->
   <div class="toast" :class="toast.type" x-show="toast.show" x-text="toast.message"></div>

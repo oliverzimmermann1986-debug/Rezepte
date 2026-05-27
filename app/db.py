@@ -60,6 +60,74 @@ CREATE INDEX IF NOT EXISTS idx_jobs_kind ON jobs(kind, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, kind);
 CREATE INDEX IF NOT EXISTS idx_pending_status ON pending(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_history_processed ON history(processed_at DESC);
+
+-- ─── Recipe-Browser (seit feat/recipe-browser-and-cart) ───────────────────
+-- recipes: ein Eintrag pro indiziertem Rezept-Ordner. Logischer FK auf
+-- history.url (kein REFERENCES, weil history nur per URL aufgebaut ist und
+-- ein User auch Folder ohne URL anlegen können soll).
+CREATE TABLE IF NOT EXISTS recipes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  url TEXT UNIQUE,                          -- NULL für manuell angelegte Folder
+  name TEXT NOT NULL,
+  type TEXT,                                -- Hauptgericht, Dessert, ...
+  category TEXT,                            -- Pasta, Fleisch, ...
+  folder_path TEXT NOT NULL UNIQUE,         -- /mnt/rezepte/Hauptgericht/Pasta/Lasagne
+  description TEXT,                         -- Caption-Text (Source für KI)
+  thumb_filename TEXT,                      -- relative {name}.jpg
+  video_filename TEXT,                      -- relative {name}.mp4
+  source_added_at REAL,                     -- Original history.processed_at
+  indexed_at REAL NOT NULL,                 -- als die recipes-Zeile entstand
+  ingredients_extracted_at REAL,            -- NULL = noch nicht durch KI
+  ingredients_status TEXT DEFAULT 'pending' -- pending | ok | error | skipped
+);
+CREATE INDEX IF NOT EXISTS idx_recipes_type     ON recipes(type, category);
+CREATE INDEX IF NOT EXISTS idx_recipes_added    ON recipes(source_added_at DESC);
+CREATE INDEX IF NOT EXISTS idx_recipes_extract  ON recipes(ingredients_status, ingredients_extracted_at);
+
+-- recipe_ingredients: pro Rezept N Zutaten. Kein FK auf eine Master-Tabelle —
+-- canonical_name reicht für Merge & Filter und ist robust gegen Tippfehler
+-- der KI (ein neuer Eintrag mit gleichem canonical_name verschmilzt sich
+-- automatisch in Filter und Einkaufskorb).
+CREATE TABLE IF NOT EXISTS recipe_ingredients (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,                       -- Anzeigename (vom KI/User)
+  canonical_name TEXT,                      -- normalisiert (lowercase, plural→singular)
+  amount REAL,                              -- NULL bei "Prise", "nach Geschmack"
+  unit TEXT,                                -- g/kg/ml/l/TL/EL/Stück/Prise/Bund/...
+  raw TEXT,                                 -- Original-Snippet aus description
+  sort_order INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ingred_recipe    ON recipe_ingredients(recipe_id);
+CREATE INDEX IF NOT EXISTS idx_ingred_canonical ON recipe_ingredients(canonical_name);
+
+-- tags + recipe_tags: freie User-Tags
+CREATE TABLE IF NOT EXISTS tags (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE
+);
+
+CREATE TABLE IF NOT EXISTS recipe_tags (
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  tag_id    INTEGER NOT NULL REFERENCES tags(id)    ON DELETE CASCADE,
+  PRIMARY KEY (recipe_id, tag_id)
+);
+
+-- shopping_cart: aggregierte Zutaten. Smart-Merge passiert vor dem INSERT
+-- (siehe app/recipes/cart_logic.py: gleiche canonical_name + kompatible Unit
+-- → Mengen summieren statt neuer Zeile).
+CREATE TABLE IF NOT EXISTS shopping_cart (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,                       -- Anzeigename ("Tomaten")
+  canonical_name TEXT,                      -- für Merge ("tomate")
+  amount REAL,                              -- summierte Menge (in unit-Basiseinheit gespeichert)
+  unit TEXT,                                -- Speicher-Einheit (g/ml/Stück/..., NICHT kg/l — siehe units.py)
+  checked INTEGER NOT NULL DEFAULT 0,       -- "habe ich"-Häkchen
+  added_at REAL NOT NULL,
+  source_recipe_ids TEXT                    -- JSON-Array der recipe_id's die zur Menge beigetragen haben
+);
+CREATE INDEX IF NOT EXISTS idx_cart_canonical ON shopping_cart(canonical_name, unit);
+CREATE INDEX IF NOT EXISTS idx_cart_added     ON shopping_cart(added_at DESC);
 """
 
 
@@ -498,6 +566,347 @@ class Database:
             }
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Recipes (feat/recipe-browser-and-cart)
+    # ════════════════════════════════════════════════════════════════════════
+
+    def recipe_upsert(
+        self,
+        *,
+        url: Optional[str],
+        name: str,
+        type: Optional[str],
+        category: Optional[str],
+        folder_path: str,
+        description: Optional[str],
+        thumb_filename: Optional[str],
+        video_filename: Optional[str],
+        source_added_at: Optional[float],
+    ) -> int:
+        """Legt einen Recipe-Eintrag an oder aktualisiert ihn (Key: folder_path).
+        Zutaten-Status wird NICHT überschrieben — ein bereits extrahiertes
+        Rezept bleibt ohne erneuten KI-Lauf bestehen, auch wenn der Indexer
+        es nochmal sieht (z.B. nach FS-Resync)."""
+        now = time.time()
+        with self.conn() as c:
+            existing = c.execute(
+                "SELECT id, ingredients_extracted_at, ingredients_status FROM recipes WHERE folder_path=?",
+                (folder_path,),
+            ).fetchone()
+            if existing:
+                c.execute(
+                    "UPDATE recipes SET url=?, name=?, type=?, category=?, "
+                    "description=?, thumb_filename=?, video_filename=?, "
+                    "source_added_at=COALESCE(?, source_added_at) "
+                    "WHERE id=?",
+                    (url, name, type, category, description,
+                     thumb_filename, video_filename, source_added_at,
+                     existing["id"]),
+                )
+                return int(existing["id"])
+            cur = c.execute(
+                "INSERT INTO recipes (url, name, type, category, folder_path, "
+                "description, thumb_filename, video_filename, source_added_at, "
+                "indexed_at, ingredients_extracted_at, ingredients_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending')",
+                (url, name, type, category, folder_path, description,
+                 thumb_filename, video_filename, source_added_at, now),
+            )
+            return int(cur.lastrowid)
+
+    def recipe_get(self, recipe_id: int) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute("SELECT * FROM recipes WHERE id=?", (recipe_id,)).fetchone()
+            return dict(row) if row else None
+
+    def recipe_get_by_folder(self, folder_path: str) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute("SELECT * FROM recipes WHERE folder_path=?", (folder_path,)).fetchone()
+            return dict(row) if row else None
+
+    def recipe_delete(self, recipe_id: int) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM recipes WHERE id=?", (recipe_id,))
+
+    def recipe_list(
+        self,
+        *,
+        type: Optional[str] = None,
+        category: Optional[str] = None,
+        folder_prefix: Optional[str] = None,
+        tag_ids: Optional[List[int]] = None,
+        ingredient_canonical: Optional[List[str]] = None,
+        search: Optional[str] = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Filter-fähige Rezept-Liste. Alle Filter sind AND-verknüpft.
+        - tag_ids: Rezept muss ALLE genannten Tags haben.
+        - ingredient_canonical: Rezept muss ALLE genannten Zutaten haben.
+        - search: matcht in name OR description (LIKE)."""
+        params: List[Any] = []
+        where: List[str] = []
+        if type:
+            where.append("r.type = ?"); params.append(type)
+        if category:
+            where.append("r.category = ?"); params.append(category)
+        if folder_prefix:
+            where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
+        if search:
+            where.append("(r.name LIKE ? OR r.description LIKE ?)")
+            params.append(f"%{search}%"); params.append(f"%{search}%")
+        # Tag-AND: für jedes Tag eine EXISTS-Subquery
+        if tag_ids:
+            for tid in tag_ids:
+                where.append(
+                    "EXISTS (SELECT 1 FROM recipe_tags rt WHERE rt.recipe_id=r.id AND rt.tag_id=?)"
+                )
+                params.append(tid)
+        # Ingredient-AND: für jede Zutat eine EXISTS-Subquery
+        if ingredient_canonical:
+            for ing in ingredient_canonical:
+                where.append(
+                    "EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id AND ri.canonical_name=?)"
+                )
+                params.append(ing)
+        sql = (
+            "SELECT r.* FROM recipes r"
+            + (" WHERE " + " AND ".join(where) if where else "")
+            + " ORDER BY COALESCE(r.source_added_at, r.indexed_at) DESC"
+            + " LIMIT ? OFFSET ?"
+        )
+        params.append(limit); params.append(offset)
+        with self.conn() as c:
+            return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+    def recipe_count(
+        self,
+        *,
+        type: Optional[str] = None,
+        category: Optional[str] = None,
+        folder_prefix: Optional[str] = None,
+        tag_ids: Optional[List[int]] = None,
+        ingredient_canonical: Optional[List[str]] = None,
+        search: Optional[str] = None,
+    ) -> int:
+        """Gleiche Filter wie recipe_list, liefert nur den Count."""
+        params: List[Any] = []
+        where: List[str] = []
+        if type:
+            where.append("r.type = ?"); params.append(type)
+        if category:
+            where.append("r.category = ?"); params.append(category)
+        if folder_prefix:
+            where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
+        if search:
+            where.append("(r.name LIKE ? OR r.description LIKE ?)")
+            params.append(f"%{search}%"); params.append(f"%{search}%")
+        if tag_ids:
+            for tid in tag_ids:
+                where.append(
+                    "EXISTS (SELECT 1 FROM recipe_tags rt WHERE rt.recipe_id=r.id AND rt.tag_id=?)"
+                )
+                params.append(tid)
+        if ingredient_canonical:
+            for ing in ingredient_canonical:
+                where.append(
+                    "EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id AND ri.canonical_name=?)"
+                )
+                params.append(ing)
+        sql = "SELECT COUNT(*) AS n FROM recipes r" + (" WHERE " + " AND ".join(where) if where else "")
+        with self.conn() as c:
+            return int(c.execute(sql, params).fetchone()["n"])
+
+    def recipes_pending_extraction(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM recipes WHERE ingredients_status='pending' "
+                "AND description IS NOT NULL AND length(description) >= 20 "
+                "ORDER BY COALESCE(source_added_at, indexed_at) DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def recipes_extraction_stats(self) -> Dict[str, int]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT ingredients_status AS s, COUNT(*) AS n FROM recipes GROUP BY ingredients_status"
+            ).fetchall()
+            return {r["s"]: int(r["n"]) for r in rows}
+
+    def recipe_set_extraction_result(
+        self,
+        recipe_id: int,
+        status: str,
+        ingredients: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Setzt status + writes ingredients ATOMISCH. Bei status='ok' werden
+        alte ingredients ersetzt; bei status='error'/'skipped' nur das Flag."""
+        now = time.time()
+        with self.conn() as c:
+            if status == "ok" and ingredients is not None:
+                c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
+                for idx, ing in enumerate(ingredients):
+                    c.execute(
+                        "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, "
+                        "amount, unit, raw, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (recipe_id, ing.get("name") or "", ing.get("canonical_name"),
+                         ing.get("amount"), ing.get("unit"), ing.get("raw"), idx),
+                    )
+            c.execute(
+                "UPDATE recipes SET ingredients_status=?, ingredients_extracted_at=? WHERE id=?",
+                (status, now, recipe_id),
+            )
+
+    def recipe_ingredients_get(self, recipe_id: int) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM recipe_ingredients WHERE recipe_id=? ORDER BY sort_order, id",
+                (recipe_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def ingredients_known(self) -> List[Dict[str, Any]]:
+        """Distinct Liste aller canonical_names mit Verwendungs-Count.
+        Für die Filter-UI: "Tomate (12 Rezepte)", "Knoblauch (8)"."""
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT canonical_name, MIN(name) AS display_name, COUNT(DISTINCT recipe_id) AS n "
+                "FROM recipe_ingredients "
+                "WHERE canonical_name IS NOT NULL AND canonical_name != '' "
+                "GROUP BY canonical_name ORDER BY n DESC, canonical_name"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # ─── Tags ─────────────────────────────────────────────────────────────
+    def tag_get_or_create(self, name: str) -> int:
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("tag name empty")
+        with self.conn() as c:
+            row = c.execute("SELECT id FROM tags WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+            if row:
+                return int(row["id"])
+            cur = c.execute("INSERT INTO tags (name) VALUES (?)", (name,))
+            return int(cur.lastrowid)
+
+    def tag_list(self) -> List[Dict[str, Any]]:
+        """Alle Tags mit Recipe-Count."""
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT t.id, t.name, COUNT(rt.recipe_id) AS n "
+                "FROM tags t LEFT JOIN recipe_tags rt ON rt.tag_id = t.id "
+                "GROUP BY t.id ORDER BY n DESC, t.name"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def recipe_tags_set(self, recipe_id: int, tag_names: List[str]) -> None:
+        """Ersetzt alle Tags eines Rezepts. Neue Tag-Namen werden angelegt."""
+        with self.conn() as c:
+            c.execute("DELETE FROM recipe_tags WHERE recipe_id=?", (recipe_id,))
+        for raw in tag_names:
+            name = (raw or "").strip()
+            if not name:
+                continue
+            tag_id = self.tag_get_or_create(name)
+            with self.conn() as c:
+                c.execute(
+                    "INSERT OR IGNORE INTO recipe_tags (recipe_id, tag_id) VALUES (?, ?)",
+                    (recipe_id, tag_id),
+                )
+
+    def recipe_tags_get(self, recipe_id: int) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT t.id, t.name FROM tags t "
+                "JOIN recipe_tags rt ON rt.tag_id = t.id WHERE rt.recipe_id=? "
+                "ORDER BY t.name",
+                (recipe_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # ─── Shopping Cart ────────────────────────────────────────────────────
+    def cart_list(self) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM shopping_cart ORDER BY checked ASC, added_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def cart_find_mergeable(self, canonical_name: str, unit: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Sucht einen Cart-Eintrag mit gleichem canonical+unit (case unit==None matched unit==None)."""
+        with self.conn() as c:
+            if unit is None:
+                row = c.execute(
+                    "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit IS NULL",
+                    (canonical_name,),
+                ).fetchone()
+            else:
+                row = c.execute(
+                    "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit=?",
+                    (canonical_name, unit),
+                ).fetchone()
+            return dict(row) if row else None
+
+    def cart_add_or_merge(
+        self,
+        *,
+        name: str,
+        canonical_name: Optional[str],
+        amount: Optional[float],
+        unit: Optional[str],
+        source_recipe_id: Optional[int],
+    ) -> int:
+        """Insert oder Merge basierend auf canonical_name+unit.
+        Die eigentliche Einheiten-Konvertierung passiert vor diesem Call in
+        cart_logic.add_to_cart() — hier wird nur summiert wenn unit gleich ist."""
+        existing = self.cart_find_mergeable(canonical_name or name.lower(), unit) if canonical_name else None
+        with self.conn() as c:
+            if existing:
+                new_amount = (existing.get("amount") or 0) + (amount or 0) if amount is not None else existing.get("amount")
+                src_ids = json.loads(existing.get("source_recipe_ids") or "[]")
+                if source_recipe_id and source_recipe_id not in src_ids:
+                    src_ids.append(source_recipe_id)
+                c.execute(
+                    "UPDATE shopping_cart SET amount=?, source_recipe_ids=? WHERE id=?",
+                    (new_amount, json.dumps(src_ids), existing["id"]),
+                )
+                return int(existing["id"])
+            src_json = json.dumps([source_recipe_id] if source_recipe_id else [])
+            cur = c.execute(
+                "INSERT INTO shopping_cart (name, canonical_name, amount, unit, "
+                "checked, added_at, source_recipe_ids) VALUES (?, ?, ?, ?, 0, ?, ?)",
+                (name, canonical_name, amount, unit, time.time(), src_json),
+            )
+            return int(cur.lastrowid)
+
+    def cart_update(self, item_id: int, *, amount: Optional[float] = None,
+                    checked: Optional[bool] = None, name: Optional[str] = None) -> None:
+        sets, params = [], []
+        if amount is not None:
+            sets.append("amount=?"); params.append(amount)
+        if checked is not None:
+            sets.append("checked=?"); params.append(1 if checked else 0)
+        if name is not None:
+            sets.append("name=?"); params.append(name)
+        if not sets:
+            return
+        params.append(item_id)
+        with self.conn() as c:
+            c.execute(f"UPDATE shopping_cart SET {', '.join(sets)} WHERE id=?", params)
+
+    def cart_delete(self, item_id: int) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM shopping_cart WHERE id=?", (item_id,))
+
+    def cart_clear(self, *, only_checked: bool = False) -> int:
+        with self.conn() as c:
+            if only_checked:
+                cur = c.execute("DELETE FROM shopping_cart WHERE checked=1")
+            else:
+                cur = c.execute("DELETE FROM shopping_cart")
+            return cur.rowcount
 
 
 _db: Database | None = None
