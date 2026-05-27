@@ -246,6 +246,80 @@
         </div>
       </div>
 
+      <!-- Externe HDD via Shelly -->
+      <div x-show="hddStatus && hddStatus.enabled" class="card" style="margin-top: 18px;">
+        <div class="card-head">
+          <h3>
+            Externe HDD
+            <span class="muted" style="font-weight: normal; font-size: 12px;"
+                  x-text="hddStatus ? hddStatus.mount_point : ''"></span>
+          </h3>
+          <button class="btn btn-ghost" @click="loadHddStatus()" :disabled="hddBusy">
+            <span x-show="!hddBusy">⟳</span>
+            <span x-show="hddBusy">…</span>
+          </button>
+        </div>
+
+        <!-- Status-Anzeige -->
+        <div class="row" style="gap: 16px; margin-bottom: 14px;">
+          <div class="stat" style="flex: 1;">
+            <div class="label">Shelly Plug</div>
+            <div class="value" style="font-size: 18px;"
+                 :style="{ color: hddStatus && hddStatus.shelly_on ? '#22c55e' : (hddStatus && hddStatus.shelly_on === false ? '#94a3b8' : '#ef4444') }">
+              <span x-show="hddStatus && hddStatus.shelly_on === true">⚡ AN</span>
+              <span x-show="hddStatus && hddStatus.shelly_on === false">○ AUS</span>
+              <span x-show="hddStatus && hddStatus.shelly_on === null">⚠ nicht erreichbar</span>
+            </div>
+            <div class="hint" x-text="hddStatus ? hddStatus.shelly_url : ''"></div>
+          </div>
+          <div class="stat" style="flex: 1;">
+            <div class="label">Mount</div>
+            <div class="value" style="font-size: 18px;"
+                 :style="{ color: hddStatus && hddStatus.mounted ? '#22c55e' : '#94a3b8' }">
+              <span x-show="hddStatus && hddStatus.mounted">✓ gemounted</span>
+              <span x-show="hddStatus && !hddStatus.mounted">— nicht gemounted</span>
+            </div>
+            <div class="hint" x-text="hddStatus ? hddStatus.mount_point : ''"></div>
+          </div>
+          <div class="stat" style="flex: 1;">
+            <div class="label">Device</div>
+            <div class="value" style="font-size: 18px;"
+                 :style="{ color: hddStatus && hddStatus.device_present ? '#22c55e' : '#94a3b8' }">
+              <span x-show="hddStatus && hddStatus.device_present === true">✓ vorhanden</span>
+              <span x-show="hddStatus && hddStatus.device_present === false">— nicht da</span>
+              <span x-show="hddStatus && hddStatus.device_present === null">—</span>
+            </div>
+            <div class="hint" x-text="hddStatus ? hddStatus.device : ''"></div>
+          </div>
+        </div>
+
+        <!-- Aktionen -->
+        <div class="flex button-row">
+          <button class="btn btn-primary" @click="hddPowerOn()"
+                  :disabled="hddBusy || (hddStatus && hddStatus.mounted)"
+                  title="Shelly einschalten, warten, dann mounten">
+            <span x-show="!hddBusy">⚡ Einschalten + Mounten</span>
+            <span x-show="hddBusy">… arbeite</span>
+          </button>
+          <button class="btn btn-danger" @click="hddPowerOff()"
+                  :disabled="hddBusy || (hddStatus && !hddStatus.mounted && !hddStatus.shelly_on)"
+                  title="Unmounten + Shelly ausschalten">
+            <span x-show="!hddBusy">○ Unmounten + Ausschalten</span>
+            <span x-show="hddBusy">… arbeite</span>
+          </button>
+          <button class="btn btn-ghost" @click="hddShellyToggle()"
+                  :disabled="hddBusy"
+                  title="Nur Shelly togglen (ohne mount/unmount)">
+            🔌 Shelly Toggle
+          </button>
+        </div>
+
+        <!-- Last-Action Output -->
+        <div x-show="hddLastOutput" class="mono"
+             style="margin-top: 14px; font-size: 11px; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; max-height: 200px; overflow-y: auto;"
+             x-text="hddLastOutput"></div>
+      </div>
+
       <!-- Stats Charts -->
       <div class="card" style="margin-top: 18px;">
         <div class="card-head">
@@ -1578,6 +1652,6 @@
   </div>
 
 </div>
-<script src="/static/app.js?v=2026-05-26-schedule"></script>
+<script src="/static/app.js?v=2026-05-26-hdd"></script>
 </body>
 </html>

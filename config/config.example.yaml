@@ -222,3 +222,20 @@ backup:
 #     enabled: true
 #     events: [job_failed]
 webhooks: []
+
+# Externe HDD mit Shelly Plug ein-/ausschalten + automatisch mounten.
+# Workflow: Button im UI → Shelly an → 12s warten → mount.
+# Beim Ausschalten: umount → 2s flush → Shelly aus.
+#
+# Sudoers-Setup nötig (einmalig):
+#   cp systemd/sudoers-scrapper-hdd /etc/sudoers.d/scrapper-hdd
+#   chmod 0440 /etc/sudoers.d/scrapper-hdd
+# Plus fstab-Eintrag mit 'noauto,nofail' für den mount_point.
+external_hdd:
+  enabled: false                            # auf true für Live-Modus
+  shelly_url: http://192.168.1.50           # IP deiner Shelly Plug S
+  mount_point: /mnt/external_hdd            # Pfad, muss in fstab stehen
+  device: /dev/sdb1                         # optional, für device_present-Check im UI
+  spinup_delay_sec: 12                      # Wartezeit HDD-Spinup nach Shelly-on
+  unmount_delay_sec: 2                      # FS-Flush nach umount
+  http_timeout_sec: 8                       # Shelly-API-Timeout

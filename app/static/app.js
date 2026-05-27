@@ -8,6 +8,9 @@ function scrapperApp() {
     pairArgsText: {},      // idx -> textarea content for per-pair args
     pairScheduleData: {},  // name -> {schedule, last_run, next_run, due}
     pairScheduleDefault: '0 3 * * *',
+    hddStatus: null,
+    hddBusy: false,
+    hddLastOutput: '',
     filterBusy: false,
     maintenance: null,
     maintBusy: false,
@@ -37,10 +40,12 @@ function scrapperApp() {
     init() {
       this.loadRecentJobs();
       this.loadStats();
+      this.loadHddStatus();   // Externe-HDD-Card auf dem Dashboard
       // Job-/Stats-Karten brauchen weiterhin gelegentliches Reload (kein
       // Live-Update, da nur Snapshot-Daten)
       this._jobsTimer = setInterval(() => this.loadRecentJobs(), 15000);
       this._statsTimer = setInterval(() => this.loadStats(), 60000);
+      this._hddTimer = setInterval(() => this.loadHddStatus(), 30000);
       // Live-Status via Server-Sent-Events. Eine offene Connection statt
       // 2+ req/s Polling. Browser-EventSource reconnected automatisch bei
       // Drop. Wenn der Endpoint nicht da ist (alte Backend-Version): Fall-
@@ -180,6 +185,70 @@ function scrapperApp() {
         this.stats = { jobs, conf, perPair };
       } catch(e) {} finally {
         this.statsLoading = false;
+      }
+    },
+
+    // ------------- Externe HDD via Shelly -------------
+    async loadHddStatus() {
+      this.hddBusy = true;
+      try {
+        this.hddStatus = await this.api('GET', '/api/hdd/status');
+      } catch(e) {
+        this.hddStatus = null;
+      } finally {
+        this.hddBusy = false;
+      }
+    },
+    async hddPowerOn() {
+      if (!confirm('Externe HDD einschalten und mounten?\n\n1. Shelly Plug an\n2. ' + (this.hddStatus.spinup_delay_sec || 12) + 's warten (HDD-Spinup)\n3. mount ' + this.hddStatus.mount_point))
+        return;
+      this.hddBusy = true;
+      this.hddLastOutput = '';
+      try {
+        const r = await this.api('POST', '/api/hdd/power-on');
+        this.hddLastOutput = JSON.stringify(r, null, 2);
+        if (r.ok) {
+          this.showToast(r.skipped ? 'Schon gemounted' : 'HDD ist online + gemounted ✓', 'ok');
+        } else {
+          this.showToast('Fehler: ' + (r.error || 'unbekannt'), 'error');
+        }
+        await this.loadHddStatus();
+      } catch(e) {
+        this.showToast('Fehler: ' + e, 'error');
+      } finally {
+        this.hddBusy = false;
+      }
+    },
+    async hddPowerOff() {
+      if (!confirm('Externe HDD unmounten und ausschalten?\n\n1. umount ' + this.hddStatus.mount_point + '\n2. ' + (this.hddStatus.unmount_delay_sec || 2) + 's warten (FS flush)\n3. Shelly Plug aus'))
+        return;
+      this.hddBusy = true;
+      this.hddLastOutput = '';
+      try {
+        const r = await this.api('POST', '/api/hdd/power-off');
+        this.hddLastOutput = JSON.stringify(r, null, 2);
+        if (r.ok) {
+          this.showToast('HDD ist offline ✓', 'ok');
+        } else {
+          this.showToast('Fehler: ' + (r.error || 'unbekannt'), 'error');
+        }
+        await this.loadHddStatus();
+      } catch(e) {
+        this.showToast('Fehler: ' + e, 'error');
+      } finally {
+        this.hddBusy = false;
+      }
+    },
+    async hddShellyToggle() {
+      this.hddBusy = true;
+      try {
+        const r = await this.api('POST', '/api/hdd/shelly-toggle');
+        this.showToast(r.ok ? ('Shelly jetzt ' + (r.shelly_on ? 'AN' : 'AUS')) : 'Fehler', r.ok ? 'ok' : 'error');
+        await this.loadHddStatus();
+      } catch(e) {
+        this.showToast('Fehler: ' + e, 'error');
+      } finally {
+        this.hddBusy = false;
       }
     },
     renderJobsChart() {
