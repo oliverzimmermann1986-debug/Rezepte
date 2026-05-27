@@ -59,7 +59,10 @@ function scrapperApp() {
       show: false, data: null, newTag: '',
       cooking: false, extracting: false,
       multiplier: 1,    // Portionen-Skalierung beim Kochen
+      cookMode: false,  // Koch-Modus: nur Schritte, große Schrift, Wake-Lock
+      wakeLockActive: false,  // UI-Indikator ob Wake-Lock greift
     },
+    _wakeLock: null,
     // Per-Schritt-Timer (key = step.id, value = {status, remaining, intervalId})
     // Bewusst auf scrapperApp-Top-Level damit Alpine reactivity trackt.
     timers: {},
@@ -1598,8 +1601,46 @@ function scrapperApp() {
       this.recipeDetail.data = null;
       this.recipeDetail.newTag = '';
       this.recipeDetail.multiplier = 1;
+      this.recipeDetail.cookMode = false;
       const r = await this.api('GET', '/api/recipes/' + id);
       if (r) this.recipeDetail.data = r;
+    },
+
+    async toggleCookMode() {
+      const next = !this.recipeDetail.cookMode;
+      this.recipeDetail.cookMode = next;
+      if (next) {
+        await this._acquireWakeLock();
+      } else {
+        await this._releaseWakeLock();
+      }
+    },
+
+    async _acquireWakeLock() {
+      // Wake-Lock-API ist nicht überall verfügbar (Safari iOS erst seit 16.4,
+      // Firefox erst seit 126). Bei Nicht-Verfügbarkeit graceful weiter — die
+      // CSS-only-Cook-Mode-Optik funktioniert eh.
+      if (!('wakeLock' in navigator)) return;
+      try {
+        this._wakeLock = await navigator.wakeLock.request('screen');
+        this.recipeDetail.wakeLockActive = true;
+        // Browser kann Lock implizit beenden (z.B. Tab im Hintergrund) —
+        // Listener informiert uns damit der UI-Indikator stimmt.
+        this._wakeLock.addEventListener('release', () => {
+          this.recipeDetail.wakeLockActive = false;
+        });
+      } catch (e) {
+        // Verweigerung (User-Gesture fehlt o.ä.) — kein Showstopper
+        this.recipeDetail.wakeLockActive = false;
+      }
+    },
+
+    async _releaseWakeLock() {
+      this.recipeDetail.wakeLockActive = false;
+      if (this._wakeLock) {
+        try { await this._wakeLock.release(); } catch (e) {}
+        this._wakeLock = null;
+      }
     },
 
     closeRecipeDetail() {
@@ -1609,6 +1650,10 @@ function scrapperApp() {
         if (t && t.intervalId) clearInterval(t.intervalId);
       });
       this.timers = {};
+      // Wake-Lock + Cook-Mode resetten — sonst hält der Lock weiter und der
+      // nächste open würde mit angeschaltetem Cook-Mode starten
+      this._releaseWakeLock();
+      this.recipeDetail.cookMode = false;
       this.recipeDetail.show = false;
       this.recipeDetail.data = null;
     },

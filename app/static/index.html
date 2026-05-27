@@ -1916,10 +1916,21 @@
 
   <!-- Rezept-Detail-Modal -->
   <div x-show="recipeDetail.show" class="modal-backdrop" @click.self="closeRecipeDetail()">
-    <div class="modal modal-wide" @click.stop x-show="recipeDetail.data">
+    <div class="modal modal-wide" :class="recipeDetail.cookMode && 'cook-mode'" @click.stop x-show="recipeDetail.data">
       <div class="modal-header">
         <h3 x-text="recipeDetail.data?.name || ''"></h3>
-        <button class="btn-icon" @click="closeRecipeDetail()">✕</button>
+        <div style="display:flex; align-items: center; gap: 6px;">
+          <span x-show="recipeDetail.wakeLockActive" class="wake-lock-indicator" title="Bildschirm bleibt wach">🔆 wach</span>
+          <button class="btn btn-secondary cook-mode-toggle"
+                  :class="recipeDetail.cookMode && 'on'"
+                  x-show="(recipeDetail.data?.steps?.length || 0) > 0"
+                  @click="toggleCookMode()"
+                  :title="recipeDetail.cookMode ? 'Koch-Modus beenden' : 'Koch-Modus: nur Schritte, große Schrift, Screen bleibt wach'">
+            <span x-show="!recipeDetail.cookMode">👨‍🍳 Kochen</span>
+            <span x-show="recipeDetail.cookMode">← Zurück</span>
+          </button>
+          <button class="btn-icon" @click="closeRecipeDetail()">✕</button>
+        </div>
       </div>
       <div class="modal-body recipe-detail-body" x-show="recipeDetail.data">
         <div class="recipe-detail-grid">
@@ -2018,7 +2029,7 @@
             </div>
 
             <!-- Zubereitung -->
-            <div class="recipe-detail-section" x-show="(recipeDetail.data?.steps?.length || 0) > 0">
+            <div class="recipe-detail-section steps-section" x-show="(recipeDetail.data?.steps?.length || 0) > 0">
               <h4>
                 Zubereitung
                 <span class="muted" x-text="'('+(recipeDetail.data?.steps?.length || 0)+' Schritte)'"></span>
