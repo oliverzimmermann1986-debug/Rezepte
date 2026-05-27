@@ -258,7 +258,7 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
         logger.info(f"Rezept #{rid}: Caption nach DE übersetzt ({len(translated)} chars)")
 
     try:
-        items = analyzer.analyze_ingredients(desc)
+        content = analyzer.analyze_recipe_content(desc)
     except Exception as e:
         logger.warning(f"Rezept #{rid}: KI-Call failed: {e}")
         db.recipe_set_extraction_result(rid, status="error", ingredients=[])
@@ -266,7 +266,7 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
 
     # canonical_name + unit-normalize beim Insert mit dranhängen
     prepared = []
-    for it in items:
+    for it in (content.get("ingredients") or []):
         prepared.append({
             "name": it.get("name") or "",
             "canonical_name": _canonical(it.get("name") or ""),
@@ -276,4 +276,15 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
         })
 
     db.recipe_set_extraction_result(rid, status="ok", ingredients=prepared)
-    logger.info(f"Rezept #{rid} '{recipe.get('name')}': {len(prepared)} Zutaten extrahiert")
+    # Schritte + Portionen aus dem gleichen Call übernehmen
+    steps = content.get("steps") or []
+    if steps:
+        db.recipe_steps_set(rid, steps)
+    servings = content.get("servings")
+    if servings is not None:
+        db.recipe_set_servings(rid, servings)
+    logger.info(
+        f"Rezept #{rid} '{recipe.get('name')}': "
+        f"{len(prepared)} Zutaten, {len(steps)} Schritte, "
+        f"servings={servings or '?'}"
+    )

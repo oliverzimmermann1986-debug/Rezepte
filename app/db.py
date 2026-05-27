@@ -101,6 +101,19 @@ CREATE TABLE IF NOT EXISTS recipe_ingredients (
 CREATE INDEX IF NOT EXISTS idx_ingred_recipe    ON recipe_ingredients(recipe_id);
 CREATE INDEX IF NOT EXISTS idx_ingred_canonical ON recipe_ingredients(canonical_name);
 
+-- recipe_steps: Zubereitungs-Schritte pro Rezept. step_number ist 1-basiert.
+-- timer_seconds optional — wenn die KI im Schritt einen Zeit-Hinweis findet
+-- ("8 Min köcheln") setzt sie den Wert, sonst NULL. Frontend rendert dann
+-- einen Stoppuhr-Button neben dem Schritt.
+CREATE TABLE IF NOT EXISTS recipe_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  step_number INTEGER NOT NULL,             -- 1, 2, 3, ...
+  instruction TEXT NOT NULL,                -- "Wasser zum Kochen bringen und Salz dazu"
+  timer_seconds INTEGER                     -- z.B. 480 für 8 Min, NULL wenn kein Timer
+);
+CREATE INDEX IF NOT EXISTS idx_steps_recipe ON recipe_steps(recipe_id, step_number);
+
 -- tags + recipe_tags: freie User-Tags
 CREATE TABLE IF NOT EXISTS tags (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,9 +156,21 @@ class Database:
             c0.execute("PRAGMA synchronous=NORMAL")
             c0.execute("PRAGMA busy_timeout=10000")
             c0.executescript(_DDL)
+            self._migrate(c0)
             c0.commit()
         finally:
             c0.close()
+
+    @staticmethod
+    def _migrate(c) -> None:
+        """Idempotente ALTER-Statements für Schema-Erweiterungen die nach der
+        initialen DDL kamen. SQLite hat kein IF NOT EXISTS für ADD COLUMN,
+        also via PRAGMA table_info() prüfen ob die Spalte fehlt."""
+        cols = {r[1] for r in c.execute("PRAGMA table_info(recipes)").fetchall()}
+        if "servings" not in cols:
+            # Anzahl Portionen, für die das Rezept ausgelegt ist (aus Caption
+            # via KI gelesen). Default NULL = unbekannt.
+            c.execute("ALTER TABLE recipes ADD COLUMN servings INTEGER")
 
     @contextmanager
     def conn(self):
@@ -766,6 +791,53 @@ class Database:
                 (recipe_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ─── Steps + Servings ─────────────────────────────────────────────────
+
+    def recipe_steps_get(self, recipe_id: int) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM recipe_steps WHERE recipe_id=? ORDER BY step_number, id",
+                (recipe_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def recipe_steps_set(self, recipe_id: int, steps: List[Dict[str, Any]]) -> None:
+        """Atomic: löscht alte Schritte, fügt neue ein. step_number wird beim
+        Insert ignoriert und automatisch durch die Position vergeben (1-basiert),
+        sodass Reordering im Frontend nur die Reihenfolge der Liste ändern muss."""
+        with self.conn() as c:
+            c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
+            for idx, s in enumerate(steps, start=1):
+                instr = (s.get("instruction") or "").strip()
+                if not instr:
+                    continue
+                timer = s.get("timer_seconds")
+                if timer is not None:
+                    try:
+                        timer = int(timer)
+                        if timer <= 0:
+                            timer = None
+                    except (TypeError, ValueError):
+                        timer = None
+                c.execute(
+                    "INSERT INTO recipe_steps (recipe_id, step_number, instruction, timer_seconds) "
+                    "VALUES (?, ?, ?, ?)",
+                    (recipe_id, idx, instr, timer),
+                )
+
+    def recipe_set_servings(self, recipe_id: int, servings: Optional[int]) -> None:
+        """servings = NULL erlaubt (= unbekannt). Wert wird beim KI-Extract
+        gesetzt, kann aber vom User später überschrieben werden."""
+        if servings is not None:
+            try:
+                servings = int(servings)
+                if servings <= 0:
+                    servings = None
+            except (TypeError, ValueError):
+                servings = None
+        with self.conn() as c:
+            c.execute("UPDATE recipes SET servings=? WHERE id=?", (servings, recipe_id))
 
     def ingredients_known(self) -> List[Dict[str, Any]]:
         """Distinct Liste aller canonical_names mit Verwendungs-Count.

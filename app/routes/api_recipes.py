@@ -131,6 +131,7 @@ def get_recipe(recipe_id: int):
     if not r:
         raise HTTPException(404, "Rezept nicht gefunden")
     r["ingredients"] = db.recipe_ingredients_get(recipe_id)
+    r["steps"] = db.recipe_steps_get(recipe_id)
     r["tags"] = db.recipe_tags_get(recipe_id)
     return r
 
@@ -183,6 +184,40 @@ def update_ingredients(recipe_id: int, payload: IngredientsUpdate):
     return {"ok": True, "ingredients": db.recipe_ingredients_get(recipe_id)}
 
 
+class StepIn(BaseModel):
+    instruction: str
+    timer_seconds: Optional[int] = None
+
+
+class StepsUpdate(BaseModel):
+    steps: List[StepIn]
+
+
+@router.put("/{recipe_id}/steps")
+def update_steps(recipe_id: int, payload: StepsUpdate):
+    """Manuelles Override der Zubereitungs-Schritte. step_number wird beim
+    Insert automatisch aus der Listen-Position abgeleitet (1-basiert),
+    sodass das Frontend nur die Reihenfolge ändern muss."""
+    db = get_db()
+    if not db.recipe_get(recipe_id):
+        raise HTTPException(404, "Rezept nicht gefunden")
+    db.recipe_steps_set(recipe_id, [s.model_dump() for s in payload.steps])
+    return {"ok": True, "steps": db.recipe_steps_get(recipe_id)}
+
+
+class ServingsUpdate(BaseModel):
+    servings: Optional[int] = None
+
+
+@router.put("/{recipe_id}/servings")
+def update_servings(recipe_id: int, payload: ServingsUpdate):
+    db = get_db()
+    if not db.recipe_get(recipe_id):
+        raise HTTPException(404, "Rezept nicht gefunden")
+    db.recipe_set_servings(recipe_id, payload.servings)
+    return {"ok": True, "servings": payload.servings}
+
+
 # ── Sync + Extraction ──────────────────────────────────────────────────
 
 @router.post("/sync")
@@ -202,9 +237,8 @@ def extraction_status():
 
 @router.post("/{recipe_id}/extract")
 def extract_one(recipe_id: int, background_tasks: BackgroundTasks):
-    """Manueller Trigger: extrahiert (oder re-extrahiert) Zutaten für EIN
-    Rezept synchron. Vor dem Aufruf nochmal sync_filesystem damit description
-    aktuell ist."""
+    """Manueller Trigger: extrahiert (oder re-extrahiert) Zutaten + Schritte +
+    Portionen für EIN Rezept synchron. Single KI-Call via analyze_recipe_content."""
     db = get_db()
     recipe = db.recipe_get(recipe_id)
     if not recipe:
@@ -222,13 +256,13 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks):
         raise HTTPException(500, f"Analyzer-Setup fehlgeschlagen: {e}")
 
     try:
-        items = analyzer.analyze_ingredients(desc)
+        content = analyzer.analyze_recipe_content(desc)
     except Exception as e:
         db.recipe_set_extraction_result(recipe_id, status="error", ingredients=[])
         raise HTTPException(502, f"KI-Call fehlgeschlagen: {e}")
 
     prepared = []
-    for it in items:
+    for it in (content.get("ingredients") or []):
         prepared.append({
             "name": it.get("name") or "",
             "canonical_name": _canonical(it.get("name") or ""),
@@ -237,11 +271,22 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks):
             "raw": it.get("raw"),
         })
     db.recipe_set_extraction_result(recipe_id, status="ok", ingredients=prepared)
+
+    steps = content.get("steps") or []
+    if steps:
+        db.recipe_steps_set(recipe_id, steps)
+    servings = content.get("servings")
+    if servings is not None:
+        db.recipe_set_servings(recipe_id, servings)
+
     return {
         "ok": True,
         "status": "ok",
-        "count": len(prepared),
+        "ingredients_count": len(prepared),
+        "steps_count": len(steps),
+        "servings": servings,
         "ingredients": db.recipe_ingredients_get(recipe_id),
+        "steps": db.recipe_steps_get(recipe_id),
     }
 
 

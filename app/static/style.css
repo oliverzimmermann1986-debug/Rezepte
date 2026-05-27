@@ -1290,3 +1290,71 @@ input[type="checkbox"] { width: auto !important; }
   .recipes-filters { position: static; max-height: none; }
   .recipe-detail-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Zubereitungs-Schritte + Timer (feat: steps+timer) ─────────────── */
+.step-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  counter-reset: step-counter;
+}
+.step-item {
+  display: grid;
+  grid-template-columns: 32px 1fr auto;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  align-items: start;
+  counter-increment: step-counter;
+  transition: background .15s;
+}
+.step-item::before {
+  content: counter(step-counter);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.step-item.step-running {
+  background: var(--accent-bg, rgba(99, 102, 241, .08));
+}
+.step-text {
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.step-timer { align-self: center; }
+.timer-active {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--card);
+  border: 1px solid var(--accent);
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.timer-display {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--accent);
+  min-width: 44px;
+  text-align: right;
+}
+.timer-display.timer-done {
+  color: var(--err, #ef4444);
+  animation: timer-pulse 1s ease-in-out infinite;
+}
+@keyframes timer-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}

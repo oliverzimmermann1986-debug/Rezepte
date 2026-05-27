@@ -265,6 +265,116 @@ class OpenAIAnalyzer:
             logger.warning(f"OpenAI Ingredients JSON-Parse: {e} | {content[:200]}")
             return []
 
+    def analyze_recipe_content(self, description: str) -> dict:
+        """Kombinierter Call: extrahiert Zutaten + Zubereitungs-Schritte +
+        Portionen-Anzahl in EINEM API-Roundtrip.
+
+        Spart gegenüber zwei separaten Calls ~40% Tokens und ~50% Latenz
+        (System-Prompt + Description müssten sonst doppelt rein). Wenn nur
+        einer der Teile benötigt wird, gibt es trotzdem keinen separaten
+        Endpoint — der Aufrufer pickt sich das passende Feld raus.
+
+        Rückgabe-Schema (alle Keys immer da, aber Listen können leer / int kann null sein):
+          {
+            "ingredients": [{"name","amount","unit","raw"}, ...],
+            "steps": [{"instruction","timer_seconds"}, ...],   # in Reihenfolge
+            "servings": int | None,                            # "für 4 Personen" → 4
+          }
+
+        timer_seconds: KI schaut aktiv nach Zeit-Hinweisen im Schritt-Text
+        ("8 Min köcheln", "20 Minuten backen", "über Nacht ziehen lassen").
+        Bei "über Nacht" o.ä. setzt sie NULL (kein realistischer Stoppuhr-Wert).
+        """
+        system = (
+            "Du analysierst deutschsprachige Rezept-Beschreibungen von TikTok/Instagram-Videos "
+            "und extrahierst Zutaten, Zubereitungs-Schritte und Portionen-Anzahl. "
+            "Antworte AUSSCHLIESSLICH mit gültigem JSON nach diesem Schema:\n"
+            '{"ingredients":[\n'
+            '  {"name":"Tomaten","amount":2,"unit":"Stück","raw":"2 große Tomaten"},\n'
+            '  ...\n'
+            "],\n"
+            '"steps":[\n'
+            '  {"instruction":"Wasser in einen Topf geben und zum Kochen bringen.","timer_seconds":null},\n'
+            '  {"instruction":"Spaghetti hinzugeben und 8 Minuten kochen.","timer_seconds":480},\n'
+            '  {"instruction":"In der Zwischenzeit die Tomaten würfeln.","timer_seconds":null}\n'
+            "],\n"
+            '"servings":4\n'
+            "}\n\n"
+            "REGELN ZUTATEN:\n"
+            "- amount: Zahl oder null. Bei Bereichen ('2-3 Eier') Mittel oder Untergrenze.\n"
+            "- unit: nur aus: g, kg, ml, l, TL, EL, Stück, Prise, Bund, Zehe, Scheibe, "
+            "Blatt, Pck, Dose, Tasse, Flasche, Glas. Sonst null.\n"
+            "- name: nur die Zutat (ohne 'frisch', 'groß', etc.).\n"
+            "- raw: genauer Text-Snippet aus der Beschreibung.\n\n"
+            "REGELN SCHRITTE:\n"
+            "- instruction: vollständiger deutscher Satz, max 200 Zeichen. Stelle Werkzeug "
+            "und Zutat-Bezug klar.\n"
+            "- timer_seconds: NUR setzen wenn ein konkreter, einkalkulierbarer Zeitwert da ist. "
+            "'8 Min köcheln' → 480. '20 Minuten backen' → 1200. "
+            "'kurz anbraten', 'goldbraun', 'über Nacht ziehen', 'bis fertig' → null.\n"
+            "- Reihenfolge muss der Zubereitung entsprechen.\n\n"
+            "REGELN PORTIONEN:\n"
+            "- servings: Anzahl Portionen (1-12) wenn explizit ('für 4 Personen', 'ergibt 8 Stück'). "
+            "Sonst null. Nicht raten.\n\n"
+            "Bei nicht-rezept-artigem Text (z.B. reine Caption ohne Anleitung): "
+            '{"ingredients":[],"steps":[],"servings":null}.'
+        )
+        content = self._call(system, f"Beschreibung:\n\n{description[:6000]}")
+        if not content:
+            return {"ingredients": [], "steps": [], "servings": None}
+        try:
+            data = json.loads(content)
+            # Ingredients
+            ings_out = []
+            for it in (data.get("ingredients") or []):
+                if not isinstance(it, dict):
+                    continue
+                name = (it.get("name") or "").strip()
+                if not name:
+                    continue
+                amount = it.get("amount")
+                if amount is not None:
+                    try:
+                        amount = float(amount)
+                    except (TypeError, ValueError):
+                        amount = None
+                ings_out.append({
+                    "name": name,
+                    "amount": amount,
+                    "unit": (it.get("unit") or None),
+                    "raw": (it.get("raw") or "").strip() or None,
+                })
+            # Steps
+            steps_out = []
+            for s in (data.get("steps") or []):
+                if not isinstance(s, dict):
+                    continue
+                instr = (s.get("instruction") or "").strip()
+                if not instr:
+                    continue
+                timer = s.get("timer_seconds")
+                if timer is not None:
+                    try:
+                        timer = int(timer)
+                        if timer <= 0 or timer > 86400:  # > 24h = unsinnig für Stoppuhr
+                            timer = None
+                    except (TypeError, ValueError):
+                        timer = None
+                steps_out.append({"instruction": instr, "timer_seconds": timer})
+            # Servings
+            servings = data.get("servings")
+            if servings is not None:
+                try:
+                    servings = int(servings)
+                    if servings < 1 or servings > 50:  # Sanity
+                        servings = None
+                except (TypeError, ValueError):
+                    servings = None
+            return {"ingredients": ings_out, "steps": steps_out, "servings": servings}
+        except Exception as e:
+            logger.warning(f"OpenAI Recipe-Content JSON-Parse: {e} | {content[:200]}")
+            return {"ingredients": [], "steps": [], "servings": None}
+
     def translate_to_german(self, text: str) -> Optional[str]:
         """Erkennt Sprache und übersetzt nach Deutsch falls nötig.
 

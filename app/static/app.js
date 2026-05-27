@@ -53,6 +53,10 @@ function scrapperApp() {
       show: false, data: null, newTag: '',
       cooking: false, extracting: false,
     },
+    // Per-Schritt-Timer (key = step.id, value = {status, remaining, intervalId})
+    // Bewusst auf scrapperApp-Top-Level damit Alpine reactivity trackt.
+    timers: {},
+    _audioCtx: null,
 
     init() {
       this.loadRecentJobs();
@@ -1406,6 +1410,86 @@ function scrapperApp() {
       return s.replace('.', ',');
     },
 
+    formatDuration(secs) {
+      if (secs === null || secs === undefined || secs < 0) return '';
+      const s = Math.floor(secs);
+      if (s < 60) return s + 's';
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      if (m < 60) return r === 0 ? m + ':00' : m + ':' + String(r).padStart(2, '0');
+      const h = Math.floor(m / 60);
+      const mm = m % 60;
+      return h + ':' + String(mm).padStart(2, '0') + ':' + String(r).padStart(2, '0');
+    },
+
+    // ── Stoppuhr pro Schritt ─────────────────────────────────────────
+    startStepTimer(step) {
+      if (!step || !step.timer_seconds) return;
+      // Falls vorher schon ein Interval drauf war: aufräumen
+      this.stopStepTimer(step, { silent: true });
+      const id = step.id;
+      const state = {
+        status: 'running',     // 'idle' | 'running' | 'done'
+        remaining: step.timer_seconds,
+        intervalId: null,
+        running: true,         // CSS hint
+      };
+      this.timers[id] = state;
+      state.intervalId = setInterval(() => {
+        state.remaining -= 1;
+        if (state.remaining <= 0) {
+          state.remaining = 0;
+          state.status = 'done';
+          state.running = false;
+          clearInterval(state.intervalId);
+          state.intervalId = null;
+          this._playTimerDoneSound();
+          this.showToast('⏰ Timer fertig: ' + (step.instruction || '').slice(0, 60), 'ok');
+        }
+        // Alpine reactivity: timers selber neu zuweisen erzwingt Re-Render
+        this.timers = { ...this.timers, [id]: { ...state } };
+      }, 1000);
+    },
+
+    stopStepTimer(step, opts = {}) {
+      if (!step) return;
+      const id = step.id;
+      const t = this.timers[id];
+      if (t && t.intervalId) clearInterval(t.intervalId);
+      const next = { ...this.timers };
+      delete next[id];
+      this.timers = next;
+      if (!opts.silent && t && t.status !== 'done') {
+        this.showToast('Timer gestoppt', 'info');
+      }
+    },
+
+    _playTimerDoneSound() {
+      // Web-Audio-API, kein externes Asset nötig. 3 Pieptöne, 800Hz.
+      try {
+        if (!this._audioCtx) {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          if (!AC) return;
+          this._audioCtx = new AC();
+        }
+        const ctx = this._audioCtx;
+        const now = ctx.currentTime;
+        for (let i = 0; i < 3; i++) {
+          const t = now + i * 0.25;
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.frequency.value = 800;
+          osc.type = 'sine';
+          gain.gain.setValueAtTime(0, t);
+          gain.gain.linearRampToValueAtTime(0.3, t + 0.01);
+          gain.gain.linearRampToValueAtTime(0, t + 0.18);
+          osc.connect(gain).connect(ctx.destination);
+          osc.start(t);
+          osc.stop(t + 0.2);
+        }
+      } catch (e) { /* silent: Audio ist nice-to-have */ }
+    },
+
     _buildRecipeQuery() {
       const f = this.recipes.filters;
       const params = new URLSearchParams();
@@ -1511,6 +1595,12 @@ function scrapperApp() {
     },
 
     closeRecipeDetail() {
+      // Laufende Step-Timer aufräumen — sonst tickern sie im Hintergrund weiter
+      // und beepen evtl. nach Modal-close.
+      Object.values(this.timers).forEach(t => {
+        if (t && t.intervalId) clearInterval(t.intervalId);
+      });
+      this.timers = {};
       this.recipeDetail.show = false;
       this.recipeDetail.data = null;
     },

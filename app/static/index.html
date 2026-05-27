@@ -1754,9 +1754,12 @@
               <h4>
                 Zutaten
                 <span class="muted" x-text="'('+(recipeDetail.data?.ingredients?.length || 0)+')'"></span>
+                <span x-show="recipeDetail.data?.servings" class="muted" style="margin-left: 8px;">
+                  für <span x-text="recipeDetail.data?.servings"></span> Portion(en)
+                </span>
                 <button class="btn btn-secondary btn-sm" style="float:right;" @click="extractIngredients()"
                         :disabled="recipeDetail.extracting"
-                        :title="recipeDetail.data?.ingredients?.length ? 'Neu extrahieren (überschreibt manuelle Änderungen)' : 'KI-Extraktion starten'">
+                        :title="recipeDetail.data?.ingredients?.length ? 'Neu extrahieren (überschreibt Zutaten + Schritte)' : 'KI-Extraktion starten'">
                   <span x-show="!recipeDetail.extracting">⟳ <span x-text="recipeDetail.data?.ingredients?.length ? 'Neu' : 'Extrahieren'"></span></span>
                   <span x-show="recipeDetail.extracting">…</span>
                 </button>
@@ -1779,6 +1782,35 @@
                   <span x-show="recipeDetail.data?.ingredients_status === 'ok'">— keine Zutaten erkannt —</span>
                 </div>
               </div>
+            </div>
+
+            <!-- Zubereitung -->
+            <div class="recipe-detail-section" x-show="(recipeDetail.data?.steps?.length || 0) > 0">
+              <h4>
+                Zubereitung
+                <span class="muted" x-text="'('+(recipeDetail.data?.steps?.length || 0)+' Schritte)'"></span>
+              </h4>
+              <ol class="step-list">
+                <template x-for="(step, idx) in recipeDetail.data?.steps || []" :key="idx">
+                  <li class="step-item" :class="timers[step.id]?.running && 'step-running'">
+                    <div class="step-text" x-text="step.instruction"></div>
+                    <div class="step-timer" x-show="step.timer_seconds">
+                      <template x-if="!timers[step.id] || timers[step.id].status === 'idle'">
+                        <button class="btn btn-secondary btn-sm" @click="startStepTimer(step)">
+                          ⏱ <span x-text="formatDuration(step.timer_seconds)"></span>
+                        </button>
+                      </template>
+                      <template x-if="timers[step.id] && timers[step.id].status !== 'idle'">
+                        <div class="timer-active">
+                          <span class="timer-display" x-text="formatDuration(timers[step.id].remaining)"
+                                :class="timers[step.id].status === 'done' && 'timer-done'"></span>
+                          <button class="btn-icon" @click="stopStepTimer(step)" title="Stop">✕</button>
+                        </div>
+                      </template>
+                    </div>
+                  </li>
+                </template>
+              </ol>
             </div>
 
             <!-- Beschreibung -->
