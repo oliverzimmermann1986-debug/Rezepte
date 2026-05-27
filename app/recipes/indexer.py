@@ -105,6 +105,32 @@ def _safe_iterdir(p: Path):
         return []
 
 
+def _try_media_extract(folder: Path, analyzer) -> Optional[str]:
+    """Sucht PDF/Bild im Folder und extrahiert eine Description daraus.
+    Wird aus dem Worker aufgerufen wenn description.txt + .txt-Fallback
+    leer waren. PDF zuerst (text-extract gratis), dann Bilder (Vision).
+
+    Returns: extrahierter Text oder None.
+    """
+    media_candidates = [
+        f for f in _safe_iterdir(folder)
+        if f.is_file()
+        and f.suffix.lower() in (".pdf", ".jpg", ".jpeg", ".png", ".webp")
+    ]
+    # PDF zuerst probieren (text-extract gratis, falls Text-Layer da)
+    media_candidates.sort(key=lambda f: 0 if f.suffix.lower() == ".pdf" else 1)
+
+    for media in media_candidates:
+        try:
+            extracted = analyzer.extract_description_from_media(media)
+        except Exception as e:
+            logger.warning(f"Media-Extract crashed bei {media}: {e}")
+            continue
+        if extracted and len(extracted) >= 20:
+            return extracted
+    return None
+
+
 def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str:
     """Legt EINEN Recipe-Ordner als DB-Zeile an oder aktualisiert ihn.
     Returns: 'added' | 'updated' | 'skipped'."""
@@ -148,43 +174,11 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
             except Exception as e:
                 logger.warning(f"Fallback-Text {best} unlesbar: {e}")
 
-    # Zweiter Fallback: PDF oder Bild im Folder, kein Text dabei.
-    # Häufig bei manuell hinzugefügten Rezept-Foldern (Screenshot, PDF-Export
-    # einer Website). PDF wird lokal via pdfplumber gelesen — gratis und
-    # offline. Bilder gehen an OpenAI Vision (~$0.002/Bild, gpt-4o-mini).
-    # Ergebnis wird persistent als description.txt im Folder gespeichert,
-    # damit folgende Sync-Läufe nichts mehr extrahieren müssen.
-    if not description:
-        from ..config_store import get_config
-        cfg = get_config()
-        api_key = cfg.get("ai", "openai", "api_key", default=None)
-        if api_key:
-            media_candidates = []
-            for f in _safe_iterdir(folder):
-                if not f.is_file():
-                    continue
-                if f.suffix.lower() in (".pdf", ".jpg", ".jpeg", ".png", ".webp"):
-                    media_candidates.append(f)
-            # PDF bevorzugen (text-extract gratis), Bild als zweites
-            media_candidates.sort(key=lambda f: 0 if f.suffix.lower() == ".pdf" else 1)
-            for media in media_candidates:
-                try:
-                    from ..core.analyzer import OpenAIAnalyzer
-                    analyzer = OpenAIAnalyzer(api_key=api_key)
-                    extracted = analyzer.extract_description_from_media(media)
-                except Exception as e:
-                    logger.warning(f"Media-Extract Init-Fehler bei {media}: {e}")
-                    continue
-                if extracted and len(extracted) >= 20:
-                    description = extracted
-                    # Persistent schreiben, damit nächster Sync direkt liest
-                    # statt erneut KI/PDF-Parse zu starten.
-                    try:
-                        desc_file.write_text(description, encoding="utf-8")
-                        logger.info(f"Media-Description in {folder.name} → description.txt geschrieben")
-                    except Exception as e:
-                        logger.warning(f"description.txt nicht schreibbar in {folder}: {e}")
-                    break
+    # ACHTUNG: Media-Extract (PDF/Bild → Vision) passiert NICHT mehr hier
+    # im Indexer, sondern im Worker (siehe _extract_for_recipe). Grund:
+    # Vision-Calls dauern 5-10s und blockierten den Sync — bei 100+ Foldern
+    # ist das Frontend ewig gefroren. Indexer bleibt jetzt FS-only/.txt-only
+    # und ist Sekunden statt Minuten durch.
 
     name = info.get("name") or folder.name
     url = info.get("url")
@@ -297,6 +291,29 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
     """
     rid = recipe["id"]
     desc = recipe.get("description") or ""
+
+    # Wenn description leer/zu kurz: erst Media-Extract aus dem Folder versuchen
+    # (PDF text-extract gratis, Bild via OpenAI Vision). Das war früher im
+    # Indexer eingebaut, blockierte aber den Sync bei vielen Bilder-Rezepten.
+    # Jetzt hier im Worker — der läuft asynchron und macht jeweils 1 Rezept,
+    # Frontend bleibt responsive.
+    if len(desc.strip()) < 20:
+        from pathlib import Path as _P
+        folder = _P(recipe.get("folder_path") or "")
+        if folder.exists():
+            extracted = _try_media_extract(folder, analyzer)
+            if extracted and len(extracted) >= 20:
+                desc = extracted
+                # Persistent als description.txt + DB-Feld updaten
+                try:
+                    (folder / "description.txt").write_text(desc, encoding="utf-8")
+                except Exception as e:
+                    logger.warning(f"Rezept #{rid}: description.txt nicht schreibbar: {e}")
+                with db.conn() as c:
+                    c.execute("UPDATE recipes SET description=? WHERE id=?", (desc, rid))
+                logger.info(f"Rezept #{rid}: Media-Extract erfolgreich ({len(desc)} chars)")
+
+    # Wenn immer noch nichts: skipped (kein .txt, kein PDF mit Text, kein verwertbares Bild)
     if len(desc.strip()) < 20:
         db.recipe_set_extraction_result(rid, status="skipped", ingredients=[])
         logger.debug(f"Rezept #{rid} '{recipe.get('name')}': description zu kurz, skipped")
