@@ -136,6 +136,44 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
             except Exception as e:
                 logger.warning(f"Fallback-Text {best} unlesbar: {e}")
 
+    # Zweiter Fallback: PDF oder Bild im Folder, kein Text dabei.
+    # Häufig bei manuell hinzugefügten Rezept-Foldern (Screenshot, PDF-Export
+    # einer Website). PDF wird lokal via pdfplumber gelesen — gratis und
+    # offline. Bilder gehen an OpenAI Vision (~$0.002/Bild, gpt-4o-mini).
+    # Ergebnis wird persistent als description.txt im Folder gespeichert,
+    # damit folgende Sync-Läufe nichts mehr extrahieren müssen.
+    if not description:
+        from ..config_store import get_config
+        cfg = get_config()
+        api_key = cfg.get("ai", "openai", "api_key", default=None)
+        if api_key:
+            media_candidates = []
+            for f in _safe_iterdir(folder):
+                if not f.is_file():
+                    continue
+                if f.suffix.lower() in (".pdf", ".jpg", ".jpeg", ".png", ".webp"):
+                    media_candidates.append(f)
+            # PDF bevorzugen (text-extract gratis), Bild als zweites
+            media_candidates.sort(key=lambda f: 0 if f.suffix.lower() == ".pdf" else 1)
+            for media in media_candidates:
+                try:
+                    from ..core.analyzer import OpenAIAnalyzer
+                    analyzer = OpenAIAnalyzer(api_key=api_key)
+                    extracted = analyzer.extract_description_from_media(media)
+                except Exception as e:
+                    logger.warning(f"Media-Extract Init-Fehler bei {media}: {e}")
+                    continue
+                if extracted and len(extracted) >= 20:
+                    description = extracted
+                    # Persistent schreiben, damit nächster Sync direkt liest
+                    # statt erneut KI/PDF-Parse zu starten.
+                    try:
+                        desc_file.write_text(description, encoding="utf-8")
+                        logger.info(f"Media-Description in {folder.name} → description.txt geschrieben")
+                    except Exception as e:
+                        logger.warning(f"description.txt nicht schreibbar in {folder}: {e}")
+                    break
+
     name = info.get("name") or folder.name
     url = info.get("url")
     # processed_at aus info.json wenn vorhanden, sonst mtime des Ordners

@@ -125,6 +125,107 @@ class OpenAIAnalyzer:
             logger.error(f"OpenAI Call: {e}")
             return None
 
+    def extract_description_from_media(self, file_path) -> Optional[str]:
+        """Extrahiert Rezept-Beschreibung aus PDF oder Bild, wenn keine .txt-
+        Datei im Folder ist. Wird vom Indexer als zweiter Fallback aufgerufen.
+
+        - PDF: pdfplumber text-extraction (lokal, gratis). Wenn Text-leer
+          (gescanntes PDF) → None (Vision-Fallback wäre möglich, braucht aber
+          poppler-utils oder pdf2image).
+        - Bild (jpg/png/webp): OpenAI Vision-Call mit gpt-4o-mini. ~1500 Tokens
+          input + 500 output = ~$0.001-0.003 pro Bild.
+
+        Returns: gefundener Text (gestrippt, joined newlines) oder None.
+        """
+        from pathlib import Path as _P
+        p = _P(file_path)
+        if not p.exists():
+            return None
+        suffix = p.suffix.lower()
+
+        if suffix == ".pdf":
+            try:
+                import pdfplumber
+                with pdfplumber.open(str(p)) as pdf:
+                    parts = []
+                    for page in pdf.pages:
+                        t = page.extract_text()
+                        if t:
+                            parts.append(t)
+                    txt = "\n\n".join(parts).strip()
+                if len(txt) >= 20:
+                    logger.info(f"PDF-Text extrahiert: {p.name} ({len(txt)} chars)")
+                    return txt
+                logger.info(f"PDF {p.name}: kein extrahierbarer Text (vermutlich Scan)")
+                return None
+            except Exception as e:
+                logger.warning(f"pdfplumber-Fehler bei {p}: {e}")
+                return None
+
+        if suffix in (".jpg", ".jpeg", ".png", ".webp"):
+            try:
+                import base64
+                with open(p, "rb") as fh:
+                    b64 = base64.b64encode(fh.read()).decode()
+                mime = "jpeg" if suffix in (".jpg", ".jpeg") else suffix.lstrip(".")
+                prompt = (
+                    "Du siehst ein Bild eines Rezepts (Foto oder Screenshot). "
+                    "Extrahiere ALLEN lesbaren Text und gib eine zusammenhängende "
+                    "deutsche Rezept-Beschreibung zurück, mit Zutaten (Mengen falls "
+                    "erkennbar) und Zubereitungs-Schritten. Wenn nichts Rezept-Artiges "
+                    "lesbar ist, antworte exakt mit: KEINE_REZEPT_DATEN"
+                )
+                txt = self._call_vision(b64, mime, prompt)
+                if not txt or "KEINE_REZEPT_DATEN" in txt or len(txt) < 20:
+                    logger.info(f"Vision {p.name}: kein verwertbarer Text")
+                    return None
+                logger.info(f"Vision-Extract: {p.name} ({len(txt)} chars)")
+                return txt
+            except Exception as e:
+                logger.warning(f"Vision-Extract-Fehler bei {p}: {e}")
+                return None
+
+        return None
+
+    def _call_vision(self, b64_data: str, mime: str, prompt: str) -> Optional[str]:
+        """Multimodal-Call: prompt + 1 Bild als base64. Kein response_format
+        (Vision liefert Freitext, kein JSON). Höherer max_tokens damit lange
+        Caption-Bilder vollständig transkribiert werden."""
+        try:
+            r = self.session.post(
+                f"{self.base_url}/chat/completions",
+                json={
+                    "model": self.model,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url",
+                             "image_url": {"url": f"data:image/{mime};base64,{b64_data}"}},
+                        ],
+                    }],
+                    "temperature": 0.2,
+                    "max_tokens": 1500,
+                },
+                timeout=60,  # Vision ist langsamer als text-only
+            )
+            r.raise_for_status()
+            data = r.json()
+            choices = data.get("choices") or []
+            if not choices:
+                return None
+            return (choices[0].get("message") or {}).get("content", "").strip()
+        except requests.exceptions.HTTPError as e:
+            try:
+                body = e.response.json().get("error", {}).get("message", "")
+            except Exception:
+                body = e.response.text[:200] if e.response is not None else ""
+            logger.error(f"OpenAI Vision HTTP {e.response.status_code if e.response else '?'}: {body}")
+            return None
+        except Exception as e:
+            logger.error(f"OpenAI Vision Call: {e}")
+            return None
+
     def health(self) -> bool:
         """Pingt GET /v1/models. 401 = Key falsch, 200 = ok.
         Loggt den konkreten Grund bei Fehler - sonst sieht der User nur
