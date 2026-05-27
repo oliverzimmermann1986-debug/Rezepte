@@ -1525,3 +1525,15 @@ input[type="checkbox"] { width: auto !important; }
   cursor: default;
 }
 .audit-item:hover { background: var(--card); }
+
+/* ── Auto-Tag-Chips (feat: auto_tags) ─────────────────────────────────── */
+.chip.chip-auto {
+  background: rgba(34, 197, 94, .12);      /* sanftes Grün */
+  border-color: rgba(34, 197, 94, .35);
+  color: var(--fg);
+}
+.chip-auto-icon {
+  font-size: 11px;
+  opacity: .85;
+  margin-right: 2px;
+}

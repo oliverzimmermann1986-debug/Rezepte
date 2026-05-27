@@ -267,38 +267,36 @@ class OpenAIAnalyzer:
 
     def analyze_recipe_content(self, description: str) -> dict:
         """Kombinierter Call: extrahiert Zutaten + Zubereitungs-Schritte +
-        Portionen-Anzahl in EINEM API-Roundtrip.
+        Portionen-Anzahl + stilistische Tags in EINEM API-Roundtrip.
 
-        Spart gegenüber zwei separaten Calls ~40% Tokens und ~50% Latenz
-        (System-Prompt + Description müssten sonst doppelt rein). Wenn nur
-        einer der Teile benötigt wird, gibt es trotzdem keinen separaten
-        Endpoint — der Aufrufer pickt sich das passende Feld raus.
+        Spart gegenüber separaten Calls ~40% Tokens und ~50% Latenz.
 
-        Rückgabe-Schema (alle Keys immer da, aber Listen können leer / int kann null sein):
+        Rückgabe-Schema:
           {
             "ingredients": [{"name","amount","unit","raw"}, ...],
-            "steps": [{"instruction","timer_seconds"}, ...],   # in Reihenfolge
-            "servings": int | None,                            # "für 4 Personen" → 4
+            "steps": [{"instruction","timer_seconds"}, ...],
+            "servings": int | None,
+            "tags": [str, ...],   # stilistische Tags aus festem Vokabular
           }
 
-        timer_seconds: KI schaut aktiv nach Zeit-Hinweisen im Schritt-Text
-        ("8 Min köcheln", "20 Minuten backen", "über Nacht ziehen lassen").
-        Bei "über Nacht" o.ä. setzt sie NULL (kein realistischer Stoppuhr-Wert).
+        Diät/Allergie-Tags (vegan, vegetarisch, laktosefrei, glutenfrei)
+        kommen NICHT von der KI — die werden deterministisch aus den
+        canonical_names in app.recipes.auto_tags berechnet (sicherer).
         """
         system = (
             "Du analysierst deutschsprachige Rezept-Beschreibungen von TikTok/Instagram-Videos "
-            "und extrahierst Zutaten, Zubereitungs-Schritte und Portionen-Anzahl. "
+            "und extrahierst Zutaten, Zubereitungs-Schritte, Portionen-Anzahl und stilistische Tags. "
             "Antworte AUSSCHLIESSLICH mit gültigem JSON nach diesem Schema:\n"
             '{"ingredients":[\n'
             '  {"name":"Tomaten","amount":2,"unit":"Stück","raw":"2 große Tomaten"},\n'
             '  ...\n'
             "],\n"
             '"steps":[\n'
-            '  {"instruction":"Wasser in einen Topf geben und zum Kochen bringen.","timer_seconds":null},\n'
-            '  {"instruction":"Spaghetti hinzugeben und 8 Minuten kochen.","timer_seconds":480},\n'
-            '  {"instruction":"In der Zwischenzeit die Tomaten würfeln.","timer_seconds":null}\n'
+            '  {"instruction":"Wasser zum Kochen bringen.","timer_seconds":null},\n'
+            '  {"instruction":"Spaghetti 8 Minuten kochen.","timer_seconds":480}\n'
             "],\n"
-            '"servings":4\n'
+            '"servings":4,\n'
+            '"tags":["italienisch","pasta","schnell","one-pot"]\n'
             "}\n\n"
             "REGELN ZUTATEN:\n"
             "- amount: Zahl oder null. Bei Bereichen ('2-3 Eier') Mittel oder Untergrenze.\n"
@@ -307,21 +305,28 @@ class OpenAIAnalyzer:
             "- name: nur die Zutat (ohne 'frisch', 'groß', etc.).\n"
             "- raw: genauer Text-Snippet aus der Beschreibung.\n\n"
             "REGELN SCHRITTE:\n"
-            "- instruction: vollständiger deutscher Satz, max 200 Zeichen. Stelle Werkzeug "
-            "und Zutat-Bezug klar.\n"
-            "- timer_seconds: NUR setzen wenn ein konkreter, einkalkulierbarer Zeitwert da ist. "
-            "'8 Min köcheln' → 480. '20 Minuten backen' → 1200. "
-            "'kurz anbraten', 'goldbraun', 'über Nacht ziehen', 'bis fertig' → null.\n"
+            "- instruction: vollständiger deutscher Satz, max 200 Zeichen.\n"
+            "- timer_seconds: NUR bei konkretem Zeitwert. '8 Min köcheln' → 480. "
+            "'kurz anbraten', 'goldbraun', 'über Nacht' → null.\n"
             "- Reihenfolge muss der Zubereitung entsprechen.\n\n"
             "REGELN PORTIONEN:\n"
-            "- servings: Anzahl Portionen (1-12) wenn explizit ('für 4 Personen', 'ergibt 8 Stück'). "
-            "Sonst null. Nicht raten.\n\n"
-            "Bei nicht-rezept-artigem Text (z.B. reine Caption ohne Anleitung): "
-            '{"ingredients":[],"steps":[],"servings":null}.'
+            "- servings: Anzahl Portionen (1-12) wenn explizit. Sonst null. Nicht raten.\n\n"
+            "REGELN TAGS (3-7 Tags, nur aus dieser festen Liste — keine Erfindungen!):\n"
+            "  Küche:    italienisch, asiatisch, mediterran, deutsch, mexikanisch, indisch, "
+            "amerikanisch, französisch, orientalisch, thailändisch, japanisch, chinesisch\n"
+            "  Kategorie: pasta, pizza, salat, suppe, eintopf, auflauf, bowl, wrap, "
+            "burger, sandwich, dessert, kuchen, gebäck, getränk, dip, snack, frühstück\n"
+            "  Stil:     schnell, einfach, aufwendig, meal-prep, kinderfreundlich, "
+            "low-carb, high-protein, one-pot, kalorienarm, comfort-food, streetfood, "
+            "gesund, sommerlich, winterlich, party, fingerfood, grillen, ofen, kalt\n"
+            "  KEINE Diät-Tags wie 'vegan' oder 'laktosefrei' — die berechnen wir selbst aus "
+            "den Zutaten, weil das sicherer ist.\n\n"
+            "Bei nicht-rezept-artigem Text: "
+            '{"ingredients":[],"steps":[],"servings":null,"tags":[]}.'
         )
         content = self._call(system, f"Beschreibung:\n\n{description[:6000]}")
         if not content:
-            return {"ingredients": [], "steps": [], "servings": None}
+            return {"ingredients": [], "steps": [], "servings": None, "tags": []}
         try:
             data = json.loads(content)
             # Ingredients
@@ -356,7 +361,7 @@ class OpenAIAnalyzer:
                 if timer is not None:
                     try:
                         timer = int(timer)
-                        if timer <= 0 or timer > 86400:  # > 24h = unsinnig für Stoppuhr
+                        if timer <= 0 or timer > 86400:
                             timer = None
                     except (TypeError, ValueError):
                         timer = None
@@ -366,14 +371,35 @@ class OpenAIAnalyzer:
             if servings is not None:
                 try:
                     servings = int(servings)
-                    if servings < 1 or servings > 50:  # Sanity
+                    if servings < 1 or servings > 50:
                         servings = None
                 except (TypeError, ValueError):
                     servings = None
-            return {"ingredients": ings_out, "steps": steps_out, "servings": servings}
+            # Tags — bei der KI dem festen Vokabular vertrauen, aber defensiv
+            # lowercase + dedup + cap auf 8 (sonst halluzinierte Listen mit 20+)
+            raw_tags = data.get("tags") or []
+            tags_out = []
+            seen = set()
+            if isinstance(raw_tags, list):
+                for t in raw_tags:
+                    if not isinstance(t, str):
+                        continue
+                    norm = t.strip().lower()
+                    if not norm or len(norm) > 30 or norm in seen:
+                        continue
+                    seen.add(norm)
+                    tags_out.append(norm)
+                    if len(tags_out) >= 8:
+                        break
+            return {
+                "ingredients": ings_out,
+                "steps": steps_out,
+                "servings": servings,
+                "tags": tags_out,
+            }
         except Exception as e:
             logger.warning(f"OpenAI Recipe-Content JSON-Parse: {e} | {content[:200]}")
-            return {"ingredients": [], "steps": [], "servings": None}
+            return {"ingredients": [], "steps": [], "servings": None, "tags": []}
 
     def translate_to_german(self, text: str) -> Optional[str]:
         """Erkennt Sprache und übersetzt nach Deutsch falls nötig.

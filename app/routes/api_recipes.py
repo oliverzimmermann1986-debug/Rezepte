@@ -279,14 +279,23 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks):
     if servings is not None:
         db.recipe_set_servings(recipe_id, servings)
 
+    # Auto-Tags (KI + Regel-Pass)
+    from ..recipes.auto_tags import compute_diet_tags
+    ki_tags = content.get("tags") or []
+    diet_tags = compute_diet_tags([p["canonical_name"] for p in prepared])
+    all_auto_tags = sorted(set(ki_tags) | set(diet_tags))
+    db.recipe_auto_tags_set(recipe_id, all_auto_tags)
+
     return {
         "ok": True,
         "status": "ok",
         "ingredients_count": len(prepared),
         "steps_count": len(steps),
         "servings": servings,
+        "auto_tags": all_auto_tags,
         "ingredients": db.recipe_ingredients_get(recipe_id),
         "steps": db.recipe_steps_get(recipe_id),
+        "tags": db.recipe_tags_get(recipe_id),
     }
 
 

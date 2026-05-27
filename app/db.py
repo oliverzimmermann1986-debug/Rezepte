@@ -172,6 +172,12 @@ class Database:
             # via KI gelesen). Default NULL = unbekannt.
             c.execute("ALTER TABLE recipes ADD COLUMN servings INTEGER")
 
+        rt_cols = {r[1] for r in c.execute("PRAGMA table_info(recipe_tags)").fetchall()}
+        if "auto" not in rt_cols:
+            # 0 = User-Tag (manuell gesetzt), 1 = Auto-Tag (vom KI/Regel-Pass).
+            # Beim Re-Extract werden NUR Tags mit auto=1 ersetzt, User-Tags bleiben.
+            c.execute("ALTER TABLE recipe_tags ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+
     @contextmanager
     def conn(self):
         # SQLite: pro-Aufruf Verbindung, dank check_same_thread=False thread-safe genug.
@@ -874,9 +880,11 @@ class Database:
             return [dict(r) for r in rows]
 
     def recipe_tags_set(self, recipe_id: int, tag_names: List[str]) -> None:
-        """Ersetzt alle Tags eines Rezepts. Neue Tag-Namen werden angelegt."""
+        """Ersetzt alle USER-Tags eines Rezepts. Auto-Tags (auto=1) bleiben
+        unangetastet — sonst würde der nächste KI-Re-Extract sie eh wieder
+        anlegen, und User-Edits durch Re-Extract verlieren wäre unerwartet."""
         with self.conn() as c:
-            c.execute("DELETE FROM recipe_tags WHERE recipe_id=?", (recipe_id,))
+            c.execute("DELETE FROM recipe_tags WHERE recipe_id=? AND auto=0", (recipe_id,))
         for raw in tag_names:
             name = (raw or "").strip()
             if not name:
@@ -884,16 +892,33 @@ class Database:
             tag_id = self.tag_get_or_create(name)
             with self.conn() as c:
                 c.execute(
-                    "INSERT OR IGNORE INTO recipe_tags (recipe_id, tag_id) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO recipe_tags (recipe_id, tag_id, auto) VALUES (?, ?, 0)",
+                    (recipe_id, tag_id),
+                )
+
+    def recipe_auto_tags_set(self, recipe_id: int, tag_names: List[str]) -> None:
+        """Ersetzt nur die Auto-Tags. User-Tags bleiben unangetastet.
+        Wenn Auto-Tag und User-Tag identisch sind: User-Tag gewinnt
+        (UNIQUE-Constraint im PK verhindert Duplikat, INSERT IGNORE)."""
+        with self.conn() as c:
+            c.execute("DELETE FROM recipe_tags WHERE recipe_id=? AND auto=1", (recipe_id,))
+        for raw in tag_names:
+            name = (raw or "").strip()
+            if not name:
+                continue
+            tag_id = self.tag_get_or_create(name)
+            with self.conn() as c:
+                c.execute(
+                    "INSERT OR IGNORE INTO recipe_tags (recipe_id, tag_id, auto) VALUES (?, ?, 1)",
                     (recipe_id, tag_id),
                 )
 
     def recipe_tags_get(self, recipe_id: int) -> List[Dict[str, Any]]:
         with self.conn() as c:
             rows = c.execute(
-                "SELECT t.id, t.name FROM tags t "
+                "SELECT t.id, t.name, rt.auto FROM tags t "
                 "JOIN recipe_tags rt ON rt.tag_id = t.id WHERE rt.recipe_id=? "
-                "ORDER BY t.name",
+                "ORDER BY rt.auto DESC, t.name",
                 (recipe_id,),
             ).fetchall()
             return [dict(r) for r in rows]

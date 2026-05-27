@@ -283,8 +283,19 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
     servings = content.get("servings")
     if servings is not None:
         db.recipe_set_servings(rid, servings)
+
+    # Auto-Tags: KI-Tags (stilistisch) + Regel-Tags (Diät/Allergene)
+    # Vereinigt unter einer Tabelle, mit auto=1 markiert. User-Tags
+    # (auto=0) bleiben dabei unangetastet.
+    from .auto_tags import compute_diet_tags
+    ki_tags = content.get("tags") or []
+    diet_tags = compute_diet_tags([p["canonical_name"] for p in prepared])
+    all_auto_tags = sorted(set(ki_tags) | set(diet_tags))
+    db.recipe_auto_tags_set(rid, all_auto_tags)
+
     logger.info(
         f"Rezept #{rid} '{recipe.get('name')}': "
         f"{len(prepared)} Zutaten, {len(steps)} Schritte, "
-        f"servings={servings or '?'}"
+        f"servings={servings or '?'}, "
+        f"{len(all_auto_tags)} Auto-Tags ({len(ki_tags)} KI + {len(diet_tags)} Diät)"
     )

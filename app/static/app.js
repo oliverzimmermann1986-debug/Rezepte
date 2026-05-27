@@ -1616,23 +1616,38 @@ function scrapperApp() {
     async addTagToRecipe() {
       const name = (this.recipeDetail.newTag || '').trim();
       if (!name || !this.recipeDetail.data) return;
-      const tags = (this.recipeDetail.data.tags || []).map(t => t.name);
-      if (tags.includes(name)) { this.recipeDetail.newTag = ''; return; }
-      tags.push(name);
-      const r = await this.api('PUT', `/api/recipes/${this.recipeDetail.data.id}/tags`, { tags });
+      // Nur User-Tags durchreichen — Backend recipe_tags_set ersetzt
+      // ohnehin nur auto=0; Auto-Tags bleiben.
+      const userTags = (this.recipeDetail.data.tags || [])
+        .filter(t => !t.auto)
+        .map(t => t.name);
+      if (userTags.includes(name)) { this.recipeDetail.newTag = ''; return; }
+      userTags.push(name);
+      const r = await this.api('PUT', `/api/recipes/${this.recipeDetail.data.id}/tags`,
+                                { tags: userTags });
       if (r && r.ok) {
-        this.recipeDetail.data.tags = r.tags;
+        // Re-fetch komplette Tag-Liste (User + Auto)
+        const fresh = await this.api('GET', `/api/recipes/${this.recipeDetail.data.id}`);
+        if (fresh) this.recipeDetail.data.tags = fresh.tags;
         this.recipeDetail.newTag = '';
-        this.loadFacets();  // Tag-Count in Sidebar aktualisieren
+        this.loadFacets();
       }
     },
 
     async removeTagFromRecipe(tagName) {
       if (!this.recipeDetail.data) return;
-      const tags = (this.recipeDetail.data.tags || []).map(t => t.name).filter(n => n !== tagName);
-      const r = await this.api('PUT', `/api/recipes/${this.recipeDetail.data.id}/tags`, { tags });
+      // Auto-Tags lassen sich nicht entfernen (× ist im UI eh nicht da).
+      // Defensiv: falls doch aufgerufen, hier abfangen.
+      const tag = (this.recipeDetail.data.tags || []).find(t => t.name === tagName);
+      if (!tag || tag.auto) return;
+      const userTags = (this.recipeDetail.data.tags || [])
+        .filter(t => !t.auto && t.name !== tagName)
+        .map(t => t.name);
+      const r = await this.api('PUT', `/api/recipes/${this.recipeDetail.data.id}/tags`,
+                                { tags: userTags });
       if (r && r.ok) {
-        this.recipeDetail.data.tags = r.tags;
+        const fresh = await this.api('GET', `/api/recipes/${this.recipeDetail.data.id}`);
+        if (fresh) this.recipeDetail.data.tags = fresh.tags;
         this.loadFacets();
       }
     },

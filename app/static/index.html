@@ -1938,17 +1938,18 @@
           <div class="recipe-detail-right">
             <!-- Tags -->
             <div class="recipe-detail-section">
-              <h4>Tags</h4>
+              <h4>Tags <span class="muted" style="font-size: 11px; font-weight: normal;">🤖 = automatisch (KI/Regel-Pass)</span></h4>
               <div class="chip-list">
                 <template x-for="t in recipeDetail.data?.tags || []" :key="t.id">
-                  <span class="chip on">
+                  <span class="chip on" :class="t.auto && 'chip-auto'">
+                    <span x-show="t.auto" class="chip-auto-icon" title="Automatisch — wird beim Re-Extract regeneriert">🤖</span>
                     <span x-text="t.name"></span>
-                    <button class="chip-x" @click="removeTagFromRecipe(t.name)" title="Entfernen">×</button>
+                    <button x-show="!t.auto" class="chip-x" @click="removeTagFromRecipe(t.name)" title="Entfernen">×</button>
                   </span>
                 </template>
               </div>
               <div style="display:flex; gap:6px; margin-top: 6px;">
-                <input type="text" x-model="recipeDetail.newTag" @keydown.enter="addTagToRecipe()" placeholder="Neuer Tag…" style="flex:1;" />
+                <input type="text" x-model="recipeDetail.newTag" @keydown.enter="addTagToRecipe()" placeholder="Eigenen Tag hinzufügen…" style="flex:1;" />
                 <button class="btn btn-secondary" @click="addTagToRecipe()">+</button>
               </div>
             </div>
