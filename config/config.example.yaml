@@ -124,20 +124,34 @@ recipe_types:
 backup:
   enabled: true
   rclone_remote: pcloud
-  # parallele Sync-Paare
+  # Globaler Default-Schedule für Pairs ohne eigene 'schedule'-Definition.
+  # Standard-Cron-Format (5 Felder: Min Hour Day Month Weekday).
+  # Beispiele:
+  #   "0 3 * * *"      - täglich 03:00 (Bestandsverhalten)
+  #   "0 */6 * * *"    - alle 6h zur vollen Stunde
+  #   "*/15 * * * *"   - alle 15 Minuten
+  #   "0 9 * * 1-5"    - werktags 09:00
+  # "off" / "manual" / "" = kein Auto-Sync, nur Button im UI
+  default_schedule: "0 3 * * *"
+  # parallele Sync-Paare. Jeder Pair kann eine eigene 'schedule' haben;
+  # ohne schedule wird default_schedule genutzt.
   pairs:
     - name: Serien
       remote: pcloud:/medien/Serien
       local: /mnt/media-nas/Serien
+      schedule: "0 2 * * *"          # täglich 02:00
     - name: Filme
       remote: pcloud:/medien/Filme
       local: /mnt/media-nas/Filme
+      schedule: "0 3 * * 0"          # nur sonntags 03:00 (große Files, selten)
     - name: Fotos
       remote: pcloud:/medien/Fotos
       local: /mnt/media-nas/Fotos
+      schedule: "0 */4 * * *"        # alle 4h
     - name: Iphone_backup
       remote: pcloud:/medien/Iphone_backup
       local: /mnt/media-nas/Iphone_backup
+      schedule: manual               # nur manueller Trigger via UI-Button
 
   rclone_args:
     # --- Performance ---

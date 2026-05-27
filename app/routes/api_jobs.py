@@ -499,3 +499,62 @@ def quick_sync(body: QuickSyncRequest):
     t = threading.Thread(target=_run_quick_thread, args=(job_id, body.model_dump()), daemon=True)
     t.start()
     return {"ok": True, "job_id": job_id}
+
+
+# ---------------- Per-Pair Schedule ----------------
+
+@router.get("/backup/schedule")
+def backup_schedule_status():
+    """Per-Pair-Schedule-Status: zeigt für jeden Pair Schedule, letzter Run,
+    nächster geplanter Run, ob jetzt fällig wäre."""
+    from ..jobs.scheduler import find_due_pairs, next_run_after, _is_disabled
+    cfg = get_config()
+    db = get_db()
+    due, status_list = find_due_pairs(cfg, db)
+
+    default_schedule = (cfg.get("backup", "default_schedule", default="0 3 * * *") or "0 3 * * *").strip()
+    enriched = []
+    for s in status_list:
+        sched = s.get("schedule") or default_schedule
+        last_run = s.get("last_run")
+        next_run = None
+        if not _is_disabled(sched):
+            # Nächster Run nach jetzt (für die Anzeige)
+            next_run = next_run_after(sched)
+        enriched.append({
+            **s,
+            "next_run": next_run,
+            "is_default_schedule": s.get("schedule") in (None, "", default_schedule),
+        })
+    return {
+        "due_now": due,
+        "default_schedule": default_schedule,
+        "pairs": enriched,
+    }
+
+
+@router.post("/backup/run-pair/{pair_name}")
+def backup_run_single_pair(pair_name: str):
+    """Startet einen Sync für nur einen einzelnen Pair (Button im UI).
+    Background-Thread, Status via /api/jobs/backup/progress trackbar."""
+    if not _locks["backup"].acquire(blocking=False):
+        raise HTTPException(409, "Backup läuft bereits")
+
+    db = get_db()
+    job_id = db.job_start("backup")
+
+    def _runner():
+        try:
+            from ..jobs.rclone_sync import run_job
+            summary = run_job(dry_run=False, pairs_filter=[pair_name])
+            db.job_finish(job_id, "ok" if not summary.get("error") else "error", summary)
+        except Exception as e:
+            db.job_finish(job_id, "error", {"error": str(e)})
+        finally:
+            try:
+                _locks["backup"].release()
+            except RuntimeError:
+                pass
+
+    threading.Thread(target=_runner, daemon=True).start()
+    return {"ok": True, "job_id": job_id, "pair": pair_name}

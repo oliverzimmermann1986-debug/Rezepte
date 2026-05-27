@@ -6,6 +6,8 @@ function scrapperApp() {
     rcloneArgsText: '',
     rcloneFilterText: '',
     pairArgsText: {},      // idx -> textarea content for per-pair args
+    pairScheduleData: {},  // name -> {schedule, last_run, next_run, due}
+    pairScheduleDefault: '0 3 * * *',
     filterBusy: false,
     maintenance: null,
     maintBusy: false,
@@ -696,6 +698,7 @@ function scrapperApp() {
       this.loadSchedule();
       this.loadFilterFile();   // rclone-Filter parallel laden
       this.loadMaintenance();  // Wartungs-Stats parallel
+      this.loadPairScheduleInfo();
     },
     async loadMaintenance() {
       this.maintBusy = true;
@@ -896,8 +899,46 @@ function scrapperApp() {
     addBackupPair() {
       const arr = this.config.backup.pairs;
       const idx = arr.length;
-      arr.push({ name: '', remote: '', local: '' });
+      arr.push({ name: '', remote: '', local: '', schedule: '' });
       this.pairArgsText[idx] = '';
+    },
+    async loadPairScheduleInfo() {
+      // Holt für alle Pairs die Schedule-Info vom Backend (next_run etc.)
+      try {
+        const r = await this.api('GET', '/api/jobs/backup/schedule');
+        const info = {};
+        for (const p of (r.pairs || [])) {
+          info[p.name] = p;
+        }
+        this.pairScheduleData = info;
+        this.pairScheduleDefault = r.default_schedule;
+      } catch(e) {
+        // Endpoint evtl. nicht verfügbar - keine Info, ignorieren
+      }
+    },
+    pairScheduleInfo(name) {
+      const p = this.pairScheduleData && this.pairScheduleData[name];
+      if (!p) return null;
+      if (p.reason === 'disabled' || (p.reason || '').startsWith('schedule=')) {
+        return `(${p.reason})`;
+      }
+      const lr = p.last_run ? new Date(p.last_run * 1000).toLocaleString('de-DE') : 'noch nie';
+      const nr = p.next_run ? new Date(p.next_run * 1000).toLocaleString('de-DE') : '—';
+      const dueLabel = p.due ? ' · ⏰ jetzt fällig' : '';
+      return `letzter: ${lr} · nächster: ${nr}${dueLabel}`;
+    },
+    async runSinglePair(name) {
+      if (!name) { this.showToast('Pair-Name fehlt - erst speichern', 'error'); return; }
+      try {
+        const r = await this.api('POST', `/api/jobs/backup/run-pair/${encodeURIComponent(name)}`);
+        if (r.ok) {
+          this.showToast(`Sync für ${name} gestartet (Job ${r.job_id})`, 'ok');
+        } else {
+          this.showToast('Sync-Start fail', 'error');
+        }
+      } catch(e) {
+        this.showToast('Fehler: ' + e, 'error');
+      }
     },
     syncPairArgs(idx) {
       // Textarea -> pair.rclone_args array. Leer = Feld weglassen.
