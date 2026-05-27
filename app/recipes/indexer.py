@@ -113,6 +113,29 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
         except Exception as e:
             logger.warning(f"description.txt unlesbar in {folder}: {e}")
 
+    # Fallback: wenn description.txt fehlt oder leer ist, prüfe ob es eine
+    # andere .txt-Datei im Folder gibt. Häufige Fälle:
+    #   - <folder-name>.txt (Brokkoli_mit_knoblauch.txt) — alte Scrapes vor
+    #     Standardisierung des Filenamens, oder Case-Mismatch
+    #   - caption.txt — von älteren Scraper-Versionen
+    #   - irgendwas.txt — manuell hineingelegt
+    # Wir nehmen die größte verfügbare .txt (höchster Informationsgehalt).
+    # description_original.txt wird ausgelassen — das ist unser auto-translate-
+    # Backup vom Original, der deutsche Pfad steckt schon in description.txt.
+    if not description:
+        candidates = [
+            f for f in _safe_iterdir(folder)
+            if f.is_file() and f.suffix.lower() == ".txt"
+            and f.name not in ("description.txt", "description_original.txt")
+        ]
+        if candidates:
+            best = max(candidates, key=lambda f: f.stat().st_size)
+            try:
+                description = best.read_text(encoding="utf-8").strip()
+                logger.info(f"Description-Fallback in {folder.name}: {best.name}")
+            except Exception as e:
+                logger.warning(f"Fallback-Text {best} unlesbar: {e}")
+
     name = info.get("name") or folder.name
     url = info.get("url")
     # processed_at aus info.json wenn vorhanden, sonst mtime des Ordners

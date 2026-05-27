@@ -626,11 +626,22 @@ class Database:
                 (folder_path,),
             ).fetchone()
             if existing:
-                c.execute(
-                    "UPDATE recipes SET url=?, name=?, type=?, category=?, "
-                    "description=?, thumb_filename=?, video_filename=?, "
-                    "source_added_at=COALESCE(?, source_added_at) "
-                    "WHERE id=?",
+                # Wenn der vorherige Sweep das Rezept auf 'skipped' gesetzt hat
+                # (weil keine description gefunden wurde) und JETZT eine
+                # description da ist (z.B. Fallback-Read findet caption.txt),
+                # Status zurück auf 'pending' damit der Worker neu extrahiert.
+                # User-Edits (status='ok' mit manuell gepflegten Zutaten) NICHT
+                # antasten — nur skipped reaktivieren.
+                reset_status = (
+                    description and len(description.strip()) >= 20
+                    and existing["ingredients_status"] == "skipped"
+                )
+                sql = ("UPDATE recipes SET url=?, name=?, type=?, category=?, "
+                       "description=?, thumb_filename=?, video_filename=?, "
+                       "source_added_at=COALESCE(?, source_added_at)"
+                       + (", ingredients_status='pending', ingredients_extracted_at=NULL" if reset_status else "")
+                       + " WHERE id=?")
+                c.execute(sql,
                     (url, name, type, category, description,
                      thumb_filename, video_filename, source_added_at,
                      existing["id"]),
