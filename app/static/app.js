@@ -764,9 +764,8 @@ function scrapperApp() {
       cfg.mail.recipe ||= {};
       cfg.mail.wedding ||= {};
       cfg.ai ||= {};
-      cfg.ai.provider ||= 'ollama';
-      cfg.ai.ollama ||= {};
       cfg.ai.openai ||= { api_key: '', model: 'gpt-4o-mini', base_url: '', timeout: 30 };
+      if (cfg.ai.auto_translate === undefined) cfg.ai.auto_translate = true;
       cfg.backup ||= {};
       cfg.backup.pairs ||= [];
       cfg.backup.rclone_args ||= [];
@@ -866,7 +865,7 @@ function scrapperApp() {
     // ------------- Tests -------------
     testing: {
       mail_recipe: false, mail_wedding: false,
-      ollama: false, openai: false,
+      openai: false,
       rclone: false, paths: false, ytdlp: false,
       schedule_preview: false, schedule_save: false,
       webhook: -1,   // Index des gerade getesteten Webhook (-1 = keiner)
@@ -929,7 +928,6 @@ function scrapperApp() {
     testMail(account) {
       this.runTest('mail_' + account, '/api/test/mail', { account });
     },
-    testOllama() { this.runTest('ollama', '/api/test/ollama'); },
     async testOpenAI() {
       // Defensiv: testing-state immer auf false zurücksetzen damit der Button
       // nicht 'stuck' bleibt nach einem alten Fehler

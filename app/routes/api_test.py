@@ -13,7 +13,6 @@ from pydantic import BaseModel
 
 from ..auth import require_auth
 from ..config_store import get_config
-from ..core.analyzer import OllamaAnalyzer
 from ..core.email_processor import MailAccount
 
 logger = logging.getLogger(__name__)
@@ -49,45 +48,6 @@ def test_mail(req: MailTestRequest) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-
-
-@router.post("/ollama")
-def test_ollama() -> Dict[str, Any]:
-    """Ollama-Server erreichbar? Beide Modelle (fast + fallback) verfügbar?"""
-    cfg = get_config().get("ai", "ollama", default={}) or {}
-    if not cfg.get("enabled"):
-        return {"ok": False, "error": "Ollama ist in der Config deaktiviert"}
-    url = cfg.get("url", "")
-    fast_model = cfg.get("model", "")
-    fallback = (cfg.get("fallback_model") or "").strip()
-    if not url or not fast_model:
-        return {"ok": False, "error": "URL oder Modell fehlt"}
-
-    # Modelle auflisten
-    try:
-        import requests
-        r = requests.get(f"{url.rstrip('/')}/api/tags", timeout=10)
-        r.raise_for_status()
-        installed = [m.get("name", "") for m in r.json().get("models", [])]
-    except Exception as e:
-        return {"ok": False, "error": f"Server nicht erreichbar: {e}"}
-
-    found_fast = any(fast_model in m for m in installed)
-    found_fb   = bool(fallback) and any(fallback in m for m in installed)
-
-    if not found_fast:
-        return {"ok": False, "error": f"Modell '{fast_model}' nicht installiert. Verfügbar: {', '.join(installed)}"}
-
-    msg_parts = [f"Fast-Modell '{fast_model}' ✓"]
-    if fallback:
-        if found_fb:
-            msg_parts.append(f"Fallback '{fallback}' ✓")
-        else:
-            return {"ok": False, "error": f"Fallback '{fallback}' nicht installiert. Verfügbar: {', '.join(installed)}"}
-    else:
-        msg_parts.append("kein Fallback konfiguriert")
-
-    return {"ok": True, "message": " · ".join(msg_parts), "installed": installed}
 
 
 class OpenAITestRequest(BaseModel):

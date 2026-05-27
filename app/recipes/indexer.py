@@ -214,13 +214,48 @@ def _extraction_loop() -> None:
 
 def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
     """Holt Zutaten für EIN Rezept und schreibt sie ins DB. Niemals raised —
-    Fehler werden auf 'error'-Status gesetzt, sodass die Schleife weiterläuft."""
+    Fehler werden auf 'error'-Status gesetzt, sodass die Schleife weiterläuft.
+
+    Wenn die Beschreibung nicht-deutsch ist, wird sie vor der Zutaten-
+    Extraktion übersetzt (Original kommt parallel als description_original.txt
+    in den Rezept-Ordner, DB-Feld wird auf deutsche Variante geupdatet).
+    Das ist für Bestands-Rezepte die einzige Stelle, an der eine retro-
+    Übersetzung passiert — der Scraper macht das beim Save selbst.
+    """
     rid = recipe["id"]
     desc = recipe.get("description") or ""
     if len(desc.strip()) < 20:
         db.recipe_set_extraction_result(rid, status="skipped", ingredients=[])
         logger.debug(f"Rezept #{rid} '{recipe.get('name')}': description zu kurz, skipped")
         return
+
+    # Pre-translate für Bestands-Rezepte: italienische/englische Captions
+    # werden hier nachträglich nach Deutsch umgesetzt, damit die Zutaten-
+    # Extraktion auf dem konsistenten deutschen Text läuft.
+    try:
+        translated = analyzer.translate_to_german(desc)
+    except Exception as e:
+        logger.warning(f"Rezept #{rid}: Translate-Call failed (behalte Original): {e}")
+        translated = None
+
+    if translated:
+        desc = translated
+        # Beschreibungs-File im Rezept-Ordner aktualisieren — Original sichern
+        from pathlib import Path as _P
+        folder = _P(recipe.get("folder_path") or "")
+        if folder.exists():
+            orig_file = folder / "description_original.txt"
+            desc_file = folder / "description.txt"
+            try:
+                if desc_file.exists() and not orig_file.exists():
+                    orig_file.write_text(desc_file.read_text(encoding="utf-8"), encoding="utf-8")
+                desc_file.write_text(desc, encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"Rezept #{rid}: Konnte description-Files nicht updaten: {e}")
+        # DB-Feld description auf die deutsche Variante setzen
+        with db.conn() as c:
+            c.execute("UPDATE recipes SET description=? WHERE id=?", (desc, rid))
+        logger.info(f"Rezept #{rid}: Caption nach DE übersetzt ({len(translated)} chars)")
 
     try:
         items = analyzer.analyze_ingredients(desc)

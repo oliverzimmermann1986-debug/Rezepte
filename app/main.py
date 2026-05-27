@@ -246,7 +246,7 @@ def healthz():
 
 @app.get("/healthz/deep")
 def healthz_deep():
-    """Tiefer Check: DB + Ollama + IMAP + Disk-Space + rclone-Config.
+    """Tiefer Check: DB + OpenAI + IMAP + Disk-Space + rclone-Config.
     Status-Code immer 200, Details im Body. Wir wollen nicht dass eine
     kaputte IMAP-Config den ganzen Container als 'unhealthy' markiert."""
     import shutil
@@ -263,21 +263,16 @@ def healthz_deep():
     except Exception as e:
         checks["db"] = {"ok": False, "error": str(e)}
 
-    # Ollama
+    # OpenAI
     try:
-        from .core.analyzer import OllamaAnalyzer
-        ollama_cfg = cfg.get("ai", "ollama", default={}) or {}
-        if ollama_cfg.get("enabled", True):
-            o = OllamaAnalyzer(
-                ollama_cfg.get("url", ""),
-                ollama_cfg.get("model", ""),
-                timeout=5,
-            )
-            checks["ollama"] = {"ok": o.health(), "model": ollama_cfg.get("model")}
-        else:
-            checks["ollama"] = {"ok": True, "disabled": True}
+        from .core.analyzer import build_analyzer
+        ai_cfg = cfg.get("ai", default={}) or {}
+        analyzer = build_analyzer(ai_cfg)
+        # Health-Check mit kurzem Timeout damit /healthz nicht hängt
+        analyzer.timeout = 5
+        checks["openai"] = {"ok": analyzer.health(), "model": analyzer.model}
     except Exception as e:
-        checks["ollama"] = {"ok": False, "error": str(e)}
+        checks["openai"] = {"ok": False, "error": str(e)}
 
     # Disk-Space (recipe_dir + temp_dir)
     for key in ("recipe_dir", "wedding_dir", "temp_dir"):

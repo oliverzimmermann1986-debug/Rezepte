@@ -1,11 +1,15 @@
 """
 Scraper-Job (TikTok/Instagram -> Rezepte/Hochzeit Ordner).
 
-Vereinfachte KI-Cascade (kein Vision-Fallback mehr):
-  Ollama-fast -> Ollama-fallback -> Pending (manuell im Web-UI)
+KI-Cascade ist seit dem Ollama-Removal flat:
+  OpenAI-Call -> Pending (manuell im Web-UI) wenn confidence zu niedrig
 
 Pending-Items werden im Web-UI über ein <video>-Element angezeigt -
 keine Standbild-Extraktion mehr nötig.
+
+Pre-Analyse-Schritt: nicht-deutsche Captions werden automatisch nach
+Deutsch übersetzt (siehe _maybe_translate_description). Das Original
+bleibt als description_original.txt im Rezept-Ordner erhalten.
 """
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ from typing import Dict, List, Optional
 
 from ..config_store import get_config
 from ..db import get_db
-from ..core.analyzer import OllamaAnalyzer, RecipeAnalysis, WeddingAnalysis, build_analyzer
+from ..core.analyzer import RecipeAnalysis, WeddingAnalysis, build_analyzer
 from ..core.downloader import VideoDownloader
 from ..core.email_processor import MailAccount, EmailRouter
 
@@ -67,13 +71,22 @@ def _has_usable_description(text: Optional[str], min_len: int) -> bool:
 
 
 def _save_video_files(target_dir: Path, video_path: Path,
-                       description: Optional[str], info: Dict) -> None:
+                       description: Optional[str], info: Dict,
+                       description_original: Optional[str] = None) -> None:
+    """Schreibt Video + description.txt + info.json in den Ziel-Ordner.
+
+    Wenn description_original gesetzt ist (= Caption wurde übersetzt), wird
+    sie als description_original.txt zusätzlich geschrieben. So bleibt das
+    Original erhalten für späteres Audit oder Re-Übersetzung.
+    """
     target_dir.mkdir(parents=True, exist_ok=True)
     file_base = target_dir.name
     if video_path and video_path.exists():
         shutil.copy2(video_path, target_dir / f"{file_base}{video_path.suffix}")
     if description:
         (target_dir / "description.txt").write_text(description, encoding="utf-8")
+    if description_original:
+        (target_dir / "description_original.txt").write_text(description_original, encoding="utf-8")
     with open(target_dir / "info.json", "w", encoding="utf-8") as f:
         json.dump(info, f, indent=2, ensure_ascii=False)
 
@@ -90,42 +103,26 @@ class ScraperJob:
         self.temp_dir = Path(cfg.get("paths", "temp_dir", default="/opt/scrapper/temp"))
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
-        # AI-Provider: 'ollama' (default) oder 'openai'.
-        # build_analyzer() liefert je nach Config eine OllamaAnalyzer- oder
-        # OpenAIAnalyzer-Instanz mit identischem Interface (analyze_recipe,
-        # analyze_wedding, spellcheck, health).
+        # AI-Provider: nur noch OpenAI. build_analyzer() liefert einen
+        # OpenAIAnalyzer (oder raised wenn api_key fehlt/gemaskt ist).
         ai_cfg = cfg.get("ai", default={}) or {}
-        provider = (ai_cfg.get("provider") or "ollama").lower().strip()
-        self.ai_provider = provider
+        self.ai_provider = "openai"
 
-        # Primary-Analyzer
         try:
-            self.ollama = build_analyzer(ai_cfg)   # name 'ollama' historisch, ist jetzt Provider-agnostisch
-            self.ollama_enabled = True
+            self.analyzer = build_analyzer(ai_cfg)
+            self.analyzer_enabled = True
         except Exception as e:
-            logger.error(f"AI-Analyzer Init fehlgeschlagen ({provider}): {e}")
-            self.ollama = None
-            self.ollama_enabled = False
-
-        # Fallback-Analyzer: nur bei Ollama sinnvoll (zweites lokales Modell).
-        # Für OpenAI macht ein 'Fallback-Model' keinen Sinn - GPT-4o-mini ist
-        # schon das günstige Modell. Wer Cascade will: ollama-fast → openai.
-        # Das ist aber komplex und selten gefragt - skip für jetzt.
-        self.ollama_fallback = None
-        if provider == "ollama":
-            ollama_cfg = ai_cfg.get("ollama") or {}
-            fb_model = (ollama_cfg.get("fallback_model") or "").strip()
-            if fb_model and self.ollama_enabled:
-                from ..core.analyzer import OllamaAnalyzer
-                self.ollama_fallback = OllamaAnalyzer(
-                    (ollama_cfg.get("url") or "http://localhost:11434").strip(),
-                    fb_model,
-                    int(ollama_cfg.get("timeout") or 60),
-                )
+            logger.error(f"AI-Analyzer Init fehlgeschlagen: {e}")
+            self.analyzer = None
+            self.analyzer_enabled = False
 
         self.confidence_threshold = float(cfg.get("ai", "confidence_threshold", default=0.75) or 0.75)
-        self.fallback_threshold = float(cfg.get("ai", "fallback_threshold", default=0.5) or 0.5)
+        # fallback_threshold bleibt für Bestandskonfigs lesbar aber wird nicht
+        # mehr genutzt (kein zweites Modell mehr seit Ollama-Removal).
         self.min_desc_len = int(cfg.get("ai", "description_min_length", default=20) or 20)
+        # Auto-Translate: bei Default true; lässt sich per Config deaktivieren
+        # falls jemand das Original behalten will.
+        self.auto_translate = bool(cfg.get("ai", "auto_translate", default=True))
 
         # Downloader (mit optionalem Cookie-Jar für private Inhalte)
         ytdlp_cfg = cfg.get("ytdlp", default={}) or {}
@@ -156,49 +153,54 @@ class ScraperJob:
             default=["Deko", "Foto", "Basteln", "Einladung", "Standesamt", "Sonstiges"],
         )
 
-    # ---------------- Analyse (Ollama-only) ----------------
+    # ---------------- Analyse (OpenAI-only) ----------------
     def _analyze_recipe(self, description: Optional[str]) -> RecipeAnalysis:
-        """Cascade: fast Modell -> fallback Modell -> bestes Ergebnis (oder Unbekannt)."""
-        best: Optional[RecipeAnalysis] = None
-        if self.ollama and _has_usable_description(description, self.min_desc_len):
-            r = self.ollama.analyze_recipe(description)
-            logger.info(f"Ollama fast: name={r.name} typ={r.type} conf={r.confidence:.2f}")
+        """Single OpenAI-Call. Bei niedriger confidence → Pending im Web-UI."""
+        if self.analyzer and _has_usable_description(description, self.min_desc_len):
+            r = self.analyzer.analyze_recipe(description)
+            logger.info(f"AI recipe: name={r.name} typ={r.type} conf={r.confidence:.2f}")
             if not r.needs_manual_input(self.confidence_threshold):
                 return r
-            best = r
-            if self.ollama_fallback:
-                r2 = self.ollama_fallback.analyze_recipe(description)
-                logger.info(f"Ollama fallback: name={r2.name} typ={r2.type} conf={r2.confidence:.2f}")
-                if not r2.needs_manual_input(self.fallback_threshold):
-                    return r2
-                if r2.confidence > best.confidence:
-                    best = r2
-        if best:
-            return best
+            return r  # auch das schwache Ergebnis durchgeben; needs_manual_input
+                      # wird vom Aufrufer ausgewertet um Pending-Zweig zu wählen
         return RecipeAnalysis("Unbekannt", "Unbekannt", None, 0.0)
 
     def _analyze_wedding(self, description: Optional[str]) -> WeddingAnalysis:
-        best: Optional[WeddingAnalysis] = None
-        if self.ollama and _has_usable_description(description, self.min_desc_len):
-            w = self.ollama.analyze_wedding(description, self.wedding_categories)
-            logger.info(f"Ollama fast (wedding): name={w.name} cat={w.category} conf={w.confidence:.2f}")
-            if not self.wedding_always_pending and not w.needs_manual_input(self.confidence_threshold):
-                return w
-            best = w
-            if self.ollama_fallback:
-                w2 = self.ollama_fallback.analyze_wedding(description, self.wedding_categories)
-                logger.info(f"Ollama fallback (wedding): name={w2.name} cat={w2.category} conf={w2.confidence:.2f}")
-                if not self.wedding_always_pending and not w2.needs_manual_input(self.fallback_threshold):
-                    return w2
-                if w2.confidence > best.confidence:
-                    best = w2
-        if best:
-            return best
+        if self.analyzer and _has_usable_description(description, self.min_desc_len):
+            w = self.analyzer.analyze_wedding(description, self.wedding_categories)
+            logger.info(f"AI wedding: name={w.name} cat={w.category} conf={w.confidence:.2f}")
+            return w
         return WeddingAnalysis("Unbekannt", None, 0.0)
+
+    def _maybe_translate_description(self, description: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        """Versucht die Caption nach Deutsch zu übersetzen.
+
+        Returns: (final_description, original_or_None)
+          - final_description: was wir weiter verarbeiten (deutsch wenn übersetzt,
+            sonst Original)
+          - original_or_None: Original-Text WENN übersetzt wurde, sonst None
+            (Aufrufer entscheidet ob description_original.txt geschrieben wird)
+        """
+        if not self.auto_translate or not self.analyzer:
+            return description, None
+        if not description or len(description.strip()) < self.min_desc_len:
+            return description, None
+        try:
+            translated = self.analyzer.translate_to_german(description)
+        except Exception as e:
+            logger.warning(f"Translate-Call fehlgeschlagen, behalte Original: {e}")
+            return description, None
+        if translated:
+            logger.info(f"Caption übersetzt: {len(description)}→{len(translated)} chars")
+            return translated, description
+        return description, None
 
     # ---------------- Save ----------------
     def _save_recipe(self, r: RecipeAnalysis, url: str, video: Path,
                      description: Optional[str]) -> Path:
+        # Pre-Save Translate: nicht-deutsche Captions auf Deutsch
+        # umsetzen, Original als Side-File aufheben.
+        description, description_original = self._maybe_translate_description(description)
         type_n = _sanitize(r.type)
         cat_n = _sanitize(r.category or "Allgemein")
         name_n = _sanitize(r.name)
@@ -211,11 +213,15 @@ class ScraperJob:
             "content_type": "recipe", "description": description,
             "timestamp": datetime.now().isoformat(),
         }
-        _save_video_files(target, video, description, info)
+        if description_original:
+            info["description_original"] = description_original
+            info["translated"] = True
+        _save_video_files(target, video, description, info, description_original)
         return target
 
     def _save_wedding(self, w: WeddingAnalysis, url: str, video: Path,
                       description: Optional[str], default_cat: str = "Sonstiges") -> Path:
+        description, description_original = self._maybe_translate_description(description)
         cat = _sanitize(w.category or default_cat)
         name_n = _sanitize(w.name) if w.name.lower() != "unbekannt" \
             else f"Hochzeit_{datetime.now():%Y%m%d_%H%M%S}"
@@ -228,7 +234,10 @@ class ScraperJob:
             "content_type": "wedding", "description": description,
             "timestamp": datetime.now().isoformat(),
         }
-        _save_video_files(target, video, description, info)
+        if description_original:
+            info["description_original"] = description_original
+            info["translated"] = True
+        _save_video_files(target, video, description, info, description_original)
         return target
 
     # ---------------- URL-Verarbeitung ----------------
@@ -327,12 +336,10 @@ class ScraperJob:
     def _analyze_image_via_openai(self, image_bytes: bytes, mime: str,
                                     content_type: str, subject: str,
                                     categories: list = None):
-        """Bei OpenAI-Provider: Vision-API für JPG/PNG. Schickt das Bild
-        als base64 mit. Returnt RecipeAnalysis oder WeddingAnalysis.
-
-        Nur wenn ai.provider == 'openai' (sonst kann Ollama keine Bilder).
+        """OpenAI Vision-API für JPG/PNG-Attachments aus Mails. Schickt das
+        Bild als base64 mit. Returnt RecipeAnalysis oder WeddingAnalysis.
         """
-        if self.ai_provider != "openai" or not self.ollama:
+        if not self.analyzer:
             return None
 
         import base64
@@ -365,10 +372,10 @@ class ScraperJob:
 
         try:
             import requests
-            r = self.ollama.session.post(
-                f"{self.ollama.base_url}/chat/completions",
+            r = self.analyzer.session.post(
+                f"{self.analyzer.base_url}/chat/completions",
                 json={
-                    "model": self.ollama.model,
+                    "model": self.analyzer.model,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": user_content},
@@ -377,7 +384,7 @@ class ScraperJob:
                     "temperature": 0.2,
                     "max_tokens": 300,
                 },
-                timeout=self.ollama.timeout,
+                timeout=self.analyzer.timeout,
             )
             r.raise_for_status()
             content = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "")
@@ -555,14 +562,10 @@ class ScraperJob:
         # wir verhindern und stattdessen den Job sofort als 'error' beenden,
         # damit keine 50 Pending-Items entstehen und keine Videos sinnlos
         # gedownloaded werden.
-        if self.ollama_enabled and self.ollama and not self.ollama.health():
-            if self.ai_provider == "openai":
-                msg = (f"OpenAI nicht erreichbar oder Modell '{self.ollama.model}' nicht verfügbar - "
-                       f"Details im Server-Log (api_key gültig? Internet vom Container? Billing aktiv?). "
-                       f"Job abgebrochen damit nicht alle URLs in Pending landen")
-            else:
-                msg = (f"Ollama nicht erreichbar oder Modell '{self.ollama.model}' fehlt - "
-                       f"Job abgebrochen damit nicht alle URLs in Pending landen")
+        if self.analyzer_enabled and self.analyzer and not self.analyzer.health():
+            msg = (f"OpenAI nicht erreichbar oder Modell '{self.analyzer.model}' nicht verfügbar - "
+                   f"Details im Server-Log (api_key gültig? Internet vom Container? Billing aktiv?). "
+                   f"Job abgebrochen damit nicht alle URLs in Pending landen")
             logger.error(msg)
             summary["error"] = msg
             summary["duration_sec"] = round(time.time() - start, 1)
@@ -708,7 +711,7 @@ class ScraperJob:
         if not entry:
             return {"ok": False, "error": "Nicht in History"}
 
-        if not self.ollama_enabled:
+        if not self.analyzer_enabled:
             return {"ok": False, "error": "AI-Analyzer nicht initialisiert"}
 
         content_type = entry.get("content_type") or "recipe"
