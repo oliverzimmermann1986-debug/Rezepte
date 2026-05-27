@@ -1777,5 +1777,108 @@ function scrapperApp() {
       // Nach Anzahl absteigend sortieren
       return Object.values(groups).sort((a, b) => b.items.length - a.items.length);
     },
+
+    // ── Audit-Aktionen (Phase 2: destruktiv) ─────────────────────────
+    async auditRenamePrompt(recipe) {
+      const current = recipe.name || '';
+      const newName = window.prompt(
+        `Neuer Name für Rezept #${recipe.id}:\n\n` +
+        `Folder wird auch umbenannt (mit normalisiertem Namen).`,
+        current
+      );
+      if (!newName || newName.trim() === current) return;
+      await this._auditDoRename(recipe.id, newName.trim());
+    },
+
+    async auditApplySuggestion(recipe, suggestion) {
+      const ok = window.confirm(
+        `Rezept #${recipe.id} umbenennen?\n\n` +
+        `Alt:  ${recipe.name || '(leer)'}\n` +
+        `Neu:  ${suggestion}\n\n` +
+        `Folder wird mit umbenannt.`
+      );
+      if (!ok) return;
+      await this._auditDoRename(recipe.id, suggestion);
+    },
+
+    async _auditDoRename(id, newName) {
+      try {
+        const r = await fetch(`/api/recipes/${id}/rename`, {
+          method: 'PUT', credentials: 'include',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ new_name: newName, rename_folder: true }),
+        });
+        const data = await r.json();
+        if (r.ok && data.ok) {
+          this.showToast(`✓ Umbenannt: ${data.new_name}`);
+          await this.loadAudit();   // Audit-Findings reloaden
+          // wenn der Recipes-Tab eh aktiv war, dort auch refreshen
+          if (this.page === 'recipes') this.loadRecipes();
+        } else {
+          this.showToast('Fehler: ' + (data.detail || data.error || 'unbekannt'), 'error');
+        }
+      } catch (e) {
+        this.showToast('Rename-Request fehlgeschlagen: ' + e, 'error');
+      }
+    },
+
+    async auditDelete(recipe) {
+      const ok = window.confirm(
+        `Rezept #${recipe.id} "${recipe.name}" wirklich löschen?\n\n` +
+        `Das löscht:\n` +
+        `  • DB-Eintrag (inkl. Zutaten, Schritte, Tags)\n` +
+        `  • Folder im Filesystem: ${recipe.folder_path}\n\n` +
+        `Aktion ist nicht rückgängig zu machen.`
+      );
+      if (!ok) return;
+      try {
+        const r = await fetch(`/api/recipes/${recipe.id}?delete_files=true`, {
+          method: 'DELETE', credentials: 'include',
+        });
+        const data = await r.json();
+        if (r.ok && data.ok) {
+          this.showToast(`🗑️ Gelöscht: ${data.name}`);
+          await this.loadAudit();
+          if (this.page === 'recipes') this.loadRecipes();
+        } else {
+          this.showToast('Fehler: ' + (data.detail || 'unbekannt'), 'error');
+        }
+      } catch (e) {
+        this.showToast('Delete-Request fehlgeschlagen: ' + e, 'error');
+      }
+    },
+
+    async auditMerge(sourceId, targetId) {
+      const ok = window.confirm(
+        `Rezept #${sourceId} in #${targetId} mergen?\n\n` +
+        `Was passiert:\n` +
+        `  • Tags von #${sourceId} kommen zu #${targetId} (Union)\n` +
+        `  • Cart-Referenzen werden umgeschrieben\n` +
+        `  • #${sourceId} wird komplett gelöscht (DB + Folder)\n` +
+        `  • #${targetId} bleibt mit allen Zutaten/Schritten erhalten`
+      );
+      if (!ok) return;
+      try {
+        const r = await fetch('/api/recipes/merge', {
+          method: 'POST', credentials: 'include',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            source_id: sourceId, target_id: targetId, delete_source: true,
+          }),
+        });
+        const data = await r.json();
+        if (r.ok && data.ok) {
+          this.showToast(
+            `⇆ Merge ok: +${data.tags_merged} Tags, ${data.cart_remapped} Cart-Refs`
+          );
+          await this.loadAudit();
+          if (this.page === 'recipes') this.loadRecipes();
+        } else {
+          this.showToast('Fehler: ' + (data.detail || 'unbekannt'), 'error');
+        }
+      } catch (e) {
+        this.showToast('Merge-Request fehlgeschlagen: ' + e, 'error');
+      }
+    },
   };
 }

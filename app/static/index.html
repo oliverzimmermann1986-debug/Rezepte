@@ -1775,13 +1775,20 @@
             <div class="audit-group">
               <div class="audit-group-head">
                 <code x-text="g.name"></code> · <span class="muted" x-text="g.items.length + '× indiziert'"></span>
+                <button x-show="g.items.length === 2" class="btn btn-secondary btn-sm" style="float:right;"
+                        @click="auditMerge(g.items[1].id, g.items[0].id)" title="Verschmilzt #2 in #1, behält #1">
+                  ⇆ Mergen (#<span x-text="g.items[1].id"></span> → #<span x-text="g.items[0].id"></span>)
+                </button>
               </div>
               <template x-for="r in g.items" :key="r.id">
-                <div class="audit-item" @click="openRecipe(r.id)">
+                <div class="audit-item">
                   <span class="audit-item-id">#<span x-text="r.id"></span></span>
                   <span class="audit-item-name" x-text="r.name"></span>
                   <span class="audit-item-folder muted" x-text="r.folder_path"></span>
-                  <button class="btn btn-secondary btn-sm">Öffnen →</button>
+                  <div class="audit-actions-inline">
+                    <button class="btn btn-secondary btn-sm" @click="openRecipe(r.id)">Öffnen</button>
+                    <button class="btn-icon btn-danger" @click="auditDelete(r)" title="Löschen (DB + Files)">🗑️</button>
+                  </div>
                 </div>
               </template>
             </div>
@@ -1793,12 +1800,21 @@
           <h3>URL-Dubletten</h3>
           <template x-for="g in audit.data.url_duplicates" :key="g.url">
             <div class="audit-group">
-              <div class="audit-group-head"><code x-text="g.url"></code></div>
+              <div class="audit-group-head">
+                <code x-text="g.url"></code>
+                <button x-show="g.items.length === 2" class="btn btn-secondary btn-sm" style="float:right;"
+                        @click="auditMerge(g.items[1].id, g.items[0].id)">
+                  ⇆ Mergen
+                </button>
+              </div>
               <template x-for="r in g.items" :key="r.id">
-                <div class="audit-item" @click="openRecipe(r.id)">
+                <div class="audit-item">
                   <span class="audit-item-id">#<span x-text="r.id"></span></span>
                   <span class="audit-item-name" x-text="r.name"></span>
-                  <button class="btn btn-secondary btn-sm">Öffnen →</button>
+                  <div class="audit-actions-inline">
+                    <button class="btn btn-secondary btn-sm" @click="openRecipe(r.id)">Öffnen</button>
+                    <button class="btn-icon btn-danger" @click="auditDelete(r)" title="Löschen">🗑️</button>
+                  </div>
                 </div>
               </template>
             </div>
@@ -1815,10 +1831,13 @@
             <div class="audit-group">
               <div class="audit-group-head"><code x-text="g.folder"></code></div>
               <template x-for="r in g.items" :key="r.id">
-                <div class="audit-item" @click="openRecipe(r.id)">
+                <div class="audit-item">
                   <span class="audit-item-id">#<span x-text="r.id"></span></span>
                   <span class="audit-item-name" x-text="r.name"></span>
-                  <button class="btn btn-secondary btn-sm">Öffnen →</button>
+                  <div class="audit-actions-inline">
+                    <button class="btn btn-secondary btn-sm" @click="openRecipe(r.id)">Öffnen</button>
+                    <button class="btn-icon btn-danger" @click="auditDelete(r)" title="Löschen">🗑️</button>
+                  </div>
                 </div>
               </template>
             </div>
@@ -1834,13 +1853,21 @@
               <div class="audit-group" x-show="!c.warning">
                 <div class="audit-group-head">
                   Cluster: <template x-for="(n, ni) in c.names || []" :key="ni"><code x-text="n" style="margin-right: 6px;"></code></template>
+                  <button x-show="(c.items || []).length === 2" class="btn btn-secondary btn-sm" style="float:right;"
+                          @click="auditMerge(c.items[1].id, c.items[0].id)">
+                    ⇆ Mergen
+                  </button>
                 </div>
                 <template x-for="r in c.items || []" :key="r.id">
-                  <div class="audit-item" @click="openRecipe(r.id)">
+                  <div class="audit-item">
                     <span class="audit-item-id">#<span x-text="r.id"></span></span>
                     <span class="audit-item-name" x-text="r.name"></span>
                     <span class="audit-item-folder muted" x-text="r.folder_path"></span>
-                    <button class="btn btn-secondary btn-sm">Öffnen →</button>
+                    <div class="audit-actions-inline">
+                      <button class="btn btn-secondary btn-sm" @click="auditRenamePrompt(r)" title="Umbenennen">✏️</button>
+                      <button class="btn btn-secondary btn-sm" @click="openRecipe(r.id)">Öffnen</button>
+                      <button class="btn-icon btn-danger" @click="auditDelete(r)" title="Löschen">🗑️</button>
+                    </div>
                   </div>
                 </template>
               </div>
@@ -1855,13 +1882,23 @@
             <div class="audit-group">
               <div class="audit-group-head" x-text="b.reason + ' (' + b.items.length + ')'"></div>
               <template x-for="entry in b.items" :key="entry.recipe.id">
-                <div class="audit-item audit-item-bad" @click="openRecipe(entry.recipe.id)">
+                <div class="audit-item audit-item-bad">
                   <span class="audit-item-id">#<span x-text="entry.recipe.id"></span></span>
                   <span class="audit-item-name" x-text="entry.recipe.name || '(leer)'"></span>
                   <span class="audit-item-suggest" x-show="audit.data.ai_suggestions[entry.recipe.id]">
                     💡 <span x-text="audit.data.ai_suggestions[entry.recipe.id]"></span>
                   </span>
-                  <button class="btn btn-secondary btn-sm">Öffnen →</button>
+                  <div class="audit-actions-inline">
+                    <button class="btn btn-primary btn-sm"
+                            x-show="audit.data.ai_suggestions[entry.recipe.id]"
+                            @click="auditApplySuggestion(entry.recipe, audit.data.ai_suggestions[entry.recipe.id])"
+                            title="KI-Vorschlag als neuen Namen übernehmen">
+                      ✓ Übernehmen
+                    </button>
+                    <button class="btn btn-secondary btn-sm" @click="auditRenamePrompt(entry.recipe)" title="Eigenen Namen eingeben">✏️</button>
+                    <button class="btn btn-secondary btn-sm" @click="openRecipe(entry.recipe.id)">Öffnen</button>
+                    <button class="btn-icon btn-danger" @click="auditDelete(entry.recipe)" title="Löschen">🗑️</button>
+                  </div>
                 </div>
               </template>
             </div>

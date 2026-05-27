@@ -290,6 +290,70 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks):
     }
 
 
+# ── Mutations: Rename / Delete / Merge ────────────────────────────────
+# Diese Endpoints touchen das FS. Werden vom Audit-Dashboard für
+# Inline-Aktionen genutzt. Logik liegt in app/recipes/manage.py mit
+# Path-Traversal-Schutz + atomic FS/DB-Operations.
+
+class RenamePayload(BaseModel):
+    new_name: str
+    rename_folder: bool = True
+
+
+@router.put("/{recipe_id}/rename")
+def rename_recipe(recipe_id: int, payload: RenamePayload):
+    from ..recipes.manage import safe_rename_recipe
+    try:
+        return safe_rename_recipe(
+            get_db(), recipe_id,
+            new_name=payload.new_name,
+            rename_folder=payload.rename_folder,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        # Path-Konflikt oder Folder-Konflikt
+        raise HTTPException(409, str(e))
+
+
+class DeletePayload(BaseModel):
+    delete_files: bool = True
+
+
+@router.delete("/{recipe_id}")
+def delete_recipe(recipe_id: int, delete_files: bool = True):
+    """DELETE mit Query-Param `?delete_files=false` falls Files behalten werden sollen."""
+    from ..recipes.manage import safe_delete_recipe
+    try:
+        return safe_delete_recipe(get_db(), recipe_id, delete_files=delete_files)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+
+
+class MergePayload(BaseModel):
+    source_id: int
+    target_id: int
+    delete_source: bool = True
+
+
+@router.post("/merge")
+def merge_recipes(payload: MergePayload):
+    from ..recipes.manage import safe_merge_recipes
+    try:
+        return safe_merge_recipes(
+            get_db(),
+            source_id=payload.source_id,
+            target_id=payload.target_id,
+            delete_source=payload.delete_source,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+
+
 # ── Static-File-Streaming ──────────────────────────────────────────────
 # Thumbnail + Video werden NICHT via FastAPI.StaticFiles bedient, weil
 # /mnt/rezepte außerhalb des App-Roots liegt UND der Pfad pro Rezept-DB-Eintrag

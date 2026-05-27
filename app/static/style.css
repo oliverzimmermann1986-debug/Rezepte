@@ -1506,3 +1506,22 @@ input[type="checkbox"] { width: auto !important; }
   .audit-item { grid-template-columns: 40px 1fr auto; }
   .audit-item-folder { display: none; }
 }
+
+/* ── Audit Inline-Aktionen (Phase 2) ──────────────────────────────── */
+.audit-actions-inline {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.btn-icon.btn-danger {
+  color: var(--err, #ef4444);
+}
+.btn-icon.btn-danger:hover {
+  background: rgba(239, 68, 68, .1);
+  border-radius: 4px;
+}
+.audit-item {
+  /* Override base — letztes Element ist jetzt eine Button-Gruppe statt einzelner Button */
+  cursor: default;
+}
+.audit-item:hover { background: var(--card); }
