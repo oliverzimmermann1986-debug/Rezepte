@@ -49,6 +49,12 @@ function scrapperApp() {
       items: [],
       add: { name: '', amount: null, unit: '' },
     },
+    audit: {
+      data: null,
+      summary: null,
+      loading: false,
+      withAi: false,
+    },
     recipeDetail: {
       show: false, data: null, newTag: '',
       cooking: false, extracting: false,
@@ -1739,6 +1745,37 @@ function scrapperApp() {
       } catch(e) {
         this.showToast('Export fehlgeschlagen', 'error');
       }
+    },
+
+    // ════════════════════════════════════════════════════════════════════
+    // Audit-Dashboard
+    // ════════════════════════════════════════════════════════════════════
+
+    async loadAudit() {
+      this.audit.loading = true;
+      try {
+        const params = new URLSearchParams();
+        if (this.audit.withAi) params.set('with_ai', 'true');
+        const r = await this.api('GET', '/api/audit?' + params.toString());
+        if (r) {
+          this.audit.data = r;
+          this.audit.summary = r.summary;
+        }
+      } finally {
+        this.audit.loading = false;
+      }
+    },
+
+    // Bad-Names gruppiert nach Grund, für die Sektion-Liste
+    groupedBadNames() {
+      if (!this.audit.data?.bad_names) return [];
+      const groups = {};
+      this.audit.data.bad_names.forEach(b => {
+        if (!groups[b.reason]) groups[b.reason] = { reason: b.reason, items: [] };
+        groups[b.reason].items.push(b);
+      });
+      // Nach Anzahl absteigend sortieren
+      return Object.values(groups).sort((a, b) => b.items.length - a.items.length);
     },
   };
 }

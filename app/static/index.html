@@ -39,6 +39,11 @@
       🛒 Einkaufskorb
       <span class="badge" x-show="cart.items.length > 0" x-text="cart.items.length"></span>
     </div>
+    <div class="nav-item" :class="page==='audit' && 'active'" @click="page='audit'; loadAudit()">
+      🔍 Audit
+      <span class="badge badge-warn" x-show="audit.summary && (audit.summary.exact_groups + audit.summary.similar_clusters + audit.summary.bad_count) > 0"
+            x-text="(audit.summary?.exact_groups || 0) + (audit.summary?.similar_clusters || 0) + (audit.summary?.bad_count || 0)"></span>
+    </div>
 
     <div class="foot">
       <div x-show="status.scraper">
@@ -1697,6 +1702,175 @@
         </div>
         <div x-show="cart.items.length === 0" class="empty-state">
           Einkaufskorb ist leer. Klick im Rezept-Tab auf „Kochen" um Zutaten hinzuzufügen.
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== AUDIT ========== -->
+    <section x-show="page==='audit'" class="audit-page">
+      <div class="card">
+        <div class="audit-header">
+          <div>
+            <h2 style="margin:0">🔍 Audit
+              <span class="muted" x-show="audit.data"
+                    x-text="'· ' + audit.data.total_recipes + ' Rezepte gescannt'"></span>
+            </h2>
+            <div class="muted" style="font-size: 12px; margin-top: 4px;">
+              Read-only Übersicht: Dubletten, ähnliche Namen, verdächtige Namen.
+              Fixen geht per Klick auf „Im Modal öffnen" → dort umbenennen oder Tags editieren.
+            </div>
+          </div>
+          <div class="audit-actions">
+            <label style="display:flex; align-items:center; gap:6px; font-size: 12px;">
+              <input type="checkbox" x-model="audit.withAi" />
+              KI-Namensvorschläge (kostet ~$0.001 pro 50)
+            </label>
+            <button class="btn btn-secondary" @click="loadAudit()" :disabled="audit.loading">
+              <span x-show="!audit.loading">↻ Neu scannen</span>
+              <span x-show="audit.loading">… scannt</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Summary-Counts als Badge-Reihe -->
+        <div class="audit-summary" x-show="audit.data">
+          <div class="audit-stat" :class="(audit.summary?.exact_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.exact_count || 0"></div>
+            <div class="audit-stat-label">Exakte Dubletten</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.url_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.url_count || 0"></div>
+            <div class="audit-stat-label">URL-Dubletten</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.folder_count || 0) > 0 && 'has-err'">
+            <div class="audit-stat-n" x-text="audit.summary?.folder_count || 0"></div>
+            <div class="audit-stat-label">Folder-Dubletten</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.similar_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.similar_count || 0"></div>
+            <div class="audit-stat-label">Ähnliche Namen</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.bad_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.bad_count || 0"></div>
+            <div class="audit-stat-label">Schlechte Namen</div>
+          </div>
+          <div class="audit-stat" x-show="audit.summary?.with_ai_suggestions > 0">
+            <div class="audit-stat-n" x-text="audit.summary?.with_ai_suggestions"></div>
+            <div class="audit-stat-label">💡 KI-Vorschläge</div>
+          </div>
+        </div>
+
+        <!-- Loading / leerer Zustand -->
+        <div x-show="!audit.data && audit.loading" class="empty-state">
+          Scanne Rezepte<span x-show="audit.withAi"> + frage KI</span>…
+        </div>
+        <div x-show="!audit.data && !audit.loading" class="empty-state">
+          Klick „Neu scannen" um zu starten.
+        </div>
+
+        <!-- 1) Exakte Dubletten -->
+        <div class="audit-section" x-show="audit.data?.exact_duplicates?.length > 0">
+          <h3>Exakte Namens-Dubletten <span class="muted" x-text="'(' + audit.data.exact_duplicates.length + ' Gruppen)'"></span></h3>
+          <template x-for="g in audit.data.exact_duplicates" :key="g.name">
+            <div class="audit-group">
+              <div class="audit-group-head">
+                <code x-text="g.name"></code> · <span class="muted" x-text="g.items.length + '× indiziert'"></span>
+              </div>
+              <template x-for="r in g.items" :key="r.id">
+                <div class="audit-item" @click="openRecipe(r.id)">
+                  <span class="audit-item-id">#<span x-text="r.id"></span></span>
+                  <span class="audit-item-name" x-text="r.name"></span>
+                  <span class="audit-item-folder muted" x-text="r.folder_path"></span>
+                  <button class="btn btn-secondary btn-sm">Öffnen →</button>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <!-- 2) URL-Dubletten -->
+        <div class="audit-section" x-show="audit.data?.url_duplicates?.length > 0">
+          <h3>URL-Dubletten</h3>
+          <template x-for="g in audit.data.url_duplicates" :key="g.url">
+            <div class="audit-group">
+              <div class="audit-group-head"><code x-text="g.url"></code></div>
+              <template x-for="r in g.items" :key="r.id">
+                <div class="audit-item" @click="openRecipe(r.id)">
+                  <span class="audit-item-id">#<span x-text="r.id"></span></span>
+                  <span class="audit-item-name" x-text="r.name"></span>
+                  <button class="btn btn-secondary btn-sm">Öffnen →</button>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <!-- 3) Folder-Path-Dubletten -->
+        <div class="audit-section" x-show="audit.data?.folder_duplicates?.length > 0">
+          <h3 class="audit-warn">⚠️ Folder-Path-Dubletten</h3>
+          <div class="muted" style="margin-bottom: 8px; font-size: 12px;">
+            DB-Inkonsistenz — Schema hat UNIQUE-Constraint, sollte nie passieren. Bitte manuell prüfen.
+          </div>
+          <template x-for="g in audit.data.folder_duplicates" :key="g.folder">
+            <div class="audit-group">
+              <div class="audit-group-head"><code x-text="g.folder"></code></div>
+              <template x-for="r in g.items" :key="r.id">
+                <div class="audit-item" @click="openRecipe(r.id)">
+                  <span class="audit-item-id">#<span x-text="r.id"></span></span>
+                  <span class="audit-item-name" x-text="r.name"></span>
+                  <button class="btn btn-secondary btn-sm">Öffnen →</button>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <!-- 4) Ähnliche Namen -->
+        <div class="audit-section" x-show="audit.data?.similar_clusters?.length > 0">
+          <h3>Ähnliche Namen <span class="muted">(potentielle Tippfehler)</span></h3>
+          <template x-for="(c, ci) in audit.data.similar_clusters" :key="ci">
+            <div>
+              <div x-show="c.warning" class="audit-warning" x-text="c.warning"></div>
+              <div class="audit-group" x-show="!c.warning">
+                <div class="audit-group-head">
+                  Cluster: <template x-for="(n, ni) in c.names || []" :key="ni"><code x-text="n" style="margin-right: 6px;"></code></template>
+                </div>
+                <template x-for="r in c.items || []" :key="r.id">
+                  <div class="audit-item" @click="openRecipe(r.id)">
+                    <span class="audit-item-id">#<span x-text="r.id"></span></span>
+                    <span class="audit-item-name" x-text="r.name"></span>
+                    <span class="audit-item-folder muted" x-text="r.folder_path"></span>
+                    <button class="btn btn-secondary btn-sm">Öffnen →</button>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 5) Schlechte Namen -->
+        <div class="audit-section" x-show="audit.data?.bad_names?.length > 0">
+          <h3>Schlechte / unklare Namen <span class="muted" x-text="'(' + audit.data.bad_names.length + ')'"></span></h3>
+          <template x-for="b in groupedBadNames()" :key="b.reason">
+            <div class="audit-group">
+              <div class="audit-group-head" x-text="b.reason + ' (' + b.items.length + ')'"></div>
+              <template x-for="entry in b.items" :key="entry.recipe.id">
+                <div class="audit-item audit-item-bad" @click="openRecipe(entry.recipe.id)">
+                  <span class="audit-item-id">#<span x-text="entry.recipe.id"></span></span>
+                  <span class="audit-item-name" x-text="entry.recipe.name || '(leer)'"></span>
+                  <span class="audit-item-suggest" x-show="audit.data.ai_suggestions[entry.recipe.id]">
+                    💡 <span x-text="audit.data.ai_suggestions[entry.recipe.id]"></span>
+                  </span>
+                  <button class="btn btn-secondary btn-sm">Öffnen →</button>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <!-- Alles sauber -->
+        <div x-show="audit.data && (audit.summary?.exact_count || 0) === 0 && (audit.summary?.url_count || 0) === 0 && (audit.summary?.similar_count || 0) === 0 && (audit.summary?.bad_count || 0) === 0" class="empty-state">
+          ✓ Keine Findings. Alles sauber.
         </div>
       </div>
     </section>
