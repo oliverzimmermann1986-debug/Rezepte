@@ -141,6 +141,36 @@ CREATE TABLE IF NOT EXISTS shopping_cart (
 );
 CREATE INDEX IF NOT EXISTS idx_cart_canonical ON shopping_cart(canonical_name, unit);
 CREATE INDEX IF NOT EXISTS idx_cart_added     ON shopping_cart(added_at DESC);
+
+-- sync_errors: FS-Sync-Konflikte (UNIQUE constraint failed, etc.)
+-- Werden vom Audit-Tab als 'FS-Konflikte'-Findings angezeigt — User entscheidet
+-- welcher der konkurrierenden Folder behalten/gelöscht wird.
+CREATE TABLE IF NOT EXISTS sync_errors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  folder_path TEXT NOT NULL UNIQUE,         -- Pfad der den Crash verursacht hat
+  error_type TEXT NOT NULL,                 -- 'unique_url' | 'unique_folder' | 'other'
+  error_msg TEXT,                           -- Original exception text
+  conflict_with_id INTEGER,                 -- recipes.id des bestehenden Eintrags (bei unique_url)
+  detected_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_errors_type ON sync_errors(error_type);
+
+-- audit_ai_findings: KI-Sanity-Check-Findings (Pfad/Name/Description-Konsistenz)
+-- Persistent zwischen Audit-Runs, damit User Aktionen ausführen kann ohne dass
+-- der nächste Run erst wieder alle KI-Calls macht.
+CREATE TABLE IF NOT EXISTS audit_ai_findings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id INTEGER NOT NULL,
+  finding_type TEXT NOT NULL,               -- 'category_mismatch' | 'name_mismatch'
+  current_value TEXT,                       -- z.B. 'Hauptgericht/Spargel'
+  suggested_value TEXT,                     -- z.B. 'Frühstück/Bowls'
+  reason TEXT,                              -- KI-Begründung, kurz
+  resolved INTEGER NOT NULL DEFAULT 0,      -- 0 = offen, 1 = ignoriert oder angewendet
+  created_at REAL NOT NULL,
+  UNIQUE(recipe_id, finding_type)           -- pro Rezept+Typ nur ein Finding
+);
+CREATE INDEX IF NOT EXISTS idx_aaf_recipe ON audit_ai_findings(recipe_id);
+CREATE INDEX IF NOT EXISTS idx_aaf_open   ON audit_ai_findings(resolved, finding_type);
 """
 
 
@@ -942,6 +972,94 @@ class Database:
                 (recipe_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ─── Sync-Errors (FS-Konflikte) ──────────────────────────────────────
+    def sync_error_record(self, folder_path: str, error_type: str,
+                           error_msg: str, conflict_with_id: Optional[int] = None) -> None:
+        """Speichert einen FS-Sync-Fehler. UNIQUE auf folder_path — wenn der
+        gleiche Folder erneut crasht, wird der bisherige Eintrag überschrieben
+        (z.B. weil sich der Fehler geändert hat)."""
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO sync_errors (folder_path, error_type, error_msg, "
+                "conflict_with_id, detected_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(folder_path) DO UPDATE SET "
+                "error_type=excluded.error_type, error_msg=excluded.error_msg, "
+                "conflict_with_id=excluded.conflict_with_id, detected_at=excluded.detected_at",
+                (folder_path, error_type, error_msg, conflict_with_id, time.time()),
+            )
+
+    def sync_errors_clear(self) -> None:
+        """Löscht alle Sync-Errors. Vor jedem neuen Sync aufgerufen — sonst
+        bleiben alte Conflicts hängen die der User schon gelöst hat."""
+        with self.conn() as c:
+            c.execute("DELETE FROM sync_errors")
+
+    def sync_errors_list(self) -> List[Dict[str, Any]]:
+        """Alle aktuellen FS-Konflikte mit Folder-Path und Konflikt-Info."""
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT s.*, r.name as conflict_name, r.folder_path as conflict_folder "
+                "FROM sync_errors s "
+                "LEFT JOIN recipes r ON r.id = s.conflict_with_id "
+                "ORDER BY s.detected_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def sync_errors_count(self) -> int:
+        with self.conn() as c:
+            return int(c.execute("SELECT COUNT(*) FROM sync_errors").fetchone()[0])
+
+    # ─── Audit-AI-Findings (KI-Sanity-Check) ────────────────────────────
+    def audit_ai_finding_set(self, recipe_id: int, finding_type: str,
+                              current_value: str, suggested_value: str,
+                              reason: str) -> None:
+        """Speichert/ersetzt ein KI-Finding. Neue Findings überschreiben alte
+        (UPSERT auf recipe_id+finding_type) — bei jedem Audit-Lauf wird der
+        Stand frisch berechnet. resolved=0 (offen)."""
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO audit_ai_findings (recipe_id, finding_type, "
+                "current_value, suggested_value, reason, resolved, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 0, ?) "
+                "ON CONFLICT(recipe_id, finding_type) DO UPDATE SET "
+                "current_value=excluded.current_value, "
+                "suggested_value=excluded.suggested_value, "
+                "reason=excluded.reason, resolved=0, created_at=excluded.created_at",
+                (recipe_id, finding_type, current_value, suggested_value,
+                 reason, time.time()),
+            )
+
+    def audit_ai_findings_list(self, finding_type: Optional[str] = None,
+                                only_open: bool = True) -> List[Dict[str, Any]]:
+        """Liefert KI-Findings, optional gefiltert nach Typ + Status."""
+        sql = ("SELECT f.*, r.name as recipe_name, r.folder_path "
+               "FROM audit_ai_findings f "
+               "JOIN recipes r ON r.id = f.recipe_id WHERE 1=1")
+        params: list = []
+        if finding_type:
+            sql += " AND f.finding_type=?"; params.append(finding_type)
+        if only_open:
+            sql += " AND f.resolved=0"
+        sql += " ORDER BY f.created_at DESC"
+        with self.conn() as c:
+            rows = c.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
+
+    def audit_ai_finding_resolve(self, finding_id: int) -> None:
+        """Markiert ein Finding als bearbeitet (ignoriert oder angewendet).
+        User-Aktion via UI-Button."""
+        with self.conn() as c:
+            c.execute("UPDATE audit_ai_findings SET resolved=1 WHERE id=?", (finding_id,))
+
+    def audit_ai_findings_count(self, only_open: bool = True) -> Dict[str, int]:
+        """Counter pro finding_type für die Audit-Summary."""
+        with self.conn() as c:
+            sql = "SELECT finding_type, COUNT(*) FROM audit_ai_findings"
+            if only_open:
+                sql += " WHERE resolved=0"
+            sql += " GROUP BY finding_type"
+            return {r[0]: int(r[1]) for r in c.execute(sql).fetchall()}
 
     # ─── Shopping Cart ────────────────────────────────────────────────────
     def cart_list(self) -> List[Dict[str, Any]]:

@@ -55,6 +55,8 @@ function scrapperApp() {
       summary: null,
       loading: false,
       withAi: false,
+      // KI-Sanity-Background-Job: Progress beim Polling
+      aiSanity: { running: false, processed: 0, total: 0, findings: 0, pollHandle: null },
     },
     recipeDetail: {
       show: false, data: null, newTag: '',
@@ -1895,6 +1897,53 @@ function scrapperApp() {
         }
       } finally {
         this.audit.loading = false;
+      }
+    },
+
+    // KI-Sanity startet Background-Job, dann pollen wir den Status alle 2s
+    async startAiSanity() {
+      if (this.audit.aiSanity.running) return;
+      const r = await this.api('POST', '/api/audit/ai-sanity');
+      if (!r || !r.ok) return;
+      this.audit.aiSanity = {
+        running: true, processed: 0, total: r.total, findings: 0, pollHandle: null,
+      };
+      this.showToast(`KI-Sanity-Check gestartet (${r.total} Rezepte)…`);
+      const tick = async () => {
+        const st = await this.api('GET', '/api/audit/ai-sanity/status');
+        if (!st) return;
+        this.audit.aiSanity.processed = st.processed;
+        this.audit.aiSanity.findings = st.findings;
+        if (st.running) {
+          this.audit.aiSanity.pollHandle = setTimeout(tick, 2000);
+        } else {
+          this.audit.aiSanity.running = false;
+          if (st.error) {
+            this.showToast(`KI-Sanity-Fehler: ${st.error}`, 'err');
+          } else {
+            this.showToast(`KI-Sanity fertig: ${st.findings} Findings`);
+          }
+          await this.loadAudit();  // Findings neu laden
+        }
+      };
+      tick();
+    },
+
+    // KI-Finding als 'erledigt' (Ignorieren-Button) — wird damit aus der
+    // Findings-Liste entfernt aber für Audit-Trail in DB behalten.
+    async resolveFinding(findingId) {
+      const r = await this.api('POST', `/api/audit/finding/${findingId}/resolve`);
+      if (r && r.ok) await this.loadAudit();
+    },
+
+    // FS-Konflikt-Folder physisch löschen via Audit-Endpoint des bestehenden
+    // delete-flows. Hier nur ein confirm + danach reload.
+    async deleteFsConflictFolder(folderPath) {
+      if (!confirm(`Wirklich folder löschen?\n\n${folderPath}\n\nDas entfernt die Dateien auf dem FS dauerhaft.`)) return;
+      const r = await this.api('POST', '/api/audit/recipe/delete-by-path', { folder_path: folderPath });
+      if (r && r.ok) {
+        this.showToast('Folder gelöscht');
+        await this.loadAudit();
       }
     },
 

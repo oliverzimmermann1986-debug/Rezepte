@@ -1857,3 +1857,56 @@ input[type="checkbox"] { width: auto !important; }
   /* Modal-Body braucht Bottom-Padding damit nichts hinter der Sticky-Bar verschwindet */
   .recipe-detail-body { padding-bottom: 8px; }
 }
+
+/* ── Audit: KI-Sanity-Trigger-Box + Findings ─────────────────────────── */
+.audit-ai-sanity-box {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 14px 0 18px;
+  flex-wrap: wrap;
+}
+.audit-finding {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.audit-finding-main { flex: 1; min-width: 0; }
+.audit-finding-main code {
+  background: var(--bg-elev);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  word-break: break-all;
+}
+.audit-finding-actions {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.btn-danger {
+  background: rgba(239, 68, 68, .12);
+  border-color: rgba(239, 68, 68, .45);
+  color: rgb(239, 68, 68);
+}
+.btn-danger:hover {
+  background: rgba(239, 68, 68, .2);
+}
+
+@media (max-width: 768px) {
+  .audit-ai-sanity-box { flex-direction: column; align-items: stretch; }
+  .audit-finding { flex-direction: column; }
+  .audit-finding-actions { width: 100%; }
+}

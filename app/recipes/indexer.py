@@ -63,6 +63,13 @@ def sync_filesystem(db: Optional[Database] = None) -> dict:
 
     counters = {"scanned": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
 
+    # Sync-Errors-Tabelle leeren — alte Konflikte könnten vom User schon
+    # gelöst worden sein. Wir tracken nur den AKTUELLEN FS-Zustand.
+    try:
+        db.sync_errors_clear()
+    except Exception as e:
+        logger.warning(f"sync_errors_clear: {e}")
+
     # Layout: /mnt/rezepte/<Typ>/<Kategorie>/<Name>/{name.mp4, name.jpg, info.json, description.txt}
     # Wir gehen 3 Ebenen tief.
     for type_dir in _safe_iterdir(recipe_root):
@@ -87,10 +94,39 @@ def sync_filesystem(db: Optional[Database] = None) -> dict:
                     counters[result] = counters.get(result, 0) + 1
                 except Exception as e:
                     counters["errors"] += 1
+                    error_msg = f"{type(e).__name__}: {e}"
                     logger.warning(
-                        f"sync_filesystem: _index_one({recipe_dir}) crashed: "
-                        f"{type(e).__name__}: {e}"
+                        f"sync_filesystem: _index_one({recipe_dir}) crashed: {error_msg}"
                     )
+                    # In sync_errors persistieren damit der Audit das zeigen kann.
+                    # Bei UNIQUE-URL-Konflikt: bestehenden Eintrag finden für
+                    # cross-reference im UI.
+                    error_type = "other"
+                    conflict_id = None
+                    if "recipes.url" in str(e):
+                        error_type = "unique_url"
+                        # URL aus dem Folder lesen um den existing zu finden
+                        try:
+                            info = json.loads((recipe_dir / "info.json").read_text(encoding="utf-8"))
+                            existing_url = info.get("url")
+                            if existing_url:
+                                with db.conn() as c:
+                                    row = c.execute(
+                                        "SELECT id FROM recipes WHERE url=?",
+                                        (existing_url,),
+                                    ).fetchone()
+                                    if row:
+                                        conflict_id = int(row["id"])
+                        except Exception:
+                            pass
+                    elif "recipes.folder_path" in str(e):
+                        error_type = "unique_folder"
+                    try:
+                        db.sync_error_record(
+                            str(recipe_dir), error_type, error_msg, conflict_id
+                        )
+                    except Exception as e2:
+                        logger.warning(f"sync_error_record failed: {e2}")
 
     logger.info(f"sync_filesystem: {counters}")
     return counters

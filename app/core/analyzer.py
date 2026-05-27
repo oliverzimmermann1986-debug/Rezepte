@@ -284,6 +284,74 @@ class OpenAIAnalyzer:
         )
         return full
 
+    def audit_recipe_consistency(self, name: str, description: str,
+                                  type_name: Optional[str],
+                                  category: Optional[str]) -> dict:
+        """KI-Sanity-Check für ein Rezept: passt Name+Kategorie zur Description?
+
+        Rückgabe (Schema garantiert):
+          {
+            "category_ok": bool,
+            "category_suggestion": str | None,  # "Frühstück/Bowls"
+            "category_reason": str | None,      # kurze Begründung
+            "name_ok": bool,
+            "name_suggestion": str | None,      # "Kichererbsen-Curry mit Reis"
+            "name_reason": str | None,
+          }
+
+        Ein Single-Call macht BEIDE Checks — spart 50% API-Cost. Bei stark
+        abweichender Kategorie ODER nichtssagendem Name (z.B. '00001.mp4',
+        'recipe_2024_03') wird der Vorschlag gesetzt; sonst _ok=true.
+        """
+        system = (
+            "Du bist ein Rezept-Klassifikator. Schaue dir Name, Folder-Kategorie "
+            "und Beschreibung eines Rezepts an und entscheide: \n"
+            "1. Passt die Kategorie (z.B. 'Hauptgericht/Pasta') zum Inhalt der "
+            "Beschreibung? Wenn nicht, schlage eine bessere Kategorie als "
+            "'Typ/Kategorie' vor.\n"
+            "2. Ist der Name aussagekräftig (kein Datei-Stub wie '00001.mp4', "
+            "kein generisches 'recipe_2024')? Wenn nicht, schlage einen "
+            "kurzen deutschen Rezept-Namen vor (max 60 Zeichen).\n\n"
+            "Antworte ausschliesslich mit JSON nach diesem Schema:\n"
+            '{"category_ok":true|false, "category_suggestion":"Typ/Kategorie"|null, '
+            '"category_reason":"kurz, max 80 chars"|null, '
+            '"name_ok":true|false, "name_suggestion":"Neuer Name"|null, '
+            '"name_reason":"kurz, max 80 chars"|null}\n\n'
+            "Strenge Regeln:\n"
+            "- Bei tatsächlicher Übereinstimmung: _ok=true und Vorschlag/Reason=null.\n"
+            "- Bei _ok=false: Vorschlag UND Reason müssen gesetzt sein.\n"
+            "- Kategorie-Vorschlag im Format 'Typ/Kategorie' — z.B. 'Frühstück/Bowls', "
+            "'Hauptgericht/Pasta', 'Dessert/Kuchen'.\n"
+            "- Sei konservativ: nur deutlich abweichende Fälle markieren. Kleine "
+            "Ungenauigkeiten (z.B. 'Beilage' statt 'Vorspeise' bei einem Salat) "
+            "sind _ok=true."
+        )
+        user_msg = (
+            f"Name: {name or '(leer)'}\n"
+            f"Aktuelle Kategorie: {type_name or '?'}/{category or '?'}\n"
+            f"Beschreibung:\n{(description or '')[:3000]}"
+        )
+        content = self._call(system, user_msg)
+        default = {
+            "category_ok": True, "category_suggestion": None, "category_reason": None,
+            "name_ok": True, "name_suggestion": None, "name_reason": None,
+        }
+        if not content:
+            return default
+        try:
+            data = json.loads(content)
+            return {
+                "category_ok": bool(data.get("category_ok", True)),
+                "category_suggestion": (data.get("category_suggestion") or None),
+                "category_reason": (data.get("category_reason") or None),
+                "name_ok": bool(data.get("name_ok", True)),
+                "name_suggestion": (data.get("name_suggestion") or None),
+                "name_reason": (data.get("name_reason") or None),
+            }
+        except Exception as e:
+            logger.warning(f"audit_recipe_consistency JSON-Parse: {e} | {content[:200]}")
+            return default
+
     def health(self) -> bool:
         """Pingt GET /v1/models. 401 = Key falsch, 200 = ok.
         Loggt den konkreten Grund bei Fehler - sonst sieht der User nur

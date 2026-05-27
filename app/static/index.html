@@ -1770,10 +1770,116 @@
             <div class="audit-stat-n" x-text="audit.summary?.bad_count || 0"></div>
             <div class="audit-stat-label">Schlechte Namen</div>
           </div>
+          <div class="audit-stat" :class="(audit.summary?.sync_error_count || 0) > 0 && 'has-err'">
+            <div class="audit-stat-n" x-text="audit.summary?.sync_error_count || 0"></div>
+            <div class="audit-stat-label">🔴 FS-Konflikte</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.ai_category_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.ai_category_count || 0"></div>
+            <div class="audit-stat-label">🤖 Falsche Kategorie</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.ai_name_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.ai_name_count || 0"></div>
+            <div class="audit-stat-label">🤖 Schlechter Name</div>
+          </div>
           <div class="audit-stat" x-show="audit.summary?.with_ai_suggestions > 0">
             <div class="audit-stat-n" x-text="audit.summary?.with_ai_suggestions"></div>
             <div class="audit-stat-label">💡 KI-Vorschläge</div>
           </div>
+        </div>
+
+        <!-- KI-Sanity-Check-Trigger -->
+        <div class="audit-ai-sanity-box" x-show="audit.data">
+          <div>
+            <strong>🤖 KI-Sanity-Check</strong>
+            <span class="muted" style="font-size: 12px;">
+              Prüft für jedes Rezept ob Kategorie + Name zur Beschreibung passen (~$0.001/Rezept)
+            </span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <span x-show="audit.aiSanity.running" class="muted" style="font-size: 13px;">
+              <span x-text="audit.aiSanity.processed"></span>
+              /
+              <span x-text="audit.aiSanity.total"></span>
+              <span class="muted">(<span x-text="audit.aiSanity.findings"></span> Findings)</span>
+            </span>
+            <button class="btn btn-secondary" @click="startAiSanity()"
+                    :disabled="audit.aiSanity.running">
+              <span x-show="!audit.aiSanity.running">▶ Starten</span>
+              <span x-show="audit.aiSanity.running">läuft…</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- FS-Konflikte (vom letzten Sync) -->
+        <div class="audit-section" x-show="(audit.data?.sync_errors?.length || 0) > 0">
+          <h3>🔴 FS-Sync-Konflikte (<span x-text="audit.data?.sync_errors?.length"></span>)</h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Diese Folder konnten beim letzten Sync nicht in die DB. Meist URL-Dubletten —
+            ein anderer Folder hat schon die gleiche TikTok/Insta-URL.
+          </div>
+          <template x-for="se in (audit.data?.sync_errors || [])" :key="se.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><code x-text="se.folder_path"></code></div>
+                <div class="muted" style="font-size: 12px;" x-text="se.error_msg"></div>
+                <div class="muted" style="font-size: 12px;" x-show="se.conflict_folder">
+                  → Konflikt mit:
+                  <code x-text="se.conflict_folder"></code>
+                  (<span x-text="se.conflict_name"></span>)
+                </div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="if (se.conflict_with_id) openRecipe(se.conflict_with_id)"
+                        x-show="se.conflict_with_id">
+                  Bestehendes ansehen
+                </button>
+                <button class="btn btn-sm btn-danger" @click="deleteFsConflictFolder(se.folder_path)">
+                  🗑 Folder löschen
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- KI-Findings: Falsche Kategorie -->
+        <div class="audit-section" x-show="(audit.data?.ai_category_findings?.length || 0) > 0">
+          <h3>🤖 Falsche Kategorie (<span x-text="audit.data?.ai_category_findings?.length"></span>)</h3>
+          <template x-for="f in (audit.data?.ai_category_findings || [])" :key="f.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="f.recipe_name"></strong></div>
+                <div class="muted" style="font-size: 12px;">
+                  aktuell: <code x-text="f.current_value"></code>
+                  →
+                  vorgeschlagen: <code style="color: var(--accent);" x-text="f.suggested_value"></code>
+                </div>
+                <div class="muted" style="font-size: 12px;" x-text="f.reason"></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(f.recipe_id)">Ansehen</button>
+                <button class="btn btn-sm" @click="resolveFinding(f.id)">Ignorieren</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- KI-Findings: Schlechter Name -->
+        <div class="audit-section" x-show="(audit.data?.ai_name_findings?.length || 0) > 0">
+          <h3>🤖 Schlechter Name (<span x-text="audit.data?.ai_name_findings?.length"></span>)</h3>
+          <template x-for="f in (audit.data?.ai_name_findings || [])" :key="f.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div>aktuell: <code x-text="f.current_value || '(leer)'"></code></div>
+                <div>vorgeschlagen: <code style="color: var(--accent);" x-text="f.suggested_value"></code></div>
+                <div class="muted" style="font-size: 12px;" x-text="f.reason"></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(f.recipe_id)">Ansehen</button>
+                <button class="btn btn-sm" @click="resolveFinding(f.id)">Ignorieren</button>
+              </div>
+            </div>
+          </template>
         </div>
 
         <!-- Loading / leerer Zustand -->
