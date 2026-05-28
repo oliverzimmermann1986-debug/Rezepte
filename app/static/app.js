@@ -19,6 +19,7 @@ function scrapperApp() {
         case 'recipes':   this.loadRecipes(); this.loadFacets(); break;
         case 'cart':      this.loadCart(); break;
         case 'audit':     this.loadAudit(); break;
+        case 'master':    this.loadMaster(); break;
         // dashboard: keine spezielle Loader, x-show triggert die Widgets
       }
     },
@@ -77,6 +78,16 @@ function scrapperApp() {
       withAi: false,
       // KI-Sanity-Background-Job: Progress beim Polling
       aiSanity: { running: false, processed: 0, total: 0, findings: 0, pollHandle: null },
+    },
+    // Stammdaten-Page: Tags + canonical Zutaten-Namen-Verwaltung
+    master: {
+      tab: 'tags',
+      tags: [],
+      canonicals: [],
+      canLoaded: false,     // canonicals lazy, erst beim Tab-Switch geladen
+      tagFilter: '',
+      canFilter: '',
+      loading: false,
     },
     recipeDetail: {
       show: false, data: null, newTag: '',
@@ -1968,6 +1979,112 @@ function scrapperApp() {
         }
       } catch(e) {
         this.showToast('Export fehlgeschlagen', 'error');
+      }
+    },
+
+    // ════════════════════════════════════════════════════════════════════
+    // Stammdaten-Verwaltung (Tags + canonical Zutaten-Namen)
+    // ════════════════════════════════════════════════════════════════════
+
+    async loadMaster() {
+      // Lädt nur den aktiven Tab — canonicals werden lazy beim Tab-Switch
+      // nachgeladen. Bei Klick auf 'Neu laden' werden beide neu geholt
+      // falls schon initial geladen.
+      this.master.loading = true;
+      try {
+        await this.loadTags();
+        if (this.master.canLoaded) await this.loadCanonicals();
+      } finally {
+        this.master.loading = false;
+      }
+    },
+
+    async loadTags() {
+      const r = await this.api('GET', '/api/master/tags');
+      if (r) this.master.tags = r.tags || [];
+    },
+
+    async loadCanonicals() {
+      const r = await this.api('GET', '/api/master/canonicals');
+      if (r) {
+        this.master.canonicals = r.canonicals || [];
+        this.master.canLoaded = true;
+      }
+    },
+
+    filteredTags() {
+      const q = (this.master.tagFilter || '').toLowerCase().trim();
+      if (!q) return this.master.tags;
+      return this.master.tags.filter(t => (t.name || '').toLowerCase().includes(q));
+    },
+
+    filteredCanonicals() {
+      const q = (this.master.canFilter || '').toLowerCase().trim();
+      if (!q) return this.master.canonicals;
+      return this.master.canonicals.filter(c =>
+        (c.canonical_name || '').toLowerCase().includes(q) ||
+        (c.raw_names || '').toLowerCase().includes(q)
+      );
+    },
+
+    async renameTag(tag) {
+      const newName = window.prompt(
+        `Tag „${tag.name}" umbenennen zu:\n\n` +
+        `Existiert der neue Name bereits, werden die Rezept-Zuordnungen ` +
+        `gemergt (kein Datenverlust).`,
+        tag.name
+      );
+      if (!newName) return;
+      const trimmed = newName.trim();
+      if (!trimmed || trimmed === tag.name) return;
+      const r = await this.api('POST', '/api/master/tags/rename', {
+        old_name: tag.name, new_name: trimmed,
+      });
+      if (r && r.ok) {
+        this.showToast(r.merged ? `✓ Tag gemergt zu „${trimmed}"` : `✓ Tag umbenannt`);
+        await this.loadTags();
+        this.loadFacets();   // Filter-Sidebar refreshen
+      }
+    },
+
+    async deleteTag(tag) {
+      const msg = tag.recipe_count > 0
+        ? `Tag „${tag.name}" wirklich löschen?\n\n${tag.recipe_count} Rezept(e) verlieren diesen Tag.`
+        : `Tag „${tag.name}" wirklich löschen?\n\n(Ist aktuell unbenutzt.)`;
+      if (!confirm(msg)) return;
+      const r = await this.api('DELETE', `/api/master/tags/${tag.id}`);
+      if (r && r.ok) {
+        this.showToast(`✓ Tag „${tag.name}" gelöscht`);
+        await this.loadTags();
+        this.loadFacets();
+      }
+    },
+
+    async renameCanonical(can) {
+      const newName = window.prompt(
+        `Canonical „${can.canonical_name}" umbenennen/mergen zu:\n\n` +
+        `${can.recipe_count} Rezept(e), ${can.ingredient_count} Vorkommen werden umgestellt.\n` +
+        `Existiert der neue Name bereits, werden die Vorkommen zusammengeführt.`,
+        can.canonical_name
+      );
+      if (!newName) return;
+      const trimmed = newName.trim().toLowerCase();
+      if (!trimmed || trimmed === can.canonical_name) return;
+      const updateNames = confirm(
+        `Soll auch das angezeigte Zutaten-Name-Feld (z.B. „${(can.raw_names || '').split(',')[0]}") ` +
+        `auf „${trimmed}" gesetzt werden?\n\n` +
+        `OK = ja (alle Schreibweisen werden vereinheitlicht).\n` +
+        `Abbrechen = nein (canonical wird angepasst, einzelne Anzeige-Namen bleiben).`
+      );
+      const r = await this.api('POST', '/api/master/canonicals/rename', {
+        old_canonical: can.canonical_name,
+        new_canonical: trimmed,
+        update_names: updateNames,
+      });
+      if (r && r.ok) {
+        this.showToast(`✓ ${r.affected} Vorkommen umgestellt`);
+        await this.loadCanonicals();
+        this.loadFacets();
       }
     },
 

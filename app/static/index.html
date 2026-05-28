@@ -46,6 +46,9 @@
     <div class="nav-item nav-secondary" :class="page==='config' && 'active'" @click="navTo('config')" title="Einstellungen">
       <span class="nav-icon">⚙️</span><span class="nav-label">Einstellungen</span>
     </div>
+    <div class="nav-item nav-secondary" :class="page==='master' && 'active'" @click="navTo('master')" title="Stammdaten">
+      <span class="nav-icon">📚</span><span class="nav-label">Stammdaten</span>
+    </div>
 
     <!-- Mehr-Button (nur Mobile sichtbar) -->
     <div class="nav-item nav-more" :class="moreDrawerOpen && 'active'" @click="moreDrawerOpen = !moreDrawerOpen" title="Mehr">
@@ -83,6 +86,10 @@
     <div class="more-drawer-item" :class="page==='config' && 'active'"
          @click="navTo('config'); moreDrawerOpen = false">
       <span class="more-icon">⚙️</span><span>Einstellungen</span>
+    </div>
+    <div class="more-drawer-item" :class="page==='master' && 'active'"
+         @click="navTo('master'); moreDrawerOpen = false">
+      <span class="more-icon">📚</span><span>Stammdaten</span>
     </div>
   </div>
 
@@ -1748,6 +1755,113 @@
         </div>
         <div x-show="cart.items.length === 0" class="empty-state">
           Einkaufskorb ist leer. Klick im Rezept-Tab auf „Kochen" um Zutaten hinzuzufügen.
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== STAMMDATEN ========== -->
+    <section x-show="page==='master'" class="master-page">
+      <div class="card">
+        <div class="master-header">
+          <h2 style="margin:0">📚 Stammdaten</h2>
+          <button class="btn btn-secondary" @click="loadMaster()" :disabled="master.loading">
+            <span x-show="!master.loading">⟳ Neu laden</span>
+            <span x-show="master.loading">…</span>
+          </button>
+        </div>
+
+        <!-- Tabs: Tags / Zutaten -->
+        <div class="master-tabs">
+          <button class="master-tab" :class="master.tab === 'tags' && 'active'"
+                  @click="master.tab = 'tags'">
+            🏷 Tags
+            <span class="muted" x-text="'(' + master.tags.length + ')'"></span>
+          </button>
+          <button class="master-tab" :class="master.tab === 'canonicals' && 'active'"
+                  @click="master.tab = 'canonicals'; if (master.canonicals.length === 0) loadCanonicals()">
+            🥕 Zutaten
+            <span class="muted" x-text="'(' + master.canonicals.length + ')'"></span>
+          </button>
+        </div>
+
+        <!-- ────── Tags-Tab ────── -->
+        <div x-show="master.tab === 'tags'">
+          <div class="master-toolbar">
+            <input type="text" x-model="master.tagFilter" placeholder="Filter Tags…" class="master-search">
+            <span class="muted" x-text="filteredTags().length + ' / ' + master.tags.length"></span>
+          </div>
+
+          <div class="master-table-wrap">
+            <table class="master-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th class="num">Nutzung</th>
+                  <th class="num">Auto</th>
+                  <th class="num">User</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="tag in filteredTags()" :key="tag.id">
+                  <tr :class="tag.recipe_count === 0 && 'unused'">
+                    <td x-text="tag.name"></td>
+                    <td class="num" x-text="tag.recipe_count"></td>
+                    <td class="num muted" x-text="tag.auto_count"></td>
+                    <td class="num muted" x-text="tag.user_count"></td>
+                    <td class="actions">
+                      <button class="btn btn-sm" @click="renameTag(tag)" title="Umbenennen / Mergen">✎</button>
+                      <button class="btn btn-sm btn-danger" @click="deleteTag(tag)" title="Löschen">🗑</button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            <div x-show="filteredTags().length === 0" class="empty-state">
+              <span x-show="master.tags.length === 0">— keine Tags in der DB —</span>
+              <span x-show="master.tags.length > 0">— keine Treffer für Filter —</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ────── Canonicals-Tab ────── -->
+        <div x-show="master.tab === 'canonicals'">
+          <div class="master-toolbar">
+            <input type="text" x-model="master.canFilter" placeholder="Filter Zutaten / Schreibweisen…" class="master-search">
+            <span class="muted" x-text="filteredCanonicals().length + ' / ' + master.canonicals.length"></span>
+          </div>
+
+          <div class="master-table-wrap">
+            <table class="master-table">
+              <thead>
+                <tr>
+                  <th>Canonical-Name</th>
+                  <th class="num">Rezepte</th>
+                  <th class="num">Vorkommen</th>
+                  <th>Schreibweisen</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="c in filteredCanonicals()" :key="c.canonical_name">
+                  <tr>
+                    <td><code x-text="c.canonical_name"></code></td>
+                    <td class="num" x-text="c.recipe_count"></td>
+                    <td class="num muted" x-text="c.ingredient_count"></td>
+                    <td class="muted" style="font-size: 12px;" x-text="c.raw_names"></td>
+                    <td class="actions">
+                      <button class="btn btn-sm" @click="renameCanonical(c)" title="Umbenennen / Mergen">✎</button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            <div x-show="filteredCanonicals().length === 0" class="empty-state">
+              <span x-show="master.canonicals.length === 0 && !master.canLoaded">Klick „Neu laden" zum Initialisieren.</span>
+              <span x-show="master.canonicals.length === 0 && master.canLoaded">— keine Zutaten in der DB —</span>
+              <span x-show="master.canonicals.length > 0">— keine Treffer für Filter —</span>
+            </div>
+          </div>
         </div>
       </div>
     </section>
