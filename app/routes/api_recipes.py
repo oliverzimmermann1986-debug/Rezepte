@@ -19,6 +19,7 @@ Endpoint schnell auch bei 500+ Rezepten.
 """
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -30,6 +31,8 @@ from ..core.analyzer import build_analyzer
 from ..config_store import get_config
 from ..db import get_db
 from ..recipes.canonical import canonical_name as _canonical
+
+logger = logging.getLogger(__name__)
 from ..recipes.indexer import (
     ensure_extraction_running,
     is_extraction_running,
