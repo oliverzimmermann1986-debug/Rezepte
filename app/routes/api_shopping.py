@@ -16,6 +16,7 @@ gespeichert, in Display-Einheit zurückgegeben).
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,8 +24,11 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from ..auth import require_auth
+from ..config_store import get_config
 from ..db import get_db
 from ..recipes.cart_logic import add_recipe_to_cart, cart_for_display, prepare_for_cart
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cart", tags=["cart"], dependencies=[Depends(require_auth)])
 
@@ -143,3 +147,114 @@ class ClearPayload(BaseModel):
 def clear_cart(payload: ClearPayload):
     n = get_db().cart_clear(only_checked=payload.only_checked)
     return {"ok": True, "deleted": n}
+
+
+# ─── Push zur externen Einkauf-App (einkaufen.mausbaeren.me-API) ────────
+class PushPayload(BaseModel):
+    consolidate: bool = True       # nach Push /consolidate aufrufen?
+    only_unchecked: bool = True    # abgehakte Items skippen (haben wir ja schon)
+    clear_after: bool = False      # bei Erfolg Cart leeren?
+
+
+def _format_raw_text(item: dict) -> str:
+    """Cart-Item → 'raw_text'-String für die einkauf-API.
+    Beispiel: amount=200, unit='g', name='Pasta (trocken)' → '200 g Pasta (trocken)'
+    Beispiel: amount=None, unit=None, name='Salz' → 'Salz'"""
+    parts = []
+    amount = item.get("amount")
+    if amount is not None:
+        # Saubere Darstellung: 1.0 → '1', 0.5 → '0.5'
+        if float(amount).is_integer():
+            parts.append(str(int(amount)))
+        else:
+            parts.append(f"{amount:.2f}".rstrip("0").rstrip("."))
+    unit = (item.get("unit") or "").strip()
+    if unit:
+        parts.append(unit)
+    name = (item.get("name") or "").strip()
+    if name:
+        parts.append(name)
+    return " ".join(parts) or "(unbenannt)"
+
+
+@router.post("/push-to-einkauf")
+def push_to_einkauf(payload: PushPayload):
+    """Schickt alle Cart-Items als POST /items an die externe Einkauf-API
+    (einkaufen.mausbaeren.me oder selbst konfigurierte URL).
+
+    Schema-Quelle: https://einkaufen.mausbaeren.me/openapi.json
+      POST /items   { raw_text: str }
+      POST /consolidate (kein Body) → dedupliziert/normalisiert auf der
+                                       Empfänger-Seite
+    Auth: aktuell keine im Schema. Falls 401/403 → wir loggen den Body
+    und reichen den HTTP-Code durch."""
+    import requests
+    cfg = get_config()
+    base_url = (cfg.get("einkauf", "api_url", default="") or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(
+            400,
+            "Einkauf-API-URL nicht konfiguriert. In Einstellungen unter "
+            "'Einkauf-App-Integration' eintragen (z.B. https://einkaufen.mausbaeren.me).",
+        )
+
+    db = get_db()
+    items = db.cart_list()
+    if payload.only_unchecked:
+        items = [i for i in items if not i.get("checked")]
+    if not items:
+        raise HTTPException(400, "Keine Items zu pushen (Cart leer oder alle abgehakt)")
+
+    pushed_ids: list = []
+    failed: list = []
+    session = requests.Session()
+    for it in items:
+        raw_text = _format_raw_text(it)
+        try:
+            r = session.post(
+                f"{base_url}/items",
+                json={"raw_text": raw_text},
+                timeout=(5, 10),  # (connect, read)
+                allow_redirects=True,
+            )
+            if r.status_code >= 400:
+                failed.append({
+                    "id": it["id"], "raw_text": raw_text,
+                    "status": r.status_code, "error": r.text[:200],
+                })
+            else:
+                pushed_ids.append(it["id"])
+        except Exception as e:
+            failed.append({
+                "id": it["id"], "raw_text": raw_text, "error": str(e)[:200],
+            })
+
+    # Konsolidieren wenn gewünscht und mindestens ein Push erfolgreich war
+    consolidated = False
+    if payload.consolidate and pushed_ids:
+        try:
+            cr = session.post(f"{base_url}/consolidate", timeout=(5, 15))
+            consolidated = cr.status_code < 400
+            if not consolidated:
+                logger.warning(f"consolidate returned {cr.status_code}: {cr.text[:200]}")
+        except Exception as e:
+            logger.warning(f"consolidate-Call failed: {e}")
+
+    # Optional: Cart leeren bei vollem Erfolg
+    cleared = 0
+    if payload.clear_after and pushed_ids and not failed:
+        cleared = db.cart_clear(only_checked=False)
+
+    logger.info(
+        f"push-to-einkauf: {len(pushed_ids)}/{len(items)} Items zu {base_url} "
+        f"(failed={len(failed)}, consolidated={consolidated}, cleared={cleared})"
+    )
+    return {
+        "ok": True,
+        "pushed": len(pushed_ids),
+        "total": len(items),
+        "failed": failed,
+        "consolidated": consolidated,
+        "cleared": cleared,
+        "target": base_url,
+    }

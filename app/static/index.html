@@ -1572,6 +1572,27 @@
                  x-text="maintenanceOutput"></div>
           </div>
 
+          <!-- ════ Einkauf-App-Integration ════ -->
+          <div class="card">
+            <h3>📦 Einkauf-App-Integration</h3>
+            <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
+              Cart-Items per „An Einkauf-App senden"-Button an externe API pushen.
+              Endpoint: <code>POST /items</code> mit <code>{raw_text}</code>, danach optional
+              <code>POST /consolidate</code>.
+            </div>
+            <div class="field">
+              <label>API-Basis-URL</label>
+              <input x-model="config.einkauf.api_url" placeholder="https://einkaufen.mausbaeren.me">
+              <div class="hint">Leer lassen = Feature deaktiviert. Ohne abschließenden Slash.</div>
+            </div>
+            <div class="field">
+              <label>
+                <input type="checkbox" x-model="config.einkauf.auto_consolidate">
+                Nach Push automatisch <code>/consolidate</code> aufrufen
+              </label>
+            </div>
+          </div>
+
           <div style="text-align: right; margin: 20px 0 60px;">
             <button class="btn btn-primary" @click="saveConfig()">💾 Speichern</button>
           </div>
@@ -1719,6 +1740,13 @@
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 16px;">
           <h2 style="margin:0">🛒 Einkaufskorb <span class="muted" x-text="'('+cart.items.length+' Posten)'"></span></h2>
           <div style="display: flex; gap: 8px;">
+            <button class="btn btn-primary" @click="pushToEinkauf()"
+                    :disabled="cart.items.length === 0 || pushingToEinkauf"
+                    x-show="config?.einkauf?.api_url"
+                    :title="'Items an ' + (config?.einkauf?.api_url || 'Einkauf-App') + ' senden'">
+              <span x-show="!pushingToEinkauf">📦 An Einkauf-App senden</span>
+              <span x-show="pushingToEinkauf">… sende</span>
+            </button>
             <button class="btn btn-secondary" @click="exportCart()" :disabled="cart.items.length === 0">Als Text exportieren</button>
             <button class="btn btn-secondary" @click="clearCheckedFromCart()" :disabled="!cart.items.some(i => i.checked)">Erledigte löschen</button>
             <button class="btn btn-danger" @click="clearCart()" :disabled="cart.items.length === 0">Alles löschen</button>

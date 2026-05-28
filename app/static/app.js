@@ -71,6 +71,7 @@ function scrapperApp() {
       items: [],
       add: { name: '', amount: null, unit: '' },
     },
+    pushingToEinkauf: false,    // Loading-state für Push-Button
     audit: {
       data: null,
       summary: null,
@@ -831,6 +832,7 @@ function scrapperApp() {
       cfg.backup.rclone_args ||= [];
       cfg.ytdlp ||= {};
       cfg.webhooks ||= [];
+      cfg.einkauf ||= { api_url: '', auto_consolidate: true };
       this.config = cfg;
       this.rcloneArgsText = (cfg.backup.rclone_args || []).join('\n');
       // Pro-Pair-Args ins UI laden
@@ -1966,6 +1968,43 @@ function scrapperApp() {
       if (r && r.ok) {
         this.showToast(`${r.deleted} erledigt-Posten gelöscht`);
         this.loadCart();
+      }
+    },
+
+    // Cart → externe Einkauf-App pushen (POST /items pro Eintrag, dann
+    // optional /consolidate). Skippt abgehakte Items per Default — die
+    // hat man ja schon. Bei vollem Erfolg fragt nochmal ob Cart geleert
+    // werden soll (Quality-of-Life — sonst hat man die Items doppelt).
+    async pushToEinkauf() {
+      const open = this.cart.items.filter(i => !i.checked).length;
+      if (open === 0) {
+        this.showToast('Keine offenen Items zu senden', 'err');
+        return;
+      }
+      const target = this.config?.einkauf?.api_url || 'die Einkauf-App';
+      if (!confirm(`${open} Items an ${target} senden?\n\nAbgehakte Items werden übersprungen.`)) return;
+      this.pushingToEinkauf = true;
+      try {
+        const r = await this.api('POST', '/api/cart/push-to-einkauf', {
+          consolidate: !!(this.config?.einkauf?.auto_consolidate),
+          only_unchecked: true,
+          clear_after: false,
+        });
+        if (!r) return;
+        const failedN = r.failed?.length || 0;
+        if (failedN === 0) {
+          this.showToast(`✓ ${r.pushed} Items gesendet${r.consolidated ? ' + konsolidiert' : ''}`);
+          // Bei vollem Erfolg fragen ob Cart geleert werden soll
+          if (r.pushed > 0 && confirm(`Cart jetzt leeren? (${r.pushed} Items wurden erfolgreich übertragen)`)) {
+            await this.api('POST', '/api/cart/clear', { only_checked: false });
+            this.cart.items = [];
+          }
+        } else {
+          this.showToast(`⚠ ${r.pushed} gesendet, ${failedN} Fehler — siehe Console`, 'err');
+          console.warn('Einkauf-Push-Fehler:', r.failed);
+        }
+      } finally {
+        this.pushingToEinkauf = false;
       }
     },
 

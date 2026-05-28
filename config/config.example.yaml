@@ -230,3 +230,12 @@ external_hdd:
   spinup_delay_sec: 12                      # Wartezeit HDD-Spinup nach Shelly-on
   unmount_delay_sec: 2                      # FS-Flush nach umount
   http_timeout_sec: 8                       # Shelly-API-Timeout
+
+# Integration mit externer Einkauf-App (z.B. einkaufen.mausbaeren.me).
+# Cart-Items werden bei Klick auf "An Einkauf-App senden" als
+# POST /items mit { raw_text: "200 g Pasta" } gepostet. Optional ruft
+# der Push danach noch POST /consolidate auf damit die Empfänger-Seite
+# Mengen zusammenführt.
+einkauf:
+  api_url: ""                               # z.B. https://einkaufen.mausbaeren.me — leer = Feature deaktiviert
+  auto_consolidate: true                    # nach Push /consolidate aufrufen?
