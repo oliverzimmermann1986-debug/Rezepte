@@ -260,6 +260,46 @@ def extraction_status():
     }
 
 
+@router.post("/recover-empty")
+def recover_empty() -> Dict[str, Any]:
+    """Setzt ingredients_status='pending' für alle Rezepte die status='ok'
+    haben aber 0 Zutaten in recipe_ingredients. Meist alte Extracts wo das
+    Prompt zu restriktiv war (PDF-Header / Markdown-Bullets übersehen) und
+    die KI leer zurückgab. Worker pickt die zurückgesetzten Rezepte auf und
+    versucht neu mit dem aktuellen Prompt."""
+    db = get_db()
+    with db.conn() as c:
+        rows = c.execute("""
+            SELECT r.id, r.name, length(r.description) as dl
+            FROM recipes r
+            LEFT JOIN recipe_ingredients ri ON ri.recipe_id = r.id
+            WHERE r.ingredients_status = 'ok'
+              AND r.description IS NOT NULL
+              AND length(r.description) >= 20
+            GROUP BY r.id
+            HAVING COUNT(ri.id) = 0
+        """).fetchall()
+        ids = [int(r["id"]) for r in rows]
+        for rid in ids:
+            c.execute(
+                "UPDATE recipes SET ingredients_status='pending' WHERE id=?",
+                (rid,),
+            )
+    # Worker ggf. anwerfen — extract_worker pickt 'pending' selbst
+    from ..recipes.indexer import ensure_extraction_running
+    try:
+        ensure_extraction_running()
+    except Exception as e:
+        logger.warning(f"recover-empty: worker-start failed: {e}")
+    logger.info(f"recover-empty: {len(ids)} Rezepte zurückgesetzt auf pending")
+    return {
+        "ok": True,
+        "reset_count": len(ids),
+        "ids": ids,
+        "recipes": [dict(r) for r in rows],
+    }
+
+
 @router.post("/{recipe_id}/extract")
 def extract_one(recipe_id: int, background_tasks: BackgroundTasks):
     """Manueller Trigger: extrahiert (oder re-extrahiert) Zutaten + Schritte +

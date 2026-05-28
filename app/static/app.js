@@ -2151,6 +2151,18 @@ function scrapperApp() {
       if (r && r.ok) await this.loadAudit();
     },
 
+    // Bulk: alle Rezepte mit status=ok+0 Zutaten auf pending zurücksetzen.
+    // Worker pickt sie auf und versucht KI-Extract neu (mit aktuellem Prompt).
+    async recoverEmpty() {
+      const n = this.audit.data?.empty_recipes?.length || 0;
+      if (!confirm(`${n} Rezepte auf 'pending' zurücksetzen?\n\nDer Worker extrahiert sie dann neu mit dem aktuellen Prompt. Bestehende Zutaten/Schritte würden überschrieben (sind ja eh leer).`)) return;
+      const r = await this.api('POST', '/api/recipes/recover-empty');
+      if (r && r.ok) {
+        this.showToast(`✓ ${r.reset_count} Rezepte auf pending — Worker läuft`);
+        await this.loadAudit();
+      }
+    },
+
     // KI-Vorschlag tatsächlich anwenden — abhängig vom finding_type:
     //   category_mismatch → Folder in neue Type/Kategorie verschieben
     //   name_mismatch     → recipe.name + Folder + info.json updaten

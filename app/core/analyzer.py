@@ -547,8 +547,10 @@ class OpenAIAnalyzer:
                 )
 
         system = (
-            "Du analysierst deutschsprachige Rezept-Beschreibungen von TikTok/Instagram-Videos "
-            "und extrahierst Zutaten, Zubereitungs-Schritte, Portionen-Anzahl und stilistische Tags. "
+            "Du analysierst deutschsprachige Rezept-Texte aus verschiedenen Quellen "
+            "(TikTok-/Instagram-Captions, Koch-Blogs, PDF-Exports von Rezept-Websites, "
+            "Markdown-Notizen, Bullet-Listen) und extrahierst Zutaten, Zubereitungs-"
+            "Schritte, Portionen-Anzahl und stilistische Tags. "
             "Antworte AUSSCHLIESSLICH mit gültigem JSON nach diesem Schema:\n"
             '{"ingredients":[\n'
             '  {"name":"Tomaten","amount":2,"unit":"Stück","raw":"2 große Tomaten"},\n'
@@ -561,19 +563,31 @@ class OpenAIAnalyzer:
             '"servings":4,\n'
             '"tags":["italienisch","pasta","schnell","one-pot"]\n'
             "}\n\n"
+            "═══ KERNREGEL ═══\n"
+            "Mengen-Angaben sind das stärkste Signal für Rezept-Inhalt. WENN der Text "
+            "explizite Zutaten mit Mengen enthält (z.B. '50 g Walnüsse', '1 Kopf Brokkoli', "
+            "'2 Knoblauchzehen', '175 g Butter') — egal in welchem Format (Fließtext, "
+            "Markdown-Bullets '- 50 g Butter', Aufzählung mit '•', englische Labels "
+            "INGREDIENTS/SERVINGS, PDF-Print-Header drumherum) — MÜSSEN diese Zutaten "
+            "extrahiert werden. Der umgebende Text (Werbung, Hashtags, PDF-Header, "
+            "Datums-Stempel, Print-Buttons) wird IGNORIERT, die Mengen ZÄHLEN.\n\n"
             "REGELN ZUTATEN:\n"
-            "- amount: Zahl oder null. Bei Bereichen ('2-3 Eier') Mittel oder Untergrenze.\n"
+            "- amount: Zahl oder null. Bei Bereichen ('2-3 Eier', '1-2 Bund') Mittel oder Untergrenze.\n"
             "- unit: nur aus: g, kg, ml, l, TL, EL, Stück, Prise, Bund, Zehe, Scheibe, "
             "Blatt, Pck, Dose, Tasse, Flasche, Glas. Sonst null.\n"
-            "- name: nur die Zutat (ohne 'frisch', 'groß', etc.).\n"
-            "- raw: genauer Text-Snippet aus der Beschreibung.\n\n"
+            "- name: nur die Zutat selbst, deutsche Form, Singular bevorzugt (ohne 'frisch', 'groß').\n"
+            "- raw: genauer Text-Snippet aus der Beschreibung wie es da steht.\n"
+            "- Englische Zutaten-Namen ins Deutsche übersetzen (oats → Haferflocken).\n\n"
             "REGELN SCHRITTE:\n"
             "- instruction: vollständiger deutscher Satz, max 200 Zeichen.\n"
             "- timer_seconds: NUR bei konkretem Zeitwert. '8 Min köcheln' → 480. "
             "'kurz anbraten', 'goldbraun', 'über Nacht' → null.\n"
-            "- Reihenfolge muss der Zubereitung entsprechen.\n\n"
+            "- Reihenfolge muss der Zubereitung entsprechen.\n"
+            "- Wenn keine expliziten Schritte vorhanden (nur Zutaten-Liste): leeres Array, "
+            "  aber Zutaten trotzdem extrahieren!\n\n"
             "REGELN PORTIONEN:\n"
-            "- servings: Anzahl Portionen (1-12) wenn explizit. Sonst null. Nicht raten.\n\n"
+            "- servings: Anzahl Portionen (1-12) wenn explizit ('für 2 Personen', 'SERVINGS 1', "
+            "'Rezept für 6 Stück'). Sonst null. Nicht raten.\n\n"
             "REGELN TAGS (3-7 Tags, nur aus dieser festen Liste — keine Erfindungen!):\n"
             "  Küche:    italienisch, asiatisch, mediterran, deutsch, mexikanisch, indisch, "
             "amerikanisch, französisch, orientalisch, thailändisch, japanisch, chinesisch\n"
@@ -584,8 +598,10 @@ class OpenAIAnalyzer:
             "gesund, sommerlich, winterlich, party, fingerfood, grillen, ofen, kalt\n"
             "  KEINE Diät-Tags wie 'vegan' oder 'laktosefrei' — die berechnen wir selbst aus "
             "den Zutaten, weil das sicherer ist.\n\n"
-            "Bei nicht-rezept-artigem Text: "
-            '{"ingredients":[],"steps":[],"servings":null,"tags":[]}.'
+            "NUR bei wirklich rezept-freiem Text (Begrüßung, reine Werbung, nur Hashtags, "
+            "nur Meta-Daten ohne Zutaten): "
+            '{"ingredients":[],"steps":[],"servings":null,"tags":[]}. '
+            "Bei vorhandenen Zutaten-Mengen NIEMALS leer zurückgeben."
             + hint
         )
         content = self._call(system, f"Beschreibung:\n\n{description[:6000]}")

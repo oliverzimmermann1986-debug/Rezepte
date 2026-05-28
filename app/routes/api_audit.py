@@ -86,6 +86,26 @@ def get_audit(
     result["ai_name_findings"] = name_findings
     result["ai_folder_findings"] = folder_findings
 
+    # Verdächtig leere Rezepte: status='ok' aber 0 Zutaten obwohl Description da ist.
+    # Signal für: KI hat in einem früheren Lauf nichts gefunden (oft alter Prompt-
+    # Bug oder zu restriktive Klassifikation). User kann per Bulk-Button alle
+    # auf 'pending' zurücksetzen.
+    with db.conn() as c:
+        empty_rows = c.execute("""
+            SELECT r.id, r.name, length(r.description) as desc_len, r.folder_path
+            FROM recipes r
+            LEFT JOIN recipe_ingredients ri ON ri.recipe_id = r.id
+            WHERE r.ingredients_status = 'ok'
+              AND r.description IS NOT NULL
+              AND length(r.description) >= 20
+            GROUP BY r.id
+            HAVING COUNT(ri.id) = 0
+            ORDER BY length(r.description) DESC
+            LIMIT 50
+        """).fetchall()
+    empty_recipes = [dict(r) for r in empty_rows]
+    result["empty_recipes"] = empty_recipes
+
     # Summary erweitert um die drei neuen Kategorien
     result["summary"] = {
         "exact_count": sum(len(g["items"]) for g in result["exact_duplicates"]),
@@ -104,6 +124,7 @@ def get_audit(
         "ai_category_count": len(cat_findings),
         "ai_name_count": len(name_findings),
         "ai_folder_count": len(folder_findings),
+        "empty_recipe_count": len(empty_recipes),
     }
     return result
 

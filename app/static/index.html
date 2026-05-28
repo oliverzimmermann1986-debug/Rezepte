@@ -1930,6 +1930,10 @@
             <div class="audit-stat-n" x-text="audit.summary?.ai_folder_count || 0"></div>
             <div class="audit-stat-label">🤖 Falscher Ordner</div>
           </div>
+          <div class="audit-stat" :class="(audit.summary?.empty_recipe_count || 0) > 0 && 'has-err'">
+            <div class="audit-stat-n" x-text="audit.summary?.empty_recipe_count || 0"></div>
+            <div class="audit-stat-label">📭 Verdächtig leer</div>
+          </div>
           <div class="audit-stat" x-show="audit.summary?.with_ai_suggestions > 0">
             <div class="audit-stat-n" x-text="audit.summary?.with_ai_suggestions"></div>
             <div class="audit-stat-label">💡 KI-Vorschläge</div>
@@ -1957,6 +1961,34 @@
               <span x-show="audit.aiSanity.running">läuft…</span>
             </button>
           </div>
+        </div>
+
+        <!-- Verdächtig leere Rezepte: status=ok aber 0 Zutaten -->
+        <div class="audit-section" x-show="(audit.data?.empty_recipes?.length || 0) > 0">
+          <h3>📭 Verdächtig leer (<span x-text="audit.data?.empty_recipes?.length"></span>)</h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte mit Status „ok" aber 0 Zutaten — die KI hat in einem früheren Lauf nichts gefunden.
+            Häufig PDF-Header / Markdown-Bullets die der alte Prompt übersehen hat.
+            Klick „Alle neu extrahieren" setzt sie auf „pending", Worker probiert mit aktuellem Prompt.
+          </div>
+          <div style="margin-bottom: 12px;">
+            <button class="btn btn-primary btn-sm" @click="recoverEmpty()">
+              ⟳ Alle <span x-text="audit.data?.empty_recipes?.length"></span> neu extrahieren
+            </button>
+          </div>
+          <template x-for="r in (audit.data?.empty_recipes || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong>
+                  <span class="muted" style="font-size: 12px;" x-text="'· ' + r.desc_len + ' chars description'"></span>
+                </div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
         </div>
 
         <!-- FS-Konflikte (vom letzten Sync) -->
