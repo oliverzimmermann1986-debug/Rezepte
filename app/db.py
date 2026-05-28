@@ -1098,12 +1098,12 @@ class Database:
     def user_create(self, username: str, password_hash: str,
                      role: str = "user") -> int:
         with self.conn() as c:
-            c.execute(
+            cur = c.execute(
                 "INSERT INTO users (username, password_hash, role, created_at) "
                 "VALUES (?, ?, ?, ?)",
                 (username, password_hash, role, time.time()),
             )
-            return int(c.lastrowid)
+            return int(cur.lastrowid)
 
     def user_set_password(self, user_id: int, password_hash: str) -> None:
         with self.conn() as c:
