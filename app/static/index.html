@@ -2053,7 +2053,13 @@
 
         <!-- KI-Findings: Falsche Kategorie -->
         <div class="audit-section" x-show="(audit.data?.ai_category_findings?.length || 0) > 0">
-          <h3>🤖 Falsche Kategorie (<span x-text="audit.data?.ai_category_findings?.length"></span>)</h3>
+          <h3>🤖 Falsche Kategorie (<span x-text="audit.data?.ai_category_findings?.length"></span>)
+            <button class="btn btn-sm btn-primary" style="float:right;"
+                    @click="applyAllFindings('category_mismatch')"
+                    :disabled="audit.bulkApplying">
+              Alle anwenden
+            </button>
+          </h3>
           <template x-for="f in (audit.data?.ai_category_findings || [])" :key="f.id">
             <div class="audit-finding">
               <div class="audit-finding-main">
@@ -2078,7 +2084,13 @@
 
         <!-- KI-Findings: Schlechter Name -->
         <div class="audit-section" x-show="(audit.data?.ai_name_findings?.length || 0) > 0">
-          <h3>🤖 Schlechter Name (<span x-text="audit.data?.ai_name_findings?.length"></span>)</h3>
+          <h3>🤖 Schlechter Name (<span x-text="audit.data?.ai_name_findings?.length"></span>)
+            <button class="btn btn-sm btn-primary" style="float:right;"
+                    @click="applyAllFindings('name_mismatch')"
+                    :disabled="audit.bulkApplying">
+              Alle anwenden
+            </button>
+          </h3>
           <template x-for="f in (audit.data?.ai_name_findings || [])" :key="f.id">
             <div class="audit-finding">
               <div class="audit-finding-main">
@@ -2100,7 +2112,13 @@
 
         <!-- KI-Findings: Falscher Folder-Name -->
         <div class="audit-section" x-show="(audit.data?.ai_folder_findings?.length || 0) > 0">
-          <h3>🤖 Falscher Ordner-Name (<span x-text="audit.data?.ai_folder_findings?.length"></span>)</h3>
+          <h3>🤖 Falscher Ordner-Name (<span x-text="audit.data?.ai_folder_findings?.length"></span>)
+            <button class="btn btn-sm btn-primary" style="float:right;"
+                    @click="applyAllFindings('folder_mismatch')"
+                    :disabled="audit.bulkApplying">
+              Alle anwenden
+            </button>
+          </h3>
           <template x-for="f in (audit.data?.ai_folder_findings || [])" :key="f.id">
             <div class="audit-finding">
               <div class="audit-finding-main">

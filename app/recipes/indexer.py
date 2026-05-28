@@ -296,7 +296,14 @@ def _extraction_loop() -> None:
         logger.error(f"Extraction-Worker: kann Analyzer nicht bauen: {e}")
         return
 
-    batch_size = 5  # KI-Calls sind teuer, aber DB-Updates billig — kleine Batches sind ok
+    # Concurrency: 3 KI-Calls gleichzeitig. SQLite ist thread-safe weil
+    # check_same_thread=False (siehe db.py L216) und jeder Aufruf eine neue
+    # Connection mit context-manager nutzt. OpenAI-API hat keine kritischen
+    # Rate-Limits bei diesen Volumen. _extract_for_recipe raised NIE
+    # (try/except inside) — Future.result() ist daher safe.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    batch_size = 9   # 3 Worker × 3 Items pro Batch — Batches schnell durch
+    max_workers = 3
     idle_loops = 0
     while not _worker_stop.is_set():
         batch = db.recipes_pending_extraction(limit=batch_size)
@@ -309,10 +316,18 @@ def _extraction_loop() -> None:
             time.sleep(2)
             continue
         idle_loops = 0
-        for recipe in batch:
-            if _worker_stop.is_set():
-                return
-            _extract_for_recipe(db, analyzer, recipe)
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="extract") as ex:
+            futures = [ex.submit(_extract_for_recipe, db, analyzer, r) for r in batch]
+            for f in as_completed(futures):
+                if _worker_stop.is_set():
+                    # Restliche Futures nicht abbrechen — laufen aus, Loop endet danach
+                    break
+                try:
+                    f.result()
+                except Exception as e:
+                    # _extract_for_recipe sollte selbst nichts raisen, aber falls
+                    # doch (z.B. OOM): nur loggen, anderen futures weiter laufen lassen
+                    logger.exception(f"_extract_for_recipe future failed: {e}")
 
 
 def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:

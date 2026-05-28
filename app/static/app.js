@@ -79,6 +79,7 @@ function scrapperApp() {
       withAi: false,
       // KI-Sanity-Background-Job: Progress beim Polling
       aiSanity: { running: false, processed: 0, total: 0, findings: 0, pollHandle: null },
+      bulkApplying: false,    // Loading-state für apply-all
     },
     // Stammdaten-Page: Tags + canonical Zutaten-Namen-Verwaltung
     master: {
@@ -2218,6 +2219,42 @@ function scrapperApp() {
       if (r && r.ok) {
         this.showToast(`✓ Angewendet → ${r.new_path?.split('/').slice(-2).join('/')}`);
         await this.loadAudit();
+      }
+    },
+
+    // Bulk-Apply: alle offenen Findings eines Typs in einem Rutsch.
+    // Bei Fehler (z.B. Ziel-Folder kollidiert) wird trotzdem weitergemacht,
+    // Toast zeigt am Ende 'X erfolgreich / Y Fehler'. Details in Console.
+    async applyAllFindings(findingType) {
+      const counts = {
+        category_mismatch: this.audit.data?.ai_category_findings?.length || 0,
+        name_mismatch: this.audit.data?.ai_name_findings?.length || 0,
+        folder_mismatch: this.audit.data?.ai_folder_findings?.length || 0,
+      };
+      const n = counts[findingType] || 0;
+      if (n === 0) return;
+      const label = {
+        category_mismatch: 'Kategorie-Verschiebungen',
+        name_mismatch: 'Namens-Änderungen (inkl. Folder + info.json)',
+        folder_mismatch: 'Folder-Umbenennungen',
+      }[findingType] || findingType;
+      if (!confirm(`${n} ${label} auf einmal anwenden?\n\nJedes FS-Move ist irreversibel.\nBei Kollisionen wird das einzelne Finding übersprungen.`)) return;
+
+      this.audit.bulkApplying = true;
+      try {
+        const r = await this.api('POST',
+          `/api/audit/findings/apply-all?finding_type=${findingType}`);
+        if (!r) return;
+        const failedN = r.failed?.length || 0;
+        if (failedN === 0) {
+          this.showToast(`✓ Alle ${r.applied} angewendet`);
+        } else {
+          this.showToast(`${r.applied} erfolgreich, ${failedN} Fehler — Console für Details`, 'err');
+          console.warn('apply-all-Fehler:', r.failed);
+        }
+        await this.loadAudit();
+      } finally {
+        this.audit.bulkApplying = false;
       }
     },
 

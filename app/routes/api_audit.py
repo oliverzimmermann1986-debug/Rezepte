@@ -193,11 +193,16 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
         with db.conn() as c:
             c.execute("DELETE FROM audit_ai_findings WHERE resolved=0")
 
-        findings_count = 0
-        for i, r in enumerate(recipes):
-            # Folder-Name = letzter Pfad-Teil, an Analyzer als 3. Check
-            from pathlib import Path as _P
+        # Parallele KI-Calls (3 gleichzeitig). DB-Schreibvorgänge sind klein
+        # und thread-safe (sqlite check_same_thread=False), counter wird mit
+        # Lock geschützt. Speed-up: ~3× bei 100 Rezepten (5min → ~1.5min).
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from pathlib import Path as _P
+
+        def _check_one(r: dict) -> int:
+            """Returnt Anzahl neuer Findings für dieses Rezept (0-3)."""
             folder_name = _P(r["folder_path"]).name if r.get("folder_path") else None
+            local = 0
             try:
                 check = analyzer.audit_recipe_consistency(
                     r["name"], r["description"], r["type"], r["category"],
@@ -207,31 +212,40 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
                     db.audit_ai_finding_set(
                         r["id"], "category_mismatch",
                         f"{r['type'] or ''}/{r['category'] or ''}",
-                        check["category_suggestion"],
-                        check["category_reason"] or "",
+                        check["category_suggestion"], check["category_reason"] or "",
                     )
-                    findings_count += 1
+                    local += 1
                 if not check["name_ok"] and check["name_suggestion"]:
                     db.audit_ai_finding_set(
                         r["id"], "name_mismatch",
-                        r["name"] or "",
-                        check["name_suggestion"],
+                        r["name"] or "", check["name_suggestion"],
                         check["name_reason"] or "",
                     )
-                    findings_count += 1
+                    local += 1
                 if not check["folder_ok"] and check["folder_suggestion"]:
                     db.audit_ai_finding_set(
                         r["id"], "folder_mismatch",
-                        folder_name or "",
-                        check["folder_suggestion"],
+                        folder_name or "", check["folder_suggestion"],
                         check["folder_reason"] or "",
                     )
-                    findings_count += 1
+                    local += 1
             except Exception as e:
                 logger.warning(f"ai-sanity Rezept #{r['id']}: {e}")
-            with _ai_sanity_lock:
-                _ai_sanity_state["processed"] = i + 1
-                _ai_sanity_state["findings"] = findings_count
+            return local
+
+        findings_count = 0
+        processed = 0
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="sanity") as ex:
+            futures = {ex.submit(_check_one, r): r for r in recipes}
+            for f in as_completed(futures):
+                processed += 1
+                try:
+                    findings_count += f.result()
+                except Exception as e:
+                    logger.exception(f"ai-sanity future failed: {e}")
+                with _ai_sanity_lock:
+                    _ai_sanity_state["processed"] = processed
+                    _ai_sanity_state["findings"] = findings_count
 
         with _ai_sanity_lock:
             _ai_sanity_state["running"] = False
@@ -262,19 +276,10 @@ def _sanitize_folder_name(name: str) -> str:
     return safe or 'unnamed'
 
 
-@router.post("/finding/{finding_id}/apply")
-def apply_finding(finding_id: int) -> Dict[str, Any]:
-    """Wendet einen KI-Vorschlag tatsächlich an:
-      - name_mismatch:     UPDATE recipes.name + FS-Folder umbenennen +
-                           info.json updaten
-      - folder_mismatch:   FS-Folder umbenennen + recipes.folder_path
-      - category_mismatch: FS-Folder in neue Type/Kategorie verschieben +
-                           recipes.type/category/folder_path
-
-    Bei FS-Move wird Path-Traversal geprüft (Ziel muss im recipe_root liegen)
-    und Konflikte (Ziel existiert schon) führen zu 409. Nach erfolgreichem
-    Apply wird das Finding als resolved=1 markiert (verschwindet aus der
-    Liste, bleibt als Audit-Trail in der DB)."""
+def _apply_finding_internal(finding_id: int) -> Dict[str, Any]:
+    """Wendet einen KI-Vorschlag tatsächlich an. Wird vom HTTP-Endpoint
+    /finding/{id}/apply UND vom Bulk-Endpoint /findings/apply-all genutzt.
+    Raised HTTPException bei Fehler (HTTP-Routes propagieren; Bulk fängt ab)."""
     import json as _json
     import shutil as _sh
     from pathlib import Path
@@ -311,7 +316,6 @@ def apply_finding(finding_id: int) -> Dict[str, Any]:
     db_updates: Dict[str, Any] = {}
 
     if ftype == "name_mismatch":
-        # recipe.name + folder + info.json updaten
         safe = _sanitize_folder_name(suggested)
         new_path = old_path.parent / safe
         if new_path.exists() and new_path != old_path:
@@ -319,7 +323,6 @@ def apply_finding(finding_id: int) -> Dict[str, Any]:
         db_updates = {"name": suggested, "folder_path": str(new_path)}
 
     elif ftype == "folder_mismatch":
-        # Nur Folder umbenennen, recipe.name bleibt
         safe = _sanitize_folder_name(suggested)
         new_path = old_path.parent / safe
         if new_path.exists() and new_path != old_path:
@@ -327,7 +330,6 @@ def apply_finding(finding_id: int) -> Dict[str, Any]:
         db_updates = {"folder_path": str(new_path)}
 
     elif ftype == "category_mismatch":
-        # Format "Typ/Kategorie" — Folder in neue Hierarchie schieben
         parts = suggested.split("/", 1)
         if len(parts) != 2:
             raise HTTPException(400, f"Vorschlag muss 'Typ/Kategorie' sein: {suggested}")
@@ -351,13 +353,11 @@ def apply_finding(finding_id: int) -> Dict[str, Any]:
         except Exception as e:
             raise HTTPException(500, f"FS-Move failed: {e}")
 
-    # DB-Updates
     set_clause = ", ".join(f"{k}=?" for k in db_updates.keys())
     params = list(db_updates.values()) + [finding["recipe_id"]]
     with db.conn() as c:
         c.execute(f"UPDATE recipes SET {set_clause} WHERE id=?", params)
 
-    # info.json mit-updaten bei name-Änderung — nur best-effort
     if ftype == "name_mismatch":
         info_file = new_path / "info.json"
         if info_file.exists():
@@ -370,13 +370,64 @@ def apply_finding(finding_id: int) -> Dict[str, Any]:
             except Exception as e:
                 logger.warning(f"info.json-Update failed für #{finding['recipe_id']}: {e}")
 
-    # Finding als resolved markieren
     db.audit_ai_finding_resolve(finding_id)
     logger.info(
         f"Apply #{finding_id} ({ftype}) für Rezept #{finding['recipe_id']}: "
         f"{old_path} → {new_path}"
     )
-    return {"ok": True, "new_path": str(new_path), "type": ftype}
+    return {"ok": True, "new_path": str(new_path), "type": ftype, "recipe_id": finding["recipe_id"]}
+
+
+@router.post("/finding/{finding_id}/apply")
+def apply_finding(finding_id: int) -> Dict[str, Any]:
+    """Einzel-Apply via UI-Button. Delegiert an _apply_finding_internal."""
+    return _apply_finding_internal(finding_id)
+
+
+@router.post("/findings/apply-all")
+def apply_all_findings(finding_type: str) -> Dict[str, Any]:
+    """Bulk-Apply: alle offenen Findings eines Typs auf einmal anwenden.
+    Wird vom UI-Bulk-Button 'Alle X anwenden' aufgerufen.
+
+    Bei Fehler in einem Finding (z.B. Ziel-Folder existiert schon) wird
+    nicht abgebrochen — die übrigen werden trotzdem versucht. Returnt
+    {applied, failed[]} damit das UI eine Sammelmeldung zeigen kann.
+
+    Akzeptiert nur die 3 known finding_types — alles andere → 400."""
+    if finding_type not in ("category_mismatch", "name_mismatch", "folder_mismatch"):
+        raise HTTPException(400, f"Unbekannter finding_type: {finding_type}")
+    db = get_db()
+    findings = db.audit_ai_findings_list(finding_type=finding_type, only_open=True)
+    applied = 0
+    failed = []
+    for f in findings:
+        try:
+            _apply_finding_internal(f["id"])
+            applied += 1
+        except HTTPException as e:
+            failed.append({
+                "finding_id": f["id"],
+                "recipe_name": f.get("recipe_name"),
+                "status": e.status_code,
+                "error": e.detail,
+            })
+        except Exception as e:
+            failed.append({
+                "finding_id": f["id"],
+                "recipe_name": f.get("recipe_name"),
+                "error": str(e)[:200],
+            })
+    logger.info(
+        f"apply-all {finding_type}: {applied}/{len(findings)} angewendet, "
+        f"{len(failed)} Fehler"
+    )
+    return {
+        "ok": True,
+        "applied": applied,
+        "failed": failed,
+        "total": len(findings),
+        "finding_type": finding_type,
+    }
 
 
 class DeleteByPathPayload(BaseModel):
