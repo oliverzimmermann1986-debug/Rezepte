@@ -286,55 +286,62 @@ class OpenAIAnalyzer:
 
     def audit_recipe_consistency(self, name: str, description: str,
                                   type_name: Optional[str],
-                                  category: Optional[str]) -> dict:
-        """KI-Sanity-Check für ein Rezept: passt Name+Kategorie zur Description?
+                                  category: Optional[str],
+                                  folder_name: Optional[str] = None) -> dict:
+        """KI-Sanity-Check für ein Rezept: passt Name+Kategorie+Folder zur
+        Description?
 
         Rückgabe (Schema garantiert):
           {
-            "category_ok": bool,
-            "category_suggestion": str | None,  # "Frühstück/Bowls"
-            "category_reason": str | None,      # kurze Begründung
-            "name_ok": bool,
-            "name_suggestion": str | None,      # "Kichererbsen-Curry mit Reis"
-            "name_reason": str | None,
+            "category_ok": bool, "category_suggestion": str|None, "category_reason": str|None,
+            "name_ok":     bool, "name_suggestion":     str|None, "name_reason":     str|None,
+            "folder_ok":   bool, "folder_suggestion":   str|None, "folder_reason":   str|None,
           }
 
-        Ein Single-Call macht BEIDE Checks — spart 50% API-Cost. Bei stark
-        abweichender Kategorie ODER nichtssagendem Name (z.B. '00001.mp4',
-        'recipe_2024_03') wird der Vorschlag gesetzt; sonst _ok=true.
+        Ein Single-Call macht ALLE drei Checks — spart ~66% API-Cost.
+        folder_name wird nur geprüft wenn der Caller einen mitgibt; bei
+        None gibt's keinen folder_mismatch (Result _ok=true).
         """
         system = (
-            "Du bist ein Rezept-Klassifikator. Schaue dir Name, Folder-Kategorie "
-            "und Beschreibung eines Rezepts an und entscheide: \n"
+            "Du bist ein Rezept-Klassifikator. Schaue dir Name, Folder-Kategorie, "
+            "Folder-Name und Beschreibung eines Rezepts an und entscheide:\n"
             "1. Passt die Kategorie (z.B. 'Hauptgericht/Pasta') zum Inhalt der "
             "Beschreibung? Wenn nicht, schlage eine bessere Kategorie als "
             "'Typ/Kategorie' vor.\n"
             "2. Ist der Name aussagekräftig (kein Datei-Stub wie '00001.mp4', "
             "kein generisches 'recipe_2024')? Wenn nicht, schlage einen "
-            "kurzen deutschen Rezept-Namen vor (max 60 Zeichen).\n\n"
+            "kurzen deutschen Rezept-Namen vor (max 60 Zeichen).\n"
+            "3. Ist der FOLDER-Name passend zur Beschreibung? Folder-Namen haben "
+            "meist Underscores statt Spaces (z.B. 'Brokkoli_mit_Knoblauch'). "
+            "Wenn der Folder-Name den Inhalt grob beschreibt, ist's OK (auch "
+            "wenn nicht 1:1 zum 'name'). Falls Stub wie '00001' oder völlig "
+            "falsch: schlage folder-tauglichen Namen vor (kurz, _ statt Spaces, "
+            "ASCII bevorzugt aber Umlaute erlaubt).\n\n"
             "Antworte ausschliesslich mit JSON nach diesem Schema:\n"
-            '{"category_ok":true|false, "category_suggestion":"Typ/Kategorie"|null, '
-            '"category_reason":"kurz, max 80 chars"|null, '
-            '"name_ok":true|false, "name_suggestion":"Neuer Name"|null, '
-            '"name_reason":"kurz, max 80 chars"|null}\n\n'
+            '{"category_ok":true|false,"category_suggestion":"Typ/Kategorie"|null,'
+            '"category_reason":"kurz, max 80 chars"|null,'
+            '"name_ok":true|false,"name_suggestion":"Neuer Name"|null,'
+            '"name_reason":"kurz, max 80 chars"|null,'
+            '"folder_ok":true|false,"folder_suggestion":"Neuer_Folder_Name"|null,'
+            '"folder_reason":"kurz, max 80 chars"|null}\n\n'
             "Strenge Regeln:\n"
             "- Bei tatsächlicher Übereinstimmung: _ok=true und Vorschlag/Reason=null.\n"
             "- Bei _ok=false: Vorschlag UND Reason müssen gesetzt sein.\n"
-            "- Kategorie-Vorschlag im Format 'Typ/Kategorie' — z.B. 'Frühstück/Bowls', "
-            "'Hauptgericht/Pasta', 'Dessert/Kuchen'.\n"
-            "- Sei konservativ: nur deutlich abweichende Fälle markieren. Kleine "
-            "Ungenauigkeiten (z.B. 'Beilage' statt 'Vorspeise' bei einem Salat) "
-            "sind _ok=true."
+            "- Kategorie-Vorschlag im Format 'Typ/Kategorie'.\n"
+            "- Folder-Vorschlag: nur Buchstaben/Ziffern/_- erlaubt, keine /\\:*?\"<>|.\n"
+            "- Sei konservativ: nur deutlich abweichende Fälle markieren."
         )
         user_msg = (
             f"Name: {name or '(leer)'}\n"
             f"Aktuelle Kategorie: {type_name or '?'}/{category or '?'}\n"
+            f"Folder-Name: {folder_name or '(unbekannt — folder_ok=true zurückgeben)'}\n"
             f"Beschreibung:\n{(description or '')[:3000]}"
         )
         content = self._call(system, user_msg)
         default = {
             "category_ok": True, "category_suggestion": None, "category_reason": None,
             "name_ok": True, "name_suggestion": None, "name_reason": None,
+            "folder_ok": True, "folder_suggestion": None, "folder_reason": None,
         }
         if not content:
             return default
@@ -347,6 +354,9 @@ class OpenAIAnalyzer:
                 "name_ok": bool(data.get("name_ok", True)),
                 "name_suggestion": (data.get("name_suggestion") or None),
                 "name_reason": (data.get("name_reason") or None),
+                "folder_ok": bool(data.get("folder_ok", True)),
+                "folder_suggestion": (data.get("folder_suggestion") or None),
+                "folder_reason": (data.get("folder_reason") or None),
             }
         except Exception as e:
             logger.warning(f"audit_recipe_consistency JSON-Parse: {e} | {content[:200]}")

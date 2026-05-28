@@ -2151,6 +2151,25 @@ function scrapperApp() {
       if (r && r.ok) await this.loadAudit();
     },
 
+    // KI-Vorschlag tatsächlich anwenden — abhängig vom finding_type:
+    //   category_mismatch → Folder in neue Type/Kategorie verschieben
+    //   name_mismatch     → recipe.name + Folder + info.json updaten
+    //   folder_mismatch   → nur Folder umbenennen, recipe.name bleibt
+    // FS-Move ist irreversibel, daher confirm() mit klarer Vorschau.
+    async applyFinding(f) {
+      const desc = {
+        category_mismatch: `Folder verschieben:\n„${f.current_value}" → „${f.suggested_value}"`,
+        name_mismatch:     `Rezept umbenennen + Folder umbenennen + info.json updaten:\n„${f.current_value}" → „${f.suggested_value}"`,
+        folder_mismatch:   `Folder auf FS umbenennen (recipe.name bleibt):\n„${f.current_value}" → „${f.suggested_value}"`,
+      }[f.finding_type] || `Anwenden: ${f.suggested_value}`;
+      if (!confirm(desc + '\n\nFS-Move ist nicht rückgängig zu machen.')) return;
+      const r = await this.api('POST', `/api/audit/finding/${f.id}/apply`);
+      if (r && r.ok) {
+        this.showToast(`✓ Angewendet → ${r.new_path?.split('/').slice(-2).join('/')}`);
+        await this.loadAudit();
+      }
+    },
+
     // FS-Konflikt-Folder physisch löschen via Audit-Endpoint des bestehenden
     // delete-flows. Hier nur ein confirm + danach reload.
     // FS-Konflikt-Compare öffnen: lädt parallel DB-Rezept (per ID) und

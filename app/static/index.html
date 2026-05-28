@@ -29,8 +29,8 @@
     </div>
     <div class="nav-item nav-primary" :class="page==='audit' && 'active'" @click="navTo('audit')" title="Audit">
       <span class="nav-icon">🔍</span><span class="nav-label">Audit</span>
-      <span class="badge badge-warn" x-show="audit.summary && (audit.summary.exact_groups + audit.summary.similar_clusters + audit.summary.bad_count + audit.summary.sync_error_count + audit.summary.ai_category_count + audit.summary.ai_name_count) > 0"
-            x-text="(audit.summary?.exact_groups || 0) + (audit.summary?.similar_clusters || 0) + (audit.summary?.bad_count || 0) + (audit.summary?.sync_error_count || 0) + (audit.summary?.ai_category_count || 0) + (audit.summary?.ai_name_count || 0)"></span>
+      <span class="badge badge-warn" x-show="audit.summary && (audit.summary.exact_groups + audit.summary.similar_clusters + audit.summary.bad_count + audit.summary.sync_error_count + audit.summary.ai_category_count + audit.summary.ai_name_count + (audit.summary.ai_folder_count||0)) > 0"
+            x-text="(audit.summary?.exact_groups || 0) + (audit.summary?.similar_clusters || 0) + (audit.summary?.bad_count || 0) + (audit.summary?.sync_error_count || 0) + (audit.summary?.ai_category_count || 0) + (audit.summary?.ai_name_count || 0) + (audit.summary?.ai_folder_count || 0)"></span>
     </div>
 
     <!-- Sekundäre Tabs (auf Mobile im Mehr-Drawer, auf Desktop in Sidebar) -->
@@ -1926,6 +1926,10 @@
             <div class="audit-stat-n" x-text="audit.summary?.ai_name_count || 0"></div>
             <div class="audit-stat-label">🤖 Schlechter Name</div>
           </div>
+          <div class="audit-stat" :class="(audit.summary?.ai_folder_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.ai_folder_count || 0"></div>
+            <div class="audit-stat-label">🤖 Falscher Ordner</div>
+          </div>
           <div class="audit-stat" x-show="audit.summary?.with_ai_suggestions > 0">
             <div class="audit-stat-n" x-text="audit.summary?.with_ai_suggestions"></div>
             <div class="audit-stat-label">💡 KI-Vorschläge</div>
@@ -2002,6 +2006,9 @@
                 <div class="muted" style="font-size: 12px;" x-text="f.reason"></div>
               </div>
               <div class="audit-finding-actions">
+                <button class="btn btn-sm btn-primary" @click="applyFinding(f)" title="Folder in neue Kategorie verschieben">
+                  ✓ Anwenden
+                </button>
                 <button class="btn btn-sm" @click="openRecipe(f.recipe_id)">Ansehen</button>
                 <button class="btn btn-sm" @click="resolveFinding(f.id)">Ignorieren</button>
               </div>
@@ -2015,11 +2022,37 @@
           <template x-for="f in (audit.data?.ai_name_findings || [])" :key="f.id">
             <div class="audit-finding">
               <div class="audit-finding-main">
+                <div><span class="muted" style="font-size:12px;">Rezept:</span> <span x-text="f.recipe_name || '(unbenannt)'"></span></div>
                 <div>aktuell: <code x-text="f.current_value || '(leer)'"></code></div>
                 <div>vorgeschlagen: <code style="color: var(--accent);" x-text="f.suggested_value"></code></div>
                 <div class="muted" style="font-size: 12px;" x-text="f.reason"></div>
               </div>
               <div class="audit-finding-actions">
+                <button class="btn btn-sm btn-primary" @click="applyFinding(f)" title="recipe.name updaten + Folder umbenennen + info.json">
+                  ✓ Anwenden
+                </button>
+                <button class="btn btn-sm" @click="openRecipe(f.recipe_id)">Ansehen</button>
+                <button class="btn btn-sm" @click="resolveFinding(f.id)">Ignorieren</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- KI-Findings: Falscher Folder-Name -->
+        <div class="audit-section" x-show="(audit.data?.ai_folder_findings?.length || 0) > 0">
+          <h3>🤖 Falscher Ordner-Name (<span x-text="audit.data?.ai_folder_findings?.length"></span>)</h3>
+          <template x-for="f in (audit.data?.ai_folder_findings || [])" :key="f.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><span class="muted" style="font-size:12px;">Rezept:</span> <span x-text="f.recipe_name"></span></div>
+                <div>aktuell: <code x-text="f.current_value || '(leer)'"></code></div>
+                <div>vorgeschlagen: <code style="color: var(--accent);" x-text="f.suggested_value"></code></div>
+                <div class="muted" style="font-size: 12px;" x-text="f.reason"></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm btn-primary" @click="applyFinding(f)" title="Folder auf FS umbenennen, recipe.name bleibt">
+                  ✓ Anwenden
+                </button>
                 <button class="btn btn-sm" @click="openRecipe(f.recipe_id)">Ansehen</button>
                 <button class="btn btn-sm" @click="resolveFinding(f.id)">Ignorieren</button>
               </div>

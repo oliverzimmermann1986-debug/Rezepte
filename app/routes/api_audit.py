@@ -81,8 +81,10 @@ def get_audit(
     # KI-Sanity-Findings (persistent, vom letzten ai-sanity-Run)
     cat_findings = db.audit_ai_findings_list(finding_type="category_mismatch", only_open=True)
     name_findings = db.audit_ai_findings_list(finding_type="name_mismatch", only_open=True)
+    folder_findings = db.audit_ai_findings_list(finding_type="folder_mismatch", only_open=True)
     result["ai_category_findings"] = cat_findings
     result["ai_name_findings"] = name_findings
+    result["ai_folder_findings"] = folder_findings
 
     # Summary erweitert um die drei neuen Kategorien
     result["summary"] = {
@@ -101,6 +103,7 @@ def get_audit(
         "sync_error_count": len(sync_errors),
         "ai_category_count": len(cat_findings),
         "ai_name_count": len(name_findings),
+        "ai_folder_count": len(folder_findings),
     }
     return result
 
@@ -159,7 +162,7 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
     try:
         with db.conn() as c:
             rows = c.execute(
-                "SELECT id, name, type, category, description FROM recipes "
+                "SELECT id, name, type, category, description, folder_path FROM recipes "
                 "WHERE description IS NOT NULL AND length(description) >= 20"
             ).fetchall()
             recipes = [dict(r) for r in rows]
@@ -171,9 +174,13 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
 
         findings_count = 0
         for i, r in enumerate(recipes):
+            # Folder-Name = letzter Pfad-Teil, an Analyzer als 3. Check
+            from pathlib import Path as _P
+            folder_name = _P(r["folder_path"]).name if r.get("folder_path") else None
             try:
                 check = analyzer.audit_recipe_consistency(
-                    r["name"], r["description"], r["type"], r["category"]
+                    r["name"], r["description"], r["type"], r["category"],
+                    folder_name=folder_name,
                 )
                 if not check["category_ok"] and check["category_suggestion"]:
                     db.audit_ai_finding_set(
@@ -189,6 +196,14 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
                         r["name"] or "",
                         check["name_suggestion"],
                         check["name_reason"] or "",
+                    )
+                    findings_count += 1
+                if not check["folder_ok"] and check["folder_suggestion"]:
+                    db.audit_ai_finding_set(
+                        r["id"], "folder_mismatch",
+                        folder_name or "",
+                        check["folder_suggestion"],
+                        check["folder_reason"] or "",
                     )
                     findings_count += 1
             except Exception as e:
@@ -215,6 +230,132 @@ def resolve_finding(finding_id: int) -> Dict[str, Any]:
     db = get_db()
     db.audit_ai_finding_resolve(finding_id)
     return {"ok": True}
+
+
+def _sanitize_folder_name(name: str) -> str:
+    """Reduziert auf safe-Filenames: keine Slashes, Spaces → Underscore,
+    keine Steuerzeichen, keine Windows-Reserved-Chars. Umlaute erlaubt."""
+    import re
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', name).strip()
+    safe = re.sub(r'\s+', '_', safe)
+    return safe or 'unnamed'
+
+
+@router.post("/finding/{finding_id}/apply")
+def apply_finding(finding_id: int) -> Dict[str, Any]:
+    """Wendet einen KI-Vorschlag tatsächlich an:
+      - name_mismatch:     UPDATE recipes.name + FS-Folder umbenennen +
+                           info.json updaten
+      - folder_mismatch:   FS-Folder umbenennen + recipes.folder_path
+      - category_mismatch: FS-Folder in neue Type/Kategorie verschieben +
+                           recipes.type/category/folder_path
+
+    Bei FS-Move wird Path-Traversal geprüft (Ziel muss im recipe_root liegen)
+    und Konflikte (Ziel existiert schon) führen zu 409. Nach erfolgreichem
+    Apply wird das Finding als resolved=1 markiert (verschwindet aus der
+    Liste, bleibt als Audit-Trail in der DB)."""
+    import json as _json
+    import shutil as _sh
+    from pathlib import Path
+    db = get_db()
+
+    with db.conn() as c:
+        row = c.execute(
+            "SELECT f.*, r.folder_path as r_folder_path, r.name as r_name, "
+            "       r.type as r_type, r.category as r_category "
+            "FROM audit_ai_findings f JOIN recipes r ON r.id=f.recipe_id "
+            "WHERE f.id=?",
+            (finding_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Finding nicht gefunden")
+    finding = dict(row)
+
+    cfg = get_config()
+    recipe_root = Path(cfg.get("paths", "recipe_dir", default="/mnt/rezepte")).resolve()
+    old_path = Path(finding["r_folder_path"]).resolve()
+    try:
+        old_path.relative_to(recipe_root)
+    except ValueError:
+        raise HTTPException(400, f"Folder-Pfad nicht im Recipe-Root: {old_path}")
+    if not old_path.exists():
+        raise HTTPException(404, f"Folder nicht da: {old_path}")
+
+    ftype = finding["finding_type"]
+    suggested = (finding["suggested_value"] or "").strip()
+    if not suggested:
+        raise HTTPException(400, "Vorschlag leer — nichts anzuwenden")
+
+    new_path: Path
+    db_updates: Dict[str, Any] = {}
+
+    if ftype == "name_mismatch":
+        # recipe.name + folder + info.json updaten
+        safe = _sanitize_folder_name(suggested)
+        new_path = old_path.parent / safe
+        if new_path.exists() and new_path != old_path:
+            raise HTTPException(409, f"Ziel-Folder existiert: {new_path}")
+        db_updates = {"name": suggested, "folder_path": str(new_path)}
+
+    elif ftype == "folder_mismatch":
+        # Nur Folder umbenennen, recipe.name bleibt
+        safe = _sanitize_folder_name(suggested)
+        new_path = old_path.parent / safe
+        if new_path.exists() and new_path != old_path:
+            raise HTTPException(409, f"Ziel-Folder existiert: {new_path}")
+        db_updates = {"folder_path": str(new_path)}
+
+    elif ftype == "category_mismatch":
+        # Format "Typ/Kategorie" — Folder in neue Hierarchie schieben
+        parts = suggested.split("/", 1)
+        if len(parts) != 2:
+            raise HTTPException(400, f"Vorschlag muss 'Typ/Kategorie' sein: {suggested}")
+        new_type, new_category = parts[0].strip(), parts[1].strip()
+        if not new_type or not new_category:
+            raise HTTPException(400, "Typ und Kategorie pflichtig")
+        new_path = recipe_root / new_type / new_category / old_path.name
+        if new_path.exists() and new_path != old_path:
+            raise HTTPException(409, f"Ziel-Folder existiert: {new_path}")
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        db_updates = {
+            "type": new_type, "category": new_category, "folder_path": str(new_path),
+        }
+    else:
+        raise HTTPException(400, f"Unbekannter finding_type: {ftype}")
+
+    # FS-Move
+    if new_path != old_path:
+        try:
+            _sh.move(str(old_path), str(new_path))
+        except Exception as e:
+            raise HTTPException(500, f"FS-Move failed: {e}")
+
+    # DB-Updates
+    set_clause = ", ".join(f"{k}=?" for k in db_updates.keys())
+    params = list(db_updates.values()) + [finding["recipe_id"]]
+    with db.conn() as c:
+        c.execute(f"UPDATE recipes SET {set_clause} WHERE id=?", params)
+
+    # info.json mit-updaten bei name-Änderung — nur best-effort
+    if ftype == "name_mismatch":
+        info_file = new_path / "info.json"
+        if info_file.exists():
+            try:
+                info = _json.loads(info_file.read_text(encoding="utf-8"))
+                info["name"] = suggested
+                info_file.write_text(
+                    _json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except Exception as e:
+                logger.warning(f"info.json-Update failed für #{finding['recipe_id']}: {e}")
+
+    # Finding als resolved markieren
+    db.audit_ai_finding_resolve(finding_id)
+    logger.info(
+        f"Apply #{finding_id} ({ftype}) für Rezept #{finding['recipe_id']}: "
+        f"{old_path} → {new_path}"
+    )
+    return {"ok": True, "new_path": str(new_path), "type": ftype}
 
 
 class DeleteByPathPayload(BaseModel):
