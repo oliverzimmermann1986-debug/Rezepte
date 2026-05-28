@@ -2290,3 +2290,44 @@ input[type="checkbox"] { width: auto !important; }
   .audit-tab { padding: 8px 10px; font-size: 13px; }
   .audit-tab-count { font-size: 10px; padding: 1px 6px; }
 }
+
+/* ── Nährwerte im Detail-Modal ──────────────────────────────────────── */
+.nutrition-section h4 .btn { vertical-align: middle; }
+.nutrition-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin: 10px 0;
+}
+.nutrition-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 10px;
+  text-align: center;
+}
+.nutrition-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.nutrition-unit {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--fg-dim);
+  margin-left: 1px;
+}
+.nutrition-label {
+  font-size: 11px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-top: 4px;
+}
+
+@media (max-width: 600px) {
+  .nutrition-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .nutrition-value { font-size: 20px; }
+}

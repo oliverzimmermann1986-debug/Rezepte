@@ -456,9 +456,26 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
     all_auto_tags = sorted(set(ki_tags) | set(diet_tags))
     db.recipe_auto_tags_set(rid, all_auto_tags)
 
+    # Nährwerte berechnen — nur wenn genug Zutaten da sind (>=3, sonst meist
+    # KI-Halbextrakt). +1 KI-Call, ~$0.0005. Skip wenn schon berechnet
+    # (force-recompute geht über den dedicated Endpoint).
+    nutrition_msg = ""
+    try:
+        if len(prepared) >= 3 and not recipe.get("calories_per_serving"):
+            nutr = analyzer.compute_nutrition(prepared, servings)
+            if nutr:
+                db.recipe_set_nutrition(
+                    rid, nutr["calories"], nutr["protein_g"],
+                    nutr["carbs_g"], nutr["fat_g"],
+                )
+                nutrition_msg = f", ~{nutr['calories']} kcal/Portion"
+    except Exception as e:
+        logger.warning(f"Rezept #{rid}: compute_nutrition failed: {e}")
+
     logger.info(
         f"Rezept #{rid} '{recipe.get('name')}': "
         f"{len(prepared)} Zutaten, {len(steps)} Schritte, "
         f"servings={servings or '?'}, "
         f"{len(all_auto_tags)} Auto-Tags ({len(ki_tags)} KI + {len(diet_tags)} Diät)"
+        f"{nutrition_msg}"
     )

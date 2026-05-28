@@ -113,14 +113,14 @@ def get_audit(
     with db.conn() as c:
         all_rows = c.execute("""
             SELECT r.id, r.name, r.folder_path, r.url, r.thumb_filename,
-                   r.ingredients_status,
+                   r.ingredients_status, r.calories_per_serving,
                    COALESCE(length(r.description), 0) as desc_len,
                    (SELECT COUNT(*) FROM recipe_ingredients WHERE recipe_id=r.id) as ing_count,
                    (SELECT COUNT(*) FROM recipe_steps WHERE recipe_id=r.id) as step_count
             FROM recipes r
         """).fetchall()
 
-    no_image, no_steps, no_url, few_ingredients, no_description = [], [], [], [], []
+    no_image, no_steps, no_url, few_ingredients, no_description, no_nutrition = [], [], [], [], [], []
     for row in all_rows:
         d = dict(row)
         if not d.get("thumb_filename"):
@@ -136,6 +136,9 @@ def get_audit(
             few_ingredients.append(d)
         if d["desc_len"] < 20:
             no_description.append(d)
+        # 'no_nutrition': KI-Schätzung fehlt obwohl >=3 Zutaten da
+        if d["ing_count"] >= 3 and not d.get("calories_per_serving"):
+            no_nutrition.append(d)
 
     data_gaps = {
         "no_image": no_image[:100],
@@ -143,6 +146,7 @@ def get_audit(
         "no_url": no_url[:100],
         "few_ingredients": few_ingredients[:100],
         "no_description": no_description[:100],
+        "no_nutrition": no_nutrition[:100],
     }
     result["data_gaps"] = data_gaps
 
@@ -170,6 +174,7 @@ def get_audit(
         "no_url_count": len(no_url),
         "few_ingredients_count": len(few_ingredients),
         "no_description_count": len(no_description),
+        "no_nutrition_count": len(no_nutrition),
     }
     return result
 

@@ -300,6 +300,74 @@ def recover_empty() -> Dict[str, Any]:
     }
 
 
+@router.post("/{recipe_id}/nutrition")
+def compute_nutrition_for(recipe_id: int) -> Dict[str, Any]:
+    """On-Demand Nährwert-Berechnung für ein Rezept. KI-Single-Call.
+    Setzt calories_per_serving + protein/carbs/fat_g + computed_at."""
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    ings = db.recipe_ingredients_get(recipe_id)
+    if len(ings) < 3:
+        raise HTTPException(400, f"Zu wenig Zutaten ({len(ings)}) für sinnvolle Schätzung")
+
+    cfg = get_config()
+    try:
+        analyzer = build_analyzer(cfg.get("ai", default={}) or {})
+    except Exception as e:
+        raise HTTPException(500, f"Analyzer-Setup fehlgeschlagen: {e}")
+
+    nutr = analyzer.compute_nutrition(ings, recipe.get("servings"))
+    if not nutr:
+        raise HTTPException(502, "KI konnte keine Nährwerte berechnen (zu wenig Info?)")
+
+    db.recipe_set_nutrition(
+        recipe_id, nutr["calories"], nutr["protein_g"],
+        nutr["carbs_g"], nutr["fat_g"],
+    )
+    return {"ok": True, **nutr}
+
+
+@router.post("/compute-nutrition-bulk")
+def compute_nutrition_bulk(limit: int = Query(50, ge=1, le=200)) -> Dict[str, Any]:
+    """Bulk: bis zu N Rezepte ohne Nährwerte berechnen. Synchroner Lauf —
+    bei vielen Rezepten >30s, daher mit Limit. UI ruft das wiederholt auf
+    bis pending=0."""
+    db = get_db()
+    cfg = get_config()
+    try:
+        analyzer = build_analyzer(cfg.get("ai", default={}) or {})
+    except Exception as e:
+        raise HTTPException(500, f"Analyzer-Setup fehlgeschlagen: {e}")
+
+    pending = db.recipes_pending_nutrition(limit=limit)
+    computed = 0
+    failed = []
+    for r in pending:
+        ings = db.recipe_ingredients_get(int(r["id"]))
+        try:
+            nutr = analyzer.compute_nutrition(ings, r.get("servings"))
+            if nutr:
+                db.recipe_set_nutrition(
+                    int(r["id"]), nutr["calories"], nutr["protein_g"],
+                    nutr["carbs_g"], nutr["fat_g"],
+                )
+                computed += 1
+            else:
+                failed.append({"id": r["id"], "name": r["name"], "reason": "KI-leer"})
+        except Exception as e:
+            failed.append({"id": r["id"], "name": r["name"], "reason": str(e)[:100]})
+    logger.info(f"compute-nutrition-bulk: {computed}/{len(pending)} berechnet")
+    return {
+        "ok": True,
+        "computed": computed,
+        "processed": len(pending),
+        "failed": failed,
+        "remaining": max(0, db.recipe_count() - computed) if computed else None,
+    }
+
+
 @router.post("/{recipe_id}/extract")
 def extract_one(recipe_id: int, background_tasks: BackgroundTasks):
     """Manueller Trigger: extrahiert (oder re-extrahiert) Zutaten + Schritte +

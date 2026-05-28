@@ -81,6 +81,7 @@ function scrapperApp() {
       aiSanity: { running: false, processed: 0, total: 0, findings: 0, pollHandle: null },
       bulkApplying: false,    // Loading-state für apply-all
       activeTab: 'gaps',      // Audit-Tab-State: gaps / fs / ai / duplicates
+      computingNutritionBulk: false,  // Loading für Bulk-Nährwerte
     },
     // Stammdaten-Page: Tags + canonical Zutaten-Namen-Verwaltung
     master: {
@@ -118,6 +119,7 @@ function scrapperApp() {
       editingIngredients: false,
       editIngs: [],
       savingIngredients: false,
+      computingNutrition: false,    // Loading-state für ⚡ Berechnen-Button
     },
     _wakeLock: null,
     // Per-Schritt-Timer (key = step.id, value = {status, remaining, intervalId})
@@ -1980,7 +1982,6 @@ function scrapperApp() {
       if (this.recipeDetail.savingIngredients) return;
       const id = this.recipeDetail.data?.id;
       if (!id) return;
-      // Leere Zutaten (Name leer) werden serverseitig sowieso geskippt,
       // aber wir filtern hier schon damit der Toast-Count stimmt.
       const cleaned = this.recipeDetail.editIngs
         .filter(i => (i.name || '').trim())
@@ -2008,6 +2009,33 @@ function scrapperApp() {
         }
       } finally {
         this.recipeDetail.savingIngredients = false;
+      }
+    },
+
+    // Nährwerte für das aktuelle Rezept berechnen (KI-Single-Call).
+    // ⚡ Button im Detail-Modal — funktioniert sowohl für Erst-Berechnung
+    // als auch für Recompute (z.B. nach manuellem Zutaten-Edit).
+    async computeNutrition() {
+      const id = this.recipeDetail.data?.id;
+      if (!id || this.recipeDetail.computingNutrition) return;
+      const ingCount = this.recipeDetail.data?.ingredients?.length || 0;
+      if (ingCount < 3) {
+        this.showToast('Mindestens 3 Zutaten nötig', 'err');
+        return;
+      }
+      this.recipeDetail.computingNutrition = true;
+      try {
+        const r = await this.api('POST', `/api/recipes/${id}/nutrition`);
+        if (r && r.ok) {
+          // In-place die data-Felder updaten damit Modal sofort die Werte zeigt
+          this.recipeDetail.data.calories_per_serving = r.calories;
+          this.recipeDetail.data.protein_g = r.protein_g;
+          this.recipeDetail.data.carbs_g = r.carbs_g;
+          this.recipeDetail.data.fat_g = r.fat_g;
+          this.showToast(`✓ ~${r.calories} kcal/Portion`);
+        }
+      } finally {
+        this.recipeDetail.computingNutrition = false;
       }
     },
 
@@ -2286,6 +2314,32 @@ function scrapperApp() {
       if (r && r.ok) {
         this.showToast(`✓ ${r.reset_count} Rezepte auf pending — Worker läuft`);
         await this.loadAudit();
+      }
+    },
+
+    // Bulk: Nährwerte für bis zu 50 Rezepte berechnen. Synchroner Lauf —
+    // UI ist blockiert für ~30s, danach Audit neu laden. Bei mehr als 50
+    // pending Rezepten muss User wiederholt klicken (siehe Audit-Liste).
+    async bulkComputeNutrition() {
+      const total = this.audit.data?.data_gaps?.no_nutrition?.length || 0;
+      if (total === 0) return;
+      const batch = Math.min(total, 50);
+      if (!confirm(`Nährwerte für ${batch} Rezepte berechnen?\n\n~$${(batch * 0.0005).toFixed(3)} Kosten, ~${batch * 0.6}s Laufzeit.\n${total > 50 ? `\nNoch ${total - batch} bleiben übrig — Button danach erneut klicken.` : ''}`)) return;
+      this.audit.computingNutritionBulk = true;
+      try {
+        const r = await this.api('POST', '/api/recipes/compute-nutrition-bulk?limit=50');
+        if (r && r.ok) {
+          const failedN = r.failed?.length || 0;
+          if (failedN === 0) {
+            this.showToast(`✓ ${r.computed} Nährwerte berechnet`);
+          } else {
+            this.showToast(`${r.computed} erfolgreich, ${failedN} Fehler`, 'err');
+            console.warn('nutrition-bulk-failures:', r.failed);
+          }
+          await this.loadAudit();
+        }
+      } finally {
+        this.audit.computingNutritionBulk = false;
       }
     },
 

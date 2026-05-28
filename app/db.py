@@ -268,6 +268,18 @@ class Database:
             # Anzahl Portionen, für die das Rezept ausgelegt ist (aus Caption
             # via KI gelesen). Default NULL = unbekannt.
             c.execute("ALTER TABLE recipes ADD COLUMN servings INTEGER")
+        # Nährwerte pro Portion (von analyzer.compute_nutrition geschrieben).
+        # Alle NULL = noch nicht berechnet. Einmalig beim ersten Extract,
+        # On-Demand via Detail-Modal-Button neu rechenbar.
+        for col, sqltype in (
+            ("calories_per_serving", "INTEGER"),
+            ("protein_g", "REAL"),
+            ("carbs_g", "REAL"),
+            ("fat_g", "REAL"),
+            ("nutrition_computed_at", "REAL"),
+        ):
+            if col not in cols:
+                c.execute(f"ALTER TABLE recipes ADD COLUMN {col} {sqltype}")
 
         rt_cols = {r[1] for r in c.execute("PRAGMA table_info(recipe_tags)").fetchall()}
         if "auto" not in rt_cols:
@@ -1074,6 +1086,35 @@ class Database:
                 "ORDER BY rt.auto DESC, t.name",
                 (recipe_id,),
             ).fetchall()
+            return [dict(r) for r in rows]
+
+    # ─── Nährwerte ──────────────────────────────────────────────────────
+    def recipe_set_nutrition(self, recipe_id: int, calories: int,
+                              protein_g: float, carbs_g: float, fat_g: float) -> None:
+        """Schreibt die KI-geschätzten Nährwerte + Zeitstempel.
+        Aufgerufen vom Worker nach Extract und vom on-demand-Endpoint."""
+        with self.conn() as c:
+            c.execute(
+                "UPDATE recipes SET calories_per_serving=?, protein_g=?, "
+                "carbs_g=?, fat_g=?, nutrition_computed_at=? WHERE id=?",
+                (calories, protein_g, carbs_g, fat_g, time.time(), recipe_id),
+            )
+
+    def recipes_pending_nutrition(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Rezepte mit Zutaten >= 3 aber ohne berechnete Nährwerte. Für
+        Bulk-Compute (Audit-Trigger). Limit gegen Endlos-Listen."""
+        with self.conn() as c:
+            rows = c.execute("""
+                SELECT r.id, r.name, r.servings,
+                       (SELECT COUNT(*) FROM recipe_ingredients WHERE recipe_id=r.id) as ing_count
+                FROM recipes r
+                WHERE r.calories_per_serving IS NULL
+                  AND r.ingredients_status = 'ok'
+                GROUP BY r.id
+                HAVING ing_count >= 3
+                ORDER BY r.id
+                LIMIT ?
+            """, (limit,)).fetchall()
             return [dict(r) for r in rows]
 
     # ─── User-Verwaltung (Multi-User-Auth) ──────────────────────────────
