@@ -262,42 +262,61 @@ def extraction_status():
 
 @router.post("/recover-empty")
 def recover_empty() -> Dict[str, Any]:
-    """Setzt ingredients_status='pending' für alle Rezepte die status='ok'
-    haben aber 0 Zutaten in recipe_ingredients. Meist alte Extracts wo das
-    Prompt zu restriktiv war (PDF-Header / Markdown-Bullets übersehen) und
-    die KI leer zurückgab. Worker pickt die zurückgesetzten Rezepte auf und
-    versucht neu mit dem aktuellen Prompt."""
+    """Setzt ingredients_status='pending' für alle Rezepte die status IN
+    ('ok','error') haben aber 0 Zutaten in recipe_ingredients. Meist alte
+    Extracts wo das Prompt zu restriktiv war oder das JSON abgeschnitten
+    wurde. Worker pickt die zurückgesetzten Rezepte auf und versucht neu
+    mit dem aktuellen Prompt + max_tokens=6000.
+
+    Robustheit: fetch im read-only context, UPDATE in executemany (eine
+    Transaktion). Response minimal (count + ids), kein dict(r) damit
+    JSON-Encoding nicht an Umlauten/None scheitern kann."""
     db = get_db()
-    with db.conn() as c:
-        rows = c.execute("""
-            SELECT r.id, r.name, length(r.description) as dl
-            FROM recipes r
-            LEFT JOIN recipe_ingredients ri ON ri.recipe_id = r.id
-            WHERE r.ingredients_status IN ('ok', 'error')
-              AND r.description IS NOT NULL
-              AND length(r.description) >= 20
-            GROUP BY r.id
-            HAVING COUNT(ri.id) = 0
-        """).fetchall()
-        ids = [int(r["id"]) for r in rows]
-        for rid in ids:
-            c.execute(
-                "UPDATE recipes SET ingredients_status='pending' WHERE id=?",
-                (rid,),
-            )
-    # Worker ggf. anwerfen — extract_worker pickt 'pending' selbst
-    from ..recipes.indexer import ensure_extraction_running
     try:
-        ensure_extraction_running()
+        # 1. Read: fetch alle Kandidaten in einer einzigen SELECT
+        with db.conn() as c:
+            rows = c.execute("""
+                SELECT r.id
+                FROM recipes r
+                LEFT JOIN recipe_ingredients ri ON ri.recipe_id = r.id
+                WHERE r.ingredients_status IN ('ok', 'error')
+                  AND r.description IS NOT NULL
+                  AND length(r.description) >= 20
+                GROUP BY r.id
+                HAVING COUNT(ri.id) = 0
+            """).fetchall()
+        ids = [int(r["id"]) for r in rows]
+
+        # 2. Write: alle IDs in einer Transaktion via executemany
+        if ids:
+            with db.conn() as c:
+                c.executemany(
+                    "UPDATE recipes SET ingredients_status='pending' WHERE id=?",
+                    [(rid,) for rid in ids],
+                )
+
+        # 3. Worker starten
+        from ..recipes.indexer import ensure_extraction_running
+        worker_started = False
+        try:
+            worker_started = ensure_extraction_running()
+        except Exception as e:
+            logger.warning(f"recover-empty: worker-start failed: {e}", exc_info=True)
+
+        logger.info(
+            f"recover-empty: {len(ids)} Rezepte → 'pending', "
+            f"worker_started={worker_started}"
+        )
+        return {
+            "ok": True,
+            "reset_count": len(ids),
+            "ids": ids,
+            "worker_started": worker_started,
+        }
     except Exception as e:
-        logger.warning(f"recover-empty: worker-start failed: {e}")
-    logger.info(f"recover-empty: {len(ids)} Rezepte zurückgesetzt auf pending")
-    return {
-        "ok": True,
-        "reset_count": len(ids),
-        "ids": ids,
-        "recipes": [dict(r) for r in rows],
-    }
+        # Defensiv: Stack-Trace ins Log damit User-Report 'Fehler 500' diagnostizierbar
+        logger.exception(f"recover-empty failed: {e}")
+        raise HTTPException(500, f"recover-empty failed: {type(e).__name__}: {e}")
 
 
 @router.post("/{recipe_id}/nutrition")
