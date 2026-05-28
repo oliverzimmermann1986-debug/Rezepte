@@ -1,12 +1,15 @@
 """API für Pending-Items: Auflisten, Vorschau, Auflösen."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from ..auth import require_auth
 from ..config_store import get_config
