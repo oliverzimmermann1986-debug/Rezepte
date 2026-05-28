@@ -312,14 +312,39 @@ class Database:
             import logging
             logging.getLogger(__name__).warning(f"FTS5-Backfill skipped: {e}")
 
+        # FTS5-Integrity-Check + Auto-Rebuild bei Korruption.
+        # Nach Crash/SIGKILL kann der FTS-Index zwischen recipes-Triggern und
+        # FTS-Schreibvorgängen inkonsistent werden — späteres recipes-UPDATE
+        # crashed dann mit 'database disk image is malformed' obwohl die
+        # main-DB ok ist. Bei jedem Start einmal prüfen: bei Fehler komplett
+        # rebuilden. Kosten: einmalig ~50ms bei 100 Rezepten.
+        import logging as _log
+        _logger = _log.getLogger(__name__)
+        try:
+            c.execute("INSERT INTO recipes_fts(recipes_fts) VALUES('integrity-check')")
+        except Exception as e:
+            _logger.warning(
+                f"FTS-Integrity-Check failed ({type(e).__name__}: {e}) — "
+                f"rebuilding Index automatisch"
+            )
+            try:
+                c.execute("INSERT INTO recipes_fts(recipes_fts) VALUES('rebuild')")
+                _logger.info("FTS-Index erfolgreich rebuilt")
+            except Exception as e2:
+                _logger.error(f"FTS-Rebuild failed: {e2} — Volltext-Suche evtl kaputt")
+
     @contextmanager
     def conn(self):
         # SQLite: pro-Aufruf Verbindung, dank check_same_thread=False thread-safe genug.
-        # synchronous=NORMAL ist per-connection und muss jedes Mal gesetzt werden;
-        # journal_mode=WAL ist file-persistent (einmalig in __init__ gesetzt).
+        # journal_mode=WAL ist file-persistent (einmalig in __init__).
+        # busy_timeout=10s per-Connection: SQLite-internes Polling wenn ein anderer
+        # Writer die DB locked — wichtig bei 3× parallelen Worker-Threads. Ohne das
+        # bekommt der Caller sofort 'database is locked' (SQLITE_BUSY).
+        # synchronous=NORMAL ist sicher mit WAL (kein Datenverlust bei OS-Crash).
         c = sqlite3.connect(str(self.path), timeout=10, check_same_thread=False)
         c.row_factory = sqlite3.Row
         try:
+            c.execute("PRAGMA busy_timeout=10000")
             c.execute("PRAGMA synchronous=NORMAL")
             c.execute("PRAGMA foreign_keys=ON")
             yield c

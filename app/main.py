@@ -91,6 +91,24 @@ async def _lifespan(app):
         yield
     finally:
         _sd_notify("STOPPING=1")
+        # Sauberes Shutdown: Worker-Thread stoppen damit keine FTS-Transaktion
+        # mitten im Schreiben abreißt (SQLite-Korruption-Risiko bei SIGKILL).
+        # Wir warten max 25s — systemd-Default TimeoutStopSec ist 90s, lässt
+        # also Puffer. Bei längerem worker-loop wird nach 25s zu SIGKILL eskaliert,
+        # aber WAL-Mode macht das Crash-safe.
+        try:
+            from .recipes.indexer import stop_extraction, is_extraction_running
+            stop_extraction()
+            import asyncio as _aio, time as _t
+            deadline = _t.time() + 25
+            while is_extraction_running() and _t.time() < deadline:
+                await _aio.sleep(0.5)
+            if is_extraction_running():
+                logger.warning("Worker nach 25s noch aktiv — wird gekillt")
+            else:
+                logger.info("Worker sauber beendet")
+        except Exception as e:
+            logger.warning(f"Worker-Shutdown failed: {e}")
 
 
 # -------- FastAPI --------
