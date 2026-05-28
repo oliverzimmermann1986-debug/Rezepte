@@ -80,6 +80,7 @@ function scrapperApp() {
       // KI-Sanity-Background-Job: Progress beim Polling
       aiSanity: { running: false, processed: 0, total: 0, findings: 0, pollHandle: null },
       bulkApplying: false,    // Loading-state für apply-all
+      activeTab: 'gaps',      // Audit-Tab-State: gaps / fs / ai / duplicates
     },
     // Stammdaten-Page: Tags + canonical Zutaten-Namen-Verwaltung
     master: {

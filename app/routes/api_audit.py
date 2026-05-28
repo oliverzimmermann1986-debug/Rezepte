@@ -106,7 +106,47 @@ def get_audit(
     empty_recipes = [dict(r) for r in empty_rows]
     result["empty_recipes"] = empty_recipes
 
-    # Summary erweitert um die drei neuen Kategorien
+    # Daten-Lücken-Detections (kein Bild / keine Schritte / keine URL /
+    # nur 1-2 Zutaten / keine Description). EIN Query mit allen Flags pro
+    # Rezept — Python sortiert dann in die Buckets. Limit pro Bucket auf
+    # 100 damit das UI nicht überflutet.
+    with db.conn() as c:
+        all_rows = c.execute("""
+            SELECT r.id, r.name, r.folder_path, r.url, r.thumb_filename,
+                   r.ingredients_status,
+                   COALESCE(length(r.description), 0) as desc_len,
+                   (SELECT COUNT(*) FROM recipe_ingredients WHERE recipe_id=r.id) as ing_count,
+                   (SELECT COUNT(*) FROM recipe_steps WHERE recipe_id=r.id) as step_count
+            FROM recipes r
+        """).fetchall()
+
+    no_image, no_steps, no_url, few_ingredients, no_description = [], [], [], [], []
+    for row in all_rows:
+        d = dict(row)
+        if not d.get("thumb_filename"):
+            no_image.append(d)
+        # 'no_steps' nur sinnvoll wenn Zutaten da sind (sonst ist's das gleiche
+        # wie 'empty_recipes' und doppelt-counted)
+        if d["ing_count"] > 0 and d["step_count"] == 0:
+            no_steps.append(d)
+        if not d.get("url"):
+            no_url.append(d)
+        # 'few_ingredients': 1-2 Zutaten ist verdächtig — meist KI-Halbextrakt
+        if 0 < d["ing_count"] < 3:
+            few_ingredients.append(d)
+        if d["desc_len"] < 20:
+            no_description.append(d)
+
+    data_gaps = {
+        "no_image": no_image[:100],
+        "no_steps": no_steps[:100],
+        "no_url": no_url[:100],
+        "few_ingredients": few_ingredients[:100],
+        "no_description": no_description[:100],
+    }
+    result["data_gaps"] = data_gaps
+
+    # Summary erweitert um die drei neuen Kategorien + Daten-Lücken
     result["summary"] = {
         "exact_count": sum(len(g["items"]) for g in result["exact_duplicates"]),
         "exact_groups": len(result["exact_duplicates"]),
@@ -125,6 +165,11 @@ def get_audit(
         "ai_name_count": len(name_findings),
         "ai_folder_count": len(folder_findings),
         "empty_recipe_count": len(empty_recipes),
+        "no_image_count": len(no_image),
+        "no_steps_count": len(no_steps),
+        "no_url_count": len(no_url),
+        "few_ingredients_count": len(few_ingredients),
+        "no_description_count": len(no_description),
     }
     return result
 

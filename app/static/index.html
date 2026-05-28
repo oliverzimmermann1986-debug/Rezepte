@@ -1991,7 +1991,33 @@
           </div>
         </div>
 
-        <!-- Verdächtig leere Rezepte: status=ok aber 0 Zutaten -->
+        <!-- Tab-Bar zur Strukturierung der vielen Findings-Sektionen -->
+        <div class="audit-tabs" x-show="audit.data">
+          <button class="audit-tab" :class="audit.activeTab === 'duplicates' && 'active'"
+                  @click="audit.activeTab = 'duplicates'">
+            📑 Duplikate
+            <span class="audit-tab-count" x-text="(audit.summary?.exact_count||0) + (audit.summary?.url_count||0) + (audit.summary?.folder_count||0) + (audit.summary?.similar_count||0) + (audit.summary?.bad_count||0)"></span>
+          </button>
+          <button class="audit-tab" :class="audit.activeTab === 'ai' && 'active'"
+                  @click="audit.activeTab = 'ai'">
+            🤖 KI-Findings
+            <span class="audit-tab-count" x-text="(audit.summary?.ai_category_count||0) + (audit.summary?.ai_name_count||0) + (audit.summary?.ai_folder_count||0)"></span>
+          </button>
+          <button class="audit-tab" :class="audit.activeTab === 'fs' && 'active'"
+                  @click="audit.activeTab = 'fs'">
+            🔴 FS-Konflikte
+            <span class="audit-tab-count" x-text="audit.summary?.sync_error_count||0"></span>
+          </button>
+          <button class="audit-tab" :class="audit.activeTab === 'gaps' && 'active'"
+                  @click="audit.activeTab = 'gaps'">
+            📭 Daten-Lücken
+            <span class="audit-tab-count" x-text="(audit.summary?.empty_recipe_count||0) + (audit.summary?.no_image_count||0) + (audit.summary?.no_steps_count||0) + (audit.summary?.no_url_count||0) + (audit.summary?.few_ingredients_count||0) + (audit.summary?.no_description_count||0)"></span>
+          </button>
+        </div>
+
+        <!-- ════ Tab: Daten-Lücken ════ -->
+        <div x-show="audit.activeTab === 'gaps'">
+          <!-- Verdächtig leere Rezepte: status=ok aber 0 Zutaten -->
         <div class="audit-section" x-show="(audit.data?.empty_recipes?.length || 0) > 0">
           <h3>📭 Verdächtig leer (<span x-text="audit.data?.empty_recipes?.length"></span>)</h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
@@ -2019,6 +2045,111 @@
           </template>
         </div>
 
+        <!-- 🖼 Kein Bild (thumb_filename ist NULL) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.no_image?.length || 0) > 0">
+          <h3>🖼 Kein Bild (<span x-text="audit.summary?.no_image_count"></span>)</h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte ohne Thumbnail. Beim nächsten Re-Scrape wird oft eins geholt; oder selbst eines im Folder ablegen.
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.no_image || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong></div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 📋 Keine Schritte (Zutaten da, aber 0 steps) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.no_steps?.length || 0) > 0">
+          <h3>📋 Keine Schritte (<span x-text="audit.summary?.no_steps_count"></span>)</h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte mit Zutaten aber leerer Schritt-Liste. KI hat keine fand oder Description war nur eine Zutatenliste.
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.no_steps || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong>
+                  <span class="muted" style="font-size: 12px;" x-text="'· ' + r.ing_count + ' Zutaten'"></span>
+                </div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 🔗 Keine URL (manuell angelegt oder Scraper-Bug) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.no_url?.length || 0) > 0">
+          <h3>🔗 Keine URL (<span x-text="audit.summary?.no_url_count"></span>)</h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte ohne TikTok/Insta-URL. Meist manuell angelegt — kein Re-Scrape möglich.
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.no_url || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong></div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 🥄 Nur 1-2 Zutaten (verdächtig wenig) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.few_ingredients?.length || 0) > 0">
+          <h3>🥄 Nur 1-2 Zutaten (<span x-text="audit.summary?.few_ingredients_count"></span>)</h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte mit nur 1-2 Zutaten. Möglich, aber meist Halbextrakt der KI — manuell editieren oder neu extrahieren.
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.few_ingredients || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong>
+                  <span class="muted" style="font-size: 12px;" x-text="'· ' + r.ing_count + ' Zutat' + (r.ing_count === 1 ? '' : 'en')"></span>
+                </div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 📝 Keine Beschreibung (description leer/<20 chars) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.no_description?.length || 0) > 0">
+          <h3>📝 Keine Beschreibung (<span x-text="audit.summary?.no_description_count"></span>)</h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte ohne (oder mit fast leerer) Beschreibung. KI kann nichts extrahieren — info.json oder .txt-Datei fehlt.
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.no_description || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong>
+                  <span class="muted" style="font-size: 12px;" x-text="'· ' + r.desc_len + ' chars'"></span>
+                </div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
+        </div>
+        <!-- ════ /Tab: Daten-Lücken ════ -->
+
+        <!-- ════ Tab: FS-Konflikte ════ -->
+        <div x-show="audit.activeTab === 'fs'">
         <!-- FS-Konflikte (vom letzten Sync) -->
         <div class="audit-section" x-show="(audit.data?.sync_errors?.length || 0) > 0">
           <h3>🔴 FS-Sync-Konflikte (<span x-text="audit.data?.sync_errors?.length"></span>)</h3>
@@ -2050,7 +2181,11 @@
             </div>
           </template>
         </div>
+        </div>
+        <!-- ════ /Tab: FS-Konflikte ════ -->
 
+        <!-- ════ Tab: KI-Findings ════ -->
+        <div x-show="audit.activeTab === 'ai'">
         <!-- KI-Findings: Falsche Kategorie -->
         <div class="audit-section" x-show="(audit.data?.ai_category_findings?.length || 0) > 0">
           <h3>🤖 Falsche Kategorie (<span x-text="audit.data?.ai_category_findings?.length"></span>)
@@ -2137,8 +2272,10 @@
             </div>
           </template>
         </div>
+        </div>
+        <!-- ════ /Tab: KI-Findings ════ -->
 
-        <!-- Loading / leerer Zustand -->
+        <!-- Loading / leerer Zustand (global, außerhalb der Tabs) -->
         <div x-show="!audit.data && audit.loading" class="empty-state">
           Scanne Rezepte<span x-show="audit.withAi"> + frage KI</span>…
         </div>
@@ -2146,6 +2283,8 @@
           Klick „Neu scannen" um zu starten.
         </div>
 
+        <!-- ════ Tab: Duplikate ════ -->
+        <div x-show="audit.activeTab === 'duplicates'">
         <!-- 1) Exakte Dubletten -->
         <div class="audit-section" x-show="audit.data?.exact_duplicates?.length > 0">
           <h3>Exakte Namens-Dubletten <span class="muted" x-text="'(' + audit.data.exact_duplicates.length + ' Gruppen)'"></span></h3>
@@ -2282,9 +2421,11 @@
             </div>
           </template>
         </div>
+        </div>
+        <!-- ════ /Tab: Duplikate ════ -->
 
-        <!-- Alles sauber -->
-        <div x-show="audit.data && (audit.summary?.exact_count || 0) === 0 && (audit.summary?.url_count || 0) === 0 && (audit.summary?.similar_count || 0) === 0 && (audit.summary?.bad_count || 0) === 0" class="empty-state">
+        <!-- Alles sauber (global, nur wenn alle Counter 0) -->
+        <div x-show="audit.data && (audit.summary?.exact_count || 0) === 0 && (audit.summary?.url_count || 0) === 0 && (audit.summary?.similar_count || 0) === 0 && (audit.summary?.bad_count || 0) === 0 && (audit.summary?.sync_error_count || 0) === 0 && (audit.summary?.ai_category_count || 0) === 0 && (audit.summary?.ai_name_count || 0) === 0 && (audit.summary?.ai_folder_count || 0) === 0 && (audit.summary?.empty_recipe_count || 0) === 0" class="empty-state">
           ✓ Keine Findings. Alles sauber.
         </div>
       </div>
