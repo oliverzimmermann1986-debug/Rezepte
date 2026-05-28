@@ -144,6 +144,8 @@ function scrapperApp() {
       // Drop. Wenn der Endpoint nicht da ist (alte Backend-Version): Fall-
       // back auf setInterval-Polling.
       this._startEventStream();
+      // Pull-to-Refresh nach DOM-Init (nextTick) damit ptr-indicator da ist
+      this.$nextTick(() => this.initPullToRefresh());
     },
     _startEventStream() {
       try {
@@ -198,6 +200,149 @@ function scrapperApp() {
     showToast(message, type = 'ok') {
       this.toast = { show: true, message, type };
       setTimeout(() => this.toast.show = false, 3500);
+      // Haptic-Feedback: kurzer Tick bei OK, längerer Tap-Pattern bei Fehler.
+      // Wirkt nur auf Mobile mit Vibrate-API + User-Geste in der History.
+      if ('vibrate' in navigator) {
+        try {
+          navigator.vibrate(type === 'ok' ? 15 : [25, 35, 25]);
+        } catch (_) {}
+      }
+    },
+
+    // Haptic-Helper für Quick-Actions ohne Toast (Tap-Bestätigung).
+    // Wird z.B. bei Cart-Swipes, Verify-Checkbox, Cook-Mode-Toggle aufgerufen.
+    haptic(pattern = 10) {
+      if ('vibrate' in navigator) {
+        try { navigator.vibrate(pattern); } catch (_) {}
+      }
+    },
+
+    // Pull-to-Refresh: touch-tracking auf dem document. Wenn man am
+    // Listen-Anfang nach unten zieht (>80px) und loslässt, wird die
+    // aktuelle Page neu geladen. Indicator-Element 'ptr-indicator'
+    // wird visuell mitgezogen.
+    initPullToRefresh() {
+      // Nur Mobile (Touch-Geräte). Auf Desktop nutzt der User F5.
+      if (!('ontouchstart' in window)) return;
+      let startY = 0, currentY = 0, pulling = false;
+      const TRIGGER = 80;  // px die gezogen werden müssen
+      const ind = document.getElementById('ptr-indicator');
+      if (!ind) return;
+
+      document.addEventListener('touchstart', (e) => {
+        // Nur am Scroll-Anfang anfangen — wenn User schon weiter unten ist,
+        // soll das normale Scrollen weiterlaufen
+        if (window.scrollY > 5) return;
+        // Nicht in Modals (recipeDetail, fsCompare etc) auslösen
+        if (document.querySelector('.modal-backdrop[style*="display: flex"]')) return;
+        startY = e.touches[0].clientY;
+        pulling = true;
+      }, { passive: true });
+
+      document.addEventListener('touchmove', (e) => {
+        if (!pulling) return;
+        currentY = e.touches[0].clientY;
+        const delta = currentY - startY;
+        if (delta > 0 && window.scrollY === 0) {
+          // Indicator-Position: max bei 1.2× TRIGGER, dann „prall"
+          const progress = Math.min(delta / (TRIGGER * 1.5), 1);
+          ind.style.transform = `translate(-50%, ${delta * 0.5}px)`;
+          ind.style.opacity = String(progress);
+          ind.classList.toggle('ready', delta >= TRIGGER);
+        }
+      }, { passive: true });
+
+      document.addEventListener('touchend', () => {
+        if (!pulling) return;
+        const delta = currentY - startY;
+        pulling = false;
+        ind.style.transform = '';
+        ind.style.opacity = '';
+        ind.classList.remove('ready');
+        if (delta >= TRIGGER && window.scrollY === 0) {
+          this.haptic(20);
+          this.reloadCurrentPage();
+        }
+      });
+    },
+
+    // Welche Methode ist „die richtige für die aktive Seite". Wird vom
+    // Pull-to-Refresh aufgerufen. Andere Pages → no-op.
+    reloadCurrentPage() {
+      const map = {
+        recipes: () => this.loadRecipes(),
+        cart: () => this.loadCart(),
+        pending: () => this.loadPending(),
+        audit: () => this.loadAudit(),
+        dashboard: () => this.loadDashboard(),
+      };
+      const fn = map[this.page];
+      if (fn) {
+        fn();
+        this.showToast('⟳ Neu geladen');
+      }
+    },
+
+    // ────────────────────────────────────────────────────────────────────
+    // Cart-Swipe-Actions (Mobile)
+    // Swipe links (>= 60px) → toggle 'erledigt' Status
+    // Swipe rechts (>= 60px) → löschen mit Confirm
+    // Während des Swipes wird die Karte mit transform: translateX bewegt
+    // und der entsprechende Action-Hintergrund (grün/rot) sichtbar.
+    // ────────────────────────────────────────────────────────────────────
+    _swipe: { startX: 0, startY: 0, currentX: 0, locked: null, id: null, el: null },
+    cartSwipeStart(e, id) {
+      const t = e.touches[0];
+      this._swipe = {
+        startX: t.clientX, startY: t.clientY,
+        currentX: t.clientX, locked: null,
+        id, el: e.currentTarget,
+      };
+    },
+    cartSwipeMove(e, id) {
+      if (this._swipe.id !== id) return;
+      const t = e.touches[0];
+      const dx = t.clientX - this._swipe.startX;
+      const dy = t.clientY - this._swipe.startY;
+      // Lock: erst Achse bestimmen (vermeidet konflikt mit vertikalem Scrollen)
+      if (this._swipe.locked === null) {
+        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+          this._swipe.locked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+        }
+      }
+      if (this._swipe.locked !== 'x') return;
+      this._swipe.currentX = t.clientX;
+      // Bewege die Karte. Max ±150px (begrenzt sonst optisch)
+      const limited = Math.max(-150, Math.min(150, dx));
+      this._swipe.el.style.transform = `translateX(${limited}px)`;
+      // Wenn Threshold erreicht: Hintergrund stärker zeigen via Klasse
+      const parent = this._swipe.el.parentElement;
+      parent.classList.toggle('swipe-active-left', dx >= 60);
+      parent.classList.toggle('swipe-active-right', dx <= -60);
+    },
+    async cartSwipeEnd(e, it) {
+      if (this._swipe.id !== it.id) return;
+      const dx = this._swipe.currentX - this._swipe.startX;
+      const el = this._swipe.el;
+      const parent = el?.parentElement;
+      const wasSwipe = this._swipe.locked === 'x';
+      // Reset visual
+      if (el) el.style.transform = '';
+      if (parent) {
+        parent.classList.remove('swipe-active-left', 'swipe-active-right');
+      }
+      this._swipe = { startX: 0, startY: 0, currentX: 0, locked: null, id: null, el: null };
+      if (!wasSwipe) return;
+      // Action triggern
+      if (dx >= 60) {
+        this.haptic(15);
+        await this.toggleCartItem(it.id, !it.checked);
+      } else if (dx <= -60) {
+        this.haptic([20, 30, 20]);
+        if (confirm(`„${it.name}" entfernen?`)) {
+          await this.deleteCartItem(it.id);
+        }
+      }
     },
     formatDuration(sec) {
       if (sec === null || sec === undefined) return '—';

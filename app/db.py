@@ -638,14 +638,23 @@ class Database:
 
     def cleanup_old_jobs(self, days: int = 90) -> int:
         """Löscht Job-Einträge älter als ``days`` Tage. Hindert die jobs-Tabelle
-        am unbegrenzten Wachsen (bei OnCalendar=*:0/30 = 17.500/Jahr)."""
+        am unbegrenzten Wachsen (bei OnCalendar=*:0/30 = 17.500/Jahr).
+        Plus: opportunistischer WAL-Checkpoint danach — bei langlaufendem
+        Prozess kann die -wal-Datei sonst stetig wachsen."""
         cutoff = time.time() - days * 86400
         with self.conn() as c:
             cur = c.execute(
                 "DELETE FROM jobs WHERE ended_at IS NOT NULL AND ended_at < ?",
                 (cutoff,),
             )
-            return cur.rowcount or 0
+            n = cur.rowcount or 0
+        if n > 0:
+            try:
+                with self.conn() as c:
+                    c.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception:
+                pass
+        return n
 
     def jobs_delete_failed(self) -> int:
         """Löscht ALLE Jobs mit Status='error'. Sinnvoll zum Aufräumen

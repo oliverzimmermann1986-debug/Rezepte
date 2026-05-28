@@ -107,6 +107,18 @@ async def _lifespan(app):
                 logger.warning("Worker nach 25s noch aktiv — wird gekillt")
             else:
                 logger.info("Worker sauber beendet")
+
+            # PRAGMA optimize beim Shutdown — SQLite-Doc empfiehlt das vor
+            # längeren Shutdowns. Plus WAL-Checkpoint(TRUNCATE) damit die
+            # -wal-Datei nicht beim nächsten Start gross ist. Beide günstig
+            # (~ms) und ohne Risiko bei WAL-Mode.
+            try:
+                with _db.conn() as c:
+                    c.execute("PRAGMA optimize")
+                    c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                logger.info("DB: optimize + wal_checkpoint(TRUNCATE) ok")
+            except Exception as e:
+                logger.warning(f"DB-Cleanup beim Shutdown failed: {e}")
         except Exception as e:
             logger.warning(f"Worker-Shutdown failed: {e}")
 

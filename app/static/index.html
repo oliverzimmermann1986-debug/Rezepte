@@ -8,6 +8,12 @@
   <script defer src="/static/alpine.min.js"></script>
 </head>
 <body>
+<!-- Pull-to-Refresh-Indicator. Wird vom JS-Touch-Handler manipuliert
+     (transform/opacity). Default unsichtbar. Mobile-only. -->
+<div id="ptr-indicator" class="ptr-indicator" aria-hidden="true">
+  <span class="ptr-arrow">↓</span>
+  <span class="ptr-text">Loslassen zum Neuladen</span>
+</div>
 <div class="app" x-data="scrapperApp()" x-init="init()" @keydown.escape.window="if (currentLog) currentLog = ''">
 
   <!-- ============ SIDEBAR ============ -->
@@ -1851,20 +1857,33 @@
         <!-- Liste -->
         <div class="cart-list" x-show="cart.items.length > 0">
           <template x-for="it in cart.items" :key="it.id">
-            <div class="cart-item" :class="it.checked && 'checked'">
-              <input type="checkbox" :checked="it.checked" @change="toggleCartItem(it.id, $event.target.checked)" />
-              <div class="cart-item-name">
-                <span x-text="it.name"></span>
+            <!-- Swipe-Wrapper: enthält Action-Layer (links erledigt, rechts löschen)
+                 + die eigentliche Karte die ge-swiped wird. -->
+            <div class="cart-swipe-row">
+              <div class="cart-swipe-actions cart-swipe-left">
+                <span>✓ erledigt</span>
               </div>
-              <div class="cart-item-amount">
-                <span x-show="it.amount !== null" x-text="formatAmount(it.amount)"></span>
-                <span class="muted" x-text="it.unit || ''"></span>
+              <div class="cart-swipe-actions cart-swipe-right">
+                <span>🗑 löschen</span>
               </div>
-              <div class="cart-item-source muted" x-show="it.source_recipe_ids.length > 0"
-                   :title="'aus '+it.source_recipe_ids.length+' Rezept(en)'">
-                <span x-text="it.source_recipe_ids.length"></span>×
+              <div class="cart-item" :class="it.checked && 'checked'"
+                   @touchstart="cartSwipeStart($event, it.id)"
+                   @touchmove="cartSwipeMove($event, it.id)"
+                   @touchend="cartSwipeEnd($event, it)">
+                <input type="checkbox" :checked="it.checked" @change="toggleCartItem(it.id, $event.target.checked)" />
+                <div class="cart-item-name">
+                  <span x-text="it.name"></span>
+                </div>
+                <div class="cart-item-amount">
+                  <span x-show="it.amount !== null" x-text="formatAmount(it.amount)"></span>
+                  <span class="muted" x-text="it.unit || ''"></span>
+                </div>
+                <div class="cart-item-source muted" x-show="it.source_recipe_ids.length > 0"
+                     :title="'aus '+it.source_recipe_ids.length+' Rezept(en)'">
+                  <span x-text="it.source_recipe_ids.length"></span>×
+                </div>
+                <button class="btn-icon" @click="deleteCartItem(it.id)" title="Entfernen">✕</button>
               </div>
-              <button class="btn-icon" @click="deleteCartItem(it.id)" title="Entfernen">✕</button>
             </div>
           </template>
         </div>
