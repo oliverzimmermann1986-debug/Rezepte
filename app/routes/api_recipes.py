@@ -165,7 +165,14 @@ class IngredientsUpdate(BaseModel):
 @router.put("/{recipe_id}/ingredients")
 def update_ingredients(recipe_id: int, payload: IngredientsUpdate):
     """Manuelle Override der Zutatenliste. Setzt ingredients_status='ok',
-    sodass der Background-Worker das Rezept nicht überschreibt."""
+    sodass der Background-Worker das Rezept nicht überschreibt.
+
+    Nach dem Save werden Diät-Tags (vegan/vegetarisch/laktosefrei/...) neu
+    berechnet — User hat ggf. Fleisch entfernt oder Milchprodukte ergänzt,
+    die alten Tags wären dann falsch. KI-Stil-Tags (italienisch, schnell,
+    pasta) bleiben unangetastet weil die aus der Description kommen, die
+    sich nicht geändert hat."""
+    from ..recipes.auto_tags import compute_diet_tags, DIET_TAGS
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
@@ -181,6 +188,24 @@ def update_ingredients(recipe_id: int, payload: IngredientsUpdate):
             "raw": ing.raw,
         })
     db.recipe_set_extraction_result(recipe_id, status="ok", ingredients=prepared)
+
+    # Diät-Tags recompute: nimm existierende auto-Tags die NICHT in DIET_TAGS
+    # sind (das sind die KI-Stil-Tags wie 'pasta', 'schnell') und merge sie
+    # mit den frisch berechneten Diät-Tags aus der neuen Zutatenliste.
+    try:
+        current_tags = db.recipe_tags_get(recipe_id)
+        non_diet_auto = [
+            t["name"] for t in current_tags
+            if t.get("auto") == 1 and t["name"] not in DIET_TAGS
+        ]
+        new_diet = compute_diet_tags([p["canonical_name"] for p in prepared])
+        merged = sorted(set(non_diet_auto) | set(new_diet))
+        db.recipe_auto_tags_set(recipe_id, merged)
+    except Exception as e:
+        # Diät-Tag-Recompute ist nice-to-have — bei Fehler nur loggen,
+        # Save selbst ist erfolgreich.
+        logger.warning(f"Rezept #{recipe_id}: diet-tag-recompute failed: {e}")
+
     return {"ok": True, "ingredients": db.recipe_ingredients_get(recipe_id)}
 
 
@@ -256,7 +281,21 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks):
         raise HTTPException(500, f"Analyzer-Setup fehlgeschlagen: {e}")
 
     try:
-        content = analyzer.analyze_recipe_content(desc)
+        with db.conn() as c:
+            tag_rows = c.execute("SELECT name FROM tags").fetchall()
+            existing_tags = [r[0] for r in tag_rows]
+            can_rows = c.execute(
+                "SELECT DISTINCT canonical_name FROM recipe_ingredients "
+                "WHERE canonical_name IS NOT NULL AND canonical_name != ''"
+            ).fetchall()
+            existing_canonical = [r[0] for r in can_rows]
+    except Exception:
+        existing_tags, existing_canonical = [], []
+
+    try:
+        content = analyzer.analyze_recipe_content(
+            desc, existing_tags=existing_tags, existing_canonical=existing_canonical,
+        )
     except Exception as e:
         db.recipe_set_extraction_result(recipe_id, status="error", ingredients=[])
         raise HTTPException(502, f"KI-Call fehlgeschlagen: {e}")

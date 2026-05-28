@@ -2153,14 +2153,39 @@
                 <span x-show="recipeDetail.data?.servings" class="muted" style="margin-left: 8px;">
                   für <span x-text="recipeDetail.data?.servings"></span> Portion(en)
                 </span>
-                <button class="btn btn-secondary btn-sm" style="float:right;" @click="extractIngredients()"
-                        :disabled="recipeDetail.extracting"
-                        :title="recipeDetail.data?.ingredients?.length ? 'Neu extrahieren (überschreibt Zutaten + Schritte)' : 'KI-Extraktion starten'">
-                  <span x-show="!recipeDetail.extracting">⟳ <span x-text="recipeDetail.data?.ingredients?.length ? 'Neu' : 'Extrahieren'"></span></span>
-                  <span x-show="recipeDetail.extracting">…</span>
-                </button>
+                <span style="float:right; display: flex; gap: 6px;">
+                  <!-- View-Mode-Buttons -->
+                  <template x-if="!recipeDetail.editingIngredients">
+                    <span style="display: flex; gap: 6px;">
+                      <button class="btn btn-secondary btn-sm" @click="startEditIngredients()"
+                              :disabled="recipeDetail.extracting"
+                              title="Zutaten manuell editieren">
+                        ✎ Bearbeiten
+                      </button>
+                      <button class="btn btn-secondary btn-sm" @click="extractIngredients()"
+                              :disabled="recipeDetail.extracting"
+                              :title="recipeDetail.data?.ingredients?.length ? 'Neu extrahieren (überschreibt Zutaten + Schritte)' : 'KI-Extraktion starten'">
+                        <span x-show="!recipeDetail.extracting">⟳ <span x-text="recipeDetail.data?.ingredients?.length ? 'Neu' : 'Extrahieren'"></span></span>
+                        <span x-show="recipeDetail.extracting">…</span>
+                      </button>
+                    </span>
+                  </template>
+                  <!-- Edit-Mode-Buttons -->
+                  <template x-if="recipeDetail.editingIngredients">
+                    <span style="display: flex; gap: 6px;">
+                      <button class="btn btn-secondary btn-sm" @click="cancelEditIngredients()">Abbrechen</button>
+                      <button class="btn btn-primary btn-sm" @click="saveIngredients()"
+                              :disabled="recipeDetail.savingIngredients">
+                        <span x-show="!recipeDetail.savingIngredients">💾 Speichern</span>
+                        <span x-show="recipeDetail.savingIngredients">…</span>
+                      </button>
+                    </span>
+                  </template>
+                </span>
               </h4>
-              <div class="ingredient-list">
+
+              <!-- View-Mode: read-only Liste -->
+              <div class="ingredient-list" x-show="!recipeDetail.editingIngredients">
                 <template x-for="(ing, idx) in recipeDetail.data?.ingredients || []" :key="idx">
                   <div class="ingredient-item">
                     <span class="ingredient-amount" x-show="ing.amount !== null">
@@ -2175,8 +2200,43 @@
                   <span x-show="recipeDetail.data?.ingredients_status === 'pending'">⏳ Wartet auf KI-Extraktion…</span>
                   <span x-show="recipeDetail.data?.ingredients_status === 'error'">⚠ Extraktion fehlgeschlagen — klick „Neu" zum Erneut-Versuchen.</span>
                   <span x-show="recipeDetail.data?.ingredients_status === 'skipped'">Beschreibung zu kurz für KI.</span>
-                  <span x-show="recipeDetail.data?.ingredients_status === 'ok'">— keine Zutaten erkannt —</span>
+                  <span x-show="recipeDetail.data?.ingredients_status === 'ok'">— keine Zutaten erkannt — klick „Bearbeiten" um manuell hinzuzufügen.</span>
                 </div>
+              </div>
+
+              <!-- Edit-Mode: jede Zutat als 3-Spalten-Input (Menge, Einheit, Name) -->
+              <div class="ingredient-edit" x-show="recipeDetail.editingIngredients">
+                <template x-for="(ing, idx) in recipeDetail.editIngs" :key="idx">
+                  <div class="ingredient-edit-row">
+                    <input type="number" step="0.01" min="0" class="ing-amount"
+                           x-model.number="ing.amount" placeholder="Menge">
+                    <select class="ing-unit" x-model="ing.unit">
+                      <option value="">—</option>
+                      <option value="g">g</option>
+                      <option value="kg">kg</option>
+                      <option value="ml">ml</option>
+                      <option value="l">l</option>
+                      <option value="TL">TL</option>
+                      <option value="EL">EL</option>
+                      <option value="Stück">Stück</option>
+                      <option value="Prise">Prise</option>
+                      <option value="Bund">Bund</option>
+                      <option value="Zehe">Zehe</option>
+                      <option value="Scheibe">Scheibe</option>
+                      <option value="Blatt">Blatt</option>
+                      <option value="Pck">Pck</option>
+                      <option value="Dose">Dose</option>
+                      <option value="Tasse">Tasse</option>
+                      <option value="Flasche">Flasche</option>
+                      <option value="Glas">Glas</option>
+                    </select>
+                    <input type="text" class="ing-name" x-model="ing.name" placeholder="Zutat">
+                    <button class="btn-icon" @click="removeIngredientRow(idx)" title="Entfernen">✕</button>
+                  </div>
+                </template>
+                <button class="btn btn-secondary btn-sm" @click="addIngredientRow()" style="margin-top: 8px;">
+                  + Zutat hinzufügen
+                </button>
               </div>
             </div>
 

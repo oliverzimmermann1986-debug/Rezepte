@@ -135,3 +135,11 @@ def compute_diet_tags(canonical_ingredients: List[str]) -> List[str]:
             tags.append("nussfrei")
 
     return tags
+
+
+# Set aller Tag-Namen die diese Funktion potenziell setzen kann —
+# wird vom manuellen Ingredients-PUT genutzt um KI-Stil-Tags und Diät-Tags
+# beim auto-Tag-Recompute sauber zu trennen.
+DIET_TAGS: frozenset = frozenset({
+    "vegan", "vegetarisch", "laktosefrei", "glutenfrei", "eifrei", "nussfrei",
+})

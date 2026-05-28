@@ -84,6 +84,10 @@ function scrapperApp() {
       multiplier: 1,    // Portionen-Skalierung beim Kochen
       cookMode: false,  // Koch-Modus: nur Schritte, große Schrift, Wake-Lock
       wakeLockActive: false,  // UI-Indikator ob Wake-Lock greift
+      // Zutaten-Edit-Modus: lokaler working-copy bis 'Speichern' geklickt wird
+      editingIngredients: false,
+      editIngs: [],
+      savingIngredients: false,
     },
     _wakeLock: null,
     // Per-Schritt-Timer (key = step.id, value = {status, remaining, intervalId})
@@ -1830,6 +1834,72 @@ function scrapperApp() {
         }
       } finally {
         this.recipeDetail.extracting = false;
+      }
+    },
+
+    // ── Zutaten-Edit-Mode ────────────────────────────────────────────
+    // Kopiert die aktuellen Zutaten in einen lokalen Working-Buffer und
+    // wechselt das UI in Edit-Mode. Save schickt PUT, Cancel discardet.
+    startEditIngredients() {
+      const current = this.recipeDetail.data?.ingredients || [];
+      // Deep-copy damit Edits nicht direkt durch Alpine in den View
+      // durchschlagen (würde Cancel inkonsistent machen)
+      this.recipeDetail.editIngs = current.map(i => ({
+        name: i.name || '',
+        amount: i.amount,
+        unit: i.unit || '',
+        raw: i.raw || null,
+      }));
+      this.recipeDetail.editingIngredients = true;
+    },
+
+    addIngredientRow() {
+      this.recipeDetail.editIngs.push({
+        name: '', amount: null, unit: '', raw: null,
+      });
+    },
+
+    removeIngredientRow(idx) {
+      this.recipeDetail.editIngs.splice(idx, 1);
+    },
+
+    cancelEditIngredients() {
+      this.recipeDetail.editingIngredients = false;
+      this.recipeDetail.editIngs = [];
+    },
+
+    async saveIngredients() {
+      if (this.recipeDetail.savingIngredients) return;
+      const id = this.recipeDetail.data?.id;
+      if (!id) return;
+      // Leere Zutaten (Name leer) werden serverseitig sowieso geskippt,
+      // aber wir filtern hier schon damit der Toast-Count stimmt.
+      const cleaned = this.recipeDetail.editIngs
+        .filter(i => (i.name || '').trim())
+        .map(i => ({
+          name: i.name.trim(),
+          amount: (i.amount === '' || i.amount == null) ? null : Number(i.amount),
+          unit: (i.unit || '').trim() || null,
+          raw: i.raw || null,
+        }));
+      this.recipeDetail.savingIngredients = true;
+      try {
+        const r = await this.api('PUT', `/api/recipes/${id}/ingredients`,
+                                  { ingredients: cleaned });
+        if (r && r.ok) {
+          // Server returnt die kanonisch verarbeitete Liste — UI darauf
+          // aktualisieren statt den lokalen Working-Buffer zu nutzen
+          this.recipeDetail.data.ingredients = r.ingredients;
+          // Tags könnten sich geändert haben (Diät-Tags Recompute) — frisch laden
+          const fresh = await this.api('GET', '/api/recipes/' + id);
+          if (fresh) this.recipeDetail.data = fresh;
+          this.recipeDetail.editingIngredients = false;
+          this.recipeDetail.editIngs = [];
+          this.showToast(`✓ ${cleaned.length} Zutaten gespeichert`);
+          this.loadFacets();
+        }
+      } finally {
+        this.recipeDetail.savingIngredients = false;
       }
     },
 

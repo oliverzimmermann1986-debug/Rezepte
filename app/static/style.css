@@ -2010,3 +2010,50 @@ input[type="checkbox"] { width: auto !important; }
   .audit-finding { flex-direction: column; }
   .audit-finding-actions { width: 100%; }
 }
+
+/* ── Zutaten-Edit-Mode im Detail-Modal ───────────────────────────────── */
+.ingredient-edit-row {
+  display: grid;
+  grid-template-columns: 90px 100px 1fr 36px;
+  gap: 6px;
+  margin-bottom: 6px;
+  align-items: center;
+}
+.ingredient-edit-row input,
+.ingredient-edit-row select {
+  padding: 6px 8px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  width: 100%;
+  min-width: 0;
+}
+.ingredient-edit-row .ing-amount { text-align: right; }
+.ingredient-edit-row .btn-icon {
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.ingredient-edit-row .btn-icon:hover {
+  background: rgba(248, 113, 113, .15);
+  color: var(--err);
+  border-color: var(--err);
+}
+
+@media (max-width: 600px) {
+  /* Auf Mobile: Amount + Einheit in einer Reihe, Name darunter */
+  .ingredient-edit-row {
+    grid-template-columns: 1fr 1fr 36px;
+    grid-template-areas: "amount unit remove" "name name name";
+    row-gap: 4px;
+  }
+  .ingredient-edit-row .ing-amount { grid-area: amount; }
+  .ingredient-edit-row .ing-unit { grid-area: unit; }
+  .ingredient-edit-row .ing-name { grid-area: name; }
+  .ingredient-edit-row .btn-icon { grid-area: remove; }
+}

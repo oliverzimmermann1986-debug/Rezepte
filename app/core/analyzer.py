@@ -492,24 +492,50 @@ class OpenAIAnalyzer:
             logger.warning(f"OpenAI Ingredients JSON-Parse: {e} | {content[:200]}")
             return []
 
-    def analyze_recipe_content(self, description: str) -> dict:
+    def analyze_recipe_content(self, description: str,
+                                existing_tags: Optional[List[str]] = None,
+                                existing_canonical: Optional[List[str]] = None) -> dict:
         """Kombinierter Call: extrahiert Zutaten + Zubereitungs-Schritte +
         Portionen-Anzahl + stilistische Tags in EINEM API-Roundtrip.
 
-        Spart gegenüber separaten Calls ~40% Tokens und ~50% Latenz.
+        Optional kann der Caller die DB-Stammdaten mitgeben:
+          existing_tags: bestehende Tag-Namen — KI soll diese bevorzugen
+            statt neue, ähnliche Varianten zu erfinden ('pasta' vs 'Pasta').
+          existing_canonical: bestehende canonical_name-Werte der Zutaten
+            — KI soll Zutaten-Namen so wählen dass das Canonical-Mapping
+            in app.recipes.canonicalize.canonical_name() denselben Wert
+            ergibt. Verhindert Dubletten wie 'Tomate' / 'Tomaten' / 'tomato'.
 
-        Rückgabe-Schema:
-          {
-            "ingredients": [{"name","amount","unit","raw"}, ...],
-            "steps": [{"instruction","timer_seconds"}, ...],
-            "servings": int | None,
-            "tags": [str, ...],   # stilistische Tags aus festem Vokabular
-          }
+        Spart gegenüber separaten Calls ~40% Tokens und ~50% Latenz.
 
         Diät/Allergie-Tags (vegan, vegetarisch, laktosefrei, glutenfrei)
         kommen NICHT von der KI — die werden deterministisch aus den
         canonical_names in app.recipes.auto_tags berechnet (sicherer).
         """
+        # Hint-Sections nur dann anhängen wenn der Caller Werte mitgibt.
+        # Cap auf 80 Items damit der Prompt nicht aufbläht — bei mehr
+        # nimmt die KI eh den Hint nur als grobe Orientierung.
+        hint = ""
+        if existing_tags:
+            tags_sample = sorted(set(t.strip() for t in existing_tags if t))[:80]
+            if tags_sample:
+                hint += (
+                    "\n\nBESTEHENDE TAGS in der DB (bevorzuge diese exakte Schreibweise "
+                    "statt ähnliche Varianten zu erfinden — z.B. 'pasta' statt 'Pasta', "
+                    "'meal-prep' statt 'meal_prep'):\n  "
+                    + ", ".join(tags_sample)
+                )
+        if existing_canonical:
+            can_sample = sorted(set(c.strip() for c in existing_canonical if c))[:120]
+            if can_sample:
+                hint += (
+                    "\n\nBESTEHENDE ZUTATEN-NAMEN in der DB (wähle den Namen so dass "
+                    "er deutsch + Singular + ohne Adjektive matcht — z.B. 'Tomate' "
+                    "(nicht 'Tomaten', nicht 'frische Tomaten'); typische Form orientiert "
+                    "sich an dieser Liste):\n  "
+                    + ", ".join(can_sample)
+                )
+
         system = (
             "Du analysierst deutschsprachige Rezept-Beschreibungen von TikTok/Instagram-Videos "
             "und extrahierst Zutaten, Zubereitungs-Schritte, Portionen-Anzahl und stilistische Tags. "
@@ -550,6 +576,7 @@ class OpenAIAnalyzer:
             "den Zutaten, weil das sicherer ist.\n\n"
             "Bei nicht-rezept-artigem Text: "
             '{"ingredients":[],"steps":[],"servings":null,"tags":[]}.'
+            + hint
         )
         content = self._call(system, f"Beschreibung:\n\n{description[:6000]}")
         if not content:
