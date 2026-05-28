@@ -2098,7 +2098,7 @@
           <button class="audit-tab" :class="audit.activeTab === 'gaps' && 'active'"
                   @click="audit.activeTab = 'gaps'">
             📭 Daten-Lücken
-            <span class="audit-tab-count" x-text="(audit.summary?.empty_recipe_count||0) + (audit.summary?.no_image_count||0) + (audit.summary?.no_steps_count||0) + (audit.summary?.no_url_count||0) + (audit.summary?.few_ingredients_count||0) + (audit.summary?.no_description_count||0) + (audit.summary?.no_nutrition_count||0)"></span>
+            <span class="audit-tab-count" x-text="(audit.summary?.empty_recipe_count||0) + (audit.summary?.no_image_count||0) + (audit.summary?.no_steps_count||0) + (audit.summary?.no_url_count||0) + (audit.summary?.few_ingredients_count||0) + (audit.summary?.no_description_count||0) + (audit.summary?.no_nutrition_count||0) + (audit.summary?.fs_missing_count||0)"></span>
           </button>
         </div>
 
@@ -2232,6 +2232,42 @@
             </div>
           </template>
         </div>
+        <!-- 📂 FS-Pfad fehlt (DB zeigt auf nicht-existenten Folder) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.fs_missing?.length || 0) > 0">
+          <h3>📂 FS-Pfad fehlt (<span x-text="audit.summary?.fs_missing_count"></span>)
+            <button class="btn btn-sm btn-primary" style="float:right;"
+                    @click="healFsPaths()"
+                    :disabled="audit.healingFs">
+              <span x-show="!audit.healingFs">🔧 Auto-Heal</span>
+              <span x-show="audit.healingFs">… läuft</span>
+            </button>
+          </h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            DB-Pfad zeigt auf Folder der nicht (mehr) existiert. Häufig
+            Underscore↔Space oder Case-Mismatch nach manuellem Rename.
+            Auto-Heal sucht passenden FS-Folder + korrigiert DB-Pfad.
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.fs_missing || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong></div>
+                <div class="muted" style="font-size: 12px;">
+                  DB: <code x-text="r.folder_path"></code>
+                </div>
+                <div class="muted" style="font-size: 12px;" x-show="r.resolved_path">
+                  FS: <code style="color: var(--accent);" x-text="r.resolved_path"></code> ← Match
+                </div>
+                <div class="muted" style="font-size: 12px; color: #c66;" x-show="!r.resolved_path">
+                  ✕ Kein FS-Match — manuell prüfen
+                </div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
         <!-- ⚡ Nährwerte fehlen (>= 3 Zutaten aber kein calories_per_serving) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.no_nutrition?.length || 0) > 0">
           <h3>⚡ Nährwerte fehlen (<span x-text="audit.summary?.no_nutrition_count"></span>)

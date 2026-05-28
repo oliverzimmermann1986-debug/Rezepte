@@ -82,6 +82,7 @@ function scrapperApp() {
       bulkApplying: false,    // Loading-state für apply-all
       activeTab: 'gaps',      // Audit-Tab-State: gaps / fs / ai / duplicates
       computingNutritionBulk: false,  // Loading für Bulk-Nährwerte
+      healingFs: false,                // Loading für FS-Path-Auto-Heal
     },
     // Stammdaten-Page: Tags + canonical Zutaten-Namen-Verwaltung
     master: {
@@ -2374,6 +2375,29 @@ function scrapperApp() {
         }
       } finally {
         this.audit.computingNutritionBulk = false;
+      }
+    },
+
+    // Auto-Heal: für alle FS-missing-Rezepte den DB-Pfad mit dem tatsächlichen
+    // FS-Folder synchronisieren (Underscore↔Space, Case-Toleranz).
+    // Idempotent — sicher mehrfach klickbar.
+    async healFsPaths() {
+      const n = this.audit.data?.data_gaps?.fs_missing?.length || 0;
+      if (n === 0) return;
+      this.audit.healingFs = true;
+      try {
+        const r = await this.api('POST', '/api/audit/heal-fs-paths');
+        if (r && r.ok) {
+          const unresolved = r.unresolvable?.length || 0;
+          if (unresolved === 0) {
+            this.showToast(`✓ ${r.healed} FS-Pfade korrigiert`);
+          } else {
+            this.showToast(`${r.healed} korrigiert · ${unresolved} ungelöst (siehe Liste)`, 'err');
+          }
+          await this.loadAudit();
+        }
+      } finally {
+        this.audit.healingFs = false;
       }
     },
 

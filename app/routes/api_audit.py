@@ -140,6 +140,27 @@ def get_audit(
         if d["ing_count"] >= 3 and not d.get("calories_per_serving"):
             no_nutrition.append(d)
 
+    # 'fs_missing': DB-folder_path zeigt auf nicht-existierenden FS-Folder.
+    # Häufige Ursache: User hat manuell umbenannt, oder Sync ist out-of-sync.
+    # Smart-Resolver kann oft helfen (Underscore↔Space, Case).
+    fs_missing = []
+    cfg = get_config()
+    recipe_root_str = str(cfg.get("paths", "recipe_dir", default="/mnt/rezepte"))
+    for row in all_rows:
+        d = dict(row)
+        fp = d.get("folder_path")
+        if not fp:
+            continue
+        # Nur prüfen wenn unter recipe_root (sonst rumstreunend)
+        if not fp.startswith(recipe_root_str):
+            continue
+        path = Path(fp)
+        if path.exists():
+            continue
+        resolved = _resolve_folder_by_name(path)
+        d["resolved_path"] = str(resolved) if resolved else None
+        fs_missing.append(d)
+
     data_gaps = {
         "no_image": no_image[:100],
         "no_steps": no_steps[:100],
@@ -147,6 +168,7 @@ def get_audit(
         "few_ingredients": few_ingredients[:100],
         "no_description": no_description[:100],
         "no_nutrition": no_nutrition[:100],
+        "fs_missing": fs_missing[:100],
     }
     result["data_gaps"] = data_gaps
 
@@ -175,6 +197,7 @@ def get_audit(
         "few_ingredients_count": len(few_ingredients),
         "no_description_count": len(no_description),
         "no_nutrition_count": len(no_nutrition),
+        "fs_missing_count": len(fs_missing),
     }
     return result
 
@@ -317,6 +340,32 @@ def resolve_finding(finding_id: int) -> Dict[str, Any]:
     return {"ok": True}
 
 
+def _resolve_folder_by_name(expected: Path) -> Optional[Path]:
+    """Sucht im Parent-Folder nach einer Variante des erwarteten Namens.
+    Toleriert Underscore↔Space-Swap und Groß-/Kleinschreibung. Returnt den
+    ersten Match oder None.
+
+    Hintergrund: DB-Pfad und FS-Folder können auseinanderlaufen wenn User
+    manuell umbenennt oder Sync den Namen normalisiert hat. Ein 1:1-exists()-
+    Check failt dann obwohl der Folder physikalisch da ist."""
+    parent = expected.parent
+    if not parent.exists() or not parent.is_dir():
+        return None
+    target = expected.name
+    norm = target.replace("_", " ").lower()
+    try:
+        for entry in parent.iterdir():
+            if not entry.is_dir():
+                continue
+            if entry.name == target:
+                return entry  # exakter Match (sollte nicht passieren wenn exists() failed, aber safety-first)
+            if entry.name.replace("_", " ").lower() == norm:
+                return entry
+    except (OSError, PermissionError):
+        pass
+    return None
+
+
 def _sanitize_folder_name(name: str) -> str:
     """Reduziert auf safe-Filenames: keine Slashes, Spaces → Underscore,
     keine Steuerzeichen, keine Windows-Reserved-Chars. Umlaute erlaubt."""
@@ -354,8 +403,26 @@ def _apply_finding_internal(finding_id: int) -> Dict[str, Any]:
         old_path.relative_to(recipe_root)
     except ValueError:
         raise HTTPException(400, f"Folder-Pfad nicht im Recipe-Root: {old_path}")
+
+    # Smart-Resolver: wenn DB-Pfad nicht existiert, im Parent-Folder nach
+    # Variante mit Underscore↔Space + case-insensitive suchen. Häufig:
+    # 'Käsespätzle Ofenkäse' in DB, 'Käsespätzle_Ofenkäse' im FS (oder
+    # umgekehrt) wegen Sync vs manuellem Rename.
     if not old_path.exists():
-        raise HTTPException(404, f"Folder nicht da: {old_path}")
+        resolved = _resolve_folder_by_name(old_path)
+        if resolved is not None and resolved != old_path:
+            logger.info(f"Apply #{finding_id}: DB-Pfad {old_path.name} → FS-Pfad {resolved.name} aufgelöst")
+            old_path = resolved
+            # DB-Pfad gleich mit-korrigieren damit das Problem nicht wieder kommt
+            with db.conn() as c:
+                c.execute("UPDATE recipes SET folder_path=? WHERE id=?",
+                          (str(resolved), finding["recipe_id"]))
+        else:
+            raise HTTPException(
+                404,
+                f"Folder nicht da: {old_path}. Keine FS-Variante mit Underscore/Space-Toleranz gefunden. "
+                f"Datei manuell verschoben? → erst Sync laufen lassen, dann nochmal."
+            )
 
     ftype = finding["finding_type"]
     suggested = (finding["suggested_value"] or "").strip()
@@ -426,6 +493,46 @@ def _apply_finding_internal(finding_id: int) -> Dict[str, Any]:
         f"{old_path} → {new_path}"
     )
     return {"ok": True, "new_path": str(new_path), "type": ftype, "recipe_id": finding["recipe_id"]}
+
+
+@router.post("/heal-fs-paths")
+def heal_fs_paths() -> Dict[str, Any]:
+    """Bulk: für alle Rezepte deren folder_path nicht existiert, im FS via
+    Smart-Resolver (Underscore↔Space, Case) suchen. Match → DB-Pfad
+    korrigieren. Kein Match → bleibt drin für manuelle Klärung.
+
+    Idempotent. Returnt {healed, unresolvable[]}."""
+    db = get_db()
+    cfg = get_config()
+    recipe_root_str = str(cfg.get("paths", "recipe_dir", default="/mnt/rezepte"))
+
+    with db.conn() as c:
+        rows = c.execute(
+            "SELECT id, name, folder_path FROM recipes WHERE folder_path LIKE ?",
+            (recipe_root_str + "%",),
+        ).fetchall()
+
+    healed = 0
+    unresolvable = []
+    for r in rows:
+        path = Path(r["folder_path"])
+        if path.exists():
+            continue
+        resolved = _resolve_folder_by_name(path)
+        if resolved is not None:
+            with db.conn() as c:
+                c.execute("UPDATE recipes SET folder_path=? WHERE id=?",
+                          (str(resolved), int(r["id"])))
+            healed += 1
+            logger.info(f"heal-fs-paths #{r['id']} '{r['name']}': {path} → {resolved}")
+        else:
+            unresolvable.append({
+                "id": int(r["id"]),
+                "name": r["name"],
+                "folder_path": r["folder_path"],
+            })
+    logger.info(f"heal-fs-paths: {healed} korrigiert, {len(unresolvable)} ungelöst")
+    return {"ok": True, "healed": healed, "unresolvable": unresolvable}
 
 
 @router.post("/finding/{finding_id}/apply")
