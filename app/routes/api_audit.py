@@ -87,9 +87,8 @@ def get_audit(
     result["ai_folder_findings"] = folder_findings
 
     # Verdächtig leere Rezepte: status='ok' aber 0 Zutaten obwohl Description da ist.
-    # Signal für: KI hat in einem früheren Lauf nichts gefunden (oft alter Prompt-
-    # Bug oder zu restriktive Klassifikation). User kann per Bulk-Button alle
-    # auf 'pending' zurücksetzen.
+    # Verifizierte Rezepte werden ausgeschlossen — User hat manuell bestätigt
+    # dass es so gewollt ist.
     with db.conn() as c:
         empty_rows = c.execute("""
             SELECT r.id, r.name, length(r.description) as desc_len, r.folder_path
@@ -98,6 +97,7 @@ def get_audit(
             WHERE r.ingredients_status IN ('ok', 'error')
               AND r.description IS NOT NULL
               AND length(r.description) >= 20
+              AND COALESCE(r.user_verified, 0) = 0
             GROUP BY r.id
             HAVING COUNT(ri.id) = 0
             ORDER BY length(r.description) DESC
@@ -114,6 +114,7 @@ def get_audit(
         all_rows = c.execute("""
             SELECT r.id, r.name, r.folder_path, r.url, r.thumb_filename,
                    r.ingredients_status, r.calories_per_serving,
+                   COALESCE(r.user_verified, 0) as user_verified,
                    COALESCE(length(r.description), 0) as desc_len,
                    (SELECT COUNT(*) FROM recipe_ingredients WHERE recipe_id=r.id) as ing_count,
                    (SELECT COUNT(*) FROM recipe_steps WHERE recipe_id=r.id) as step_count
@@ -123,20 +124,19 @@ def get_audit(
     no_image, no_steps, no_url, few_ingredients, no_description, no_nutrition = [], [], [], [], [], []
     for row in all_rows:
         d = dict(row)
+        # Verifizierte Rezepte werden ÜBERALL übersprungen — User-Override.
+        if d.get("user_verified"):
+            continue
         if not d.get("thumb_filename"):
             no_image.append(d)
-        # 'no_steps' nur sinnvoll wenn Zutaten da sind (sonst ist's das gleiche
-        # wie 'empty_recipes' und doppelt-counted)
         if d["ing_count"] > 0 and d["step_count"] == 0:
             no_steps.append(d)
         if not d.get("url"):
             no_url.append(d)
-        # 'few_ingredients': 1-2 Zutaten ist verdächtig — meist KI-Halbextrakt
         if 0 < d["ing_count"] < 3:
             few_ingredients.append(d)
         if d["desc_len"] < 20:
             no_description.append(d)
-        # 'no_nutrition': KI-Schätzung fehlt obwohl >=3 Zutaten da
         if d["ing_count"] >= 3 and not d.get("calories_per_serving"):
             no_nutrition.append(d)
 

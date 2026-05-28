@@ -277,6 +277,12 @@ class Database:
             ("carbs_g", "REAL"),
             ("fat_g", "REAL"),
             ("nutrition_computed_at", "REAL"),
+            # User-Verifikations-Flag: 1 = vom User manuell als 'ok' geprüft.
+            # Verifizierte Rezepte werden aus den Daten-Lücken-Detections
+            # ausgeschlossen — User-Override über die KI-Heuristik.
+            ("user_verified", "INTEGER NOT NULL DEFAULT 0"),
+            ("verified_at", "REAL"),
+            ("verified_by", "TEXT"),
         ):
             if col not in cols:
                 c.execute(f"ALTER TABLE recipes ADD COLUMN {col} {sqltype}")
@@ -1087,6 +1093,26 @@ class Database:
                 (recipe_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ─── User-Verifikation ──────────────────────────────────────────────
+    def recipe_set_verified(self, recipe_id: int, verified: bool,
+                              username: Optional[str]) -> None:
+        """Toggle für die 'manuell geprüft, ok'-Checkbox. Bei verified=True
+        wird Timestamp + Username für den Audit-Trail mitgeschrieben, bei
+        False werden beide gelöscht."""
+        with self.conn() as c:
+            if verified:
+                c.execute(
+                    "UPDATE recipes SET user_verified=1, verified_at=?, verified_by=? "
+                    "WHERE id=?",
+                    (time.time(), username, recipe_id),
+                )
+            else:
+                c.execute(
+                    "UPDATE recipes SET user_verified=0, verified_at=NULL, "
+                    "verified_by=NULL WHERE id=?",
+                    (recipe_id,),
+                )
 
     # ─── Nährwerte ──────────────────────────────────────────────────────
     def recipe_set_nutrition(self, recipe_id: int, calories: int,

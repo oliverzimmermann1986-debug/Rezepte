@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -320,6 +320,22 @@ def recover_empty() -> Dict[str, Any]:
         # Defensiv: Stack-Trace ins Log damit User-Report 'Fehler 500' diagnostizierbar
         logger.exception(f"recover-empty failed: {e}")
         raise HTTPException(500, f"recover-empty failed: {type(e).__name__}: {e}")
+
+
+@router.post("/{recipe_id}/verify")
+def toggle_verify(recipe_id: int, request: Request,
+                    verified: bool = Query(True)) -> Dict[str, Any]:
+    """Toggle 'manuell geprüft'-Flag. Verifizierte Rezepte werden aus den
+    Audit-Daten-Lücken-Listen ausgeschlossen — User-Override über KI-Heuristik.
+    Audit-Trail: speichert username + Timestamp."""
+    from ..auth import SESSION_COOKIE, session_user
+    db = get_db()
+    if not db.recipe_get(recipe_id):
+        raise HTTPException(404, "Rezept nicht gefunden")
+    username = session_user(request.cookies.get(SESSION_COOKIE, "")) or "?"
+    db.recipe_set_verified(recipe_id, verified, username if verified else None)
+    logger.info(f"verify #{recipe_id}: {verified} von '{username}'")
+    return {"ok": True, "verified": verified, "by": username}
 
 
 @router.post("/{recipe_id}/nutrition")

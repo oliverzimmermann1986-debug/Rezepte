@@ -2331,3 +2331,31 @@ input[type="checkbox"] { width: auto !important; }
   .nutrition-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .nutrition-value { font-size: 20px; }
 }
+
+/* ── Verify-Checkbox im Detail-Modal ─────────────────────────────────── */
+.verify-section {
+  background: rgba(var(--accent-rgb), .06);
+  border: 1px solid rgba(var(--accent-rgb), .25);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+.verify-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.verify-checkbox input[type="checkbox"] {
+  width: 18px; height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.verify-checkbox:has(input:checked) .verify-label {
+  color: var(--accent);
+  font-weight: 600;
+}
+.verify-label {
+  font-size: 14px;
+  flex: 1;
+}

@@ -2853,6 +2853,28 @@
               </div>
             </div>
 
+            <!-- User-Verifikation: 'manuell geprüft, ok' — schließt das Rezept
+                 aus den Daten-Lücken-Detections aus. -->
+            <div class="recipe-detail-section verify-section">
+              <label class="verify-checkbox">
+                <input type="checkbox"
+                       :checked="recipeDetail.data?.user_verified"
+                       @change="toggleVerified($event.target.checked)"
+                       :disabled="recipeDetail.verifying">
+                <span class="verify-label">
+                  ✓ Manuell geprüft, ok
+                  <span class="muted" style="font-size: 12px; font-weight: normal;"
+                        x-show="recipeDetail.data?.user_verified && recipeDetail.data?.verified_by">
+                    — von <span x-text="recipeDetail.data?.verified_by"></span>
+                    am <span x-text="recipeDetail.data?.verified_at ? formatTs(recipeDetail.data.verified_at) : ''"></span>
+                  </span>
+                </span>
+              </label>
+              <div class="muted" style="font-size: 12px; margin-top: 4px;">
+                Schließt dieses Rezept aus den Audit-Daten-Lücken aus (kein Bild / wenige Zutaten / etc).
+              </div>
+            </div>
+
             <!-- Nährwerte (pro Portion, KI-Schätzung) -->
             <div class="recipe-detail-section nutrition-section"
                  x-show="recipeDetail.data?.calories_per_serving || recipeDetail.data?.ingredients?.length >= 3">

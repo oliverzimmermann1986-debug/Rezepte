@@ -122,6 +122,7 @@ function scrapperApp() {
       savingIngredients: false,
       computingNutrition: false,    // Loading-state für ⚡ Berechnen-Button
       sharing: false,                // Loading-state für 🔗 Share-Button
+      verifying: false,              // Loading für 'manuell geprüft'-Toggle
     },
     _wakeLock: null,
     // Per-Schritt-Timer (key = step.id, value = {status, remaining, intervalId})
@@ -2071,6 +2072,29 @@ function scrapperApp() {
         }
       } finally {
         this.recipeDetail.sharing = false;
+      }
+    },
+
+    // 'Manuell geprüft, ok'-Toggle. Verifizierte Rezepte verschwinden aus
+    // den Audit-Daten-Lücken (kein Bild / wenige Zutaten / etc). Audit-Trail:
+    // Username + Timestamp werden mitgespeichert. Unchecken setzt beides
+    // zurück auf NULL.
+    async toggleVerified(verified) {
+      const id = this.recipeDetail.data?.id;
+      if (!id || this.recipeDetail.verifying) return;
+      this.recipeDetail.verifying = true;
+      try {
+        const r = await this.api('POST',
+          `/api/recipes/${id}/verify?verified=${verified ? 'true' : 'false'}`);
+        if (r && r.ok) {
+          // In-place updaten damit UI sofort den Username + Timestamp zeigt
+          this.recipeDetail.data.user_verified = verified ? 1 : 0;
+          this.recipeDetail.data.verified_by = verified ? r.by : null;
+          this.recipeDetail.data.verified_at = verified ? (Date.now() / 1000) : null;
+          this.showToast(verified ? '✓ Als geprüft markiert' : '⊘ Verifikation entfernt');
+        }
+      } finally {
+        this.recipeDetail.verifying = false;
       }
     },
 
