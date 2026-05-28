@@ -273,7 +273,7 @@ def recover_empty() -> Dict[str, Any]:
             SELECT r.id, r.name, length(r.description) as dl
             FROM recipes r
             LEFT JOIN recipe_ingredients ri ON ri.recipe_id = r.id
-            WHERE r.ingredients_status = 'ok'
+            WHERE r.ingredients_status IN ('ok', 'error')
               AND r.description IS NOT NULL
               AND length(r.description) >= 20
             GROUP BY r.id

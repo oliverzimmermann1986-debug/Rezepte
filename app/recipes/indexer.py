@@ -427,6 +427,13 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
         db.recipe_set_extraction_result(rid, status="error", ingredients=[])
         return
 
+    # KI hat None returnt = _call failed (timeout/length-trunc/etc).
+    # Lieber als error markieren damit der Audit-Tab das sichtbar macht.
+    if content is None:
+        logger.warning(f"Rezept #{rid}: analyze_recipe_content returnt None")
+        db.recipe_set_extraction_result(rid, status="error", ingredients=[])
+        return
+
     # canonical_name + unit-normalize beim Insert mit dranhängen
     prepared = []
     for it in (content.get("ingredients") or []):
@@ -437,6 +444,18 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
             "unit": normalize_unit(it.get("unit")),
             "raw": it.get("raw"),
         })
+
+    # Sicherheits-Netz: bei langer Description aber 0 Zutaten ist ziemlich
+    # sicher etwas schiefgelaufen (KI hat verweigert oder nichts erkannt).
+    # Status auf 'error' damit Audit das aufzeigt und User es nochmal triggern
+    # kann. Vorher wurde status='ok' gesetzt → Rezept fiel durchs Raster.
+    if not prepared and desc and len(desc.strip()) > 100:
+        logger.warning(
+            f"Rezept #{rid}: 0 Zutaten extrahiert obwohl description "
+            f"{len(desc)} chars hat — markiere als 'error' statt 'ok'"
+        )
+        db.recipe_set_extraction_result(rid, status="error", ingredients=[])
+        return
 
     db.recipe_set_extraction_result(rid, status="ok", ingredients=prepared)
     # Schritte + Portionen aus dem gleichen Call übernehmen

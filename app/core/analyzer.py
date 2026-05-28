@@ -92,12 +92,11 @@ class OpenAIAnalyzer:
         })
 
     def _call(self, system: str, user: str) -> Optional[str]:
-        # max_tokens=2000: ein Rezept-JSON mit 10 Zutaten + 8 Schritten + Tags
-        # braucht ~800-1200 Output-Tokens. Vorher waren das nur 300 — bei langen
-        # Markdown-Listen wurde das JSON mitten in der Zutat abgeschnitten
-        # ('{"name":"Pasta"|EOF), JSON.parse failed, Result = leer, status
-        # wurde trotzdem auf 'ok' gesetzt → User sah ZUTATEN (0) bei
-        # offensichtlich rezept-vollem Text. 2000 ist sicher mit Puffer.
+        # max_tokens=6000: bei gpt-4o-mini gibt's 16k Output-Limit, 6k ist
+        # also überdimensioniert. Output-Kosten bei mini sind ~$0.0006/1k,
+        # also auch bei 6k nur ~$0.004 worst-case pro Call — nicht relevant.
+        # Vorher: 300 → 2000, beides zu wenig für lange Rezepte mit vielen
+        # Schritten. Logging unten verrät wie groß die Antworten wirklich sind.
         try:
             r = self.session.post(
                 f"{self.base_url}/chat/completions",
@@ -109,7 +108,7 @@ class OpenAIAnalyzer:
                     ],
                     "response_format": {"type": "json_object"},
                     "temperature": 0.2,
-                    "max_tokens": 2000,
+                    "max_tokens": 6000,
                 },
                 timeout=self.timeout,
             )
@@ -117,18 +116,32 @@ class OpenAIAnalyzer:
             data = r.json()
             choices = data.get("choices") or []
             if not choices:
+                logger.warning("_call: keine choices in API-Response")
                 return None
-            # finish_reason='length' = abgeschnitten = JSON kaputt = unbrauchbar.
-            # Lieber None returnen damit der Worker das Rezept als 'error' markiert
-            # statt mit halb-extrahierten Zutaten als 'ok' zu speichern.
             finish = choices[0].get("finish_reason")
+            content = (choices[0].get("message") or {}).get("content", "").strip()
+
+            # Diagnose-Log: hilft beim Debugging warum Rezepte leer bleiben.
+            # input/output-Token zeigen ob die KI gar nicht erst antwortet
+            # oder die Antwort zu lang wurde.
+            usage = data.get("usage") or {}
+            logger.info(
+                f"_call: in={usage.get('prompt_tokens', '?')}t, "
+                f"out={usage.get('completion_tokens', '?')}t, "
+                f"finish={finish}, content_len={len(content)}"
+            )
+
             if finish == "length":
+                # Auch bei 6k erreicht? Dann ist was kaputt (Endlos-Loop in KI etc).
                 logger.warning(
-                    f"_call: max_tokens-Limit erreicht (finish_reason=length) — "
-                    f"JSON unvollständig, returnt None. System-Prompt evtl. kürzen."
+                    f"_call: max_tokens=6000 erreicht (finish_reason=length) — "
+                    f"JSON unvollständig. content[-200:]={content[-200:]!r}"
                 )
                 return None
-            return (choices[0].get("message") or {}).get("content", "").strip()
+            if not content:
+                logger.warning(f"_call: leerer content trotz finish={finish}")
+                return None
+            return content
         except requests.exceptions.HTTPError as e:
             # 401/403/429 sind häufig und sollten verständlich loggen
             try:
@@ -685,7 +698,11 @@ class OpenAIAnalyzer:
         )
         content = self._call(system, f"Beschreibung:\n\n{description[:6000]}")
         if not content:
-            return {"ingredients": [], "steps": [], "servings": None, "tags": []}
+            # _call hat None returnt (length-Truncation, network error,
+            # leerer choice). Aufrufer muss das als Fehler behandeln und
+            # NICHT als 'leer aber erfolgreich'. Zurück None statt empty
+            # dict — der Worker markiert dann als 'error' statt 'ok'.
+            return None
         try:
             data = json.loads(content)
             # Ingredients

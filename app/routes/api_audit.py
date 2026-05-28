@@ -95,7 +95,7 @@ def get_audit(
             SELECT r.id, r.name, length(r.description) as desc_len, r.folder_path
             FROM recipes r
             LEFT JOIN recipe_ingredients ri ON ri.recipe_id = r.id
-            WHERE r.ingredients_status = 'ok'
+            WHERE r.ingredients_status IN ('ok', 'error')
               AND r.description IS NOT NULL
               AND length(r.description) >= 20
             GROUP BY r.id
