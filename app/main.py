@@ -21,7 +21,7 @@ from .config_store import get_config
 from .db import get_db
 from .routes import (api_audit, api_browse, api_config, api_events, api_hdd, api_history,
                      api_jobs, api_master, api_metrics, api_pending, api_recipes, api_schedule,
-                     api_shopping, api_stats, api_test, api_users)
+                     api_shopping, api_stats, api_test, api_users, sharing)
 from .security import SecurityHeadersMiddleware, client_ip, login_limiter
 
 # -------- Logging --------
@@ -128,6 +128,10 @@ app.include_router(api_shopping.router)
 app.include_router(api_audit.router)
 app.include_router(api_master.router)
 app.include_router(api_users.router)
+# Sharing: Print-View (auth), Share-Token-API (auth), Public-Share (NO auth)
+app.include_router(sharing.print_router)
+app.include_router(sharing.share_api_router)
+app.include_router(sharing.public_router)
 
 
 # -------- Cookie-Helper --------

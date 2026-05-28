@@ -120,6 +120,7 @@ function scrapperApp() {
       editIngs: [],
       savingIngredients: false,
       computingNutrition: false,    // Loading-state für ⚡ Berechnen-Button
+      sharing: false,                // Loading-state für 🔗 Share-Button
     },
     _wakeLock: null,
     // Per-Schritt-Timer (key = step.id, value = {status, remaining, intervalId})
@@ -2036,6 +2037,39 @@ function scrapperApp() {
         }
       } finally {
         this.recipeDetail.computingNutrition = false;
+      }
+    },
+
+    // Print-View in neuem Tab öffnen — Browser-Cmd+P speichert als PDF.
+    // Print-View ist eine eigenständige, auth-required HTML-Route mit
+    // print-optimiertem Inline-CSS (@media print).
+    printRecipe() {
+      const id = this.recipeDetail.data?.id;
+      if (!id) return;
+      window.open(`/recipe/${id}/print`, '_blank', 'noopener,noreferrer');
+    },
+
+    // Signierten Share-Link erstellen + in Clipboard kopieren.
+    // 30 Tage gültig. Empfänger braucht keinen Login, sieht nur das Rezept.
+    async shareRecipe() {
+      const id = this.recipeDetail.data?.id;
+      if (!id || this.recipeDetail.sharing) return;
+      this.recipeDetail.sharing = true;
+      try {
+        const r = await this.api('POST', `/api/recipes/${id}/share`,
+                                  { expires_days: 30 });
+        if (!r || !r.url) return;
+        // Clipboard-API kann fehlschlagen (kein HTTPS, kein User-Gesture etc).
+        // Fallback: prompt() damit User manuell kopieren kann.
+        try {
+          await navigator.clipboard.writeText(r.url);
+          this.showToast(`✓ Link kopiert (${r.expires_days}d gültig)`);
+        } catch (e) {
+          // eslint-disable-next-line no-alert
+          window.prompt('Share-Link (Strg+C zum Kopieren):', r.url);
+        }
+      } finally {
+        this.recipeDetail.sharing = false;
       }
     },
 

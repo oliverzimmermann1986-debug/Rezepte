@@ -2634,6 +2634,22 @@
         <h3 x-text="recipeDetail.data?.name || ''"></h3>
         <div style="display:flex; align-items: center; gap: 6px;">
           <span x-show="recipeDetail.wakeLockActive" class="wake-lock-indicator" title="Bildschirm bleibt wach">🔆 wach</span>
+          <!-- Drucken / PDF: öffnet print-View in neuem Tab, Browser-cmd+P → PDF -->
+          <button class="btn btn-secondary btn-sm"
+                  x-show="!recipeDetail.cookMode"
+                  @click="printRecipe()"
+                  title="Print-View öffnen — Browser Cmd+P → Als PDF speichern">
+            📄
+          </button>
+          <!-- Teilen: signierten Share-Link erstellen + in Clipboard -->
+          <button class="btn btn-secondary btn-sm"
+                  x-show="!recipeDetail.cookMode"
+                  @click="shareRecipe()"
+                  :disabled="recipeDetail.sharing"
+                  title="Read-only-Link erstellen (30 Tage gültig)">
+            <span x-show="!recipeDetail.sharing">🔗</span>
+            <span x-show="recipeDetail.sharing">…</span>
+          </button>
           <button class="btn btn-secondary cook-mode-toggle"
                   :class="recipeDetail.cookMode && 'on'"
                   x-show="(recipeDetail.data?.steps?.length || 0) > 0"
