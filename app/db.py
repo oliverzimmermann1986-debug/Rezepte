@@ -171,7 +171,60 @@ CREATE TABLE IF NOT EXISTS audit_ai_findings (
 );
 CREATE INDEX IF NOT EXISTS idx_aaf_recipe ON audit_ai_findings(recipe_id);
 CREATE INDEX IF NOT EXISTS idx_aaf_open   ON audit_ai_findings(resolved, finding_type);
+
+-- recipes_fts: SQLite-FTS5-Volltextindex für recipes.{name, description, type, category}.
+-- 'unicode61 remove_diacritics 2' = Umlauten-/Akzent-Folding (Tomaten matcht Tomáten),
+-- 'content=recipes' = contentless FTS (kein doppelter Speicher, recipes ist Source of Truth).
+-- Trigger unten halten den Index aktuell.
+CREATE VIRTUAL TABLE IF NOT EXISTS recipes_fts USING fts5(
+  name, description, type, category,
+  content='recipes', content_rowid='id',
+  tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS recipes_fts_ai AFTER INSERT ON recipes BEGIN
+  INSERT INTO recipes_fts(rowid, name, description, type, category)
+  VALUES (new.id, new.name, COALESCE(new.description, ''),
+          COALESCE(new.type, ''), COALESCE(new.category, ''));
+END;
+CREATE TRIGGER IF NOT EXISTS recipes_fts_ad AFTER DELETE ON recipes BEGIN
+  INSERT INTO recipes_fts(recipes_fts, rowid, name, description, type, category)
+  VALUES ('delete', old.id, old.name, COALESCE(old.description, ''),
+          COALESCE(old.type, ''), COALESCE(old.category, ''));
+END;
+CREATE TRIGGER IF NOT EXISTS recipes_fts_au AFTER UPDATE ON recipes BEGIN
+  INSERT INTO recipes_fts(recipes_fts, rowid, name, description, type, category)
+  VALUES ('delete', old.id, old.name, COALESCE(old.description, ''),
+          COALESCE(old.type, ''), COALESCE(old.category, ''));
+  INSERT INTO recipes_fts(rowid, name, description, type, category)
+  VALUES (new.id, new.name, COALESCE(new.description, ''),
+          COALESCE(new.type, ''), COALESCE(new.category, ''));
+END;
 """
+
+
+def _build_fts_query(q: str) -> Optional[str]:
+    """User-Input → FTS5-MATCH-Syntax. Multi-Word wird AND-verknüpft, jedes
+    Token bekommt prefix-* damit Wortanfänge matchen.
+
+      'pasta cheese' → '"pasta"* AND "cheese"*'
+      'tomáten'      → '"tomáten"*'  (FTS5 entfernt Diakritika beim Tokenize)
+      'a'            → None  (Single-Char zu kurz, sonst Garbage-Matches)
+      ''             → None
+
+    Quoting der Tokens schützt vor FTS5-Syntax-Special-Chars (- + * etc.).
+    Tokens < 2 Chars werden skipped (FTS5 würde meckern bzw. zu viele Treffer)."""
+    if not q:
+        return None
+    import re
+    # Special FTS5-Chars + Punkte/Klammern raus, Underscore/Bindestrich als Spacer
+    cleaned = re.sub(r'[^\w\s\u00C0-\u017F-]+', ' ', q, flags=re.UNICODE)
+    cleaned = cleaned.replace('-', ' ').replace('_', ' ')
+    tokens = [t for t in cleaned.split() if len(t) >= 2]
+    if not tokens:
+        return None
+    # Maximal 8 Tokens (Performance + AND wird sonst sehr restriktiv)
+    tokens = tokens[:8]
+    return ' AND '.join(f'"{t}"*' for t in tokens)
 
 
 class Database:
@@ -207,6 +260,25 @@ class Database:
             # 0 = User-Tag (manuell gesetzt), 1 = Auto-Tag (vom KI/Regel-Pass).
             # Beim Re-Extract werden NUR Tags mit auto=1 ersetzt, User-Tags bleiben.
             c.execute("ALTER TABLE recipe_tags ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+
+        # FTS5-Backfill: wenn recipes_fts existiert aber leer ist (Migration auf
+        # bestehende DB ohne FTS), alle Rezepte indizieren. Triggers übernehmen
+        # ab da Pflege. Idempotent: fts_count > 0 → skip.
+        try:
+            fts_count = int(c.execute("SELECT COUNT(*) FROM recipes_fts").fetchone()[0])
+            rec_count = int(c.execute("SELECT COUNT(*) FROM recipes").fetchone()[0])
+            if rec_count > 0 and fts_count == 0:
+                c.execute("""
+                    INSERT INTO recipes_fts(rowid, name, description, type, category)
+                    SELECT id, name, COALESCE(description, ''),
+                           COALESCE(type, ''), COALESCE(category, '')
+                    FROM recipes
+                """)
+        except Exception as e:
+            # Bei sehr alter SQLite ohne FTS5 — nicht fatal, search-Endpoint
+            # fällt dann auf den LIKE-Fallback (siehe recipe_list)
+            import logging
+            logging.getLogger(__name__).warning(f"FTS5-Backfill skipped: {e}")
 
     @contextmanager
     def conn(self):
@@ -726,8 +798,18 @@ class Database:
         if folder_prefix:
             where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
         if search:
-            where.append("(r.name LIKE ? OR r.description LIKE ?)")
-            params.append(f"%{search}%"); params.append(f"%{search}%")
+            # FTS5 statt LIKE — O(log n) statt O(n), Multi-Word AND-verknüpft,
+            # Diakritika-Folding. Bei Build-Fail (nur Sonderzeichen) fallback
+            # auf LIKE damit der Aufruf nicht 0 Treffer returnt.
+            fts_q = _build_fts_query(search)
+            if fts_q:
+                where.append(
+                    "r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?)"
+                )
+                params.append(fts_q)
+            else:
+                where.append("(r.name LIKE ? OR r.description LIKE ?)")
+                params.append(f"%{search}%"); params.append(f"%{search}%")
         # Tag-AND: für jedes Tag eine EXISTS-Subquery
         if tag_ids:
             for tid in tag_ids:
@@ -772,8 +854,15 @@ class Database:
         if folder_prefix:
             where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
         if search:
-            where.append("(r.name LIKE ? OR r.description LIKE ?)")
-            params.append(f"%{search}%"); params.append(f"%{search}%")
+            fts_q = _build_fts_query(search)
+            if fts_q:
+                where.append(
+                    "r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?)"
+                )
+                params.append(fts_q)
+            else:
+                where.append("(r.name LIKE ? OR r.description LIKE ?)")
+                params.append(f"%{search}%"); params.append(f"%{search}%")
         if tag_ids:
             for tid in tag_ids:
                 where.append(
