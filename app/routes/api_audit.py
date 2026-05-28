@@ -221,6 +221,73 @@ class DeleteByPathPayload(BaseModel):
     folder_path: str
 
 
+@router.get("/folder-preview")
+def folder_preview(path: str) -> Dict[str, Any]:
+    """Liefert den Inhalt eines FS-Konflikt-Folders (info.json, description,
+    Media-File-Listing). Damit kann der User im UI Side-by-Side vergleichen:
+    den in-DB Eintrag (über das normale Modal) UND den auf-FS Konflikt-Folder
+    (über diesen Endpoint).
+
+    Liest direkt vom FS, nicht aus DB (Folder ist ja nicht in DB drin —
+    deswegen entstand der Konflikt). Path-Traversal-Schutz wie bei delete."""
+    import json as _json
+    from pathlib import Path
+    cfg = get_config()
+    recipe_root = Path(cfg.get("paths", "recipe_dir", default="/mnt/rezepte")).resolve()
+    target = Path(path).resolve()
+    try:
+        target.relative_to(recipe_root)
+    except ValueError:
+        raise HTTPException(400, f"Pfad nicht im Recipe-Root: {target}")
+    if not target.exists() or not target.is_dir():
+        raise HTTPException(404, f"Folder existiert nicht: {target}")
+
+    # info.json
+    info = {}
+    info_file = target / "info.json"
+    if info_file.exists():
+        try:
+            info = _json.loads(info_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            info = {"_parse_error": str(e)}
+
+    # description.txt — fallback auf größte .txt
+    description = ""
+    desc_file = target / "description.txt"
+    if not desc_file.exists():
+        txt_candidates = sorted(
+            (f for f in target.iterdir() if f.is_file() and f.suffix.lower() == ".txt"),
+            key=lambda f: f.stat().st_size, reverse=True,
+        )
+        if txt_candidates:
+            desc_file = txt_candidates[0]
+    if desc_file.exists():
+        try:
+            description = desc_file.read_text(encoding="utf-8")[:3000]
+        except Exception:
+            pass
+
+    # Medien-Files mit Größe
+    media = []
+    for f in sorted(target.iterdir()):
+        if not f.is_file():
+            continue
+        media.append({
+            "name": f.name,
+            "size": f.stat().st_size,
+            "ext": f.suffix.lower().lstrip("."),
+        })
+
+    return {
+        "ok": True,
+        "folder_path": str(target),
+        "folder_name": target.name,
+        "info": info,
+        "description": description,
+        "media": media,
+    }
+
+
 @router.post("/recipe/delete-by-path")
 def delete_folder_by_path(payload: DeleteByPathPayload) -> Dict[str, Any]:
     """Löscht einen Folder physisch — für FS-Konflikt-Folder die NIE in der DB

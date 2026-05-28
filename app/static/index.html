@@ -208,7 +208,6 @@
           </div>
         </div>
       </div>
-    </section>
 
       <!-- Reanalyze Progress -->
       <div x-show="reanalyzeProgress && reanalyzeProgress.running" class="card" style="margin-top: 18px;">
@@ -442,6 +441,7 @@
           </table>
         </div>
       </div>
+    </section>
 
     <!-- ========== PENDING ========== -->
     <section x-show="page==='pending'">
@@ -1961,6 +1961,7 @@
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
             Diese Folder konnten beim letzten Sync nicht in die DB. Meist URL-Dubletten —
             ein anderer Folder hat schon die gleiche TikTok/Insta-URL.
+            Klick „🔍 Vergleichen" um beide Folder Side-by-Side zu sehen und zu entscheiden welcher behalten wird.
           </div>
           <template x-for="se in (audit.data?.sync_errors || [])" :key="se.id">
             <div class="audit-finding">
@@ -1974,12 +1975,12 @@
                 </div>
               </div>
               <div class="audit-finding-actions">
-                <button class="btn btn-sm" @click="if (se.conflict_with_id) openRecipe(se.conflict_with_id)"
+                <button class="btn btn-sm btn-primary" @click="openFsCompare(se)"
                         x-show="se.conflict_with_id">
-                  Bestehendes ansehen
+                  🔍 Vergleichen
                 </button>
                 <button class="btn btn-sm btn-danger" @click="deleteFsConflictFolder(se.folder_path)">
-                  🗑 Folder löschen
+                  🗑 FS-Folder löschen
                 </button>
               </div>
             </div>
@@ -2179,6 +2180,85 @@
     </section>
 
   </main>
+
+  <!-- FS-Konflikt-Compare-Modal: Side-by-Side beider Folder -->
+  <div x-show="fsCompare.show" class="modal-backdrop" @click.self="fsCompare.show = false" x-transition.opacity>
+    <div class="modal modal-wide fs-compare-modal">
+      <div class="modal-head">
+        <h3>🔍 FS-Konflikt-Vergleich</h3>
+        <button class="btn-icon" @click="fsCompare.show = false">✕</button>
+      </div>
+      <div class="modal-body fs-compare-body">
+        <!-- Links: in-DB-Rezept -->
+        <div class="fs-compare-col">
+          <div class="fs-compare-head">
+            <span class="pill pill-ok">In DB</span>
+            <strong x-text="fsCompare.dbRecipe?.name || '…'"></strong>
+          </div>
+          <div x-show="!fsCompare.dbRecipe" class="muted">Wird geladen…</div>
+          <template x-if="fsCompare.dbRecipe">
+            <div class="fs-compare-content">
+              <div class="fs-compare-meta">
+                <div><strong>Folder:</strong> <code x-text="fsCompare.dbRecipe.folder_path"></code></div>
+                <div><strong>URL:</strong> <a :href="fsCompare.dbRecipe.url" target="_blank" x-text="fsCompare.dbRecipe.url"></a></div>
+                <div x-show="fsCompare.dbRecipe.type || fsCompare.dbRecipe.category">
+                  <strong>Kategorie:</strong>
+                  <span x-text="(fsCompare.dbRecipe.type || '?') + ' / ' + (fsCompare.dbRecipe.category || '?')"></span>
+                </div>
+                <div><strong>Zutaten:</strong> <span x-text="fsCompare.dbRecipe.ingredients?.length || 0"></span></div>
+              </div>
+              <div class="fs-compare-desc">
+                <strong>Beschreibung:</strong>
+                <pre x-text="(fsCompare.dbRecipe.description || '').substring(0, 1500)"></pre>
+              </div>
+              <div class="fs-compare-actions">
+                <button class="btn btn-secondary btn-sm" @click="openRecipe(fsCompare.dbRecipe.id); fsCompare.show = false">
+                  Im Detail-Modal öffnen
+                </button>
+                <button class="btn btn-danger btn-sm" @click="deleteFsCompareDb()">
+                  🗑 DB-Rezept + Folder löschen
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- Rechts: FS-Konflikt-Folder -->
+        <div class="fs-compare-col">
+          <div class="fs-compare-head">
+            <span class="pill pill-warn">FS (nicht in DB)</span>
+            <strong x-text="fsCompare.fsPreview?.info?.name || fsCompare.fsPreview?.folder_name || '…'"></strong>
+          </div>
+          <div x-show="!fsCompare.fsPreview" class="muted">Wird geladen…</div>
+          <template x-if="fsCompare.fsPreview">
+            <div class="fs-compare-content">
+              <div class="fs-compare-meta">
+                <div><strong>Folder:</strong> <code x-text="fsCompare.fsPreview.folder_path"></code></div>
+                <div x-show="fsCompare.fsPreview.info?.url">
+                  <strong>URL:</strong>
+                  <a :href="fsCompare.fsPreview.info.url" target="_blank" x-text="fsCompare.fsPreview.info.url"></a>
+                </div>
+                <div><strong>Medien:</strong>
+                  <template x-for="m in fsCompare.fsPreview.media" :key="m.name">
+                    <span class="pill" style="margin-right: 4px;" x-text="m.name + ' (' + Math.round(m.size/1024) + 'KB)'"></span>
+                  </template>
+                </div>
+              </div>
+              <div class="fs-compare-desc">
+                <strong>Beschreibung:</strong>
+                <pre x-text="(fsCompare.fsPreview.description || '— keine Beschreibung gefunden —').substring(0, 1500)"></pre>
+              </div>
+              <div class="fs-compare-actions">
+                <button class="btn btn-danger btn-sm" @click="deleteFsCompareFs()">
+                  🗑 FS-Folder löschen
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Rezept-Detail-Modal -->
   <div x-show="recipeDetail.show" class="modal-backdrop" @click.self="closeRecipeDetail()">

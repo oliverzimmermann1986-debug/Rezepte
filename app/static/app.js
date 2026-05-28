@@ -89,6 +89,14 @@ function scrapperApp() {
       canFilter: '',
       loading: false,
     },
+    // FS-Konflikt-Vergleichs-Modal: zeigt DB-Rezept und nicht-indexierten
+    // FS-Folder Side-by-Side, damit User entscheidet welcher behalten wird.
+    fsCompare: {
+      show: false,
+      syncError: null,    // Original-sync_errors row
+      dbRecipe: null,     // Vom GET /api/recipes/{id} (Konflikt-Partner)
+      fsPreview: null,    // Vom GET /api/audit/folder-preview (Konflikt-Folder)
+    },
     recipeDetail: {
       show: false, data: null, newTag: '',
       cooking: false, extracting: false,
@@ -2145,6 +2153,58 @@ function scrapperApp() {
 
     // FS-Konflikt-Folder physisch löschen via Audit-Endpoint des bestehenden
     // delete-flows. Hier nur ein confirm + danach reload.
+    // FS-Konflikt-Compare öffnen: lädt parallel DB-Rezept (per ID) und
+    // FS-Folder-Preview (info.json + description + media-Liste). User sieht
+    // beide Seiten und entscheidet welcher behalten wird.
+    async openFsCompare(syncError) {
+      this.fsCompare.show = true;
+      this.fsCompare.syncError = syncError;
+      this.fsCompare.dbRecipe = null;
+      this.fsCompare.fsPreview = null;
+      try {
+        const [db, fs] = await Promise.all([
+          syncError.conflict_with_id
+            ? this.api('GET', '/api/recipes/' + syncError.conflict_with_id)
+            : Promise.resolve(null),
+          this.api('GET', '/api/audit/folder-preview?path=' +
+                   encodeURIComponent(syncError.folder_path)),
+        ]);
+        this.fsCompare.dbRecipe = db;
+        this.fsCompare.fsPreview = fs;
+      } catch (e) {
+        this.showToast('Fehler beim Laden: ' + e.message, 'err');
+      }
+    },
+
+    // Compare-Aktion: das in-DB Rezept (+ sein Folder) löschen, dann
+    // automatisch nächsten Sync triggern damit der bisherige FS-Konflikt-
+    // Folder neu indexiert wird (= übernimmt die URL).
+    async deleteFsCompareDb() {
+      const r = this.fsCompare.dbRecipe;
+      if (!r) return;
+      if (!confirm(`DB-Rezept #${r.id} „${r.name}" löschen?\n\nDer Folder ${r.folder_path} wird auch entfernt.\nDanach kann der Konflikt-Folder beim nächsten Sync rein.`)) return;
+      const resp = await this.api('DELETE', '/api/recipes/' + r.id);
+      if (resp && resp.ok) {
+        this.showToast('✓ DB-Rezept gelöscht');
+        this.fsCompare.show = false;
+        await this.loadAudit();
+      }
+    },
+
+    // FS-Konflikt-Folder löschen (gleiches wie der Inline-Button, aber direkt
+    // aus dem Compare-Modal heraus).
+    async deleteFsCompareFs() {
+      const path = this.fsCompare.fsPreview?.folder_path;
+      if (!path) return;
+      if (!confirm(`FS-Folder löschen?\n\n${path}\n\nDie Dateien werden dauerhaft entfernt.`)) return;
+      const r = await this.api('POST', '/api/audit/recipe/delete-by-path', { folder_path: path });
+      if (r && r.ok) {
+        this.showToast('✓ FS-Folder gelöscht');
+        this.fsCompare.show = false;
+        await this.loadAudit();
+      }
+    },
+
     async deleteFsConflictFolder(folderPath) {
       if (!confirm(`Wirklich folder löschen?\n\n${folderPath}\n\nDas entfernt die Dateien auf dem FS dauerhaft.`)) return;
       const r = await this.api('POST', '/api/audit/recipe/delete-by-path', { folder_path: folderPath });
