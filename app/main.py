@@ -217,12 +217,31 @@ def logout():
 
 
 # -------- Home (geschützt) --------
+def _static_version() -> str:
+    """Cache-Buster für /static/app.js und /static/style.css.
+
+    mtime von app.js wird zum Token. Ändert sich bei jedem git pull +
+    systemctl restart — Browser lädt dann automatisch die neue Datei statt
+    aus dem Cache.
+
+    Wird einmal pro Request berechnet (kein hot-reload bei Dev-Edits
+    sonst, aber im Container ist's eh stabil pro Lifecycle)."""
+    try:
+        m = int((STATIC_DIR / "app.js").stat().st_mtime)
+        return str(m)
+    except Exception:
+        return "0"
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     token = request.cookies.get(SESSION_COOKIE, "")
     if not token or not verify_session(token):
         return RedirectResponse(url="/login", status_code=303)
-    return FileResponse(STATIC_DIR / "index.html")
+    # index.html mit {VERSION}-Token rendern — kein Jinja, simple String-replace
+    # reicht für genau einen Platzhalter.
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(html.replace("{VERSION}", _static_version()))
 
 
 # -------- Exception-Handler --------
