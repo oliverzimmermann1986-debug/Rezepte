@@ -1,7 +1,27 @@
 // Scrapper Manager - Frontend Logic
 function scrapperApp() {
   return {
-    page: 'dashboard',
+    page: 'recipes',
+    moreDrawerOpen: false,  // Bottom-Sheet mit Dashboard/Historie/Jobs/Config (Mobile only)
+
+    // Zentrale Navigations-Helper — page-switch plus die zugehörigen
+    // Loader. Vorher waren die Loader direkt im @click jeder nav-item,
+    // was beim Refactor (z.B. neue Bottom-Sheet) duplication erzeugte.
+    navTo(targetPage) {
+      this.page = targetPage;
+      // Drawer immer schließen wenn man eine andere Page wählt
+      this.moreDrawerOpen = false;
+      switch (targetPage) {
+        case 'pending':   this.loadPending(); this.loadFailedDownloads(); break;
+        case 'history':   this.loadHistory(); break;
+        case 'jobs':      this.loadJobs(); break;
+        case 'config':    this.loadConfig(); break;
+        case 'recipes':   this.loadRecipes(); this.loadFacets(); break;
+        case 'cart':      this.loadCart(); break;
+        case 'audit':     this.loadAudit(); break;
+        // dashboard: keine spezielle Loader, x-show triggert die Widgets
+      }
+    },
     config: {},
     rcloneArgsText: '',
     rcloneFilterText: '',

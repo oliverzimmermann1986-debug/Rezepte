@@ -14,6 +14,7 @@
   --fg-dim: #8e9aae;
   --fg-mute: #5a6577;
   --accent: #ff7849;
+  --accent-rgb: 255, 120, 73;     /* für rgba() in nav-pills + drawer */
   --accent-2: #ffb96b;
   --ok: #4ade80;
   --warn: #fbbf24;
@@ -698,11 +699,11 @@ input[type="checkbox"] { width: auto !important; }
   /* Grid -> single column */
   .app {
     grid-template-columns: 1fr;
-    /* Platz für die Bottom-Nav freihalten */
-    padding-bottom: 64px;
+    /* Platz für die Bottom-Nav freihalten (Höhe + safe-area) */
+    padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
   }
 
-  /* Sidebar -> fixed Bottom-Nav, horizontal */
+  /* Sidebar -> fixed Bottom-Nav, horizontal — App-Style */
   .sidebar {
     position: fixed;
     bottom: 0; left: 0; right: 0;
@@ -710,42 +711,160 @@ input[type="checkbox"] { width: auto !important; }
     height: auto;
     width: 100%;
     flex-direction: row;
+    justify-content: space-around;
     border-right: 0;
     border-top: 1px solid var(--border);
-    padding: 6px 4px;
-    gap: 2px;
+    padding: 4px 6px;
+    gap: 0;
     z-index: 50;
-    /* Sicherheitsabstand für iOS home-bar */
-    padding-bottom: max(6px, env(safe-area-inset-bottom));
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+    /* Safe-Area-Inset für iOS home-bar (Notch) */
+    padding-bottom: max(4px, env(safe-area-inset-bottom));
+    /* Solidem bg damit nichts durchschimmert */
+    background: var(--card);
+    /* Subtle shadow am oberen Rand für Erhöhung-Wirkung */
+    box-shadow: 0 -1px 12px rgba(0, 0, 0, .25);
   }
   .sidebar .logo,
   .sidebar .foot { display: none; }
+
   .nav-item {
     flex: 1 1 0;
-    min-width: 64px;
-    padding: 8px 4px;
+    min-width: 0;
+    padding: 7px 2px 6px;
     flex-direction: column;
     gap: 2px;
     font-size: 11px;
     text-align: center;
     border-left: 0;
-    border-bottom: 2px solid transparent;
+    border-bottom: 0;            /* alter underline-active raus */
+    border-radius: 12px;          /* runder pill-style */
     white-space: nowrap;
+    position: relative;
+    margin: 0 1px;
+    color: var(--fg-dim);
+    transition: background .12s ease, color .12s ease, transform .1s ease;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
   }
+  /* Tap-Feedback */
+  .nav-item:active {
+    background: rgba(var(--accent-rgb, 234, 88, 12), .15);
+    transform: scale(0.96);
+  }
+  /* Active-State: filled pill mit accent color */
   .nav-item.active {
-    border-left: 0;
-    border-bottom-color: var(--accent);
+    background: rgba(var(--accent-rgb, 234, 88, 12), .18);
+    color: var(--accent);
+  }
+  .nav-item.active .nav-label {
+    font-weight: 600;
+  }
+  .nav-icon {
+    font-size: 22px;
+    line-height: 1;
+    margin: 0;
+    display: block;
+  }
+  .nav-label {
+    font-size: 10px;
+    line-height: 1.2;
+    display: block;
   }
   .nav-item .badge {
     position: absolute;
+    top: 2px;
+    right: 50%;
+    transform: translateX(22px);
     margin: 0;
-    transform: translate(18px, -6px);
     font-size: 9px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 9px;
+    min-width: 16px;
     padding: 1px 4px;
+    line-height: 1.3;
+    font-weight: 600;
   }
+  .nav-item .badge.badge-warn {
+    background: #f59e0b;
+  }
+  /* Sekundäre Nav-Items auf Mobile ausblenden — die kommen in den Drawer */
+  .nav-secondary { display: none !important; }
+}
 
+/* "Mehr"-Item: auf Desktop verstecken (alle 8 Items sichtbar in Sidebar),
+   auf Mobile sichtbar als 5. Tab in der Bottom-Nav */
+.nav-more { display: none; }
+@media (max-width: 900px) {
+  .nav-more { display: flex; }
+}
+
+/* === Mehr-Drawer (Bottom-Sheet, nur Mobile) === */
+.more-drawer-backdrop {
+  display: none;
+}
+.more-drawer {
+  display: none;
+}
+@media (max-width: 900px) {
+  .more-drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .45);
+    z-index: 90;
+  }
+  .more-drawer {
+    display: block;
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    background: var(--card);
+    border-top-left-radius: 18px;
+    border-top-right-radius: 18px;
+    padding: 14px 12px;
+    padding-bottom: max(14px, env(safe-area-inset-bottom));
+    z-index: 95;
+    transform: translateY(105%);
+    transition: transform .25s cubic-bezier(.32, .72, 0, 1);
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, .35);
+  }
+  .more-drawer.open { transform: translateY(0); }
+  .more-drawer-grip {
+    width: 40px;
+    height: 4px;
+    background: var(--fg-dim);
+    border-radius: 2px;
+    margin: 0 auto 14px;
+    opacity: .35;
+  }
+  .more-drawer-item {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 14px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 15px;
+    color: var(--fg);
+    -webkit-tap-highlight-color: transparent;
+    transition: background .12s;
+  }
+  .more-drawer-item:active {
+    background: rgba(var(--accent-rgb, 234, 88, 12), .15);
+  }
+  .more-drawer-item.active {
+    background: rgba(var(--accent-rgb, 234, 88, 12), .18);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .more-drawer-item .more-icon {
+    font-size: 22px;
+    width: 28px;
+    text-align: center;
+  }
+}
+
+@media (max-width: 900px) {
   /* Main: kompakter */
   .main {
     padding: 18px 14px 24px;
@@ -1705,32 +1824,13 @@ input[type="checkbox"] { width: auto !important; }
    Mobile-Overhaul (feat: mobile improvements)
    ════════════════════════════════════════════════════════════════════ */
 
-/* Nav-Items: Icon + Label nebeneinander auf Desktop, gestackt im Footer */
-.nav-icon { margin-right: 6px; }
-.nav-label { }
-
-/* === Desktop-Sidebar nutzt Icon+Label inline === */
+/* Nav-Items auf Desktop: Icon + Label inline (siehe oberhalb für Mobile) */
 @media (min-width: 901px) {
-  .nav-icon { display: inline; }
+  .nav-icon { display: inline; margin-right: 6px; }
   .nav-label { display: inline; }
 }
-
-/* === Bottom-Nav auf Mobile: stacked Icon über Label === */
-@media (max-width: 900px) {
-  .nav-icon { margin-right: 0; font-size: 18px; line-height: 1; display: block; }
-  .nav-label { font-size: 11px; display: block; }
-}
-
-/* === Sehr kleine Phones: NUR Icons, mehr Items passen rein === */
-@media (max-width: 500px) {
-  .nav-label { display: none; }
-  .nav-icon { font-size: 20px; }
-  .sidebar { padding: 4px 2px; padding-bottom: max(4px, env(safe-area-inset-bottom)); }
-  .nav-item {
-    min-width: 36px;
-    padding: 8px 2px;
-  }
-}
+/* (Mobile Nav-Regeln stehen oberhalb in der zentralen @media (max-width:900px)-
+   Section, einheitlich mit Drawer + filled-pill-Active-State.) */
 
 /* ── Filter-Sidebar auf Mobile als Slide-in-Drawer ──────────────────── */
 .recipes-filter-btn { display: none; }

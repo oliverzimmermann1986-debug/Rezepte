@@ -14,35 +14,42 @@
   <aside class="sidebar">
     <div class="logo">SCRAPPER</div>
 
-    <div class="nav-item" :class="page==='dashboard' && 'active'" @click="page='dashboard'" title="Dashboard">
-      <span class="nav-icon">▤</span><span class="nav-label">Dashboard</span>
-    </div>
-    <div class="nav-item" :class="page==='pending' && 'active'" @click="page='pending'; loadPending(); loadFailedDownloads()" title="Pending">
-      <span class="nav-icon">⧗</span><span class="nav-label">Pending</span>
-      <span class="badge" x-show="status.pending_count > 0" x-text="status.pending_count"></span>
-    </div>
-    <div class="nav-item" :class="page==='history' && 'active'" @click="page='history'; loadHistory()" title="Historie">
-      <span class="nav-icon">⌖</span><span class="nav-label">Historie</span>
-    </div>
-    <div class="nav-item" :class="page==='jobs' && 'active'" @click="page='jobs'; loadJobs()" title="Jobs & Logs">
-      <span class="nav-icon">⏵</span><span class="nav-label">Jobs &amp; Logs</span>
-    </div>
-    <div class="nav-item" :class="page==='config' && 'active'" @click="page='config'; loadConfig()" title="Einstellungen">
-      <span class="nav-icon">⚙</span><span class="nav-label">Einstellungen</span>
-    </div>
-
-    <div class="nav-item" :class="page==='recipes' && 'active'" @click="page='recipes'; loadRecipes(); loadFacets()" title="Rezepte">
+    <!-- Primäre Tabs (sichtbar auf Mobile + Desktop) -->
+    <div class="nav-item nav-primary" :class="page==='recipes' && 'active'" @click="navTo('recipes')" title="Rezepte">
       <span class="nav-icon">🍳</span><span class="nav-label">Rezepte</span>
       <span class="badge" x-show="recipes.extractionPending > 0" x-text="recipes.extractionPending" title="Zutaten werden gerade extrahiert"></span>
     </div>
-    <div class="nav-item" :class="page==='cart' && 'active'" @click="page='cart'; loadCart()" title="Einkaufskorb">
-      <span class="nav-icon">🛒</span><span class="nav-label">Einkaufskorb</span>
+    <div class="nav-item nav-primary" :class="page==='cart' && 'active'" @click="navTo('cart')" title="Einkaufskorb">
+      <span class="nav-icon">🛒</span><span class="nav-label">Cart</span>
       <span class="badge" x-show="cart.items.length > 0" x-text="cart.items.length"></span>
     </div>
-    <div class="nav-item" :class="page==='audit' && 'active'" @click="page='audit'; loadAudit()" title="Audit">
+    <div class="nav-item nav-primary" :class="page==='pending' && 'active'" @click="navTo('pending')" title="Pending">
+      <span class="nav-icon">⏳</span><span class="nav-label">Pending</span>
+      <span class="badge" x-show="status.pending_count > 0" x-text="status.pending_count"></span>
+    </div>
+    <div class="nav-item nav-primary" :class="page==='audit' && 'active'" @click="navTo('audit')" title="Audit">
       <span class="nav-icon">🔍</span><span class="nav-label">Audit</span>
-      <span class="badge badge-warn" x-show="audit.summary && (audit.summary.exact_groups + audit.summary.similar_clusters + audit.summary.bad_count) > 0"
-            x-text="(audit.summary?.exact_groups || 0) + (audit.summary?.similar_clusters || 0) + (audit.summary?.bad_count || 0)"></span>
+      <span class="badge badge-warn" x-show="audit.summary && (audit.summary.exact_groups + audit.summary.similar_clusters + audit.summary.bad_count + audit.summary.sync_error_count + audit.summary.ai_category_count + audit.summary.ai_name_count) > 0"
+            x-text="(audit.summary?.exact_groups || 0) + (audit.summary?.similar_clusters || 0) + (audit.summary?.bad_count || 0) + (audit.summary?.sync_error_count || 0) + (audit.summary?.ai_category_count || 0) + (audit.summary?.ai_name_count || 0)"></span>
+    </div>
+
+    <!-- Sekundäre Tabs (auf Mobile im Mehr-Drawer, auf Desktop in Sidebar) -->
+    <div class="nav-item nav-secondary" :class="page==='dashboard' && 'active'" @click="navTo('dashboard')" title="Dashboard">
+      <span class="nav-icon">📊</span><span class="nav-label">Dashboard</span>
+    </div>
+    <div class="nav-item nav-secondary" :class="page==='history' && 'active'" @click="navTo('history')" title="Historie">
+      <span class="nav-icon">📜</span><span class="nav-label">Historie</span>
+    </div>
+    <div class="nav-item nav-secondary" :class="page==='jobs' && 'active'" @click="navTo('jobs')" title="Jobs & Logs">
+      <span class="nav-icon">⚡</span><span class="nav-label">Jobs &amp; Logs</span>
+    </div>
+    <div class="nav-item nav-secondary" :class="page==='config' && 'active'" @click="navTo('config')" title="Einstellungen">
+      <span class="nav-icon">⚙️</span><span class="nav-label">Einstellungen</span>
+    </div>
+
+    <!-- Mehr-Button (nur Mobile sichtbar) -->
+    <div class="nav-item nav-more" :class="moreDrawerOpen && 'active'" @click="moreDrawerOpen = !moreDrawerOpen" title="Mehr">
+      <span class="nav-icon">⋯</span><span class="nav-label">Mehr</span>
     </div>
 
     <div class="foot">
@@ -55,6 +62,29 @@
       <div style="margin-top: 12px">v1.0 · <a href="/logout">Logout</a></div>
     </div>
   </aside>
+
+  <!-- Mehr-Drawer (nur Mobile, Bottom-Sheet) -->
+  <div class="more-drawer-backdrop" x-show="moreDrawerOpen"
+       @click="moreDrawerOpen = false" x-transition.opacity></div>
+  <div class="more-drawer" :class="moreDrawerOpen && 'open'">
+    <div class="more-drawer-grip"></div>
+    <div class="more-drawer-item" :class="page==='dashboard' && 'active'"
+         @click="navTo('dashboard'); moreDrawerOpen = false">
+      <span class="more-icon">📊</span><span>Dashboard</span>
+    </div>
+    <div class="more-drawer-item" :class="page==='history' && 'active'"
+         @click="navTo('history'); moreDrawerOpen = false">
+      <span class="more-icon">📜</span><span>Historie</span>
+    </div>
+    <div class="more-drawer-item" :class="page==='jobs' && 'active'"
+         @click="navTo('jobs'); moreDrawerOpen = false">
+      <span class="more-icon">⚡</span><span>Jobs &amp; Logs</span>
+    </div>
+    <div class="more-drawer-item" :class="page==='config' && 'active'"
+         @click="navTo('config'); moreDrawerOpen = false">
+      <span class="more-icon">⚙️</span><span>Einstellungen</span>
+    </div>
+  </div>
 
   <!-- ============ MAIN ============ -->
   <main class="main">
