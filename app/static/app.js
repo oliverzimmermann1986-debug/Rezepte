@@ -15,7 +15,7 @@ function scrapperApp() {
         case 'pending':   this.loadPending(); this.loadFailedDownloads(); break;
         case 'history':   this.loadHistory(); break;
         case 'jobs':      this.loadJobs(); break;
-        case 'config':    this.loadConfig(); break;
+        case 'config':    this.loadConfig(); this.loadUsers(); break;
         case 'recipes':   this.loadRecipes(); this.loadFacets(); break;
         case 'cart':      this.loadCart(); break;
         case 'audit':     this.loadAudit(); break;
@@ -99,6 +99,14 @@ function scrapperApp() {
       syncError: null,    // Original-sync_errors row
       dbRecipe: null,     // Vom GET /api/recipes/{id} (Konflikt-Partner)
       fsPreview: null,    // Vom GET /api/audit/folder-preview (Konflikt-Folder)
+    },
+    // Benutzer-Verwaltung (Multi-User-Auth)
+    users: {
+      list: [],
+      loading: false,
+      showAdd: false,
+      creating: false,
+      addForm: { username: '', password: '', role: 'user' },
     },
     recipeDetail: {
       show: false, data: null, newTag: '',
@@ -818,6 +826,83 @@ function scrapperApp() {
     },
 
     // ------------- Config -------------
+    // ════════════════════════════════════════════════════════════════════
+    // Benutzer-Verwaltung (Multi-User-Auth, admin-only)
+    // ════════════════════════════════════════════════════════════════════
+    async loadUsers() {
+      this.users.loading = true;
+      try {
+        const r = await this.api('GET', '/api/users');
+        if (r) this.users.list = r.users || [];
+      } finally {
+        this.users.loading = false;
+      }
+    },
+
+    async createUser() {
+      const f = this.users.addForm;
+      if (!f.username || !f.password) {
+        this.showToast('Username und Passwort pflichtig', 'err');
+        return;
+      }
+      this.users.creating = true;
+      try {
+        const r = await this.api('POST', '/api/users', {
+          username: f.username.trim(),
+          password: f.password,
+          role: f.role,
+        });
+        if (r && r.ok) {
+          this.showToast(`✓ Benutzer '${r.username}' angelegt`);
+          this.users.showAdd = false;
+          this.users.addForm = { username: '', password: '', role: 'user' };
+          await this.loadUsers();
+        }
+      } finally {
+        this.users.creating = false;
+      }
+    },
+
+    async changeUserPassword(u) {
+      const pw = window.prompt(`Neues Passwort für „${u.username}":\n\n(mindestens 8 Zeichen)`);
+      if (!pw) return;
+      if (pw.length < 8) { this.showToast('Mindestens 8 Zeichen', 'err'); return; }
+      const r = await this.api('PATCH', `/api/users/${u.id}`, { password: pw });
+      if (r && r.ok) this.showToast('✓ Passwort geändert');
+    },
+
+    async setUserRole(u, newRole) {
+      if (u.role === newRole) return;
+      const r = await this.api('PATCH', `/api/users/${u.id}`, { role: newRole });
+      if (r && r.ok) {
+        this.showToast(`✓ Rolle: ${newRole}`);
+        await this.loadUsers();
+      } else {
+        // Bei Fehler (z.B. letzter Admin) Liste neu laden — Select wieder
+        // auf alten Wert zurück
+        await this.loadUsers();
+      }
+    },
+
+    async setUserDisabled(u, disabled) {
+      const r = await this.api('PATCH', `/api/users/${u.id}`, { disabled });
+      if (r && r.ok) {
+        this.showToast(disabled ? `✓ '${u.username}' deaktiviert` : `✓ '${u.username}' aktiviert`);
+        await this.loadUsers();
+      } else {
+        await this.loadUsers();
+      }
+    },
+
+    async deleteUser(u) {
+      if (!confirm(`Benutzer „${u.username}" wirklich löschen?\n\nDer Datensatz wird endgültig entfernt.`)) return;
+      const r = await this.api('DELETE', `/api/users/${u.id}`);
+      if (r && r.ok) {
+        this.showToast(`✓ Benutzer '${r.deleted}' gelöscht`);
+        await this.loadUsers();
+      }
+    },
+
     async loadConfig() {
       const cfg = await this.api('GET', '/api/config');
       // Defaults absichern damit Alpine-Bindings nicht meckern

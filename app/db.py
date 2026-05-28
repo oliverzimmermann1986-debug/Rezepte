@@ -142,6 +142,20 @@ CREATE TABLE IF NOT EXISTS shopping_cart (
 CREATE INDEX IF NOT EXISTS idx_cart_canonical ON shopping_cart(canonical_name, unit);
 CREATE INDEX IF NOT EXISTS idx_cart_added     ON shopping_cart(added_at DESC);
 
+-- users: Multi-User-Auth. Bcrypt-Hashes in password_hash, role steuert
+-- Zugriff auf /api/users (nur admin). disabled=1 → kein Login mehr,
+-- Datensatz bleibt für Audit-Trail.
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'user',           -- 'admin' | 'user'
+  disabled INTEGER NOT NULL DEFAULT 0,
+  created_at REAL NOT NULL,
+  last_login_at REAL                           -- NULL bis 1. Login
+);
+CREATE INDEX IF NOT EXISTS idx_users_name ON users(username);
+
 -- sync_errors: FS-Sync-Konflikte (UNIQUE constraint failed, etc.)
 -- Werden vom Audit-Tab als 'FS-Konflikte'-Findings angezeigt — User entscheidet
 -- welcher der konkurrierenden Folder behalten/gelöscht wird.
@@ -1061,6 +1075,72 @@ class Database:
                 (recipe_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ─── User-Verwaltung (Multi-User-Auth) ──────────────────────────────
+    def user_get_by_name(self, username: str) -> Optional[Dict[str, Any]]:
+        """Liefert User-Row inkl. password_hash. Auch disabled-Users werden
+        zurückgegeben — Caller entscheidet (Login: ablehnen; Settings: anzeigen)."""
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT * FROM users WHERE username=?", (username,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def user_list(self) -> List[Dict[str, Any]]:
+        """Liste aller User für die Settings-UI. OHNE password_hash."""
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT id, username, role, disabled, created_at, last_login_at "
+                "FROM users ORDER BY username"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def user_create(self, username: str, password_hash: str,
+                     role: str = "user") -> int:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO users (username, password_hash, role, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (username, password_hash, role, time.time()),
+            )
+            return int(c.lastrowid)
+
+    def user_set_password(self, user_id: int, password_hash: str) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE users SET password_hash=? WHERE id=?",
+                (password_hash, user_id),
+            )
+
+    def user_set_role(self, user_id: int, role: str) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
+
+    def user_set_disabled(self, user_id: int, disabled: bool) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE users SET disabled=? WHERE id=?",
+                (1 if disabled else 0, user_id),
+            )
+
+    def user_delete(self, user_id: int) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM users WHERE id=?", (user_id,))
+
+    def user_update_last_login(self, user_id: int) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE users SET last_login_at=? WHERE id=?",
+                (time.time(), user_id),
+            )
+
+    def user_count_active_admins(self) -> int:
+        """Verhindert Lockout: vor delete/disable/role-change prüfen dass
+        mindestens 1 aktiver Admin übrig bleibt."""
+        with self.conn() as c:
+            return int(c.execute(
+                "SELECT COUNT(*) FROM users WHERE role='admin' AND disabled=0"
+            ).fetchone()[0])
 
     # ─── Sync-Errors (FS-Konflikte) ──────────────────────────────────────
     def sync_error_record(self, folder_path: str, error_type: str,

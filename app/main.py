@@ -15,12 +15,13 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, check_credentials,
-                    create_session, migrate_security, verify_session)
+                    create_session, migrate_security, migrate_users_to_db,
+                    verify_session)
 from .config_store import get_config
 from .db import get_db
 from .routes import (api_audit, api_browse, api_config, api_events, api_hdd, api_history,
                      api_jobs, api_master, api_metrics, api_pending, api_recipes, api_schedule,
-                     api_shopping, api_stats, api_test)
+                     api_shopping, api_stats, api_test, api_users)
 from .security import SecurityHeadersMiddleware, client_ip, login_limiter
 
 # -------- Logging --------
@@ -45,6 +46,10 @@ _db = get_db()
 _stale = _db.reset_stale_running()
 if _stale:
     logger.warning(f"{_stale} Job(s) waren als 'running' markiert - auf 'error' gesetzt (Crash/Restart-Recovery)")
+
+# User-Migration: config.web.{username, password} → users-Tabelle (initialer admin).
+# Idempotent — läuft nur wenn users-Tabelle leer ist.
+migrate_users_to_db()
 
 # DB-Hygiene: alte Jobs raus, uralte Pending-Items automatisch skippen.
 # Idempotent + günstig - läuft bei jedem Restart einmal.
@@ -122,6 +127,7 @@ app.include_router(api_recipes.router)
 app.include_router(api_shopping.router)
 app.include_router(api_audit.router)
 app.include_router(api_master.router)
+app.include_router(api_users.router)
 
 
 # -------- Cookie-Helper --------

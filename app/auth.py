@@ -9,6 +9,7 @@ from __future__ import annotations
 import hmac
 import logging
 import secrets
+from typing import Optional
 
 import bcrypt
 from fastapi import HTTPException, Request, status
@@ -51,13 +52,57 @@ def verify_password(plain: str, stored: str) -> bool:
 
 
 def check_credentials(username: str, password: str) -> bool:
+    """Prüft Login. Ablauf:
+      1. DB-User suchen (Multi-User-Pfad). Bei Match und !disabled → ok.
+      2. Fallback auf config.web.{username,password} (Backwards-Compat für
+         frische Installs ohne DB-Migration und für vor-Migrations-State).
+    last_login_at wird beim erfolgreichen Match aktualisiert."""
+    from .db import get_db
+    db = get_db()
+    user_row = db.user_get_by_name(username)
+    if user_row:
+        if user_row.get("disabled"):
+            return False
+        if verify_password(password, user_row["password_hash"]):
+            try:
+                db.user_update_last_login(int(user_row["id"]))
+            except Exception:
+                pass  # Login darf nicht failen weil last_login_at-update bricht
+            return True
+        return False
+
+    # Config-Fallback: nur greift wenn DB komplett leer ist (typisch vor
+    # erster Migration). Nach migrate_users_to_db() ist immer mindestens
+    # ein admin in der DB — dann läuft alles über den DB-Pfad.
     cfg = get_config()
     cfg_u = str(cfg.get("web", "username", default="admin"))
     cfg_p = cfg.get("web", "password", default="") or ""
     user_ok = hmac.compare_digest(str(username).encode("utf-8"), cfg_u.encode("utf-8"))
     pass_ok = verify_password(password, cfg_p)
-    # Beide checken (kein Early-Return), damit kein Timing-Leak zw. User-/Pwd-Fehler
     return user_ok and pass_ok
+
+
+def migrate_users_to_db() -> None:
+    """Übernimmt den config-web-User als initialer admin in die users-Tabelle.
+    Idempotent: läuft nur wenn die users-Tabelle leer ist."""
+    from .db import get_db
+    db = get_db()
+    with db.conn() as c:
+        existing = int(c.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+    if existing > 0:
+        return
+    cfg = get_config()
+    username = str(cfg.get("web", "username", default="admin"))
+    pw_hash = cfg.get("web", "password", default="") or ""
+    if not username or not pw_hash or not is_hashed(pw_hash):
+        logger.warning(
+            "migrate_users_to_db: config.web.password ist nicht gehasht oder "
+            "leer — überspringe. Benutzer-Verwaltung wird erst nach manuellem "
+            "Anlegen funktionieren."
+        )
+        return
+    db.user_create(username, pw_hash, role="admin")
+    logger.info(f"Initialer admin '{username}' aus Config in users-DB migriert.")
 
 
 # -------------------- Startup-Migration --------------------
@@ -111,12 +156,22 @@ def create_session(username: str) -> str:
     return _serializer().dumps({"user": username})
 
 
-def verify_session(token: str) -> bool:
+def session_user(token: str) -> Optional[str]:
+    """Returnt username aus gültiger Session, sonst None.
+    Eine Schicht über verify_session() — der Caller braucht oft den User-Namen,
+    nicht nur den 'valid yes/no'-Status (z.B. für require_admin)."""
+    if not token:
+        return None
     try:
-        _serializer().loads(token, max_age=SESSION_MAX_AGE)
-        return True
+        data = _serializer().loads(token, max_age=SESSION_MAX_AGE)
+        u = data.get("user")
+        return str(u) if u else None
     except (BadSignature, SignatureExpired):
-        return False
+        return None
+
+
+def verify_session(token: str) -> bool:
+    return session_user(token) is not None
 
 
 async def require_auth(request: Request) -> None:
@@ -132,3 +187,29 @@ async def require_auth(request: Request) -> None:
             status_code=status.HTTP_303_SEE_OTHER,
             headers={"Location": f"/login?next={request.url.path}"},
         )
+
+
+async def require_admin(request: Request) -> dict:
+    """FastAPI-Dependency für admin-only Endpoints (z.B. /api/users).
+    Returnt das User-Dict (für Logging) oder raised 401/403."""
+    token = request.cookies.get(SESSION_COOKIE, "")
+    username = session_user(token)
+    if not username:
+        raise HTTPException(401, "Authentication required")
+
+    from .db import get_db
+    user = get_db().user_get_by_name(username)
+    if user and not user.get("disabled") and user.get("role") == "admin":
+        return user
+
+    # Legacy-Compat: wenn der eingeloggte User dem config-web-user entspricht
+    # UND die DB noch keinen User hat (= migrate_users_to_db lief nicht oder
+    # config-User wurde gelöscht), behandeln wir ihn als admin damit die
+    # Settings-Seite nicht aussperrt.
+    if not user:
+        cfg = get_config()
+        config_user = str(cfg.get("web", "username", default="admin"))
+        if username == config_user:
+            return {"username": username, "role": "admin", "legacy_config_user": True}
+
+    raise HTTPException(403, "Admin-Rolle benötigt")
