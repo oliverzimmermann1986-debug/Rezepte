@@ -13,9 +13,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from ..auth import require_auth
@@ -122,6 +123,7 @@ def get_audit(
         """).fetchall()
 
     no_image, no_steps, no_url, few_ingredients, no_description, no_nutrition = [], [], [], [], [], []
+    unverified = []     # 'Zutaten extrahiert aber nicht manuell geprüft'
     for row in all_rows:
         d = dict(row)
         # Verifizierte Rezepte werden ÜBERALL übersprungen — User-Override.
@@ -139,6 +141,11 @@ def get_audit(
             no_description.append(d)
         if d["ing_count"] >= 3 and not d.get("calories_per_serving"):
             no_nutrition.append(d)
+        # 'unverified': Zutaten ≥1 extrahiert aber noch nicht manuell als
+        # ok markiert. Damit kann User durch die Liste gehen und systematisch
+        # prüfen → ✓-Button im Modal → fällt raus.
+        if d["ing_count"] >= 1:
+            unverified.append(d)
 
     # 'fs_missing': DB-folder_path zeigt auf nicht-existierenden FS-Folder.
     # Häufige Ursache: User hat manuell umbenannt, oder Sync ist out-of-sync.
@@ -169,6 +176,7 @@ def get_audit(
         "no_description": no_description[:100],
         "no_nutrition": no_nutrition[:100],
         "fs_missing": fs_missing[:100],
+        "unverified": unverified[:100],
     }
     result["data_gaps"] = data_gaps
 
@@ -198,6 +206,7 @@ def get_audit(
         "no_description_count": len(no_description),
         "no_nutrition_count": len(no_nutrition),
         "fs_missing_count": len(fs_missing),
+        "unverified_count": len(unverified),
     }
     return result
 
@@ -493,6 +502,30 @@ def _apply_finding_internal(finding_id: int) -> Dict[str, Any]:
         f"{old_path} → {new_path}"
     )
     return {"ok": True, "new_path": str(new_path), "type": ftype, "recipe_id": finding["recipe_id"]}
+
+
+class VerifyBulk(BaseModel):
+    recipe_ids: list[int]
+
+
+@router.post("/verify-bulk")
+def verify_bulk(payload: VerifyBulk, request: Request) -> Dict[str, Any]:
+    """Bulk: markiert alle angegebenen Rezept-IDs als user_verified=1.
+    Frontend nutzt das für 'alle unverifizierten als ok markieren' im
+    Audit-Tab. Audit-Trail bekommt den Username der Bulk-Aktion."""
+    from ..auth import SESSION_COOKIE, session_user
+    db = get_db()
+    username = session_user(request.cookies.get(SESSION_COOKIE, "")) or "?"
+    ids = list(set(int(x) for x in (payload.recipe_ids or []) if int(x) > 0))
+    if not ids:
+        raise HTTPException(400, "Keine recipe_ids angegeben")
+    for rid in ids:
+        try:
+            db.recipe_set_verified(rid, True, username)
+        except Exception as e:
+            logger.warning(f"verify-bulk #{rid}: {e}")
+    logger.info(f"verify-bulk: {len(ids)} Rezepte als verifiziert markiert von '{username}'")
+    return {"ok": True, "verified": len(ids), "by": username}
 
 
 @router.post("/heal-fs-paths")

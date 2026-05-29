@@ -83,6 +83,7 @@ function scrapperApp() {
       activeTab: 'gaps',      // Audit-Tab-State: gaps / fs / ai / duplicates
       computingNutritionBulk: false,  // Loading für Bulk-Nährwerte
       healingFs: false,                // Loading für FS-Path-Auto-Heal
+      verifyingBulk: false,            // Loading für Bulk-Verify
     },
     // Stammdaten-Page: Tags + canonical Zutaten-Namen-Verwaltung
     master: {
@@ -2567,6 +2568,36 @@ function scrapperApp() {
         }
       } finally {
         this.audit.healingFs = false;
+      }
+    },
+
+    // Schnell-Verify einzelnes Rezept direkt aus der Audit-Liste, ohne
+    // Modal zu öffnen. Sendet POST /verify?verified=true mit dem id.
+    async quickVerify(recipeId) {
+      const r = await this.api('POST', `/api/recipes/${recipeId}/verify?verified=true`);
+      if (r && r.ok) {
+        this.haptic(15);
+        this.showToast('✓ Geprüft markiert');
+        await this.loadAudit();
+      }
+    },
+
+    // Bulk-Verify: alle aktuell sichtbaren unverifizierten Rezepte auf
+    // einmal als 'ok' markieren. Vorsicht-Confirm weil pauschal —
+    // umgeht die manuelle Prüfung.
+    async verifyBulkUnverified() {
+      const ids = (this.audit.data?.data_gaps?.unverified || []).map(r => r.id);
+      if (ids.length === 0) return;
+      if (!confirm(`${ids.length} Rezepte pauschal als geprüft markieren?\n\nAchtung: das setzt das verified-Flag OHNE manuelle Sichtung. Wenn du auch die ungesehenen pauschal akzeptieren willst, ok.\n\nReversibel: pro Rezept im Modal wieder unchecken.`)) return;
+      this.audit.verifyingBulk = true;
+      try {
+        const r = await this.api('POST', '/api/audit/verify-bulk', { recipe_ids: ids });
+        if (r && r.ok) {
+          this.showToast(`✓ ${r.verified} als geprüft markiert`);
+          await this.loadAudit();
+        }
+      } finally {
+        this.audit.verifyingBulk = false;
       }
     },
 

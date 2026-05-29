@@ -2117,7 +2117,7 @@
           <button class="audit-tab" :class="audit.activeTab === 'gaps' && 'active'"
                   @click="audit.activeTab = 'gaps'">
             📭 Daten-Lücken
-            <span class="audit-tab-count" x-text="(audit.summary?.empty_recipe_count||0) + (audit.summary?.no_image_count||0) + (audit.summary?.no_steps_count||0) + (audit.summary?.no_url_count||0) + (audit.summary?.few_ingredients_count||0) + (audit.summary?.no_description_count||0) + (audit.summary?.no_nutrition_count||0) + (audit.summary?.fs_missing_count||0)"></span>
+            <span class="audit-tab-count" x-text="(audit.summary?.empty_recipe_count||0) + (audit.summary?.no_image_count||0) + (audit.summary?.no_steps_count||0) + (audit.summary?.no_url_count||0) + (audit.summary?.few_ingredients_count||0) + (audit.summary?.no_description_count||0) + (audit.summary?.no_nutrition_count||0) + (audit.summary?.fs_missing_count||0) + (audit.summary?.unverified_count||0)"></span>
           </button>
         </div>
 
@@ -2251,6 +2251,41 @@
             </div>
           </template>
         </div>
+
+        <!-- ☐ Zutaten nicht verifiziert -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.unverified?.length || 0) > 0">
+          <h3>☐ Nicht verifiziert (<span x-text="audit.summary?.unverified_count"></span>)
+            <button class="btn btn-sm btn-primary" style="float:right;"
+                    @click="verifyBulkUnverified()"
+                    :disabled="audit.verifyingBulk">
+              <span x-show="!audit.verifyingBulk">✓ Alle als geprüft markieren</span>
+              <span x-show="audit.verifyingBulk">…</span>
+            </button>
+          </h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte mit ≥ 1 Zutat, die noch nicht manuell als ok markiert wurden.
+            Klick „Ansehen" → im Modal ✓-Button. Oder pro Eintrag das ✓-Icon
+            für schnelle Einzel-Verifikation. Bulk-Button setzt alle auf
+            einmal (Vorsicht: pauschal).
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.unverified || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong>
+                  <span class="muted" style="font-size: 12px;"
+                        x-text="'· ' + r.ing_count + ' Zutaten, ' + r.step_count + ' Schritte'"></span>
+                </div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+                <button class="btn btn-sm btn-primary" @click="quickVerify(r.id)"
+                        title="Direkt als geprüft markieren">✓</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
         <!-- 📂 FS-Pfad fehlt (DB zeigt auf nicht-existenten Folder) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.fs_missing?.length || 0) > 0">
           <h3>📂 FS-Pfad fehlt (<span x-text="audit.summary?.fs_missing_count"></span>)
