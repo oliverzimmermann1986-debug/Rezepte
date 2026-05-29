@@ -11,13 +11,6 @@ Group=scrapper
 WorkingDirectory=/opt/scrapper
 Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
 Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
-# rclone schreibt seinen Cache (inkl. bisync-State) standardmäßig nach
-# ~/.cache/rclone. Mit ProtectHome=read-only ist /home nicht beschreibbar
-# - bisync würde sofort scheitern. Daher umlenken nach data/.
-Environment="RCLONE_CACHE_DIR=/opt/scrapper/data/.rclone-cache"
-# Cache-Dir vor dem Start anlegen (idempotent, läuft als root)
-ExecStartPre=/bin/mkdir -p /opt/scrapper/data/.rclone-cache
-ExecStartPre=/bin/chown scrapper:scrapper /opt/scrapper/data/.rclone-cache
 # Bind-Adresse:
 #   - 127.0.0.1  wenn der Reverse-Proxy / Cloudflare-Tunnel IM SELBEN Container läuft
 #   - 0.0.0.0    wenn er in einem ANDEREN Container/Host läuft und über LAN zugreift
@@ -37,11 +30,9 @@ StandardError=journal
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-# ProtectHome=read-only: rclone liest seine Config (und ggf. Cache) aus
-# /home/scrapper/. Mit ProtectHome=true wäre /home komplett unsichtbar
-# (Permission denied), mit 'read-only' kann rclone lesen, aber nicht
-# unter /home schreiben - sein Cache landet via TMPDIR in /tmp (privat
-# pro Service durch PrivateTmp).
+# ProtectHome=read-only: einige Tools (z.B. yt-dlp Cookies) lesen aus
+# /home/scrapper/. ProtectHome=true wäre komplett unsichtbar - mit
+# 'read-only' kann gelesen, aber nicht geschrieben werden.
 ProtectHome=read-only
 ReadWritePaths=/opt/scrapper /mnt
 ProtectKernelTunables=true

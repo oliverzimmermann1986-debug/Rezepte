@@ -1,11 +1,12 @@
 # Scrappercontainer
 
-Proxmox-LXC-Container mit zwei Jobs in einem:
+Proxmox-LXC-Container für den Scraper-Job:
 
-1. **TikTok/Instagram Scraper** — zieht Links aus zwei separaten E-Mail-Postfächern (Rezepte + Hochzeit), lädt die Videos mit `yt-dlp`, lässt sie von einer **lokalen Ollama-Instanz** klassifizieren und sortiert sie in passende Ordner.
-2. **rclone-Sync (Cloud↔Cloud oder Cloud↔Lokal)** — synchronisiert beliebige rclone-Pairs parallel, mit Cancel-Funktion und Live-Progress.
+**TikTok/Instagram Scraper** — zieht Links aus zwei separaten E-Mail-Postfächern (Rezepte + Hochzeit), lädt die Videos mit `yt-dlp`, lässt sie von einer **lokalen Ollama-Instanz** klassifizieren und sortiert sie in passende Ordner.
 
-Beide Jobs werden über ein **Web-Interface** verwaltet (Konfiguration, manuelles Starten, Pending-Auflösung, Logs, Historie). Externe Erreichbarkeit ist explizit für **Cloudflare-Tunnel + Cloudflare Access** (MFA-Layer) ausgelegt.
+Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Starten, Pending-Auflösung, Logs, Historie). Externe Erreichbarkeit ist explizit für **Cloudflare-Tunnel + Cloudflare Access** (MFA-Layer) ausgelegt.
+
+> **Hinweis:** rclone-Sync wurde in einen separaten Container ausgelagert. Dieser Container hier macht nur noch Scraping.
 
 ---
 
@@ -67,7 +68,6 @@ Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Butto
 **Backup**
 - Pairs können `cloud:path ↔ cloud:path`, `cloud:path ↔ local:/path`, oder beide remote sein — wird automatisch detected
 - ThreadPool mit `max_parallel` Cap (Default 3) verhindert API-Drosselung bei vielen Pairs
-- Cancel-Mechanismus killt laufende rclone-Subprozesse sauber
 
 ---
 
@@ -95,7 +95,7 @@ Das Install-Script erzeugt automatisch:
 - einen `scrapper`-User
 - ein **zufälliges Initial-Passwort** (gespeichert in `data/.initial-password`)
 - ein **zufälliges `secret_key`** (48 Zeichen)
-- die systemd-Units (`scrapper-web`, `scrapper-job.timer`, `rclone-sync.timer`)
+- die systemd-Units (`scrapper-web`, `scrapper-job.timer`)
 
 ```
 🌐 Web-Interface (LOKAL):    http://127.0.0.1:8000
@@ -183,13 +183,7 @@ Damit hast du MFA vor der App, **ohne** die App selbst anzupassen.
 Im Web-UI → „Einstellungen":
 - **E-Mail-Konten** (IMAP-App-Passwords für Gmail)
 - **Ollama-URL** und Modell-Namen (Default: `qwen2.5:7b-instruct`, optional `fallback_model`)
-- **Backup-Pairs** (rclone-Remotes mit `pcloud:foo` ↔ `gdrive:bar` oder `pcloud:foo` ↔ `/mnt/local/bar`)
 - **Schedule** (systemd-OnCalendar-Expression für beide Jobs)
-
-rclone muss vorab als `scrapper`-User konfiguriert sein:
-```bash
-sudo -u scrapper rclone config
-```
 
 ---
 
@@ -229,7 +223,6 @@ journalctl -u scrapper-web -f
 
 # Manuell ausführen (respektiert File-Lock)
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.jobs.scraper_cli
-sudo -u scrapper /opt/scrapper/venv/bin/python -m app.jobs.backup_cli --dry-run
 
 # Daily DB-Backup-Timer aktivieren (läuft 04:00, macht auch log-cleanup + sonntags vacuum)
 systemctl enable --now scrapper-db-backup.timer
@@ -248,9 +241,6 @@ Die täglichen Backups landen in `data/backups/daily/scrapper-YYYY-MM-DD.db.gz`.
 Sichere die idealerweise **außerhalb** des Containers. Optionen:
 
 ```bash
-# Variante A: rclone in eine Cloud schieben (das gleiche pCloud das du eh nutzt)
-sudo -u scrapper rclone copy /opt/scrapper/data/backups/ pcloud:/scrapper-backups/
-
 # Variante B: cron-Job der das täglich nach 04:30 macht
 cat > /etc/cron.d/scrapper-offsite-backup <<'EOF'
 30 4 * * * scrapper rclone copy /opt/scrapper/data/backups/ pcloud:/scrapper-backups/ --max-age 25h

@@ -307,7 +307,7 @@ def healthz():
 
 @app.get("/healthz/deep")
 def healthz_deep():
-    """Tiefer Check: DB + OpenAI + IMAP + Disk-Space + rclone-Config.
+    """Tiefer Check: DB + OpenAI + IMAP + Disk-Space.
     Status-Code immer 200, Details im Body. Wir wollen nicht dass eine
     kaputte IMAP-Config den ganzen Container als 'unhealthy' markiert."""
     import shutil
@@ -356,21 +356,6 @@ def healthz_deep():
             checks[f"disk_{key}"] = {"ok": False, "path": p, "error": "path does not exist"}
         except Exception as e:
             checks[f"disk_{key}"] = {"ok": False, "path": p, "error": str(e)}
-
-    # rclone-Config lesbar
-    try:
-        import subprocess
-        r = subprocess.run(["rclone", "listremotes"],
-                            capture_output=True, text=True, timeout=5)
-        if r.returncode == 0:
-            remotes = [x.strip(":") for x in r.stdout.split() if x.strip()]
-            checks["rclone"] = {"ok": True, "remotes": remotes}
-        else:
-            checks["rclone"] = {"ok": False, "error": r.stderr.strip()[:200]}
-    except FileNotFoundError:
-        checks["rclone"] = {"ok": False, "error": "rclone binary not found"}
-    except Exception as e:
-        checks["rclone"] = {"ok": False, "error": str(e)}
 
     overall = all(v.get("ok", False) for v in checks.values())
     return {"ok": overall, "checks": checks}

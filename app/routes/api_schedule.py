@@ -1,4 +1,7 @@
-"""API für systemd-Timer-Verwaltung (Scraper + Backup Schedule)."""
+"""API für systemd-Timer-Verwaltung (nur noch Scraper-Timer).
+
+Backup-Timer (rclone-sync.timer) wurde entfernt — Sync läuft im separaten
+Container."""
 from __future__ import annotations
 
 import logging
@@ -19,11 +22,9 @@ router = APIRouter(prefix="/api/schedule", tags=["schedule"], dependencies=[Depe
 
 TIMER_FILES = {
     "scraper": "/etc/systemd/system/scrapper-job.timer",
-    "backup":  "/etc/systemd/system/rclone-sync.timer",
 }
 
 # Erlaubt: systemd-OnCalendar-Zeichen (Buchstaben/Ziffern/: * / , . - Leerzeichen).
-# Newlines/Quotes/Semikolons/Backslash explizit nicht.
 _ONCALENDAR_RE = re.compile(r"^[A-Za-z0-9:*/,.\- ]{1,200}$")
 
 
@@ -42,7 +43,6 @@ def _validate_oncalendar(value: str) -> str:
             "OnCalendar enthält ungültige Zeichen "
             "(erlaubt: A-Z a-z 0-9 : * / , . - Leerzeichen)",
         )
-    # Semantik-Check via systemd-analyze
     try:
         r = subprocess.run(
             ["systemd-analyze", "calendar", v],
@@ -56,7 +56,6 @@ def _validate_oncalendar(value: str) -> str:
     except subprocess.TimeoutExpired:
         raise HTTPException(504, "systemd-analyze Timeout")
     except FileNotFoundError:
-        # systemd-analyze fehlt: dann eben nur Regex-Check
         logger.warning("systemd-analyze nicht gefunden, semantische Prüfung übersprungen")
     return v
 
@@ -86,14 +85,12 @@ def _write_oncalendar(timer_path: str, new_value: str) -> None:
         else:
             out_lines.append(line)
     if not replaced:
-        # OnCalendar Zeile fehlt - vor [Install] einfügen
         new_lines = []
         for line in out_lines:
             if line.startswith("[Install]"):
                 new_lines.append(f"OnCalendar={new_value}")
             new_lines.append(line)
         out_lines = new_lines
-    # Atomic write via temp
     p.write_text("\n".join(out_lines) + "\n")
 
 
@@ -125,14 +122,12 @@ def get_schedule() -> Dict:
                 capture_output=True, text=True, timeout=10,
             )
             if r.returncode == 0 and r.stdout.strip():
-                # Format: "Thu 2024-05-21 14:00:00 UTC 30min Wed ..."
                 line = r.stdout.strip()
                 parts = line.split()
                 if len(parts) >= 3:
                     next_run = " ".join(parts[:3])
         except Exception:
             pass
-        # Letzter erfolgreicher Lauf aus DB
         last_run = None
         last_summary = None
         try:
@@ -144,15 +139,11 @@ def get_schedule() -> Dict:
                         "status": j.get("status"),
                         "duration": round(j["ended_at"] - j["started_at"]) if j.get("started_at") else None,
                     }
-                    if j.get("summary"):
+                    if j.get("summary") and kind == "scraper":
                         s = j["summary"]
-                        if kind == "scraper":
-                            last_summary["auto"] = s.get("auto", 0)
-                            last_summary["pending"] = s.get("pending", 0)
-                            last_summary["errors"] = s.get("errors", 0)
-                        elif kind == "backup":
-                            last_summary["ok_count"] = s.get("ok_count", 0)
-                            last_summary["total_pairs"] = s.get("total_pairs", 0)
+                        last_summary["auto"] = s.get("auto", 0)
+                        last_summary["pending"] = s.get("pending", 0)
+                        last_summary["errors"] = s.get("errors", 0)
                     break
         except Exception:
             pass
@@ -169,7 +160,6 @@ def get_schedule() -> Dict:
 
 class ScheduleUpdate(BaseModel):
     scraper: Optional[str] = None
-    backup: Optional[str] = None
 
 
 @router.put("")
@@ -180,15 +170,10 @@ def update_schedule(body: ScheduleUpdate) -> Dict:
         clean = _validate_oncalendar(body.scraper)
         _write_oncalendar(TIMER_FILES["scraper"], clean)
         changes.append(("scraper", clean))
-    if body.backup:
-        clean = _validate_oncalendar(body.backup)
-        _write_oncalendar(TIMER_FILES["backup"], clean)
-        changes.append(("backup", clean))
 
     if not changes:
         return {"ok": True, "message": "Nichts zu ändern"}
 
-    # systemd reload + restart der Timer
     results = []
     daemon = _systemctl_via_sudo("daemon-reload")
     results.append({"step": "daemon-reload", **daemon})
@@ -204,12 +189,9 @@ def update_schedule(body: ScheduleUpdate) -> Dict:
         r = _systemctl_via_sudo("restart", unit)
         results.append({"step": f"restart {unit}", **r})
 
-    # Schedule auch in config speichern (für Persistenz/Anzeige)
     cfg = get_config()
     if body.scraper:
         cfg.set("schedule", "scraper_interval", body.scraper)
-    if body.backup:
-        cfg.set("schedule", "backup_interval", body.backup)
     cfg.save()
 
     return {"ok": True, "changes": dict(changes), "details": results}
@@ -219,26 +201,23 @@ def update_schedule(body: ScheduleUpdate) -> Dict:
 def preview_oncalendar(body: ScheduleUpdate) -> Dict:
     """Berechnet Vorschau-Termine ohne zu speichern. Nutzt systemd-analyze calendar."""
     results = {}
-    for kind, value in [("scraper", body.scraper), ("backup", body.backup)]:
-        if not value:
-            continue
-        # Vor-Validierung (Regex), damit kein gefährlicher Input an systemd-analyze geht.
-        v = value.strip()
-        if "\n" in v or "\r" in v or "\x00" in v or not _ONCALENDAR_RE.match(v):
-            results[kind] = {"ok": False, "error": "Ungültige Zeichen im Ausdruck"}
-            continue
-        r = subprocess.run(
-            ["systemd-analyze", "calendar", "--iterations=5", v],
-            capture_output=True, text=True, timeout=10,
-        )
-        if r.returncode != 0:
-            results[kind] = {"ok": False, "error": r.stderr.strip() or r.stdout.strip()}
-            continue
-        # Parse out next iterations
-        next_runs = []
-        for line in r.stdout.splitlines():
-            m = re.match(r'\s+Next elapse:\s+(.*)', line) or re.match(r'\s+Iter\.\s*#\d+:\s+(.*)', line)
-            if m:
-                next_runs.append(m.group(1).strip())
-        results[kind] = {"ok": True, "next_runs": next_runs[:5], "raw": r.stdout.strip()}
+    if not body.scraper:
+        return results
+    v = body.scraper.strip()
+    if "\n" in v or "\r" in v or "\x00" in v or not _ONCALENDAR_RE.match(v):
+        results["scraper"] = {"ok": False, "error": "Ungültige Zeichen im Ausdruck"}
+        return results
+    r = subprocess.run(
+        ["systemd-analyze", "calendar", "--iterations=5", v],
+        capture_output=True, text=True, timeout=10,
+    )
+    if r.returncode != 0:
+        results["scraper"] = {"ok": False, "error": r.stderr.strip() or r.stdout.strip()}
+        return results
+    next_runs = []
+    for line in r.stdout.splitlines():
+        m = re.match(r'\s+Next elapse:\s+(.*)', line) or re.match(r'\s+Iter\.\s*#\d+:\s+(.*)', line)
+        if m:
+            next_runs.append(m.group(1).strip())
+    results["scraper"] = {"ok": True, "next_runs": next_runs[:5], "raw": r.stdout.strip()}
     return results

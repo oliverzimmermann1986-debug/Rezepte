@@ -65,9 +65,6 @@
       <div x-show="status.scraper">
         <span class="pill running">scraper</span> läuft
       </div>
-      <div x-show="status.backup">
-        <span class="pill running">backup</span> läuft
-      </div>
       <div style="margin-top: 12px">v1.0 · <a href="/logout">Logout</a></div>
     </div>
   </aside>
@@ -144,75 +141,7 @@
           </div>
         </div>
 
-        <div class="card">
-          <div class="card-head"><h3>Backup (rclone bisync)</h3></div>
-          <p class="muted" style="margin: 0 0 18px;">
-            rclone-Sync zwischen den konfigurierten Pairs (Cloud↔Cloud oder Cloud↔Lokal, je nach Konfig).
-          </p>
-          <div class="flex button-row">
-            <button class="btn btn-primary" @click="runBackup(false)" :disabled="status.backup">
-              <span x-show="!status.backup">▶ Backup starten</span>
-              <span x-show="status.backup">… läuft</span>
-            </button>
-            <button class="btn" @click="runBackup(true)" :disabled="status.backup">
-              🔍 Dry-Run
-            </button>
-            <button class="btn" @click="showQuickSync = !showQuickSync" :disabled="status.backup">
-              ⚡ Quick-Sync
-            </button>
-          </div>
-
-          <!-- Quick-Sync Panel (Ad-hoc Sync ohne Config) -->
-          <div x-show="showQuickSync" x-transition style="margin-top: 18px; padding: 14px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);">
-            <div class="muted" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px;">
-              ⚡ Einmaliger Sync ohne Speichern als Paar
-            </div>
-            <div class="field">
-              <label>Remote (z.B. pcloud:/medien/Fotos/2024)</label>
-              <div style="display:flex; gap:6px;">
-                <input class="mono" x-model="quickSync.remote_path" placeholder="pcloud:/medien/...">
-                <button class="btn" @click="pickFolderForQuick('remote')" title="rclone-Pfad auswählen">📂</button>
-              </div>
-            </div>
-            <div class="field">
-              <label>Lokal (z.B. /mnt/data/medien/Fotos/2024)</label>
-              <div style="display:flex; gap:6px;">
-                <input class="mono" x-model="quickSync.local_path" placeholder="/mnt/...">
-                <button class="btn" @click="pickFolderForQuick('local')" title="Lokalen Pfad auswählen">📂</button>
-              </div>
-            </div>
-            <div class="row">
-              <div class="field">
-                <label>Richtung</label>
-                <select x-model="quickSync.direction" @change="if (quickSync.direction === 'bisync') { quickSync.mode = 'bisync'; } else if (quickSync.mode === 'bisync') { quickSync.mode = 'copy'; }">
-                  <option value="pull">⬇ Pull · Remote → Lokal</option>
-                  <option value="push">⬆ Push · Lokal → Remote</option>
-                  <option value="bisync">⇄ Bi-Sync · bidirektional</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>Modus</label>
-                <select x-model="quickSync.mode" :disabled="quickSync.direction === 'bisync'">
-                  <option value="copy">Copy · nur neue/geänderte (kein Löschen)</option>
-                  <option value="sync">Sync · Mirror (löscht im Ziel!)</option>
-                  <option value="bisync" x-show="quickSync.direction === 'bisync'">Bi-Sync</option>
-                </select>
-                <div class="hint" x-show="quickSync.mode === 'sync'" style="color: var(--err)">⚠ Sync löscht Dateien im Ziel die nicht in Quelle sind!</div>
-              </div>
-            </div>
-            <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
-              <input type="checkbox" x-model="quickSync.dry_run" id="qs-dry">
-              <label for="qs-dry" style="text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--fg);">Dry-Run (simulieren, nichts wirklich übertragen)</label>
-            </div>
-            <div style="text-align: right; margin-top: 12px; display: flex; justify-content: flex-end; gap: 8px;">
-              <button class="btn" @click="showQuickSync = false">Abbrechen</button>
-              <button class="btn btn-primary" @click="runQuickSync()" :disabled="quickSync.running || !quickSync.remote_path || !quickSync.local_path">
-                <span x-show="!quickSync.running">▶ Quick-Sync starten</span>
-                <span x-show="quickSync.running">… startet</span>
-              </button>
-            </div>
-          </div>
-        </div>
+        <!-- Backup-Card entfernt — rclone-Sync läuft im separaten Container. -->
       </div>
 
       <!-- Reanalyze Progress -->
@@ -268,39 +197,7 @@
       </div>
 
       <!-- Backup Progress -->
-      <div x-show="backupProgress && backupProgress.running" class="card" style="margin-top: 18px;">
-        <div class="card-head">
-          <h3>Backup läuft</h3>
-          <span class="pill running" x-text="(backupProgress && backupProgress.done_pairs) + ' / ' + (backupProgress && backupProgress.total_pairs) + ' Paare'"></span>
-        </div>
-        <div style="margin-bottom: 14px;">
-          <div class="muted" style="font-size: 11px;">Gesamt-Laufzeit: <span class="mono" x-text="backupProgress && formatDuration(backupProgress.elapsed_sec)"></span></div>
-        </div>
-        <template x-for="pair in (backupProgress && backupProgress.pairs || [])" :key="pair.name">
-          <div style="margin-bottom: 14px;">
-            <div class="flex between" style="margin-bottom: 4px;">
-              <div>
-                <strong x-text="pair.name"></strong>
-                <span class="pill" :class="pair.status === 'done' ? 'ok' : (pair.status === 'running' ? 'running' : '')" x-text="pair.status" style="margin-left: 6px;"></span>
-              </div>
-              <div class="mono" style="font-size: 11px; color: var(--fg-dim);" x-text="(pair.transferred || '—') + ' / ' + (pair.total || '—')"></div>
-            </div>
-            <div class="progress-bar">
-              <div class="progress-fill" :style="`width: ${pair.percent || 0}%`"></div>
-            </div>
-            <div class="flex between" style="margin-top: 4px; font-size: 11px;" class="muted">
-              <span class="mono muted" x-text="(pair.speed || '—') + ' · ETA ' + (pair.eta || '—')"></span>
-              <span class="mono muted" x-text="(pair.files !== null ? (pair.files + '/' + pair.files_total + ' Dateien') : '') + (pair.errors ? ' · ' + pair.errors + ' err' : '')"></span>
-            </div>
-            <!-- Roher rclone-Output falls Stats nicht geparst werden konnten -->
-            <div x-show="pair.raw_stats" class="mono muted" style="font-size: 10px; margin-top: 6px; padding: 6px 8px; background: var(--bg); border-radius: 3px; word-break: break-all;" x-text="pair.raw_stats"></div>
-          </div>
-        </template>
-        <!-- Cancel-Button für laufenden Backup -->
-        <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); text-align: right;">
-          <button class="btn btn-danger" @click="cancelBackup()">✗ Backup abbrechen</button>
-        </div>
-      </div>
+      <!-- Backup-Progress entfernt — rclone-Sync im separaten Container. -->
 
       <!-- Externe HDD via Shelly -->
       <div x-show="hddStatus && hddStatus.enabled" class="card" style="margin-top: 18px;">
@@ -1092,41 +989,7 @@
                   </div>
                 </div>
 
-                <div class="job-card">
-                  <div class="job-card-head">
-                    <span class="job-icon">☁️</span>
-                    <strong>Backup</strong>
-                    <span class="muted" style="margin-left: auto; font-size: 11px;">rclone bisync</span>
-                  </div>
-                  <div class="job-stat-row">
-                    <span class="muted">Letzter Lauf</span>
-                    <span class="mono" x-text="schedule.backup && schedule.backup.last_run ? formatTs(schedule.backup.last_run) : 'noch nicht gelaufen'"></span>
-                  </div>
-                  <div class="job-stat-row" x-show="schedule.backup && schedule.backup.last_summary">
-                    <span class="muted">Ergebnis</span>
-                    <span class="mono" x-text="schedule.backup && schedule.backup.last_summary ? ((schedule.backup.last_summary.ok_count || 0) + '/' + (schedule.backup.last_summary.total_pairs || 0) + ' Paare · ' + (schedule.backup.last_summary.duration || 0) + 's') : '—'"></span>
-                  </div>
-                  <div class="job-stat-row">
-                    <span class="muted">Nächster Lauf</span>
-                    <span class="mono" style="color: var(--accent)" x-text="(schedule.backup && schedule.backup.next_run) || '—'"></span>
-                  </div>
-                  <div style="margin-top: 14px;">
-                    <div class="muted" style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;">Schnellauswahl</div>
-                    <div class="preset-chips">
-                      <template x-for="preset in SCHEDULE_PRESETS_BACKUP" :key="preset.value">
-                        <button type="button" class="chip" :class="scheduleEdit.backup === preset.value && 'active'"
-                                @click="scheduleEdit.backup = preset.value" x-text="preset.label"></button>
-                      </template>
-                    </div>
-                    <div class="field" style="margin: 12px 0 0;">
-                      <label style="display:flex; justify-content:space-between; align-items:baseline;">
-                        <span>Cron-Ausdruck</span>
-                        <span class="muted" style="font-size: 10px;" x-text="humanCron(scheduleEdit.backup)"></span>
-                      </label>
-                      <input class="mono" x-model="scheduleEdit.backup" placeholder="*-*-* 03:00:00">
-                    </div>
-                  </div>
-                </div>
+                <!-- Backup-Schedule-Card entfernt — rclone im separaten Container. -->
               </div>
 
               <div class="hint" style="margin-bottom: 14px;">
@@ -1341,177 +1204,7 @@
 
           <!-- Telegram-Block entfernt: Benachrichtigungen sind raus. -->
 
-          <!-- Backup -->
-          <div class="config-section">
-            <div class="head">
-              <span style="flex: 1;">Backup · rclone</span>
-              <button class="btn" @click="testRclone()" :disabled="testing.rclone">
-                <span x-show="!testing.rclone">⌬ rclone Remotes testen</span>
-                <span x-show="testing.rclone">… testet</span>
-              </button>
-            </div>
-            <div class="body">
-              <div x-show="testResults.rclone" class="test-result" :class="(testResults.rclone && testResults.rclone.ok) ? 'ok' : 'err'">
-                <div x-text="(testResults.rclone && (testResults.rclone.message || testResults.rclone.error))"></div>
-                <div x-show="(testResults.rclone && testResults.rclone.remotes)" class="mono" style="margin-top: 6px; font-size: 11px;">
-                  Verfügbar: <span x-text="((testResults.rclone && testResults.rclone.remotes) || []).join(', ')"></span>
-                </div>
-              </div>
-              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
-                <input type="checkbox" x-model="config.backup.enabled" id="bk-en">
-                <label for="bk-en">Aktiv</label>
-              </div>
-              <div class="field"><label>rclone Remote</label><input x-model="config.backup.rclone_remote"></div>
-
-              <h4 style="margin: 18px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">Sync-Paare</h4>
-              <div class="field" style="margin-bottom: 14px;">
-                <label>Default-Schedule (Cron) für Pairs ohne eigenen Schedule</label>
-                <input x-model="config.backup.default_schedule" placeholder="0 3 * * *">
-                <div class="hint">
-                  Standard-Cron-Format. Beispiele:
-                  <code>0 3 * * *</code> = täglich 03:00,
-                  <code>*/15 * * * *</code> = alle 15 Min,
-                  <code>0 */6 * * *</code> = alle 6h,
-                  <code>0 9 * * 1-5</code> = werktags 9 Uhr.
-                  Per-Pair-Schedule überschreibt dies.
-                </div>
-              </div>
-              <template x-for="(p, idx) in config.backup.pairs" :key="idx">
-                <div>
-                  <div class="row" style="margin-bottom: 8px; align-items: end;">
-                    <div class="field" style="margin:0"><label>Name</label><input x-model="p.name"></div>
-                    <div class="field" style="margin:0">
-                      <label>Remote</label>
-                      <div class="input-with-btn">
-                        <input x-model="p.remote">
-                        <button type="button" class="btn" @click="openRcloneBrowser(p.remote, (v) => p.remote = v)">📂</button>
-                      </div>
-                    </div>
-                    <div class="field" style="margin:0">
-                      <label>Lokal</label>
-                      <div class="input-with-btn">
-                        <input x-model="p.local">
-                        <button type="button" class="btn" @click="openLocalBrowser(p.local, (v) => p.local = v)">📂</button>
-                      </div>
-                    </div>
-                    <div style="display:flex; gap:6px;">
-                      <button class="btn" @click="runSinglePair(p.name)" :disabled="status.backup" title="Nur dieses Paar jetzt synchronisieren">
-                        ▶
-                      </button>
-                      <button class="btn" @click="testRclone(idx)" :disabled="testing['rclone_'+idx]" title="Verbindung + Größe testen">
-                        <span x-show="!testing['rclone_'+idx]">⌬</span>
-                        <span x-show="testing['rclone_'+idx]">…</span>
-                      </button>
-                      <button class="btn btn-danger" @click="config.backup.pairs.splice(idx, 1)" title="Paar löschen">✗</button>
-                    </div>
-                  </div>
-                  <!-- Schedule-Zeile pro Pair -->
-                  <div class="row" style="margin-bottom: 12px; align-items: end;">
-                    <div class="field" style="margin:0; flex: 2;">
-                      <label>Schedule (Cron, leer = Default, "manual" = nur Button)</label>
-                      <input x-model="p.schedule" placeholder="z.B. 0 3 * * *  oder  manual">
-                    </div>
-                    <div class="field" style="margin:0; flex: 3;">
-                      <label>Nächster Lauf (laut Plan)</label>
-                      <div class="mono muted" style="padding: 8px 0; font-size: 12px;"
-                           x-text="pairScheduleInfo(p.name) || '— wird beim Speichern berechnet —'"></div>
-                    </div>
-                  </div>
-                  <div x-show="testResults['rclone_'+idx]" class="test-result" :class="(testResults['rclone_'+idx] && testResults['rclone_'+idx].ok) ? 'ok' : 'err'" style="margin-bottom: 12px;">
-                    <div x-text="(testResults['rclone_'+idx] && (testResults['rclone_'+idx].message || testResults['rclone_'+idx].error))"></div>
-                    <div x-show="(testResults['rclone_'+idx] && testResults['rclone_'+idx].remote_size_output)" class="mono" style="margin-top:4px; font-size: 11px;" x-text="(testResults['rclone_'+idx] && testResults['rclone_'+idx].remote_size_output)"></div>
-                  </div>
-                  <!-- Erweiterte Pro-Pair-Optionen (collapsible) -->
-                  <details style="margin-bottom: 14px; font-size: 12px;">
-                    <summary style="cursor:pointer; color: var(--fg-dim); user-select: none;">⚙ Erweiterte Optionen</summary>
-                    <div style="margin-top: 8px; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);">
-                      <div class="hint" style="margin-bottom: 8px;">
-                        Optional - überschreibt die globalen rclone-Args nur für dieses Paar.
-                        Mehrere Args, eine pro Zeile. Beispiele:<br>
-                        <code>--transfers=16</code> (mehr parallele Uploads für Foto-Paare)<br>
-                        <code>--multi-thread-streams=4</code> (parallele Streams pro großem File)<br>
-                        <code>--compare=size,modtime,checksum</code> (für kritische Daten)
-                      </div>
-                      <textarea
-                        x-model="pairArgsText[idx]"
-                        @input="syncPairArgs(idx)"
-                        rows="3"
-                        placeholder="z.B. --transfers=16"
-                        style="font-family: var(--mono); width:100%; background: var(--bg-elev); border: 1px solid var(--border); color: var(--fg); padding:8px; border-radius: var(--radius); font-size: 11px;"></textarea>
-                    </div>
-                  </details>
-                </div>
-              </template>
-              <button class="btn" @click="addBackupPair()">+ Paar hinzufügen</button>
-
-              <h4 style="margin: 22px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">rclone-Args</h4>
-              <textarea x-model="rcloneArgsText" rows="5" style="font-family: var(--mono); width:100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding:10px; border-radius: var(--radius);"></textarea>
-              <div class="hint">eine Option pro Zeile (z.B. <code>--checkers=16</code>)</div>
-
-              <div class="field" style="margin-top: 16px;">
-                <label>Bandbreiten-Limit (optional)</label>
-                <input x-model="config.backup.bwlimit" placeholder='leer = unbegrenzt, z.B. "10M" oder "08:00,1M 22:00,off"'>
-                <div class="hint">
-                  Konstant z.B. <code>10M</code>, oder zeitgesteuert
-                  <code>08:00,1M 22:00,off</code> für 1 MB/s tagsüber.
-                </div>
-              </div>
-
-              <h4 style="margin: 22px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">Datensicherheit</h4>
-              <div class="field">
-                <label>Backup-Dir (Trash-Ordner für überschriebene/gelöschte Files)</label>
-                <input x-model="config.backup.backup_dir" placeholder='z.B. ".bisync-trash/{date}" - leer = direkt löschen'>
-                <div class="hint">
-                  <code>{date}</code> wird zu Zeitstempel. Relativer Pfad landet unter dem Remote-Root.
-                  Beispiel: <code>.bisync-trash/{date}</code> → <code>pcloud:/Filme/.bisync-trash/2026-05-22T16-00/</code>
-                </div>
-              </div>
-              <div class="row">
-                <div class="field">
-                  <label>Konflikt-Auflösung</label>
-                  <select x-model="config.backup.conflict_resolve">
-                    <option value="auto">auto · manuell mit .conflict-Files</option>
-                    <option value="newer">newer · jüngeres File behalten</option>
-                    <option value="older">older · älteres File behalten</option>
-                    <option value="larger">larger · größeres File behalten</option>
-                    <option value="path1">path1 · Cloud (Remote) gewinnt</option>
-                    <option value="path2">path2 · Local gewinnt</option>
-                  </select>
-                </div>
-                <div class="field">
-                  <label>Immutable-Mode</label>
-                  <select x-model.boolean="config.backup.immutable">
-                    <option :value="false">aus (Standard)</option>
-                    <option :value="true">an · niemals existierende Files überschreiben</option>
-                  </select>
-                  <div class="hint">Schutz vor manipulierter Cloud / Ransomware</div>
-                </div>
-              </div>
-
-              <h4 style="margin: 22px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">rclone-Filter</h4>
-              <div class="field">
-                <label>Filter-Datei</label>
-                <input x-model="config.backup.filter_file" placeholder="/opt/scrapper/data/rclone-filters.txt">
-              </div>
-              <textarea x-model="rcloneFilterText" rows="10"
-                        style="font-family: var(--mono); width:100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding:10px; border-radius: var(--radius); font-size: 12px;"
-                        placeholder="- .DS_Store
-- Thumbs.db
-- *.tmp"></textarea>
-              <div class="flex" style="margin-top: 8px;">
-                <button class="btn" @click="loadFilterFile()" :disabled="filterBusy">
-                  <span x-show="!filterBusy">⟳ Datei laden</span>
-                  <span x-show="filterBusy">…</span>
-                </button>
-                <button class="btn btn-primary" @click="saveFilterFile()" :disabled="filterBusy">
-                  💾 Filter speichern
-                </button>
-                <span class="hint" style="flex:1;">
-                  Doku: <a href="https://rclone.org/filtering/" target="_blank" rel="noopener">rclone.org/filtering</a>
-                </span>
-              </div>
-            </div>
-          </div>
+          <!-- Backup-Section entfernt — rclone-Sync läuft im separaten Container. -->
 
           <!-- yt-dlp -->
           <div class="config-section">
@@ -1571,7 +1264,7 @@
                 <div class="field">
                   <label>Events (Mehrfachauswahl)</label>
                   <div class="flex" style="flex-wrap: wrap; gap: 8px;">
-                    <template x-for="ev in ['scraper_done','backup_done','job_failed','pending_high']" :key="ev">
+                    <template x-for="ev in ['scraper_done','job_failed','pending_high']" :key="ev">
                       <label style="display:inline-flex; align-items:center; gap:5px; text-transform:none; letter-spacing:0; font-size:12px; color:var(--fg);">
                         <input type="checkbox" :value="ev"
                                :checked="(hook.events || []).includes(ev)"

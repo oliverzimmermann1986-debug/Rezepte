@@ -24,11 +24,6 @@ function scrapperApp() {
       }
     },
     config: {},
-    rcloneArgsText: '',
-    rcloneFilterText: '',
-    pairArgsText: {},      // idx -> textarea content for per-pair args
-    pairScheduleData: {},  // name -> {schedule, last_run, next_run, due}
-    pairScheduleDefault: '0 3 * * *',
     hddStatus: null,
     hddBusy: false,
     hddLastOutput: '',
@@ -46,7 +41,7 @@ function scrapperApp() {
     junkItems: null,
     junkLoading: false,
     jobs: [],
-    status: { scraper: null, backup: null, pending_count: 0 },
+    status: { scraper: null, pending_count: 0 },
     lastScraper: null,
     lastBackup: null,
     stats: null,
@@ -160,9 +155,6 @@ function scrapperApp() {
         this._eventSource = es;
         es.addEventListener('status', (e) => {
           try { this.status = JSON.parse(e.data); } catch(_) {}
-        });
-        es.addEventListener('backup_progress', (e) => {
-          try { this.backupProgress = JSON.parse(e.data); } catch(_) {}
         });
         es.addEventListener('scraper_progress', (e) => {
           try { this.scraperProgress = JSON.parse(e.data); } catch(_) {}
@@ -393,9 +385,6 @@ function scrapperApp() {
       if (j.kind === 'scraper') {
         return `${s.auto||0} auto, ${s.pending||0} pending${s.errors ? ', '+s.errors+' err' : ''}`;
       }
-      if (j.kind === 'backup') {
-        return `${s.ok_count||0}/${s.total_pairs||0} Paare${s.dry_run ? ' (dry)' : ''}`;
-      }
       if (j.kind === 'reanalyze') {
         return `${s.auto_saved||0} eingeordnet, ${s.still_pending||0} pending, ${s.errors||0} err (${s.processed||0}/${s.total||0})`;
       }
@@ -415,8 +404,6 @@ function scrapperApp() {
       try {
         const all = await this.api('GET', '/api/jobs/list?limit=20');
         this.lastScraper = all.find(j => j.kind === 'scraper' && j.status === 'ok');
-        // Quick-Sync zählt auch als Backup für die Dashboard-Card
-        this.lastBackup = all.find(j => (j.kind === 'backup' || j.kind === 'quicksync') && j.status === 'ok');
       } catch(e) {}
     },
     async loadStats() {
@@ -502,7 +489,7 @@ function scrapperApp() {
       const w = 600, h = 140, pad = 24;
       const days = s.days;
       const kinds = Object.keys(s.series);
-      const palette = { scraper: '#f97316', backup: '#22c55e', quicksync: '#06b6d4', reanalyze: '#a855f7' };
+      const palette = { scraper: '#f97316', reanalyze: '#a855f7' };
       // Max-Wert für Y-Skala
       let maxVal = 1;
       kinds.forEach(k => s.series[k].forEach(v => { if (v > maxVal) maxVal = v; }));
@@ -572,12 +559,7 @@ function scrapperApp() {
     },
     async refreshProgress() {
       // Nur abfragen wenn Job läuft, sonst Last-Info behalten
-      if (this.status && this.status.backup) {
-        try { this.backupProgress = await this.api('GET', '/api/jobs/backup/progress'); } catch(e) {}
-      } else if (this.backupProgress && this.backupProgress.running) {
-        // war running, jetzt nicht mehr → finalen Stand laden
-        try { this.backupProgress = await this.api('GET', '/api/jobs/backup/progress'); } catch(e) {}
-      }
+      
       if (this.status && this.status.scraper) {
         try { this.scraperProgress = await this.api('GET', '/api/jobs/scraper/progress'); } catch(e) {}
       } else if (this.scraperProgress && this.scraperProgress.running) {
@@ -599,47 +581,6 @@ function scrapperApp() {
       await this.api('POST', '/api/jobs/scraper/run');
       this.showToast('Scraper gestartet');
       this.refreshStatus();
-    },
-    async runBackup(dryRun, pairs) {
-      let url = `/api/jobs/backup/run?dry_run=${dryRun}`;
-      if (pairs && pairs.length) url += '&pairs=' + encodeURIComponent(pairs.join(','));
-      await this.api('POST', url);
-      this.showToast(`Backup gestartet${pairs ? ' (' + pairs.join(', ') + ')' : ''}${dryRun ? ' [dry-run]' : ''}`);
-      this.refreshStatus();
-    },
-    async runQuickSync() {
-      if (!this.quickSync.remote_path || !this.quickSync.local_path) {
-        this.showToast('Remote- und Local-Pfad sind Pflicht', 'error');
-        return;
-      }
-      this.quickSync.running = true;
-      try {
-        const r = await this.api('POST', '/api/jobs/backup/quick', {
-          remote_path: this.quickSync.remote_path,
-          local_path: this.quickSync.local_path,
-          direction: this.quickSync.direction,
-          mode: this.quickSync.mode,
-          dry_run: this.quickSync.dry_run,
-        });
-        if (r && r.job_id) {
-          this.showToast('Quick-Sync gestartet (Job #' + r.job_id + ')');
-          this.refreshStatus();
-          this.showQuickSync = false;
-        }
-      } catch(e) {
-        this.showToast('Fehler: ' + (e.message || e), 'error');
-      } finally {
-        this.quickSync.running = false;
-      }
-    },
-
-    async cancelBackup() {
-      if (!confirm('Backup wirklich abbrechen? Alle laufenden rclone-Prozesse werden gestoppt.')) return;
-      try {
-        await this.api('POST', '/api/jobs/backup/cancel', {});
-        this.showToast('Cancel-Signal gesendet', 'ok');
-        this.refreshStatus();
-      } catch(e) {}
     },
     async cancelScraper() {
       if (!confirm('Scraper abbrechen? Die gerade laufende URL wird noch fertig verarbeitet, danach wird gestoppt.')) return;
@@ -1071,25 +1012,15 @@ function scrapperApp() {
       cfg.ai ||= {};
       cfg.ai.openai ||= { api_key: '', model: 'gpt-4o-mini', base_url: '', timeout: 30 };
       if (cfg.ai.auto_translate === undefined) cfg.ai.auto_translate = true;
-      cfg.backup ||= {};
-      cfg.backup.pairs ||= [];
-      cfg.backup.rclone_args ||= [];
       cfg.ytdlp ||= {};
       cfg.webhooks ||= [];
       cfg.einkauf ||= { api_url: '', auto_consolidate: true };
       this.config = cfg;
-      this.rcloneArgsText = (cfg.backup.rclone_args || []).join('\n');
       // Pro-Pair-Args ins UI laden
-      this.pairArgsText = {};
-      (cfg.backup.pairs || []).forEach((p, idx) => {
-        this.pairArgsText[idx] = (p.rclone_args || []).join('\n');
-      });
       this.recipeTypes = cfg.recipe_types || this.recipeTypes;
       this.weddingCategories = cfg.wedding_categories || this.weddingCategories;
       this.loadSchedule();
-      this.loadFilterFile();   // rclone-Filter parallel laden
       this.loadMaintenance();  // Wartungs-Stats parallel
-      this.loadPairScheduleInfo();
     },
     async loadMaintenance() {
       this.maintBusy = true;
@@ -1122,37 +1053,13 @@ function scrapperApp() {
         this.maintBusy = false;
       }
     },
-    async runBackupNow() {
-      this.maintBusy = true;
-      this.maintenanceOutput = '';
-      try {
-        const r = await this.api('POST', '/api/config/backups/run-now');
-        this.maintenanceOutput = (r.stdout || '') + (r.stderr ? '\n[STDERR]\n' + r.stderr : '');
-        this.showToast(r.ok ? 'Backup ok' : 'Backup-Fehler', r.ok ? 'ok' : 'error');
-        await this.loadMaintenance();
-      } catch(e) {
-        this.showToast('Backup-Fehler: ' + e, 'error');
-      } finally {
-        this.maintBusy = false;
-      }
-    },
     async saveConfig() {
-      // rclone-args aus textarea zurück in array
-      this.config.backup.rclone_args = this.rcloneArgsText
-        .split('\n').map(s => s.trim()).filter(Boolean);
       // Pfad-Werte trimmen damit nicht versehentlich Leerzeichen reinrutschen
       // (führt sonst zu 'path does not exist' beim healthz/deep)
       if (this.config.paths) {
         ['recipe_dir', 'wedding_dir', 'temp_dir', 'logs_dir'].forEach(k => {
           if (typeof this.config.paths[k] === 'string') {
             this.config.paths[k] = this.config.paths[k].trim();
-          }
-        });
-      }
-      if (this.config.backup) {
-        ['filter_file', 'backup_dir', 'bwlimit'].forEach(k => {
-          if (typeof this.config.backup[k] === 'string') {
-            this.config.backup[k] = this.config.backup[k].trim();
           }
         });
       }
@@ -1172,27 +1079,19 @@ function scrapperApp() {
     testing: {
       mail_recipe: false, mail_wedding: false,
       openai: false,
-      rclone: false, paths: false, ytdlp: false,
+      paths: false, ytdlp: false,
       schedule_preview: false, schedule_save: false,
       webhook: -1,   // Index des gerade getesteten Webhook (-1 = keiner)
     },
     testResults: {},
-    schedule: { scraper: { oncalendar: '', next_run: null }, backup: { oncalendar: '', next_run: null } },
-    scheduleEdit: { scraper: '', backup: '' },
+    schedule: { scraper: { oncalendar: '', next_run: null } },
+    scheduleEdit: { scraper: '' },
     schedulePreview: null,
-    backupProgress: null,
+
     scraperProgress: null,
     reanalyzeProgress: null,
     _progressTimer: null,
-    quickSync: {
-      remote_path: '',
-      local_path: '',
-      direction: 'bisync',
-      mode: 'bisync',
-      dry_run: false,
-      running: false,
-    },
-    showQuickSync: false,
+
     isTesting(key) { return this.testing[key] === true; },
     testResult(key) { return this.testResults[key] || null; },
     testResultMsg(key) {
@@ -1278,103 +1177,15 @@ function scrapperApp() {
         this.testing.openai = false;
       }
     },
-    testRclone(pairIndex = null) {
-      const body = pairIndex !== null ? { pair_index: pairIndex } : {};
-      this.runTest(pairIndex !== null ? 'rclone_' + pairIndex : 'rclone', '/api/test/rclone', body);
-    },
     testPaths() { this.runTest('paths', '/api/test/paths'); },
     testYtdlp() { this.runTest('ytdlp', '/api/test/ytdlp'); },
-
-    // ---------------- Backup-Pairs (Pro-Pair-Args) ----------------
-    addBackupPair() {
-      const arr = this.config.backup.pairs;
-      const idx = arr.length;
-      arr.push({ name: '', remote: '', local: '', schedule: '' });
-      this.pairArgsText[idx] = '';
-    },
-    async loadPairScheduleInfo() {
-      // Holt für alle Pairs die Schedule-Info vom Backend (next_run etc.)
-      try {
-        const r = await this.api('GET', '/api/jobs/backup/schedule');
-        const info = {};
-        for (const p of (r.pairs || [])) {
-          info[p.name] = p;
-        }
-        this.pairScheduleData = info;
-        this.pairScheduleDefault = r.default_schedule;
-      } catch(e) {
-        // Endpoint evtl. nicht verfügbar - keine Info, ignorieren
-      }
-    },
-    pairScheduleInfo(name) {
-      const p = this.pairScheduleData && this.pairScheduleData[name];
-      if (!p) return null;
-      if (p.reason === 'disabled' || (p.reason || '').startsWith('schedule=')) {
-        return `(${p.reason})`;
-      }
-      const lr = p.last_run ? new Date(p.last_run * 1000).toLocaleString('de-DE') : 'noch nie';
-      const nr = p.next_run ? new Date(p.next_run * 1000).toLocaleString('de-DE') : '—';
-      const dueLabel = p.due ? ' · ⏰ jetzt fällig' : '';
-      return `letzter: ${lr} · nächster: ${nr}${dueLabel}`;
-    },
-    async runSinglePair(name) {
-      if (!name) { this.showToast('Pair-Name fehlt - erst speichern', 'error'); return; }
-      try {
-        const r = await this.api('POST', `/api/jobs/backup/run-pair/${encodeURIComponent(name)}`);
-        if (r.ok) {
-          this.showToast(`Sync für ${name} gestartet (Job ${r.job_id})`, 'ok');
-        } else {
-          this.showToast('Sync-Start fail', 'error');
-        }
-      } catch(e) {
-        this.showToast('Fehler: ' + e, 'error');
-      }
-    },
-    syncPairArgs(idx) {
-      // Textarea -> pair.rclone_args array. Leer = Feld weglassen.
-      const text = (this.pairArgsText[idx] || '').trim();
-      const arr = text.split('\n').map(s => s.trim()).filter(Boolean);
-      const pair = this.config.backup.pairs[idx];
-      if (!pair) return;
-      if (arr.length === 0) {
-        delete pair.rclone_args;
-      } else {
-        pair.rclone_args = arr;
-      }
-    },
-
-    // ---------------- rclone Filter-Datei ----------------
-    async loadFilterFile() {
-      this.filterBusy = true;
-      try {
-        const r = await this.api('GET', '/api/config/filter-file');
-        this.rcloneFilterText = (r && r.content) || '';
-      } catch(e) {
-        // 404/error: leer lassen (Datei existiert noch nicht)
-        this.rcloneFilterText = '';
-      } finally {
-        this.filterBusy = false;
-      }
-    },
-    async saveFilterFile() {
-      this.filterBusy = true;
-      try {
-        const r = await this.api('PUT', '/api/config/filter-file',
-                                 { content: this.rcloneFilterText });
-        this.showToast(`Filter gespeichert (${r.bytes} Bytes)`, 'ok');
-      } catch(e) {
-        this.showToast('Speichern fehlgeschlagen: ' + e, 'error');
-      } finally {
-        this.filterBusy = false;
-      }
-    },
 
     // ---------------- Webhooks ----------------
     addWebhook() {
       if (!this.config.webhooks) this.config.webhooks = [];
       this.config.webhooks.push({
         name: '', url: '', enabled: true,
-        events: ['scraper_done', 'backup_done', 'job_failed'],
+        events: ['scraper_done', 'job_failed'],
       });
     },
     removeWebhook(idx) {
@@ -1414,7 +1225,6 @@ function scrapperApp() {
       try {
         this.schedule = await this.api('GET', '/api/schedule');
         this.scheduleEdit.scraper = this.schedule.scraper.oncalendar || '';
-        this.scheduleEdit.backup  = this.schedule.backup.oncalendar  || '';
       } catch(e) {}
     },
     async previewSchedule() {
@@ -1422,7 +1232,6 @@ function scrapperApp() {
       try {
         this.schedulePreview = await this.api('POST', '/api/schedule/preview', {
           scraper: this.scheduleEdit.scraper,
-          backup:  this.scheduleEdit.backup,
         });
       } finally {
         this.testing.schedule_preview = false;
@@ -1433,7 +1242,6 @@ function scrapperApp() {
       try {
         const r = await this.api('PUT', '/api/schedule', {
           scraper: this.scheduleEdit.scraper,
-          backup:  this.scheduleEdit.backup,
         });
         if (r && r.ok) {
           this.showToast('Schedule gespeichert ✓');
@@ -1449,7 +1257,7 @@ function scrapperApp() {
     // ------------- Verzeichnis-Browser -------------
     browser: {
       show: false,
-      mode: 'local',          // 'local' | 'rclone'
+      mode: 'local',
       currentPath: '/',
       entries: [],
       suggestedRoots: [],
@@ -1467,13 +1275,6 @@ function scrapperApp() {
       this.browser.show = true;
       this.loadBrowserPath(initialPath || '/mnt');
     },
-    openRcloneBrowser(initialPath, callback, title) {
-      this.browser.mode = 'rclone';
-      this.browser.callback = callback;
-      this.browser.title = title || 'rclone-Pfad wählen';
-      this.browser.show = true;
-      this.loadBrowserPath(initialPath || '');
-    },
     async loadBrowserPath(path) {
       this.browser.loading = true;
       // State sofort leeren - sonst zeigt das Modal bei einem API-Fehler
@@ -1484,7 +1285,7 @@ function scrapperApp() {
       this.browser.isRoot = false;
       this.browser.currentPath = path || '';
       try {
-        const endpoint = this.browser.mode === 'local' ? '/api/browse/local' : '/api/browse/rclone';
+        const endpoint = '/api/browse/local';
         const r = await this.api('GET', endpoint + '?path=' + encodeURIComponent(path || ''));
         if (r) {
           this.browser.currentPath = r.path;
@@ -1517,22 +1318,6 @@ function scrapperApp() {
         this.loadBrowserPath(this.browser.currentPath);
       } catch(e) {
         this.showToast('Anlegen fehlgeschlagen', 'error');
-      }
-    },
-
-    pickFolderForQuick(which) {
-      if (which === 'remote') {
-        this.openRcloneBrowser(
-          this.quickSync.remote_path || '',
-          (path) => { this.quickSync.remote_path = path; },
-          'Remote-Pfad für Quick-Sync'
-        );
-      } else {
-        this.openLocalBrowser(
-          this.quickSync.local_path || '/mnt',
-          (path) => { this.quickSync.local_path = path; },
-          'Lokalen Pfad für Quick-Sync'
-        );
       }
     },
 
@@ -1617,14 +1402,7 @@ function scrapperApp() {
       { label: 'Alle 6 Std',  value: '00,06,12,18:00' },
       { label: 'Täglich 08:00', value: '*-*-* 08:00:00' },
     ],
-    SCHEDULE_PRESETS_BACKUP: [
-      { label: 'Täglich 02:00', value: '*-*-* 02:00:00' },
-      { label: 'Täglich 03:00', value: '*-*-* 03:00:00' },
-      { label: 'Täglich 04:00', value: '*-*-* 04:00:00' },
-      { label: 'Mo-Fr 03:00', value: 'Mon..Fri *-*-* 03:00:00' },
-      { label: 'Wöchentlich So 02:00', value: 'Sun *-*-* 02:00:00' },
-      { label: 'Alle 6 Std',  value: '00,06,12,18:00' },
-    ],
+
     humanCron(cron) {
       if (!cron) return '—';
       const map = {

@@ -1,4 +1,7 @@
-"""API für Jobs: starten, Status abrufen, Logs."""
+"""API für Scraper-Jobs: starten, Status abrufen, Logs.
+
+Hinweis: Backup/Sync-Funktionalität (rclone) ist komplett entfernt und in
+einen separaten Container ausgelagert. Hier nur noch Scraper-Jobs."""
 from __future__ import annotations
 
 import logging
@@ -8,35 +11,31 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..auth import require_auth
 from ..config_store import get_config
 from ..db import get_db
 from ..jobs import scraper as scraper_job
-from ..jobs import rclone_sync as rclone_job
 from ..jobs.locks import file_lock_or_none
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(require_auth)])
 
-# Globale Locks damit nicht 2x parallel laufen
+# Globaler Lock damit Scraper nicht 2x parallel läuft (Web-Trigger + CLI)
 _locks: Dict[str, threading.Lock] = {
     "scraper": threading.Lock(),
-    "backup": threading.Lock(),
 }
 
 
 def _rotate_old_logs(log_dir: Path, days: int = 30) -> None:
-    """Löscht Job-Log-Files älter als ``days`` Tage. Best-effort, ignoriert Fehler.
-    Wird bei jedem Job-Start aufgerufen, daher amortisierter O(1)."""
+    """Löscht Job-Log-Files älter als ``days`` Tage. Best-effort, ignoriert Fehler."""
     if not log_dir.exists():
         return
     cutoff = time.time() - days * 86400
-    patterns = ["scraper-*.log", "backup-*.log", "quicksync-*.log",
-                "reanalyze-*.log", "sync-*.log", "quick-*.log"]
+    patterns = ["scraper-*.log", "reanalyze-*.log"]
     deleted = 0
     for pat in patterns:
         for f in log_dir.rglob(pat):
@@ -51,8 +50,8 @@ def _rotate_old_logs(log_dir: Path, days: int = 30) -> None:
 
 
 def _setup_job_logger(job_id: int, kind: str) -> tuple[Path, logging.Handler]:
-    """Liefert einen FileHandler der dieses Job-Lauf-Logs aufzeichnet.
-    Macht außerdem bei jedem Aufruf eine billige Log-Rotation."""
+    """Liefert einen FileHandler der den Job-Lauf aufzeichnet.
+    Macht zusätzlich bei jedem Aufruf eine billige Log-Rotation."""
     log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
     _rotate_old_logs(log_dir)
@@ -65,12 +64,10 @@ def _setup_job_logger(job_id: int, kind: str) -> tuple[Path, logging.Handler]:
 
 
 def _run_scraper_thread(job_id: int):
-    """Background-Thread. WICHTIG: ein einziger try/finally umschließt ALLES
-    inkl. Logger-Setup, sonst kann der Lock bei FileHandler-Fehler hängen bleiben.
-
-    Holt zusätzlich einen ``file_lock_or_none("scraper")`` als prozessübergreifender
-    Schutz gegen parallelen CLI-Lauf (systemd-Timer).
-    """
+    """Background-Thread. EIN try/finally für ALLES inkl. Logger-Setup
+    damit der Lock bei FileHandler-Fehler nicht hängen bleibt.
+    Plus file_lock_or_none als prozessübergreifender Schutz gegen
+    parallelen CLI-Lauf (systemd-Timer)."""
     db = get_db()
     fh = None
     try:
@@ -97,7 +94,6 @@ def _run_scraper_thread(job_id: int):
                 logger.exception(f"Scraper-Job {job_id} fehlgeschlagen")
                 db.job_finish(job_id, "error", {"error": str(e)})
     except Exception as e:
-        # Logger-Setup ist geplatzt: Job direkt als error markieren
         try:
             db.job_finish(job_id, "error", {"error": f"setup failed: {e}"})
         except Exception:
@@ -113,47 +109,6 @@ def _run_scraper_thread(job_id: int):
         _locks["scraper"].release()
 
 
-def _run_backup_thread(job_id: int, dry_run: bool, pairs_filter=None):
-    db = get_db()
-    fh = None
-    try:
-        with file_lock_or_none("backup") as flock:
-            if flock is None:
-                logger.warning(f"Backup-Job {job_id}: anderer Prozess (CLI?) hält den Lock - skip")
-                db.job_finish(job_id, "skipped", {
-                    "error": "anderer Backup-Prozess (CLI?) läuft bereits"
-                })
-                return
-            try:
-                log_file, fh = _setup_job_logger(job_id, "backup")
-                db.job_set_log_file(job_id, str(log_file))
-                logger.info(f"=== Backup-Job {job_id} startet (Web-Trigger, dry_run={dry_run}, pairs={pairs_filter}) ===")
-                summary = rclone_job.run_job(dry_run=dry_run, pairs_filter=pairs_filter)
-                status = "ok"
-                if rclone_job.is_cancelled():
-                    status = "error"
-                    summary["error"] = "Abgebrochen"
-                db.job_finish(job_id, status, summary)
-                logger.info(f"=== Backup-Job {job_id} {status} ===")
-            except Exception as e:
-                logger.exception(f"Backup-Job {job_id} fehlgeschlagen")
-                db.job_finish(job_id, "error", {"error": str(e)})
-    except Exception as e:
-        try:
-            db.job_finish(job_id, "error", {"error": f"setup failed: {e}"})
-        except Exception:
-            pass
-        logger.exception(f"Backup-Job {job_id}: Setup gescheitert")
-    finally:
-        if fh is not None:
-            try:
-                logging.getLogger().removeHandler(fh)
-                fh.close()
-            except Exception:
-                pass
-        _locks["backup"].release()
-
-
 @router.post("/scraper/run")
 def run_scraper():
     if not _locks["scraper"].acquire(blocking=False):
@@ -164,31 +119,10 @@ def run_scraper():
     return {"ok": True, "job_id": job_id}
 
 
-@router.post("/backup/run")
-def run_backup(dry_run: bool = Query(False), pairs: Optional[str] = Query(None)):
-    """pairs = kommagetrennte Paar-Namen, sonst alle"""
-    if not _locks["backup"].acquire(blocking=False):
-        raise HTTPException(409, "Backup läuft bereits")
-    pairs_filter = [p.strip() for p in pairs.split(",")] if pairs else None
-    job_id = get_db().job_start("backup")
-    t = threading.Thread(target=_run_backup_thread, args=(job_id, dry_run, pairs_filter), daemon=True)
-    t.start()
-    return {"ok": True, "job_id": job_id, "pairs": pairs_filter}
-
-
-@router.post("/backup/cancel")
-def cancel_backup():
-    db = get_db()
-    if not (db.job_running("backup") or db.job_running("quicksync")):
-        return {"ok": False, "error": "Kein laufender Backup/Quick-Sync"}
-    result = rclone_job.cancel_job()
-    return result
-
-
 @router.post("/scraper/cancel")
 def cancel_scraper():
-    """Setzt das Cancel-Flag im Scraper. Bricht zwischen URLs ab -
-    eine bereits laufende URL (Download + Analyse) wird komplett verarbeitet,
+    """Setzt das Cancel-Flag im Scraper. Bricht zwischen URLs ab — eine
+    bereits laufende URL (Download + Analyse) wird komplett verarbeitet,
     aber keine weitere mehr gestartet."""
     if not get_db().job_running("scraper"):
         return {"ok": False, "error": "Kein laufender Scraper-Job"}
@@ -202,7 +136,7 @@ def list_jobs(kind: Optional[str] = None, limit: int = 50):
 
 @router.post("/cleanup-failed")
 def cleanup_failed_jobs():
-    """Löscht alle Job-Einträge mit Status='error'. Nur Log-Cleanup -
+    """Löscht alle Job-Einträge mit Status='error'. Nur Log-Cleanup —
     es wird nichts in History oder Pending verändert."""
     deleted = get_db().jobs_delete_failed()
     return {"ok": True, "deleted": deleted}
@@ -232,151 +166,11 @@ def job_log(job_id: int, tail: int = 500):
         return {"log": f"<Fehler: {e}>"}
 
 
-@router.get("/backup/progress")
-def backup_progress():
-    """Live-Progress des laufenden (oder letzten) Backup/Quick-Sync-Jobs."""
-    import re
-    db = get_db()
-    cfg = get_config()
-    running = db.job_running("backup") or db.job_running("quicksync")
-    if not running:
-        # Letzten beider Arten holen, den jüngeren zurückgeben
-        last_b = db.job_list(kind="backup", limit=1)
-        last_q = db.job_list(kind="quicksync", limit=1)
-        candidates = [j for j in (last_b + last_q) if j]
-        last = max(candidates, key=lambda j: j.get("started_at", 0)) if candidates else None
-        return {"running": False, "last": last}
-
-    log_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs")) / "rclone"
-    started = float(running["started_at"])
-
-    # rclone "Transferred:" Zeilen können verschiedene Formen haben:
-    #   Transferred:   1.234 GiB / 5.678 GiB, 22%, 30 MiB/s, ETA 2m15s
-    #   Transferred:   0 B / 0 B, -, 0 B/s, ETA -
-    #   Transferred:   1.2 KiB / 0, -, 0 B/s, ETA -      (ohne Größen-Total beim ersten Listing)
-    # Wir matchen großzügig.
-    stats_re = re.compile(
-        r'Transferred:\s*([\d.]+\s*\w*)\s*/\s*([\d.]+\s*\w*)'  # x / y
-        r'(?:,\s*(?:([\d.]+)\s*%|-))?'                                # , Z% oder , -
-        r'(?:,\s*([\d.]+\s*\w*/s))?'                                  # , speed
-        r'(?:,\s*ETA\s*([\w-]+))?'                                     # , ETA
-    )
-    # Datei-Zähler kommen in einer separaten Zeile (ohne "i" in KiB):
-    files_re = re.compile(r'Transferred:\s+(\d+)\s*/\s*(\d+),\s*([\d.]+)\s*%')
-    elapsed_re = re.compile(r'Elapsed time:\s*([\w.]+)')
-    errors_re = re.compile(r'Errors:\s*(\d+)')
-
-    pairs_status = []
-    pairs_cfg = cfg.get("backup", "pairs", default=[]) or []
-    for pair in pairs_cfg:
-        name = pair["name"]
-        # Neueste log-Datei für dieses Paar (gleicher Run)
-        matches = sorted(
-            log_dir.glob(f"sync-{name}-*.log"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        active_log = None
-        for m in matches:
-            if m.stat().st_mtime >= started - 30:   # ±30s Toleranz
-                active_log = m
-                break
-
-        pair_data = {
-            "name": name,
-            "remote": pair.get("remote", ""),
-            "local": pair.get("local", ""),
-            "log_file": str(active_log) if active_log else None,
-            "status": "pending",
-            "transferred": None,
-            "total": None,
-            "percent": None,
-            "speed": None,
-            "eta": None,
-            "files": None,
-            "files_total": None,
-            "elapsed": None,
-            "errors": 0,
-        }
-
-        if active_log:
-            try:
-                # Letzte 32 KB lesen für Stats (bisync schreibt viel)
-                with open(active_log, "rb") as f:
-                    f.seek(0, 2)
-                    size = f.tell()
-                    f.seek(max(0, size - 32768))
-                    tail = f.read().decode("utf-8", errors="ignore")
-
-                lines = tail.splitlines()
-                last_transferred_line = None
-
-                for line in reversed(lines):
-                    if "Transferred:" in line and pair_data["transferred"] is None:
-                        last_transferred_line = line.strip()
-                        m = stats_re.search(line)
-                        if m:
-                            t = m.group(1).strip() if m.group(1) else None
-                            tot = m.group(2).strip() if m.group(2) else None
-                            pct = float(m.group(3)) if m.group(3) else None
-                            spd = m.group(4).strip() if m.group(4) else None
-                            eta = m.group(5).strip() if m.group(5) else None
-                            # Erst echte Byte-Stats nehmen (mit B oder i im Total),
-                            # nicht Datei-Zähler
-                            if tot and (("B" in tot) or ("i" in tot)):
-                                pair_data.update({
-                                    "transferred": t, "total": tot,
-                                    "percent": pct, "speed": spd, "eta": eta,
-                                    "status": "running",
-                                })
-                    if pair_data["files"] is None:
-                        m2 = files_re.search(line)
-                        if m2:
-                            pair_data["files"] = int(m2.group(1))
-                            pair_data["files_total"] = int(m2.group(2))
-                    if pair_data["elapsed"] is None:
-                        m3 = elapsed_re.search(line)
-                        if m3:
-                            pair_data["elapsed"] = m3.group(1).strip()
-                    m4 = errors_re.search(line)
-                    if m4:
-                        pair_data["errors"] = max(pair_data["errors"], int(m4.group(1)))
-
-                # Status
-                lower = tail.lower()
-                if "bisync successful" in lower or "completed successfully" in lower:
-                    pair_data["status"] = "done"
-                elif "bisync critical" in lower or "must run --resync" in lower:
-                    pair_data["status"] = "needs_resync"
-                elif pair_data["status"] == "pending":
-                    pair_data["status"] = "running"
-
-                # Falls Regex nicht griff aber Zeile da war: roh anzeigen
-                if pair_data["transferred"] is None and last_transferred_line:
-                    pair_data["raw_stats"] = last_transferred_line[-180:]
-            except Exception as e:
-                logger.warning(f"progress parse {active_log}: {e}")
-
-        pairs_status.append(pair_data)
-
-    import time
-    return {
-        "running": True,
-        "job_id": running["id"],
-        "started_at": started,
-        "elapsed_sec": round(time.time() - started),
-        "pairs": pairs_status,
-        "total_pairs": len(pairs_cfg),
-        "done_pairs": sum(1 for p in pairs_status if p["status"] == "done"),
-    }
-
-
 @router.get("/scraper/progress")
 def scraper_progress():
     """Live-Progress des laufenden Scraper-Jobs (aus dem Job-Log)."""
     import re
     db = get_db()
-    cfg = get_config()
     running = db.job_running("scraper")
     if not running:
         last = db.job_list(kind="scraper", limit=1)
@@ -387,16 +181,14 @@ def scraper_progress():
         "running": True,
         "job_id": running["id"],
         "started_at": float(running["started_at"]),
-        "elapsed_sec": None,
-        "current": None,        # zuletzt verarbeitete URL
+        "elapsed_sec": round(time.time() - float(running["started_at"])),
+        "current": None,
         "total_urls": None,
         "processed": 0,
         "auto": 0,
         "pending": 0,
         "errors": 0,
     }
-    import time
-    info["elapsed_sec"] = round(time.time() - info["started_at"])
 
     if log_file and Path(log_file).exists():
         try:
@@ -406,15 +198,11 @@ def scraper_progress():
                 f.seek(max(0, size - 16384))
                 tail = f.read().decode("utf-8", errors="ignore")
 
-            # Counts aus Log-Zeilen extrahieren (best-effort)
             for line in tail.splitlines():
                 if "Neue URLs:" in line:
                     m = re.search(r'Neue URLs:\s*(\d+)', line)
-                    if m: info["total_urls"] = int(m.group(1))
-                if "Job-Summary:" in line:
-                    # Job ist fertig - wir sind hier eigentlich gar nicht running
-                    pass
-            # Letzte URL die verarbeitet wird
+                    if m:
+                        info["total_urls"] = int(m.group(1))
             for line in reversed(tail.splitlines()):
                 if "Verarbeite" in line or "→ Pending" in line or "→ AUTO" in line:
                     info["current"] = line.strip()[-200:]
@@ -424,137 +212,13 @@ def scraper_progress():
 
     return info
 
+
 @router.get("/status/current")
 def status_current():
-    """Was läuft gerade? Quick-Sync wird als kind='quicksync' gespeichert,
-    teilt sich aber den Backup-Slot im Frontend - beide rclone-Operationen
-    nutzen denselben Lock und Progress-Indikator."""
+    """Was läuft gerade? Reduziert auf scraper + reanalyze nach rclone-Removal."""
     db = get_db()
     return {
         "scraper": db.job_running("scraper"),
-        "backup": db.job_running("backup") or db.job_running("quicksync"),
         "reanalyze": db.job_running("reanalyze"),
         "pending_count": db.pending_count(),
     }
-
-
-class QuickSyncRequest(BaseModel):
-    remote_path: str
-    local_path: str
-    direction: str = "bisync"   # pull | push | bisync
-    mode: str = "bisync"         # copy | sync | bisync
-    dry_run: bool = False
-
-
-def _run_quick_thread(job_id: int, req: dict):
-    db = get_db()
-    fh = None
-    try:
-        with file_lock_or_none("backup") as flock:
-            if flock is None:
-                logger.warning(f"Quick-Sync {job_id}: anderer Backup-Prozess hält den Lock - skip")
-                db.job_finish(job_id, "skipped", {
-                    "error": "anderer Backup-Prozess (CLI?) läuft bereits"
-                })
-                return
-            try:
-                log_file, fh = _setup_job_logger(job_id, "quicksync")
-                db.job_set_log_file(job_id, str(log_file))
-                logger.info(f"=== Quick-Sync {job_id}: {req['direction']} {req['remote_path']} ⇄ {req['local_path']} ===")
-                summary = rclone_job.run_quick(**req)
-                status = "ok" if summary.get("ok") else "error"
-                if rclone_job.is_cancelled():
-                    status = "error"
-                    summary["error"] = "Abgebrochen"
-                db.job_finish(job_id, status, summary)
-                logger.info(f"=== Quick-Sync {job_id} {status} ===")
-            except Exception as e:
-                logger.exception(f"Quick-Sync {job_id} crashed")
-                db.job_finish(job_id, "error", {"error": str(e)})
-    except Exception as e:
-        try:
-            db.job_finish(job_id, "error", {"error": f"setup failed: {e}"})
-        except Exception:
-            pass
-        logger.exception(f"Quick-Sync {job_id}: Setup gescheitert")
-    finally:
-        if fh is not None:
-            try:
-                logging.getLogger().removeHandler(fh)
-                fh.close()
-            except Exception:
-                pass
-        _locks["backup"].release()
-
-
-@router.post("/backup/quick")
-def quick_sync(body: QuickSyncRequest):
-    """One-shot Sync ohne Config-Paar."""
-    if not _locks["backup"].acquire(blocking=False):
-        raise HTTPException(409, "Anderer Backup-Job läuft bereits")
-    if not body.remote_path or not body.local_path:
-        _locks["backup"].release()
-        raise HTTPException(400, "remote_path und local_path sind Pflicht")
-    job_id = get_db().job_start("quicksync")
-    t = threading.Thread(target=_run_quick_thread, args=(job_id, body.model_dump()), daemon=True)
-    t.start()
-    return {"ok": True, "job_id": job_id}
-
-
-# ---------------- Per-Pair Schedule ----------------
-
-@router.get("/backup/schedule")
-def backup_schedule_status():
-    """Per-Pair-Schedule-Status: zeigt für jeden Pair Schedule, letzter Run,
-    nächster geplanter Run, ob jetzt fällig wäre."""
-    from ..jobs.scheduler import find_due_pairs, next_run_after, _is_disabled
-    cfg = get_config()
-    db = get_db()
-    due, status_list = find_due_pairs(cfg, db)
-
-    default_schedule = (cfg.get("backup", "default_schedule", default="0 3 * * *") or "0 3 * * *").strip()
-    enriched = []
-    for s in status_list:
-        sched = s.get("schedule") or default_schedule
-        last_run = s.get("last_run")
-        next_run = None
-        if not _is_disabled(sched):
-            # Nächster Run nach jetzt (für die Anzeige)
-            next_run = next_run_after(sched)
-        enriched.append({
-            **s,
-            "next_run": next_run,
-            "is_default_schedule": s.get("schedule") in (None, "", default_schedule),
-        })
-    return {
-        "due_now": due,
-        "default_schedule": default_schedule,
-        "pairs": enriched,
-    }
-
-
-@router.post("/backup/run-pair/{pair_name}")
-def backup_run_single_pair(pair_name: str):
-    """Startet einen Sync für nur einen einzelnen Pair (Button im UI).
-    Background-Thread, Status via /api/jobs/backup/progress trackbar."""
-    if not _locks["backup"].acquire(blocking=False):
-        raise HTTPException(409, "Backup läuft bereits")
-
-    db = get_db()
-    job_id = db.job_start("backup")
-
-    def _runner():
-        try:
-            from ..jobs.rclone_sync import run_job
-            summary = run_job(dry_run=False, pairs_filter=[pair_name])
-            db.job_finish(job_id, "ok" if not summary.get("error") else "error", summary)
-        except Exception as e:
-            db.job_finish(job_id, "error", {"error": str(e)})
-        finally:
-            try:
-                _locks["backup"].release()
-            except RuntimeError:
-                pass
-
-    threading.Thread(target=_runner, daemon=True).start()
-    return {"ok": True, "job_id": job_id, "pair": pair_name}

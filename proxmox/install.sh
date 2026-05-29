@@ -21,7 +21,6 @@ apt-get install -y --no-install-recommends \
   ca-certificates curl wget gnupg git \
   python3 python3-venv python3-pip python3-dev \
   build-essential ffmpeg \
-  rclone \
   sqlite3 \
   cron \
   sudo \
@@ -64,8 +63,7 @@ python3 -m venv "$APP_DIR/venv"
 # editier nach der Installation einfach data/config.yaml -> paths:
 # und passe das Verzeichnis an deinen Mount an.
 mkdir -p "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" \
-         "$APP_DIR/files/rezepte" "$APP_DIR/files/hochzeit" \
-         "$APP_DIR/data/.rclone-cache"
+         "$APP_DIR/files/rezepte" "$APP_DIR/files/hochzeit"
 chown -R $APP_USER:$APP_USER "$APP_DIR"
 
 # 8. Default-Config erstellen wenn fehlt
@@ -91,33 +89,22 @@ if [[ ! -f "$APP_DIR/data/config.yaml" ]]; then
   INITIAL_PASSWORD="$GEN_PASS"
 fi
 
-# 8b. Default-Filter-Datei für rclone seeden (nur wenn nicht da)
-if [[ ! -f "$APP_DIR/data/rclone-filters.txt" ]]; then
-  cp "$APP_DIR/config/rclone-filters.example.txt" "$APP_DIR/data/rclone-filters.txt"
-  chown $APP_USER:$APP_USER "$APP_DIR/data/rclone-filters.txt"
-  echo "📝 Default rclone-Filter angelegt unter $APP_DIR/data/rclone-filters.txt"
-fi
-
 # 9. systemd Services installieren
 echo "⚙️  Installiere systemd Units..."
 cp "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/
 cp "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/
 cp "$APP_DIR/systemd/scrapper-job.timer"   /etc/systemd/system/
-cp "$APP_DIR/systemd/rclone-sync.service"  /etc/systemd/system/
-cp "$APP_DIR/systemd/rclone-sync.timer"    /etc/systemd/system/
 
 # sudoers-Eintrag damit scrapper Timer-Files schreiben + systemd neuladen darf
 install -m 0440 "$APP_DIR/systemd/sudoers-scrapper" /etc/sudoers.d/scrapper
-chgrp $APP_USER /etc/systemd/system/scrapper-job.timer /etc/systemd/system/rclone-sync.timer
-chmod 0664 /etc/systemd/system/scrapper-job.timer /etc/systemd/system/rclone-sync.timer
+chgrp $APP_USER /etc/systemd/system/scrapper-job.timer
+chmod 0664 /etc/systemd/system/scrapper-job.timer
 
 systemctl daemon-reload
 
 # 10. Web-Service starten + enablen
 systemctl enable --now scrapper-web.service
 systemctl enable --now scrapper-job.timer
-systemctl enable --now rclone-sync.timer
-
 # 11. Status anzeigen
 sleep 2
 echo ""
@@ -149,9 +136,8 @@ echo ""
 echo "Erste Schritte:"
 echo "  1. Reverse-Proxy oder Cloudflare-Tunnel davorstellen (uvicorn lauscht nur auf 127.0.0.1)"
 echo "  2. Web-UI öffnen, auf 'Einstellungen' gehen, Passwort ändern"
-echo "  3. E-Mail-Konten, Telegram, Ollama eintragen"
-echo "  4. rclone konfigurieren:   sudo -u $APP_USER rclone config"
-echo "  5. Erster Test-Lauf via Web-UI"
+echo "  3. E-Mail-Konten + KI-Provider (OpenAI/Ollama) eintragen"
+echo "  4. Erster Test-Lauf via Web-UI"
 echo ""
 echo "Service-Befehle:"
 echo "  systemctl status scrapper-web"

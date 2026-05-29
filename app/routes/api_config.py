@@ -111,51 +111,6 @@ def _unmask(incoming: dict, current: dict) -> dict:
     return out
 
 
-# ---------------- rclone Filter-Datei ----------------
-# Get/Put für eine separate Filter-Datei (rclone --filter-from). Liegt
-# außerhalb von config.yaml weil rclone das Format selbst parst und
-# nicht über YAML gehen sollte.
-
-class FilterPayload(BaseModel):
-    content: str
-
-
-def _filter_path() -> Path:
-    """Pfad aus config holen mit fallback. Konstrain auf data/ damit
-    User nicht /etc/passwd überschreibt."""
-    cfg = get_config()
-    p = cfg.get("backup", "filter_file", default="/opt/scrapper/data/rclone-filters.txt") \
-        or "/opt/scrapper/data/rclone-filters.txt"
-    # Constraint: Pfad muss innerhalb /opt/scrapper/data liegen
-    resolved = Path(p).resolve()
-    base = Path("/opt/scrapper/data").resolve()
-    if not str(resolved).startswith(str(base)):
-        raise HTTPException(400, f"filter_file muss unter /opt/scrapper/data liegen, ist: {resolved}")
-    return resolved
-
-
-@router.get("/filter-file")
-def get_filter_file() -> dict:
-    path = _filter_path()
-    if not path.exists():
-        return {"path": str(path), "exists": False, "content": ""}
-    try:
-        return {"path": str(path), "exists": True, "content": path.read_text(encoding="utf-8")}
-    except Exception as e:
-        raise HTTPException(500, f"Lesefehler: {e}")
-
-
-@router.put("/filter-file")
-def save_filter_file(body: FilterPayload) -> dict:
-    path = _filter_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        path.write_text(body.content, encoding="utf-8")
-        return {"ok": True, "path": str(path), "bytes": len(body.content.encode("utf-8"))}
-    except Exception as e:
-        raise HTTPException(500, f"Schreibfehler: {e}")
-
-
 # ---------------- Log + Backup Management ----------------
 
 @router.get("/logs/stats")
