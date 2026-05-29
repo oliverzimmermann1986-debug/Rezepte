@@ -2246,6 +2246,10 @@ function scrapperApp() {
 
     // ── Einkaufskorb ──────────────────────────────────────────────────
     async loadCart() {
+      // Defensive: falls ein vorheriger Push hängen geblieben ist (z.B.
+      // Network-Drop oder Tab-Wechsel mid-request), beim Tab-Reload
+      // den Loading-State zurücksetzen damit der Button wieder klickbar ist.
+      this.pushingToEinkauf = false;
       const r = await this.api('GET', '/api/cart');
       if (r) this.cart.items = r.items || [];
     },

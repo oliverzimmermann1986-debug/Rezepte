@@ -8,6 +8,7 @@
   --bg: #0a0d12;
   --bg-elev: #11161e;
   --bg-elev-2: #181f2a;
+  --card: #11161e;          /* Alias für --bg-elev — wird in vielen Components als var(--card) referenziert */
   --border: #232c3a;
   --border-hot: #3b4759;
   --fg: #e7edf5;
@@ -2404,10 +2405,9 @@ input[type="checkbox"] { width: auto !important; }
 .cart-swipe-row .cart-item {
   position: relative;
   z-index: 2;
-  background: var(--card);
+  background: var(--bg);    /* gleiche Variable wie das Standard-Cart-Item-bg */
   transition: transform .25s cubic-bezier(.2, .8, .2, 1);
-  /* Erst overflow-hidden um Touch-Events sauber zu bekommen */
-  touch-action: pan-y;
+  touch-action: pan-y;       /* vertikales Scrollen weiter erlauben */
   margin-bottom: 0;
 }
 .cart-swipe-actions {
@@ -2421,6 +2421,11 @@ input[type="checkbox"] { width: auto !important; }
   color: white;
   z-index: 1;
   user-select: none;
+  /* Default unsichtbar — werden nur sichtbar wenn der User aktiv swiped
+     (Klassen swipe-active-left/right werden vom JS gesetzt). */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .15s;
 }
 .cart-swipe-left {
   left: 0;
@@ -2436,7 +2441,8 @@ input[type="checkbox"] { width: auto !important; }
 }
 .cart-swipe-row.swipe-active-left .cart-swipe-left,
 .cart-swipe-row.swipe-active-right .cart-swipe-right {
-  filter: brightness(1.2);
+  opacity: 1;
+  filter: brightness(1.1);
 }
 
 /* ── Verify-Button im Zutaten-Header ─────────────────────────────────── */
