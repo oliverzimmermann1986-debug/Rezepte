@@ -1375,23 +1375,31 @@ input[type="checkbox"] { width: auto !important; }
 }
 .ingredient-item {
   display: grid;
-  grid-template-columns: 80px 1fr auto;
+  grid-template-columns: 90px 1fr;
   gap: 8px;
-  padding: 4px 8px;
+  padding: 6px 10px;
   background: var(--bg);
   border-radius: 4px;
   font-size: 13px;
-  align-items: center;
+  align-items: start;
 }
 .ingredient-amount {
   font-variant-numeric: tabular-nums;
   text-align: right;
   color: var(--fg);
   font-weight: 500;
+  padding-top: 1px;
+}
+.ingredient-name {
+  word-break: break-word;
 }
 .ingredient-raw {
+  display: block;            /* eigene Zeile unter dem Namen */
   font-size: 11px;
   font-style: italic;
+  color: var(--fg-mute);
+  margin-top: 2px;
+  word-break: break-word;
 }
 
 /* Einkaufskorb */
@@ -2015,9 +2023,9 @@ input[type="checkbox"] { width: auto !important; }
 /* ── Zutaten-Edit-Mode im Detail-Modal ───────────────────────────────── */
 .ingredient-edit-row {
   display: grid;
-  grid-template-columns: 90px 100px 1fr 36px;
+  grid-template-columns: 80px 90px minmax(140px, 1fr) 36px;
   gap: 6px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   align-items: center;
 }
 .ingredient-edit-row input,
@@ -2030,8 +2038,15 @@ input[type="checkbox"] { width: auto !important; }
   color: var(--fg);
   width: 100%;
   min-width: 0;
+  min-height: 32px;          /* damit auch leere Inputs immer sichtbar bleiben */
+  box-sizing: border-box;
 }
 .ingredient-edit-row .ing-amount { text-align: right; }
+.ingredient-edit-row .ing-name {
+  /* explizit damit der Name-Input auch bei null/leer immer als Fläche sichtbar
+     bleibt — Bug zuvor: erste Zeile zeigte keinen Input wenn name=null */
+  background: var(--bg);
+}
 .ingredient-edit-row .btn-icon {
   padding: 6px 8px;
   background: transparent;
@@ -2039,6 +2054,7 @@ input[type="checkbox"] { width: auto !important; }
   color: var(--fg-dim);
   border-radius: 5px;
   cursor: pointer;
+  min-height: 32px;
 }
 .ingredient-edit-row .btn-icon:hover {
   background: rgba(248, 113, 113, .15);

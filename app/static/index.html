@@ -2884,8 +2884,13 @@
                       <span x-text="formatAmount(ing.amount)"></span>
                       <span x-text="ing.unit || ''"></span>
                     </span>
-                    <span class="ingredient-name" x-text="ing.name"></span>
-                    <span class="ingredient-raw muted" x-text="ing.raw" x-show="ing.raw && ing.raw !== ing.name"></span>
+                    <!-- Wenn amount null ist, Platzhalter damit Grid nicht verrutscht -->
+                    <span class="ingredient-amount muted" x-show="ing.amount === null">—</span>
+                    <div>
+                      <span class="ingredient-name" x-text="ing.name"></span>
+                      <span class="ingredient-raw" x-text="ing.raw"
+                            x-show="ing.raw && ing.raw !== ing.name"></span>
+                    </div>
                   </div>
                 </template>
                 <div x-show="(recipeDetail.data?.ingredients?.length || 0) === 0" class="muted">
