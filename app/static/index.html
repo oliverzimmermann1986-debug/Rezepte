@@ -2672,60 +2672,58 @@
 
             <!-- Zutaten -->
             <div class="recipe-detail-section">
-              <h4>
-                Zutaten
-                <span class="muted" x-text="'('+(recipeDetail.data?.ingredients?.length || 0)+')'"></span>
-                <span x-show="recipeDetail.data?.servings" class="muted" style="margin-left: 8px;">
-                  für <span x-text="recipeDetail.data?.servings"></span> Portion(en)
-                </span>
-                <span style="float:right; display: flex; gap: 6px;">
-                  <!-- View-Mode-Buttons -->
-                  <template x-if="!recipeDetail.editingIngredients">
-                    <span style="display: flex; gap: 6px; align-items: center;">
-                      <!-- Verify-Toggle: kompakter Button mit Status-Indikator.
-                           Aktiviert (geprüft) = grüner Hintergrund + ✓-Häkchen.
-                           Inaktiv = neutral, klick → markiert als geprüft.
-                           Schließt das Rezept aus den Audit-Daten-Lücken-
-                           Detections aus. -->
-                      <button class="btn btn-sm btn-verify"
-                              :class="recipeDetail.data?.user_verified ? 'verified' : ''"
-                              @click="toggleVerified(!recipeDetail.data?.user_verified)"
-                              :disabled="recipeDetail.verifying"
-                              :title="recipeDetail.data?.user_verified
-                                ? ('Geprüft von '+ (recipeDetail.data?.verified_by||'?') +' am '+ formatTs(recipeDetail.data?.verified_at) +' — klick zum Aufheben')
-                                : 'Als geprüft markieren (verschwindet aus Audit-Daten-Lücken)'">
-                        <span x-show="!recipeDetail.verifying">
-                          <span x-show="recipeDetail.data?.user_verified">✓ Geprüft</span>
-                          <span x-show="!recipeDetail.data?.user_verified">☐ Prüfen</span>
-                        </span>
-                        <span x-show="recipeDetail.verifying">…</span>
-                      </button>
-                      <button class="btn btn-secondary btn-sm" @click="startEditIngredients()"
-                              :disabled="recipeDetail.extracting"
-                              title="Zutaten manuell editieren">
-                        ✎ Bearbeiten
-                      </button>
-                      <button class="btn btn-secondary btn-sm" @click="extractIngredients()"
-                              :disabled="recipeDetail.extracting"
-                              :title="recipeDetail.data?.ingredients?.length ? 'Neu extrahieren (überschreibt Zutaten + Schritte)' : 'KI-Extraktion starten'">
-                        <span x-show="!recipeDetail.extracting">⟳ <span x-text="recipeDetail.data?.ingredients?.length ? 'Neu' : 'Extrahieren'"></span></span>
-                        <span x-show="recipeDetail.extracting">…</span>
-                      </button>
-                    </span>
-                  </template>
-                  <!-- Edit-Mode-Buttons -->
-                  <template x-if="recipeDetail.editingIngredients">
-                    <span style="display: flex; gap: 6px;">
-                      <button class="btn btn-secondary btn-sm" @click="cancelEditIngredients()">Abbrechen</button>
-                      <button class="btn btn-primary btn-sm" @click="saveIngredients()"
-                              :disabled="recipeDetail.savingIngredients">
-                        <span x-show="!recipeDetail.savingIngredients">💾 Speichern</span>
-                        <span x-show="recipeDetail.savingIngredients">…</span>
-                      </button>
-                    </span>
-                  </template>
+              <h4 class="ing-section-head">
+                <span>
+                  Zutaten
+                  <span class="muted" x-text="'('+(recipeDetail.data?.ingredients?.length || 0)+')'"></span>
+                  <span x-show="recipeDetail.data?.servings" class="muted" style="margin-left: 8px;">
+                    für <span x-text="recipeDetail.data?.servings"></span> Portion(en)
+                  </span>
                 </span>
               </h4>
+              <div class="ing-actions">
+                <!-- View-Mode-Buttons -->
+                <template x-if="!recipeDetail.editingIngredients">
+                  <div class="ing-actions-row">
+                    <!-- Verify-Toggle -->
+                    <button class="btn btn-sm btn-verify"
+                            :class="recipeDetail.data?.user_verified ? 'verified' : ''"
+                            @click="toggleVerified(!recipeDetail.data?.user_verified)"
+                            :disabled="recipeDetail.verifying"
+                            :title="recipeDetail.data?.user_verified
+                              ? ('Geprüft von '+ (recipeDetail.data?.verified_by||'?') +' am '+ formatTs(recipeDetail.data?.verified_at) +' — klick zum Aufheben')
+                              : 'Als geprüft markieren (verschwindet aus Audit-Daten-Lücken)'">
+                      <span x-show="!recipeDetail.verifying">
+                        <span x-show="recipeDetail.data?.user_verified">✓ Geprüft</span>
+                        <span x-show="!recipeDetail.data?.user_verified">☐ Prüfen</span>
+                      </span>
+                      <span x-show="recipeDetail.verifying">…</span>
+                    </button>
+                    <button class="btn btn-secondary btn-sm" @click="startEditIngredients()"
+                            :disabled="recipeDetail.extracting"
+                            title="Zutaten manuell editieren">
+                      ✎ Bearbeiten
+                    </button>
+                    <button class="btn btn-secondary btn-sm" @click="extractIngredients()"
+                            :disabled="recipeDetail.extracting"
+                            :title="recipeDetail.data?.ingredients?.length ? 'Neu extrahieren (überschreibt Zutaten + Schritte)' : 'KI-Extraktion starten'">
+                      <span x-show="!recipeDetail.extracting">⟳ <span x-text="recipeDetail.data?.ingredients?.length ? 'Neu' : 'Extrahieren'"></span></span>
+                      <span x-show="recipeDetail.extracting">…</span>
+                    </button>
+                  </div>
+                </template>
+                <!-- Edit-Mode-Buttons -->
+                <template x-if="recipeDetail.editingIngredients">
+                  <div class="ing-actions-row">
+                    <button class="btn btn-secondary btn-sm" @click="cancelEditIngredients()">Abbrechen</button>
+                    <button class="btn btn-primary btn-sm" @click="saveIngredients()"
+                            :disabled="recipeDetail.savingIngredients">
+                      <span x-show="!recipeDetail.savingIngredients">💾 Speichern</span>
+                      <span x-show="recipeDetail.savingIngredients">…</span>
+                    </button>
+                  </div>
+                </template>
+              </div>
 
               <!-- View-Mode: read-only Liste -->
               <div class="ingredient-list" x-show="!recipeDetail.editingIngredients">

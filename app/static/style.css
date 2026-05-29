@@ -2492,3 +2492,20 @@ input[type="checkbox"] { width: auto !important; }
 .btn-verify.verified:hover:not(:disabled) {
   background: rgba(42, 157, 63, .25);
 }
+
+/* ── Zutaten-Section Header + Actions ──────────────────────────────── */
+.ing-section-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin: 0 0 8px 0;
+  font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--fg-dim);
+}
+.ing-actions {
+  margin-bottom: 10px;
+}
+.ing-actions-row {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.ing-actions-row .btn {
+  flex: 0 1 auto;
+}
