@@ -1959,6 +1959,15 @@ function scrapperApp() {
       this.recipeDetail.newTag = '';
       this.recipeDetail.multiplier = 1;
       this.recipeDetail.cookMode = false;
+      // KRITISCH: Edit-State zurücksetzen damit die Zutaten vom vorigen
+      // Rezept nicht ins neue Rezept leaken. Bug zuvor: ein Rezept im
+      // Edit-Modus → openRecipe(anderes) → Modal zeigte alte Zutaten +
+      // Speichern hätte sie ins neue Rezept geschrieben.
+      this.recipeDetail.editingIngredients = false;
+      this.recipeDetail.editIngs = [];
+      this.recipeDetail.savingIngredients = false;
+      this.recipeDetail.extracting = false;
+      this.recipeDetail.verifying = false;
       const r = await this.api('GET', '/api/recipes/' + id);
       if (r) this.recipeDetail.data = r;
     },
@@ -2013,6 +2022,9 @@ function scrapperApp() {
       this.recipeDetail.cookMode = false;
       this.recipeDetail.show = false;
       this.recipeDetail.data = null;
+      // Edit-State + ephemerale Loading-States ZWINGEND clearen
+      this.recipeDetail.editingIngredients = false;
+      this.recipeDetail.editIngs = [];
     },
 
     async addTagToRecipe() {
