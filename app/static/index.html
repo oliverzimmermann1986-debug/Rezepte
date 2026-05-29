@@ -2616,10 +2616,18 @@
                  @error="$el.style.display='none'" />
             <div x-show="!recipeDetail.data?.video_filename && !recipeDetail.data?.thumb_filename"
                  class="muted">Kein Video, kein Bild.</div>
-            <div class="recipe-detail-meta muted" style="margin-top: 8px; font-size: 12px;">
+            <div class="recipe-detail-meta muted" style="margin-top: 8px; font-size: 12px; min-width: 0; overflow: hidden;">
               <div><span x-text="recipeDetail.data?.type"></span> · <span x-text="recipeDetail.data?.category"></span></div>
-              <div x-show="recipeDetail.data?.url"><a :href="recipeDetail.data?.url" target="_blank" rel="noopener" x-text="recipeDetail.data?.url"></a></div>
-              <div x-text="recipeDetail.data?.folder_path"></div>
+              <div x-show="recipeDetail.data?.url" style="overflow:hidden;">
+                <a :href="recipeDetail.data?.url" target="_blank" rel="noopener"
+                   style="display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom;"
+                   :title="recipeDetail.data?.url">
+                  🔗 <span x-text="(recipeDetail.data?.url || '').replace(/^https?:\/\//, '').split('?')[0]"></span>
+                </a>
+              </div>
+              <div x-text="recipeDetail.data?.folder_path"
+                   style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                   :title="recipeDetail.data?.folder_path"></div>
             </div>
           </div>
 
