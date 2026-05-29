@@ -492,7 +492,10 @@ function scrapperApp() {
       if (!s || !s.days || s.days.length === 0) return '<div class="muted" style="padding:20px 0; text-align:center;">keine Daten</div>';
       const w = 600, h = 140, pad = 24;
       const days = s.days;
-      const kinds = Object.keys(s.series);
+      // Nur Scrapper-Job-Typen anzeigen — backup/quicksync sind Reste vom
+      // alten rclone-Code, läuft jetzt im separaten Container.
+      const ALLOWED = ['scraper', 'reanalyze'];
+      const kinds = Object.keys(s.series).filter(k => ALLOWED.includes(k));
       const palette = { scraper: '#f97316', reanalyze: '#a855f7' };
       // Max-Wert für Y-Skala
       let maxVal = 1;

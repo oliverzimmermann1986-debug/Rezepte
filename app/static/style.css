@@ -869,17 +869,29 @@ input[type="checkbox"] { width: auto !important; }
   /* Main: kompakter */
   .main {
     padding: 18px 14px 24px;
+    /* PWA-Standalone: Status-Bar überlappt — Padding-Top safe-area */
+    padding-top: max(18px, env(safe-area-inset-top, 0px));
     max-width: 100%;
   }
   .page-head {
     flex-direction: column;
     align-items: flex-start;
-    gap: 8px;
+    gap: 12px;
     margin-bottom: 18px;
     padding-bottom: 12px;
+    /* Title-Row + Action-Row stapeln, beide volle Breite */
   }
-  .page-head h1 { font-size: 20px; }
+  .page-head > div:first-child { width: 100%; }
+  .page-head h1 { font-size: 20px; line-height: 1.2; }
   .page-head .subtitle { font-size: 12px; }
+  /* Page-head .flex (Action-Buttons-Container) bricht auf Handy
+     in eigene Row + wrappt damit die Buttons nicht überlaufen */
+  .page-head .flex {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .page-head .flex .btn { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 8px 10px; }
 
   /* Cards: weniger padding */
   .card { padding: 14px; border-radius: 10px; }
@@ -2508,4 +2520,27 @@ input[type="checkbox"] { width: auto !important; }
 }
 .ing-actions-row .btn {
   flex: 0 1 auto;
+}
+
+/* ── Mobile: Cart-Add-Form wraps statt überzulaufen ────────────────── */
+@media (max-width: 720px) {
+  .cart-add {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  /* Zutat = volle Breite oben */
+  .cart-add input[type="text"]:first-of-type {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  /* Menge + Einheit zusammen halben Platz, +Hinzufügen ebenfalls */
+  .cart-add input[type="number"],
+  .cart-add input[type="text"]:not(:first-of-type) {
+    flex: 1 1 calc(33% - 6px);
+    min-width: 0;
+  }
+  .cart-add button {
+    flex: 1 1 30%;
+    white-space: nowrap;
+  }
 }
