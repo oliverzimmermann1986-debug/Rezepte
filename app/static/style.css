@@ -1375,31 +1375,42 @@ input[type="checkbox"] { width: auto !important; }
 }
 .ingredient-item {
   display: grid;
-  grid-template-columns: 90px 1fr;
-  gap: 8px;
+  /* minmax(60px, auto) damit kurze Mengen nicht 90px verschwenden,
+     1fr für den Name-Container — aber min-width:0 damit Grid weiß
+     dass Shrink erlaubt ist (sonst dominiert die intrinsic-Größe
+     des längsten Wortes und der Name-Container wird zu breit). */
+  grid-template-columns: minmax(60px, auto) minmax(0, 1fr);
+  gap: 10px;
   padding: 6px 10px;
   background: var(--bg);
   border-radius: 4px;
   font-size: 13px;
   align-items: start;
 }
+.ingredient-item > div { min-width: 0; }
 .ingredient-amount {
   font-variant-numeric: tabular-nums;
   text-align: right;
   color: var(--fg);
   font-weight: 500;
   padding-top: 1px;
+  white-space: nowrap;        /* "500 g" nicht trennen */
 }
 .ingredient-name {
-  word-break: break-word;
+  /* word-break:break-word ist legacy und bricht mitten in Wörtern.
+     overflow-wrap:anywhere bricht nur wenn ein Wort sonst überlaufen würde. */
+  word-break: normal;
+  overflow-wrap: anywhere;
+  hyphens: auto;
 }
 .ingredient-raw {
-  display: block;            /* eigene Zeile unter dem Namen */
+  display: block;
   font-size: 11px;
   font-style: italic;
   color: var(--fg-mute);
   margin-top: 2px;
-  word-break: break-word;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 /* Einkaufskorb */
