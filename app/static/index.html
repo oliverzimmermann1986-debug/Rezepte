@@ -2523,6 +2523,9 @@
             <span x-show="!recipeDetail.cookMode">👨‍🍳 Kochen</span>
             <span x-show="recipeDetail.cookMode">← Zurück</span>
           </button>
+          <button class="btn-icon" @click="deleteRecipeFromDetail()"
+                  title="Rezept + Files löschen"
+                  style="color: var(--err);">🗑</button>
           <button class="btn-icon" @click="closeRecipeDetail()">✕</button>
         </div>
       </div>

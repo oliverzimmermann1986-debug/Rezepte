@@ -2544,6 +2544,28 @@ function scrapperApp() {
       }
     },
 
+    // Aus dem Detail-Modal heraus löschen
+    async deleteRecipeFromDetail() {
+      const data = this.recipeDetail?.data;
+      if (!data?.id) return;
+      const choice = confirm(
+        `Rezept "${data.name}" löschen?\n\n` +
+        `⚠ OK = Rezept + Folder + Files KOMPLETT weg.\n` +
+        `Abbrechen = nichts passiert.\n\n` +
+        `Möchtest du Files behalten und nur DB-Eintrag löschen, klicke 'Abbrechen' und nutze den 🗑-Button in der Audit-Liste.`
+      );
+      if (!choice) return;
+      const r = await this.api('DELETE',
+        `/api/recipes/${data.id}?delete_files=true`);
+      if (r?.ok) {
+        this.showToast(`✓ "${data.name}" gelöscht`);
+        this.closeRecipeDetail();
+        // Listen aktualisieren falls offen
+        if (typeof this.loadAudit === 'function') await this.loadAudit();
+        if (typeof this.loadRecipes === 'function') await this.loadRecipes();
+      }
+    },
+
     // Bulk-Delete pro Detection (mit Files).
     async bulkDeleteDetection(detection) {
       const list = this.audit.data?.data_gaps?.[detection] || [];
