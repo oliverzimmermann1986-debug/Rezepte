@@ -1,0 +1,38 @@
+{
+  "name": "Scrapper",
+  "short_name": "Scrapper",
+  "description": "Rezepte + Hochzeit · TikTok/Instagram Scraper mit Einkaufsliste",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0f1419",
+  "background_color": "#0a0d12",
+  "lang": "de",
+  "categories": ["food", "lifestyle", "productivity"],
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    { "name": "Rezepte", "url": "/?tab=recipes", "icons": [{"src":"/static/icon-192.png","sizes":"192x192"}] },
+    { "name": "Einkaufskorb", "url": "/?tab=cart", "icons": [{"src":"/static/icon-192.png","sizes":"192x192"}] },
+    { "name": "Audit", "url": "/?tab=audit", "icons": [{"src":"/static/icon-192.png","sizes":"192x192"}] }
+  ]
+}

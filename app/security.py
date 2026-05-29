@@ -98,6 +98,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src 'self' https://fonts.gstatic.com data:; "
             "connect-src 'self'; "
+            # PWA: Service Worker + Manifest
+            "worker-src 'self'; "
+            "manifest-src 'self'; "
             "frame-ancestors 'none'; "
             "base-uri 'self'; "
             "form-action 'self'",

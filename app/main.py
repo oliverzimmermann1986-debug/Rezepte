@@ -141,6 +141,27 @@ app.add_middleware(SecurityHeadersMiddleware)
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+
+# Service-Worker + Manifest direkt aus root servieren mit korrekten Headers.
+# SW braucht 'Service-Worker-Allowed: /' damit der scope auf root sein darf
+# wenn die Datei aus /static/ kommt; einfacher: direkt aus root liefern.
+@app.get("/sw.js", include_in_schema=False)
+def serve_sw():
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        STATIC_DIR / "sw.js",
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/manifest.json", include_in_schema=False)
+def serve_manifest():
+    from fastapi.responses import FileResponse
+    return FileResponse(STATIC_DIR / "manifest.json",
+                        media_type="application/manifest+json")
+
+
 # API-Routen
 app.include_router(api_config.router)
 app.include_router(api_jobs.router)

@@ -2,12 +2,85 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <title>Scrapper Manager</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scrapper</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1419">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Scrapper">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="application-name" content="Scrapper">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/png" href="/static/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="stylesheet" href="/static/style.css?v={VERSION}">
   <script defer src="/static/alpine.min.js"></script>
+  <script>
+    // Service Worker registrieren — non-blocking
+    if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js', { scope: '/' })
+          .then(reg => console.log('SW registered:', reg.scope))
+          .catch(err => console.warn('SW failed:', err));
+      });
+    }
+  </script>
 </head>
 <body>
+
+<!-- PWA Install-Banner: erscheint wenn beforeinstallprompt feuert.
+     Auto-hide nach Install oder nach 'Später'-Klick. -->
+<div id="pwa-install-banner" style="display:none; position:fixed; bottom:14px; left:14px; right:14px;
+     background:#11161e; border:1px solid #232c3a; border-radius:10px; padding:14px 16px;
+     z-index:5000; box-shadow:0 4px 20px rgba(0,0,0,.5); display:flex; gap:12px; align-items:center;">
+  <span style="font-size:24px;">📱</span>
+  <div style="flex:1; font-size:13px; color:#e7edf5;">
+    <div style="font-weight:500;">Scrapper als App installieren?</div>
+    <div style="color:#8e9aae; font-size:11px; margin-top:2px;">Vollbild, Homescreen-Icon, schneller Start.</div>
+  </div>
+  <button id="pwa-install-btn" style="padding:8px 14px; background:#06b6d4; color:#fff; border:0; border-radius:6px; cursor:pointer; font-size:13px;">Installieren</button>
+  <button id="pwa-dismiss-btn" style="padding:8px 12px; background:transparent; color:#8e9aae; border:0; cursor:pointer; font-size:13px;">Später</button>
+</div>
+<script>
+(function() {
+  let deferredPrompt = null;
+  const banner = document.getElementById('pwa-install-banner');
+  const installBtn = document.getElementById('pwa-install-btn');
+  const dismissBtn = document.getElementById('pwa-dismiss-btn');
+
+  // Wenn schon mal "später" geklickt — 7 Tage Ruhe
+  const dismissed = parseInt(localStorage.getItem('pwa-dismissed-until') || '0', 10);
+  if (dismissed > Date.now()) return;
+  // Wenn schon installiert (standalone-mode) — gar nicht zeigen
+  if (window.matchMedia('(display-mode: standalone)').matches
+      || window.navigator.standalone === true) return;
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    banner.style.display = 'flex';
+  });
+
+  installBtn?.addEventListener('click', async () => {
+    banner.style.display = 'none';
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log('PWA install:', outcome);
+    deferredPrompt = null;
+  });
+
+  dismissBtn?.addEventListener('click', () => {
+    banner.style.display = 'none';
+    localStorage.setItem('pwa-dismissed-until', String(Date.now() + 7*24*3600*1000));
+  });
+
+  window.addEventListener('appinstalled', () => {
+    banner.style.display = 'none';
+    deferredPrompt = null;
+  });
+})();
+</script>
 <!-- Pull-to-Refresh-Indicator. Wird vom JS-Touch-Handler manipuliert
      (transform/opacity). Default unsichtbar. Mobile-only. -->
 <div id="ptr-indicator" class="ptr-indicator" aria-hidden="true">
