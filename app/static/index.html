@@ -2722,7 +2722,14 @@
             <video x-show="recipeDetail.data?.video_filename" controls preload="metadata"
                    :src="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/video' : ''"
                    style="max-width: 100%; max-height: 60vh; background: #000;"></video>
-            <div x-show="!recipeDetail.data?.video_filename" class="muted">Kein Video.</div>
+            <!-- Fallback: Thumbnail wenn kein Video aber Bild vorhanden -->
+            <img x-show="!recipeDetail.data?.video_filename && recipeDetail.data?.thumb_filename"
+                 :src="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/thumb' : ''"
+                 alt=""
+                 style="max-width: 100%; max-height: 60vh; object-fit: contain; background: #000; border-radius: 4px;"
+                 @error="$el.style.display='none'" />
+            <div x-show="!recipeDetail.data?.video_filename && !recipeDetail.data?.thumb_filename"
+                 class="muted">Kein Video, kein Bild.</div>
             <div class="recipe-detail-meta muted" style="margin-top: 8px; font-size: 12px;">
               <div><span x-text="recipeDetail.data?.type"></span> · <span x-text="recipeDetail.data?.category"></span></div>
               <div x-show="recipeDetail.data?.url"><a :href="recipeDetail.data?.url" target="_blank" rel="noopener" x-text="recipeDetail.data?.url"></a></div>
@@ -2788,7 +2795,25 @@
                 <span style="float:right; display: flex; gap: 6px;">
                   <!-- View-Mode-Buttons -->
                   <template x-if="!recipeDetail.editingIngredients">
-                    <span style="display: flex; gap: 6px;">
+                    <span style="display: flex; gap: 6px; align-items: center;">
+                      <!-- Verify-Toggle: kompakter Button mit Status-Indikator.
+                           Aktiviert (geprüft) = grüner Hintergrund + ✓-Häkchen.
+                           Inaktiv = neutral, klick → markiert als geprüft.
+                           Schließt das Rezept aus den Audit-Daten-Lücken-
+                           Detections aus. -->
+                      <button class="btn btn-sm btn-verify"
+                              :class="recipeDetail.data?.user_verified ? 'verified' : ''"
+                              @click="toggleVerified(!recipeDetail.data?.user_verified)"
+                              :disabled="recipeDetail.verifying"
+                              :title="recipeDetail.data?.user_verified
+                                ? ('Geprüft von '+ (recipeDetail.data?.verified_by||'?') +' am '+ formatTs(recipeDetail.data?.verified_at) +' — klick zum Aufheben')
+                                : 'Als geprüft markieren (verschwindet aus Audit-Daten-Lücken)'">
+                        <span x-show="!recipeDetail.verifying">
+                          <span x-show="recipeDetail.data?.user_verified">✓ Geprüft</span>
+                          <span x-show="!recipeDetail.data?.user_verified">☐ Prüfen</span>
+                        </span>
+                        <span x-show="recipeDetail.verifying">…</span>
+                      </button>
                       <button class="btn btn-secondary btn-sm" @click="startEditIngredients()"
                               :disabled="recipeDetail.extracting"
                               title="Zutaten manuell editieren">
@@ -2869,28 +2894,6 @@
                 <button class="btn btn-secondary btn-sm" @click="addIngredientRow()" style="margin-top: 8px;">
                   + Zutat hinzufügen
                 </button>
-              </div>
-            </div>
-
-            <!-- User-Verifikation: 'manuell geprüft, ok' — schließt das Rezept
-                 aus den Daten-Lücken-Detections aus. -->
-            <div class="recipe-detail-section verify-section">
-              <label class="verify-checkbox">
-                <input type="checkbox"
-                       :checked="recipeDetail.data?.user_verified"
-                       @change="toggleVerified($event.target.checked)"
-                       :disabled="recipeDetail.verifying">
-                <span class="verify-label">
-                  ✓ Manuell geprüft, ok
-                  <span class="muted" style="font-size: 12px; font-weight: normal;"
-                        x-show="recipeDetail.data?.user_verified && recipeDetail.data?.verified_by">
-                    — von <span x-text="recipeDetail.data?.verified_by"></span>
-                    am <span x-text="recipeDetail.data?.verified_at ? formatTs(recipeDetail.data.verified_at) : ''"></span>
-                  </span>
-                </span>
-              </label>
-              <div class="muted" style="font-size: 12px; margin-top: 4px;">
-                Schließt dieses Rezept aus den Audit-Daten-Lücken aus (kein Bild / wenige Zutaten / etc).
               </div>
             </div>
 

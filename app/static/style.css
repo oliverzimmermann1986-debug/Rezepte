@@ -2438,3 +2438,24 @@ input[type="checkbox"] { width: auto !important; }
 .cart-swipe-row.swipe-active-right .cart-swipe-right {
   filter: brightness(1.2);
 }
+
+/* ── Verify-Button im Zutaten-Header ─────────────────────────────────── */
+.btn-verify {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  transition: background .15s, color .15s, border-color .15s;
+}
+.btn-verify:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn-verify.verified {
+  background: rgba(42, 157, 63, .15);
+  border-color: #2a9d3f;
+  color: #4cba60;
+  font-weight: 600;
+}
+.btn-verify.verified:hover:not(:disabled) {
+  background: rgba(42, 157, 63, .25);
+}
