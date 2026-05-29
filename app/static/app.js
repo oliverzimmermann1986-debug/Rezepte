@@ -84,6 +84,11 @@ function scrapperApp() {
       computingNutritionBulk: false,  // Loading für Bulk-Nährwerte
       healingFs: false,                // Loading für FS-Path-Auto-Heal
       verifyingBulk: false,            // Loading für Bulk-Verify
+      rescrapingId: null,               // ID des Rezepts das gerade re-scraped wird
+      rescrapingBulk: false,            // Loading für Bulk-Re-Scrape
+      rescrapeProgress: 0,              // Counter für Bulk-Re-Scrape-UI
+      rescrapeTotal: 0,
+      deletingUnresolvable: false,      // Loading für Bulk-Delete-toter-Einträge
     },
     // Stammdaten-Page: Tags + canonical Zutaten-Namen-Verwaltung
     master: {
@@ -124,6 +129,7 @@ function scrapperApp() {
       computingNutrition: false,    // Loading-state für ⚡ Berechnen-Button
       sharing: false,                // Loading-state für 🔗 Share-Button
       verifying: false,              // Loading für 'manuell geprüft'-Toggle
+      rescraping: false,             // Loading für Re-Scrape im Modal
     },
     _wakeLock: null,
     // Per-Schritt-Timer (key = step.id, value = {status, remaining, intervalId})
@@ -1968,6 +1974,7 @@ function scrapperApp() {
       this.recipeDetail.savingIngredients = false;
       this.recipeDetail.extracting = false;
       this.recipeDetail.verifying = false;
+      this.recipeDetail.rescraping = false;
       const r = await this.api('GET', '/api/recipes/' + id);
       if (r) this.recipeDetail.data = r;
     },
@@ -2253,6 +2260,33 @@ function scrapperApp() {
         }
       } finally {
         this.recipeDetail.verifying = false;
+      }
+    },
+
+    // Re-Scrape aus dem Detail-Modal — gleicher Endpoint wie aus Audit
+    async rescrapeFromDetailModal() {
+      const id = this.recipeDetail.data?.id;
+      if (!id || this.recipeDetail.rescraping) return;
+      this.recipeDetail.rescraping = true;
+      try {
+        const r = await this.api('POST', `/api/recipes/${id}/rescrape`);
+        if (r && r.ok) {
+          if (r.any_change) {
+            const parts = [];
+            if (r.description_updated) parts.push('Beschreibung');
+            if (r.thumbnail_updated) parts.push('Bild');
+            this.showToast(`✓ ${parts.join(' + ')} aktualisiert`);
+            // Re-Fetch damit das neue Thumb + Description sichtbar werden
+            const fresh = await this.api('GET', '/api/recipes/' + id);
+            if (fresh) this.recipeDetail.data = fresh;
+          } else {
+            this.showToast('⊘ Schon aktuell — keine Änderung');
+          }
+        } else if (r) {
+          this.showToast('Re-Scrape: ' + (r.error || 'fehler'), 'err');
+        }
+      } finally {
+        this.recipeDetail.rescraping = false;
       }
     },
 
@@ -2617,6 +2651,99 @@ function scrapperApp() {
       }
     },
 
+    // ─── Re-Scrape: yt-dlp nochmal für die URL ──────────────────────────
+    async rescrapeRecipe(recipeId) {
+      this.audit.rescrapingId = recipeId;
+      try {
+        const r = await this.api('POST', `/api/recipes/${recipeId}/rescrape`);
+        if (r && r.ok) {
+          if (r.any_change) {
+            const parts = [];
+            if (r.description_updated) parts.push('Beschreibung');
+            if (r.thumbnail_updated) parts.push('Bild');
+            this.showToast(`✓ ${parts.join(' + ')} aktualisiert`);
+          } else {
+            this.showToast('⊘ Schon aktuell — keine Änderung');
+          }
+          await this.loadAudit();
+        } else if (r) {
+          this.showToast('Re-Scrape: ' + (r.error || 'unbekannter Fehler'), 'err');
+        }
+      } finally {
+        this.audit.rescrapingId = null;
+      }
+    },
+
+    // Bulk: max 20 'Kein Bild'-Rezepte hintereinander re-scrapen.
+    // Sequentiell (nicht parallel) damit yt-dlp nicht rate-limited wird.
+    async rescrapeBulkNoImage() {
+      const list = (this.audit.data?.data_gaps?.no_image || []).slice(0, 20);
+      if (list.length === 0) return;
+      if (!confirm(`${list.length} Rezepte sequenziell re-scrapen?\n\nDauert ~${list.length * 15}s. Bei Fehlern (URL down/geo-blocked) wird das Rezept übersprungen.`)) return;
+      this.audit.rescrapingBulk = true;
+      this.audit.rescrapeProgress = 0;
+      this.audit.rescrapeTotal = list.length;
+      let ok = 0, fail = 0;
+      try {
+        for (const r of list) {
+          this.audit.rescrapeProgress++;
+          try {
+            const resp = await this.api('POST', `/api/recipes/${r.id}/rescrape`);
+            if (resp && resp.ok && resp.any_change) ok++; else fail++;
+          } catch (e) {
+            fail++;
+          }
+        }
+        this.showToast(`✓ ${ok} aktualisiert · ${fail} unverändert/fehlgeschlagen`);
+        await this.loadAudit();
+      } finally {
+        this.audit.rescrapingBulk = false;
+        this.audit.rescrapeProgress = 0;
+        this.audit.rescrapeTotal = 0;
+      }
+    },
+
+    // ─── Delete-DB-only: nur DB-Eintrag löschen, FS unangetastet ────────
+    // Für tote Rezepte deren FS-Folder weg ist. delete_files=false damit
+    // safe_delete_recipe nicht versucht den nicht-existenten Folder zu
+    // löschen (würde fehlerfrei skippen, aber explizit ist sauberer).
+    async deleteRecipeDbOnly(recipeId, name) {
+      if (!confirm(`„${name}" nur aus DB löschen?\n\nFS-Files werden NICHT angetastet (Folder existiert eh nicht mehr).`)) return;
+      const r = await this.api('DELETE', `/api/recipes/${recipeId}?delete_files=false`);
+      if (r) {
+        this.showToast(`✓ „${name}" aus DB entfernt`);
+        await this.loadAudit();
+      }
+    },
+
+    // Bulk: alle 'Kein FS-Match' aus DB löschen
+    async deleteUnresolvableFsMissing() {
+      const ids = (this.audit.data?.data_gaps?.fs_missing || [])
+        .filter(r => !r.resolved_path)
+        .map(r => r.id);
+      if (ids.length === 0) {
+        this.showToast('Keine ungelösten — Auto-Heal hat alles erwischt');
+        return;
+      }
+      if (!confirm(`${ids.length} 'Kein FS-Match'-Rezepte aus DB löschen?\n\nFS unangetastet. Die Rezepte sind in den FS-Foldern eh weg, das räumt nur die DB auf. Reversibel nur per Backup.`)) return;
+      this.audit.deletingUnresolvable = true;
+      try {
+        let ok = 0, fail = 0;
+        for (const id of ids) {
+          try {
+            const r = await this.api('DELETE', `/api/recipes/${id}?delete_files=false`);
+            if (r) ok++; else fail++;
+          } catch (e) {
+            fail++;
+          }
+        }
+        this.showToast(`✓ ${ok} gelöscht${fail ? ' · ' + fail + ' Fehler' : ''}`);
+        await this.loadAudit();
+      } finally {
+        this.audit.deletingUnresolvable = false;
+      }
+    },
+
     // KI-Vorschlag tatsächlich anwenden — abhängig vom finding_type:
     //   category_mismatch → Folder in neue Type/Kategorie verschieben
     //   name_mismatch     → recipe.name + Folder + info.json updaten
@@ -2682,6 +2809,9 @@ function scrapperApp() {
       this.fsCompare.syncError = syncError;
       this.fsCompare.dbRecipe = null;
       this.fsCompare.fsPreview = null;
+      // Loading-Flags damit das UI 'Wird geladen' vs 'Keine Daten' unterscheiden kann
+      this.fsCompare.loadingDb = !!syncError.conflict_with_id;
+      this.fsCompare.loadingFs = true;
       try {
         const [db, fs] = await Promise.all([
           syncError.conflict_with_id
@@ -2694,6 +2824,9 @@ function scrapperApp() {
         this.fsCompare.fsPreview = fs;
       } catch (e) {
         this.showToast('Fehler beim Laden: ' + e.message, 'err');
+      } finally {
+        this.fsCompare.loadingDb = false;
+        this.fsCompare.loadingFs = false;
       }
     },
 

@@ -2153,9 +2153,19 @@
 
         <!-- 🖼 Kein Bild (thumb_filename ist NULL) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.no_image?.length || 0) > 0">
-          <h3>🖼 Kein Bild (<span x-text="audit.summary?.no_image_count"></span>)</h3>
+          <h3>🖼 Kein Bild (<span x-text="audit.summary?.no_image_count"></span>)
+            <button class="btn btn-sm btn-primary" style="float:right;"
+                    @click="rescrapeBulkNoImage()"
+                    :disabled="audit.rescrapingBulk"
+                    title="Erste 20 ohne Bild via yt-dlp neu pullen (~10-30s pro Rezept)">
+              <span x-show="!audit.rescrapingBulk">🔄 Bulk-Re-Scrape (max 20)</span>
+              <span x-show="audit.rescrapingBulk" x-text="'… ' + audit.rescrapeProgress + '/' + audit.rescrapeTotal"></span>
+            </button>
+          </h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
-            Rezepte ohne Thumbnail. Beim nächsten Re-Scrape wird oft eins geholt; oder selbst eines im Folder ablegen.
+            Rezepte ohne Thumbnail. Re-Scrape ruft yt-dlp nochmal für die URL
+            auf und holt Caption + Bild. Kostenlos, aber dauert pro Rezept
+            ~10-30s. Bei Bulk werden max 20 verarbeitet (Server-Schonung).
           </div>
           <template x-for="r in (audit.data?.data_gaps?.no_image || [])" :key="r.id">
             <div class="audit-finding">
@@ -2165,6 +2175,12 @@
               </div>
               <div class="audit-finding-actions">
                 <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+                <button class="btn btn-sm btn-primary" @click="rescrapeRecipe(r.id)"
+                        :disabled="audit.rescrapingId === r.id"
+                        title="URL erneut abrufen und Bild holen">
+                  <span x-show="audit.rescrapingId !== r.id">🔄</span>
+                  <span x-show="audit.rescrapingId === r.id">…</span>
+                </button>
               </div>
             </div>
           </template>
@@ -2289,17 +2305,27 @@
         <!-- 📂 FS-Pfad fehlt (DB zeigt auf nicht-existenten Folder) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.fs_missing?.length || 0) > 0">
           <h3>📂 FS-Pfad fehlt (<span x-text="audit.summary?.fs_missing_count"></span>)
-            <button class="btn btn-sm btn-primary" style="float:right;"
-                    @click="healFsPaths()"
-                    :disabled="audit.healingFs">
-              <span x-show="!audit.healingFs">🔧 Auto-Heal</span>
-              <span x-show="audit.healingFs">… läuft</span>
-            </button>
+            <span style="float:right; display:flex; gap:6px;">
+              <button class="btn btn-sm btn-primary"
+                      @click="healFsPaths()"
+                      :disabled="audit.healingFs">
+                <span x-show="!audit.healingFs">🔧 Auto-Heal</span>
+                <span x-show="audit.healingFs">… läuft</span>
+              </button>
+              <button class="btn btn-sm btn-danger"
+                      @click="deleteUnresolvableFsMissing()"
+                      :disabled="audit.deletingUnresolvable"
+                      title="Alle 'Kein FS-Match'-Rezepte aus DB löschen (Files unangetastet)">
+                <span x-show="!audit.deletingUnresolvable">🗑 Tote DB-Einträge</span>
+                <span x-show="audit.deletingUnresolvable">… löscht</span>
+              </button>
+            </span>
           </h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
-            DB-Pfad zeigt auf Folder der nicht (mehr) existiert. Häufig
-            Underscore↔Space oder Case-Mismatch nach manuellem Rename.
-            Auto-Heal sucht passenden FS-Folder + korrigiert DB-Pfad.
+            DB-Pfad zeigt auf Folder der nicht (mehr) existiert. Auto-Heal
+            sucht passenden FS-Folder (Underscore↔Space, Case). Bei
+            'Kein FS-Match' ist der Folder weg — entweder im FS anlegen
+            oder den DB-Eintrag löschen (🗑-Button am Eintrag oder Bulk).
           </div>
           <template x-for="r in (audit.data?.data_gaps?.fs_missing || [])" :key="r.id">
             <div class="audit-finding">
@@ -2317,6 +2343,10 @@
               </div>
               <div class="audit-finding-actions">
                 <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+                <button class="btn btn-sm btn-danger"
+                        x-show="!r.resolved_path"
+                        @click="deleteRecipeDbOnly(r.id, r.name)"
+                        title="Nur DB-Eintrag löschen, FS unangetastet">🗑</button>
               </div>
             </div>
           </template>
@@ -2652,7 +2682,13 @@
             <span class="pill pill-ok">In DB</span>
             <strong x-text="fsCompare.dbRecipe?.name || '…'"></strong>
           </div>
-          <div x-show="!fsCompare.dbRecipe" class="muted">Wird geladen…</div>
+          <div x-show="fsCompare.loadingDb" class="muted">Wird geladen…</div>
+          <div x-show="!fsCompare.loadingDb && !fsCompare.dbRecipe" class="muted">
+            Kein DB-Match angegeben — möglicherweise wurde der Konflikt aus
+            anderem Grund (z.B. fehlende info.json, defekter Folder) gelistet.
+            Schau dir den FS-Folder rechts an + ggf. „Aus DB entfernen" wenn
+            er nicht eingelesen werden soll.
+          </div>
           <template x-if="fsCompare.dbRecipe">
             <div class="fs-compare-content">
               <div class="fs-compare-meta">
@@ -2686,7 +2722,10 @@
             <span class="pill pill-warn">FS (nicht in DB)</span>
             <strong x-text="fsCompare.fsPreview?.info?.name || fsCompare.fsPreview?.folder_name || '…'"></strong>
           </div>
-          <div x-show="!fsCompare.fsPreview" class="muted">Wird geladen…</div>
+          <div x-show="fsCompare.loadingFs" class="muted">Wird geladen…</div>
+          <div x-show="!fsCompare.loadingFs && !fsCompare.fsPreview" class="muted">
+            Folder-Preview konnte nicht geladen werden — Folder fehlt oder nicht zugreifbar.
+          </div>
           <template x-if="fsCompare.fsPreview">
             <div class="fs-compare-content">
               <div class="fs-compare-meta">
@@ -2724,6 +2763,15 @@
         <h3 x-text="recipeDetail.data?.name || ''"></h3>
         <div style="display:flex; align-items: center; gap: 6px;">
           <span x-show="recipeDetail.wakeLockActive" class="wake-lock-indicator" title="Bildschirm bleibt wach">🔆 wach</span>
+          <!-- Re-Scrape: yt-dlp nochmal für die URL — frische Caption + Bild -->
+          <button class="btn btn-secondary btn-sm"
+                  x-show="!recipeDetail.cookMode && recipeDetail.data?.url"
+                  @click="rescrapeFromDetailModal()"
+                  :disabled="recipeDetail.rescraping"
+                  title="URL erneut abrufen — frische Caption + Thumbnail">
+            <span x-show="!recipeDetail.rescraping">🔄</span>
+            <span x-show="recipeDetail.rescraping">…</span>
+          </button>
           <!-- Drucken / PDF: öffnet print-View in neuem Tab, Browser-cmd+P → PDF -->
           <button class="btn btn-secondary btn-sm"
                   x-show="!recipeDetail.cookMode"

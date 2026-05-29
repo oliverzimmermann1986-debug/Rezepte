@@ -10,7 +10,7 @@ import logging
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -76,3 +76,57 @@ class VideoDownloader:
             return text or None
         except Exception:
             return None
+
+    def refresh_metadata(self, url: str) -> Optional[Dict[str, Path]]:
+        """Re-Scrape: holt Beschreibung + Thumbnail ohne Video-Download.
+        Returnt {'description_text': str, 'thumbnail_path': Path} oder None.
+
+        Schneller als download() weil nur Metadata gepulled werden (~2-5s
+        statt ~30s für Video-DL). Geeignet für 'frische Caption + Bild'-
+        Refresh ohne den Folder zu invalidieren."""
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        sub = self.temp_dir / uuid.uuid4().hex[:8]
+        sub.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            self.ytdlp_path, url,
+            "-o", str(sub / "thumb.%(ext)s"),
+            "--no-playlist", "--quiet", "--no-warnings",
+            "--skip-download",
+            "--write-description",
+            "--write-thumbnail",
+            "--convert-thumbnails", "jpg",
+        ]
+        if self.cookies_file:
+            cmd += ["--cookies", self.cookies_file]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                logger.warning(f"yt-dlp refresh_metadata fehler: {result.stderr.strip()[:300]}")
+                return None
+        except subprocess.TimeoutExpired:
+            logger.warning(f"yt-dlp refresh_metadata Timeout für {url}")
+            return None
+        except Exception as e:
+            logger.warning(f"yt-dlp refresh_metadata Exception: {e}")
+            return None
+
+        # description-File suchen (yt-dlp schreibt thumb.description trotz -o)
+        desc_files = list(sub.glob("*.description"))
+        thumb_files = list(sub.glob("*.jpg")) + list(sub.glob("*.jpeg")) + list(sub.glob("*.webp")) + list(sub.glob("*.png"))
+        if not desc_files and not thumb_files:
+            return None
+
+        out: Dict[str, Any] = {}
+        if desc_files:
+            try:
+                txt = desc_files[0].read_text(encoding="utf-8").strip()
+                if txt:
+                    out["description_text"] = txt
+            except Exception as e:
+                logger.warning(f"Description read fehler: {e}")
+        if thumb_files:
+            out["thumbnail_path"] = thumb_files[0]
+        return out or None

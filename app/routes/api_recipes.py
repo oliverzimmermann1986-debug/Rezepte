@@ -30,6 +30,7 @@ from ..auth import require_auth
 from ..core.analyzer import build_analyzer
 from ..config_store import get_config
 from ..db import get_db
+from pathlib import Path
 from ..recipes.canonical import canonical_name as _canonical
 
 logger = logging.getLogger(__name__)
@@ -320,6 +321,98 @@ def recover_empty() -> Dict[str, Any]:
         # Defensiv: Stack-Trace ins Log damit User-Report 'Fehler 500' diagnostizierbar
         logger.exception(f"recover-empty failed: {e}")
         raise HTTPException(500, f"recover-empty failed: {type(e).__name__}: {e}")
+
+
+@router.post("/{recipe_id}/rescrape")
+def rescrape_recipe(recipe_id: int) -> Dict[str, Any]:
+    """Re-Scrape: ruft yt-dlp nochmal für die ursprüngliche URL auf und
+    aktualisiert Caption + Thumbnail im Folder. Video wird NICHT neu
+    heruntergeladen (--skip-download). Zutaten/Schritte bleiben unberührt.
+
+    Use-Cases:
+    - Rezepte ohne Thumbnail (Audit 'Kein Bild') → frisches Bild holen
+    - TikTok/Instagram-Caption wurde aktualisiert → frischer Text für
+      bessere KI-Extraktion
+    - Bei beschädigtem .jpg im Folder: neu pullen
+
+    Fehlerfälle: URL nicht da, yt-dlp-Fehler (Video gelöscht, geo-blocked,
+    Login nötig). Returnt 200 mit ok=False + Detail bei Fehlern."""
+    import shutil as _shutil
+    db = get_db()
+    rec = db.recipe_get(recipe_id)
+    if not rec:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    url = rec.get("url")
+    if not url:
+        return {"ok": False, "error": "Rezept hat keine URL (manuell angelegt?)"}
+    folder = rec.get("folder_path")
+    if not folder or not Path(folder).exists():
+        return {"ok": False, "error": f"FS-Folder nicht da: {folder}"}
+
+    # Downloader bauen mit Config
+    cfg = get_config()
+    from ..core.downloader import VideoDownloader
+    ytdlp_path = cfg.get("paths", "ytdlp", default="yt-dlp")
+    temp_dir = Path(cfg.get("paths", "temp_dir", default="/tmp/scrapper"))
+    cookies_file = cfg.get("downloader", "cookies_file", default=None)
+    dl = VideoDownloader(ytdlp_path=ytdlp_path, temp_dir=temp_dir,
+                          cookies_file=cookies_file)
+
+    meta = dl.refresh_metadata(url)
+    if not meta:
+        return {"ok": False, "error": "yt-dlp lieferte nichts — URL down/geo-blocked/login nötig?"}
+
+    folder_p = Path(folder)
+    changed = {"description": False, "thumbnail": False}
+
+    # Description aktualisieren
+    new_desc = meta.get("description_text")
+    if new_desc and new_desc.strip():
+        old_desc = rec.get("description") or ""
+        if new_desc != old_desc:
+            with db.conn() as c:
+                c.execute("UPDATE recipes SET description=? WHERE id=?",
+                          (new_desc, recipe_id))
+            # Plus im Folder als description.txt ablegen für Konsistenz
+            try:
+                (folder_p / "description.txt").write_text(new_desc, encoding="utf-8")
+            except OSError as e:
+                logger.warning(f"description.txt schreiben fehler: {e}")
+            changed["description"] = True
+
+    # Thumbnail ersetzen
+    new_thumb = meta.get("thumbnail_path")
+    if new_thumb and Path(new_thumb).exists():
+        try:
+            # Existing Thumbs im Folder löschen (jpg/jpeg/webp/png mit thumb-prefix
+            # oder gleichem Stem wie folder-name)
+            for old in folder_p.glob("thumb.*"):
+                old.unlink(missing_ok=True)
+            for old in folder_p.glob("*.jpg"):
+                # Nur Thumb-Dateien — kein User-Foto
+                if old.name.startswith("thumb") or old.stem == folder_p.name:
+                    old.unlink(missing_ok=True)
+            target_thumb = folder_p / "thumb.jpg"
+            _shutil.copy2(new_thumb, target_thumb)
+            with db.conn() as c:
+                c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?",
+                          ("thumb.jpg", recipe_id))
+            changed["thumbnail"] = True
+            # Tempdir aufräumen
+            try:
+                _shutil.rmtree(Path(new_thumb).parent, ignore_errors=True)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning(f"Thumbnail-Copy fehler #{recipe_id}: {e}")
+
+    logger.info(f"rescrape #{recipe_id} '{rec.get('name')}': {changed}")
+    return {
+        "ok": True,
+        "description_updated": changed["description"],
+        "thumbnail_updated": changed["thumbnail"],
+        "any_change": changed["description"] or changed["thumbnail"],
+    }
 
 
 @router.post("/{recipe_id}/verify")
