@@ -83,6 +83,10 @@ function scrapperApp() {
       rescrapingBulk: false,            // Loading für Bulk-Re-Scrape
       rescrapeProgress: 0,              // Counter für Bulk-Re-Scrape-UI
       rescrapeTotal: 0,
+      extractingId: null,               // ID des Rezepts das gerade Frame-extract macht
+      extractingBulk: false,            // Bulk-Frame-Extract läuft
+      extractProgress: 0,
+      extractTotal: 0,
       deletingUnresolvable: false,      // Loading für Bulk-Delete-toter-Einträge
     },
     // Stammdaten-Page: Tags + canonical Zutaten-Namen-Verwaltung
@@ -2480,6 +2484,89 @@ function scrapperApp() {
         this.showToast(`✓ ${r.verified} Rezepte als geprüft markiert`);
         await this.loadAudit();
       }
+    },
+
+    // Frame aus lokalem Video extrahieren via ffmpeg (Alternative zu rescrape
+    // wenn URL tot ist aber Video noch vorhanden).
+    async extractFrame(recipeId, seconds = 2.0) {
+      this.audit.extractingId = recipeId;
+      try {
+        const r = await this.api('POST',
+          `/api/recipes/${recipeId}/extract-frame?seconds=${seconds}`);
+        if (r?.ok) {
+          this.showToast(`✓ Frame aus ${r.video} @ ${r.seconds}s`);
+          await this.loadAudit();
+        } else if (r) {
+          this.showToast('Frame: ' + (r.error || 'Fehler'), 'err');
+        }
+      } finally {
+        this.audit.extractingId = null;
+      }
+    },
+
+    // Bulk Frame-Extract — sequenziell für die ersten 20.
+    async bulkExtractFrames() {
+      const list = (this.audit.data?.data_gaps?.no_image || []).slice(0, 20);
+      if (list.length === 0) return;
+      if (!confirm(`${list.length} Rezepte Frame-Extract (lokal, ~1s pro Rezept)?`)) return;
+      this.audit.extractingBulk = true;
+      this.audit.extractProgress = 0;
+      this.audit.extractTotal = list.length;
+      let ok = 0, fail = 0;
+      for (const r of list) {
+        if (!this.audit.extractingBulk) break; // Cancel via state-flip
+        this.audit.extractingId = r.id;
+        try {
+          const res = await this.api('POST',
+            `/api/recipes/${r.id}/extract-frame?seconds=2.0`);
+          if (res?.ok) ok++; else fail++;
+        } catch { fail++; }
+        this.audit.extractProgress++;
+      }
+      this.audit.extractingBulk = false;
+      this.audit.extractingId = null;
+      this.showToast(`Fertig: ${ok} ok, ${fail} fail`);
+      await this.loadAudit();
+    },
+
+    // Einzeln löschen — mit/ohne Files.
+    async deleteRecipe(recipeId, deleteFiles = true) {
+      const rec = this.audit.data?.data_gaps?.no_image?.find(r => r.id === recipeId) ||
+                  this.audit.data?.data_gaps?.no_url?.find(r => r.id === recipeId) ||
+                  null;
+      const name = rec?.name || `#${recipeId}`;
+      if (!confirm(`Rezept "${name}" wirklich löschen?\n\n${deleteFiles ? '⚠ FILES + Folder werden gelöscht!' : 'Nur DB-Eintrag, Files bleiben.'}`)) return;
+      const r = await this.api('DELETE',
+        `/api/recipes/${recipeId}?delete_files=${deleteFiles}`);
+      if (r?.ok) {
+        this.showToast(`✓ "${name}" gelöscht`);
+        await this.loadAudit();
+      }
+    },
+
+    // Bulk-Delete pro Detection (mit Files).
+    async bulkDeleteDetection(detection) {
+      const list = this.audit.data?.data_gaps?.[detection] || [];
+      if (list.length === 0) return;
+      const ids = list.map(r => r.id);
+      const label = {
+        no_image: 'ohne Bild', no_url: 'ohne URL', no_steps: 'ohne Schritte',
+        few_ingredients: 'mit wenigen Zutaten', no_description: 'ohne Beschreibung',
+        no_nutrition: 'ohne Nährwerte', fs_missing: 'mit fehlendem Pfad',
+      }[detection] || detection;
+      const txt = `${ids.length} Rezepte "${label}" KOMPLETT löschen?\n\n` +
+                  `⚠ DB-Einträge UND Folder + Files werden entfernt — nicht reversibel!`;
+      if (!confirm(txt)) return;
+      if (!confirm(`Wirklich SICHER? ${ids.length} Rezepte für immer weg.`)) return;
+      let ok = 0, fail = 0;
+      for (const id of ids) {
+        try {
+          const res = await this.api('DELETE', `/api/recipes/${id}?delete_files=true`);
+          if (res?.ok) ok++; else fail++;
+        } catch { fail++; }
+      }
+      this.showToast(`✓ ${ok} gelöscht, ${fail} Fehler`);
+      await this.loadAudit();
     },
 
     // Bulk: max 20 'Kein Bild'-Rezepte hintereinander re-scrapen.

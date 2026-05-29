@@ -415,6 +415,73 @@ def rescrape_recipe(recipe_id: int) -> Dict[str, Any]:
     }
 
 
+@router.post("/{recipe_id}/extract-frame")
+def extract_frame(recipe_id: int, seconds: float = 2.0) -> Dict[str, Any]:
+    """Extrahiert einen Frame aus dem Video im Recipe-Folder via ffmpeg und
+    setzt diesen als Thumbnail. Alternative zu rescrape wenn die URL tot
+    ist aber das Video noch lokal liegt.
+
+    `seconds` ist der Zeitstempel (default 2.0s — vermeidet schwarze
+    Anfangsframes). Sucht im folder_path nach .mp4/.mov/.webm/.mkv."""
+    import subprocess as _sp
+    db = get_db()
+    rec = db.recipe_get(recipe_id)
+    if not rec:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    folder = rec.get("folder_path")
+    if not folder or not Path(folder).exists():
+        return {"ok": False, "error": f"Folder fehlt: {folder}"}
+    folder_p = Path(folder)
+
+    # Video finden — erste Datei mit Video-Extension
+    video = None
+    for ext in (".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi"):
+        cands = list(folder_p.glob(f"*{ext}"))
+        if cands:
+            video = cands[0]
+            break
+    if not video:
+        return {"ok": False, "error": "Kein Video im Folder gefunden (.mp4/.mov/.webm/.mkv)"}
+
+    # Existing thumbs entfernen
+    for old in folder_p.glob("thumb.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+    target = folder_p / "thumb.jpg"
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-ss", str(seconds), "-i", str(video),
+        "-frames:v", "1", "-q:v", "2",
+        str(target),
+    ]
+    try:
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=60)
+    except FileNotFoundError:
+        return {"ok": False, "error": "ffmpeg nicht installiert"}
+    except _sp.TimeoutExpired:
+        return {"ok": False, "error": "ffmpeg Timeout (>60s)"}
+    if r.returncode != 0 or not target.exists():
+        # Vielleicht ist seconds > Video-Länge → Frame aus 0.5s versuchen
+        cmd[cmd.index("-ss") + 1] = "0.5"
+        try:
+            r2 = _sp.run(cmd, capture_output=True, text=True, timeout=60)
+            if r2.returncode != 0 or not target.exists():
+                return {"ok": False,
+                        "error": f"ffmpeg: {(r.stderr or r2.stderr).strip()[:200]}"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    with db.conn() as c:
+        c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?",
+                  ("thumb.jpg", recipe_id))
+    logger.info(f"frame #{recipe_id} '{rec.get('name')}' @ {seconds}s → {target.name}")
+    return {"ok": True, "thumbnail": "thumb.jpg", "video": video.name,
+            "seconds": seconds, "size_bytes": target.stat().st_size}
+
+
 @router.post("/{recipe_id}/verify")
 def toggle_verify(recipe_id: int, request: Request,
                     verified: bool = Query(True)) -> Dict[str, Any]:
