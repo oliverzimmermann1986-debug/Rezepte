@@ -17,7 +17,7 @@ function scrapperApp() {
         case 'jobs':      this.loadJobs(); break;
         case 'config':    this.loadConfig(); this.loadUsers(); break;
         case 'recipes':   this.loadRecipes(); this.loadFacets(); break;
-        case 'cart':      this.loadCart(); break;
+        case 'cart':      this.loadCart(); if (!this.config?.einkauf) this.loadConfig(); break;
         case 'audit':     this.loadAudit(); break;
         case 'master':    this.loadMaster(); break;
         // dashboard: keine spezielle Loader, x-show triggert die Widgets
