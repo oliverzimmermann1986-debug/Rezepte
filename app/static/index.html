@@ -1847,18 +1847,25 @@
         <!-- 🖼 Kein Bild (thumb_filename ist NULL) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.no_image?.length || 0) > 0">
           <h3>🖼 Kein Bild (<span x-text="audit.summary?.no_image_count"></span>)
-            <button class="btn btn-sm btn-primary" style="float:right;"
-                    @click="rescrapeBulkNoImage()"
-                    :disabled="audit.rescrapingBulk"
-                    title="Erste 20 ohne Bild via yt-dlp neu pullen (~10-30s pro Rezept)">
-              <span x-show="!audit.rescrapingBulk">🔄 Bulk-Re-Scrape (max 20)</span>
-              <span x-show="audit.rescrapingBulk" x-text="'… ' + audit.rescrapeProgress + '/' + audit.rescrapeTotal"></span>
-            </button>
+            <span style="float:right; display:flex; gap:6px;">
+              <button class="btn btn-sm" @click="bulkVerifyDetection('no_image')"
+                      title="Alle in dieser Liste als 'geprüft' markieren — fallen aus dem Audit raus, Files bleiben">
+                ✓ Alle als geprüft markieren
+              </button>
+              <button class="btn btn-sm btn-primary"
+                      @click="rescrapeBulkNoImage()"
+                      :disabled="audit.rescrapingBulk"
+                      title="Erste 20 ohne Bild via yt-dlp neu pullen (~10-30s pro Rezept)">
+                <span x-show="!audit.rescrapingBulk">🔄 Bulk-Re-Scrape (max 20)</span>
+                <span x-show="audit.rescrapingBulk" x-text="'… ' + audit.rescrapeProgress + '/' + audit.rescrapeTotal"></span>
+              </button>
+            </span>
           </h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
             Rezepte ohne Thumbnail. Re-Scrape ruft yt-dlp nochmal für die URL
             auf und holt Caption + Bild. Kostenlos, aber dauert pro Rezept
             ~10-30s. Bei Bulk werden max 20 verarbeitet (Server-Schonung).
+            Wenn nicht reparierbar → „✓ als geprüft markieren" entfernt's aus der Liste.
           </div>
           <template x-for="r in (audit.data?.data_gaps?.no_image || [])" :key="r.id">
             <div class="audit-finding">
@@ -1874,6 +1881,8 @@
                   <span x-show="audit.rescrapingId !== r.id">🔄</span>
                   <span x-show="audit.rescrapingId === r.id">…</span>
                 </button>
+                <button class="btn btn-sm" @click="verifyRecipe(r.id)"
+                        title="Einzeln als geprüft markieren (aus Audit entfernen)">✓</button>
               </div>
             </div>
           </template>
@@ -1881,7 +1890,7 @@
 
         <!-- 📋 Keine Schritte (Zutaten da, aber 0 steps) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.no_steps?.length || 0) > 0">
-          <h3>📋 Keine Schritte (<span x-text="audit.summary?.no_steps_count"></span>)</h3>
+          <h3>📋 Keine Schritte (<span x-text="audit.summary?.no_steps_count"></span>) <button class="btn btn-sm" style="float:right;" @click="bulkVerifyDetection('no_steps')" title="Alle in der Liste als geprüft markieren">✓ Alle als geprüft markieren</button></h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
             Rezepte mit Zutaten aber leerer Schritt-Liste. KI hat keine fand oder Description war nur eine Zutatenliste.
           </div>
@@ -1902,7 +1911,7 @@
 
         <!-- 🔗 Keine URL (manuell angelegt oder Scraper-Bug) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.no_url?.length || 0) > 0">
-          <h3>🔗 Keine URL (<span x-text="audit.summary?.no_url_count"></span>)</h3>
+          <h3>🔗 Keine URL (<span x-text="audit.summary?.no_url_count"></span>) <button class="btn btn-sm" style="float:right;" @click="bulkVerifyDetection('no_url')" title="Alle in der Liste als geprüft markieren">✓ Alle als geprüft markieren</button></h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
             Rezepte ohne TikTok/Insta-URL. Meist manuell angelegt — kein Re-Scrape möglich.
           </div>
@@ -1921,7 +1930,7 @@
 
         <!-- 🥄 Nur 1-2 Zutaten (verdächtig wenig) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.few_ingredients?.length || 0) > 0">
-          <h3>🥄 Nur 1-2 Zutaten (<span x-text="audit.summary?.few_ingredients_count"></span>)</h3>
+          <h3>🥄 Nur 1-2 Zutaten (<span x-text="audit.summary?.few_ingredients_count"></span>) <button class="btn btn-sm" style="float:right;" @click="bulkVerifyDetection('few_ingredients')" title="Alle in der Liste als geprüft markieren">✓ Alle als geprüft markieren</button></h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
             Rezepte mit nur 1-2 Zutaten. Möglich, aber meist Halbextrakt der KI — manuell editieren oder neu extrahieren.
           </div>
@@ -1942,7 +1951,7 @@
 
         <!-- 📝 Keine Beschreibung (description leer/<20 chars) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.no_description?.length || 0) > 0">
-          <h3>📝 Keine Beschreibung (<span x-text="audit.summary?.no_description_count"></span>)</h3>
+          <h3>📝 Keine Beschreibung (<span x-text="audit.summary?.no_description_count"></span>) <button class="btn btn-sm" style="float:right;" @click="bulkVerifyDetection('no_description')" title="Alle in der Liste als geprüft markieren">✓ Alle als geprüft markieren</button></h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
             Rezepte ohne (oder mit fast leerer) Beschreibung. KI kann nichts extrahieren — info.json oder .txt-Datei fehlt.
           </div>
@@ -2048,12 +2057,18 @@
         <!-- ⚡ Nährwerte fehlen (>= 3 Zutaten aber kein calories_per_serving) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.no_nutrition?.length || 0) > 0">
           <h3>⚡ Nährwerte fehlen (<span x-text="audit.summary?.no_nutrition_count"></span>)
-            <button class="btn btn-sm btn-primary" style="float:right;"
-                    @click="bulkComputeNutrition()"
-                    :disabled="audit.computingNutritionBulk">
-              <span x-show="!audit.computingNutritionBulk">⚡ Bis zu 50 berechnen</span>
-              <span x-show="audit.computingNutritionBulk">… läuft</span>
-            </button>
+            <span style="float:right; display:flex; gap:6px;">
+              <button class="btn btn-sm" @click="bulkVerifyDetection('no_nutrition')"
+                      title="Alle als geprüft markieren (aus Audit entfernen)">
+                ✓ Alle als geprüft markieren
+              </button>
+              <button class="btn btn-sm btn-primary"
+                      @click="bulkComputeNutrition()"
+                      :disabled="audit.computingNutritionBulk">
+                <span x-show="!audit.computingNutritionBulk">⚡ Bis zu 50 berechnen</span>
+                <span x-show="audit.computingNutritionBulk">… läuft</span>
+              </button>
+            </span>
           </h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
             Rezepte mit ≥ 3 Zutaten ohne KI-geschätzte Nährwerte. Bulk-Berechnung

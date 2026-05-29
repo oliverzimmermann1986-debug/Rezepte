@@ -2452,6 +2452,36 @@ function scrapperApp() {
       }
     },
 
+    // Einzelnes Rezept als 'geprüft' markieren - fällt aus allen Audit-Detections raus.
+    // Rezept + Files bleiben unberührt.
+    async verifyRecipe(recipeId) {
+      const r = await this.api('POST', `/api/recipes/${recipeId}/verify`, { verified: true });
+      if (r?.ok) {
+        this.showToast('✓ als geprüft markiert');
+        await this.loadAudit();
+      }
+    },
+
+    // Bulk: alle IDs einer Detection-Section als geprüft markieren.
+    // 'detection' ist der key in audit.data.data_gaps (z.B. 'no_image', 'no_url', 'few_ingredients').
+    async bulkVerifyDetection(detection) {
+      const list = this.audit.data?.data_gaps?.[detection] || [];
+      if (list.length === 0) return;
+      const ids = list.map(r => r.id);
+      const label = {
+        no_image: 'ohne Bild', no_steps: 'ohne Schritte', no_url: 'ohne URL',
+        few_ingredients: 'mit wenigen Zutaten', no_description: 'ohne Beschreibung',
+        no_nutrition: 'ohne Nährwerte', fs_missing: 'mit fehlendem Pfad',
+        unverified: 'noch nicht geprüft',
+      }[detection] || detection;
+      if (!confirm(`${ids.length} Rezepte "${label}" als geprüft markieren?\n\nSie fallen aus dem Audit raus. Files und DB-Einträge bleiben.`)) return;
+      const r = await this.api('POST', '/api/audit/verify-bulk', { recipe_ids: ids });
+      if (r?.ok) {
+        this.showToast(`✓ ${r.verified} Rezepte als geprüft markiert`);
+        await this.loadAudit();
+      }
+    },
+
     // Bulk: max 20 'Kein Bild'-Rezepte hintereinander re-scrapen.
     // Sequentiell (nicht parallel) damit yt-dlp nicht rate-limited wird.
     async rescrapeBulkNoImage() {
