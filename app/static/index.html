@@ -28,51 +28,107 @@
 </head>
 <body>
 
-<!-- PWA Install-Banner: erscheint wenn beforeinstallprompt feuert.
-     Auto-hide nach Install oder nach 'Später'-Klick. -->
+<!-- PWA Install-Banner: Android Chrome zeigt nativen Install-Prompt,
+     iOS Safari hat keine Programmatic-Install — User muss manuell via
+     Teilen-Button. Plus: im Standalone-Mode (= bereits installiert)
+     gar nicht zeigen. -->
 <div id="pwa-install-banner" style="display:none; position:fixed; bottom:14px; left:14px; right:14px;
      background:#11161e; border:1px solid #232c3a; border-radius:10px; padding:14px 16px;
-     z-index:5000; box-shadow:0 4px 20px rgba(0,0,0,.5); display:flex; gap:12px; align-items:center;">
+     z-index:5000; box-shadow:0 4px 20px rgba(0,0,0,.5); align-items:center; gap:12px;">
   <span style="font-size:24px;">📱</span>
   <div style="flex:1; font-size:13px; color:#e7edf5;">
-    <div style="font-weight:500;">Scrapper als App installieren?</div>
-    <div style="color:#8e9aae; font-size:11px; margin-top:2px;">Vollbild, Homescreen-Icon, schneller Start.</div>
+    <div style="font-weight:500;" id="pwa-banner-title">Scrapper als App installieren?</div>
+    <div style="color:#8e9aae; font-size:11px; margin-top:2px;" id="pwa-banner-sub">Vollbild, Homescreen-Icon, schneller Start.</div>
   </div>
   <button id="pwa-install-btn" style="padding:8px 14px; background:#06b6d4; color:#fff; border:0; border-radius:6px; cursor:pointer; font-size:13px;">Installieren</button>
   <button id="pwa-dismiss-btn" style="padding:8px 12px; background:transparent; color:#8e9aae; border:0; cursor:pointer; font-size:13px;">Später</button>
 </div>
+
+<!-- iOS-Install-Modal: Schritt-für-Schritt-Anleitung weil iOS kein
+     programmatic Install kann. -->
+<div id="ios-install-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:6000;
+     align-items:center; justify-content:center; padding:20px;">
+  <div style="background:#11161e; border:1px solid #232c3a; border-radius:12px; padding:24px; max-width:380px; width:100%; color:#e7edf5;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h3 style="margin:0; font-size:16px;">📱 App auf iPhone installieren</h3>
+      <button id="ios-modal-close" style="background:none; border:0; color:#8e9aae; font-size:20px; cursor:pointer;">✕</button>
+    </div>
+    <ol style="margin:0; padding-left:20px; font-size:14px; line-height:1.7;">
+      <li>Unten in Safari auf <strong>Teilen</strong> tippen <span style="display:inline-block; padding:2px 6px; background:#1a212c; border-radius:4px;">⬆</span></li>
+      <li>Runterscrollen → <strong>„Zum Home-Bildschirm"</strong></li>
+      <li>Oben rechts „Hinzufügen" → fertig</li>
+    </ol>
+    <div style="color:#8e9aae; font-size:12px; margin-top:14px;">
+      Funktioniert nur in <strong>Safari</strong> (nicht in Chrome/Firefox auf iOS).
+    </div>
+  </div>
+</div>
+
 <script>
 (function() {
   let deferredPrompt = null;
   const banner = document.getElementById('pwa-install-banner');
   const installBtn = document.getElementById('pwa-install-btn');
   const dismissBtn = document.getElementById('pwa-dismiss-btn');
+  const iosModal = document.getElementById('ios-install-modal');
+  const iosClose = document.getElementById('ios-modal-close');
+  const bannerSub = document.getElementById('pwa-banner-sub');
 
-  // Wenn schon mal "später" geklickt — 7 Tage Ruhe
+  // 1. Im Standalone-Modus (= App bereits installiert) gar nicht zeigen
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+                       || window.navigator.standalone === true
+                       || document.referrer.startsWith('android-app://');
+  if (isStandalone) return;
+
+  // 2. Wenn schon mal 'Später' geklickt — 7 Tage Ruhe
   const dismissed = parseInt(localStorage.getItem('pwa-dismissed-until') || '0', 10);
   if (dismissed > Date.now()) return;
-  // Wenn schon installiert (standalone-mode) — gar nicht zeigen
-  if (window.matchMedia('(display-mode: standalone)').matches
-      || window.navigator.standalone === true) return;
 
-  window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    deferredPrompt = e;
+  // 3. iOS-Erkennung (Safari supports kein beforeinstallprompt)
+  const ua = navigator.userAgent;
+  const isIOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+  const isIOSSafari = isIOS && /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua);
+  const isIOSOtherBrowser = isIOS && !isIOSSafari;
+
+  if (isIOSSafari) {
+    // Banner zeigen, aber Klick öffnet Anleitung statt nativen Prompt
+    if (bannerSub) bannerSub.textContent = 'Teilen-Button (unten) → Zum Home-Bildschirm.';
     banner.style.display = 'flex';
-  });
+    installBtn.addEventListener('click', () => {
+      iosModal.style.display = 'flex';
+    });
+  } else if (isIOSOtherBrowser) {
+    // iOS Chrome/Firefox kann gar nicht installieren — Banner nicht zeigen
+    return;
+  } else {
+    // Android Chrome / Desktop: warte auf beforeinstallprompt
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      banner.style.display = 'flex';
+    });
 
-  installBtn?.addEventListener('click', async () => {
-    banner.style.display = 'none';
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    console.log('PWA install:', outcome);
-    deferredPrompt = null;
-  });
+    installBtn.addEventListener('click', async () => {
+      banner.style.display = 'none';
+      if (!deferredPrompt) {
+        // Fallback: Hinweis auf Browser-Menü
+        alert('Browser-Menü öffnen (3 Punkte) → „App installieren" oder „Zum Startbildschirm".');
+        return;
+      }
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      console.log('PWA install:', outcome);
+      deferredPrompt = null;
+    });
+  }
 
-  dismissBtn?.addEventListener('click', () => {
+  dismissBtn.addEventListener('click', () => {
     banner.style.display = 'none';
     localStorage.setItem('pwa-dismissed-until', String(Date.now() + 7*24*3600*1000));
+  });
+
+  iosClose?.addEventListener('click', () => {
+    iosModal.style.display = 'none';
   });
 
   window.addEventListener('appinstalled', () => {
