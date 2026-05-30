@@ -1381,9 +1381,11 @@ input[type="checkbox"] { width: auto !important; }
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 320px;
-  overflow-y: auto;
-  padding-right: 4px;
+  /* Vorher: max-height: 320px; overflow-y: auto — auf Touch-Geräten
+     Konflikt mit Modal-Scroll (User scrollt im inneren Container statt
+     im äußeren). Jetzt nimmt die Liste ihre natürliche Höhe und scrollt
+     mit dem Modal. Bei sehr vielen Zutaten (>30) wird das Modal länger,
+     aber das ist auf Mobile sowieso natürlicher als 2 Scroll-Container. */
 }
 .ingredient-item {
   display: grid;
