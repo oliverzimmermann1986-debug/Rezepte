@@ -1518,6 +1518,26 @@
           </div>
 
           <div class="filter-block">
+            <label>Zutaten-Status</label>
+            <select x-model="recipes.filters.ingredients_status" @change="recipes.filters.offset=0; loadRecipes()">
+              <option value="">— alle —</option>
+              <option value="ok">✓ Geprüft (KI-Extraktion ok)</option>
+              <option value="pending">⏳ Wartet auf KI</option>
+              <option value="error">⚠ Fehler</option>
+              <option value="skipped">— Übersprungen</option>
+            </select>
+          </div>
+
+          <div class="filter-block">
+            <label>Manuell geprüft</label>
+            <select x-model="recipes.filters.verified" @change="recipes.filters.offset=0; loadRecipes()">
+              <option value="">— alle —</option>
+              <option :value="true">✓ Nur geprüfte</option>
+              <option :value="false">☐ Nur ungeprüfte</option>
+            </select>
+          </div>
+
+          <div class="filter-block">
             <label>Tags <span class="muted" x-text="recipes.filters.tag_ids.length ? '('+recipes.filters.tag_ids.length+' aktiv)' : ''"></span></label>
             <div class="chip-list">
               <template x-for="t in recipes.facets.tags" :key="t.id">

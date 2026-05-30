@@ -54,6 +54,10 @@ def list_recipes(
     tag_id: Optional[List[int]] = Query(None),
     ingredient: Optional[List[str]] = Query(None, description="canonical_name(s), AND-verknüpft"),
     search: Optional[str] = Query(None),
+    ingredients_status: Optional[str] = Query(None,
+        description="Filter auf KI-Extraktions-Status: 'ok' | 'pending' | 'error' | 'skipped'"),
+    verified: Optional[bool] = Query(None,
+        description="Nur user_verified=1 (True) bzw =0 (False) Rezepte"),
     limit: int = Query(60, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -75,6 +79,8 @@ def list_recipes(
         tag_ids=tag_id,
         ingredient_canonical=ingredient,
         search=search,
+        ingredients_status=ingredients_status,
+        verified=verified,
         limit=limit,
         offset=offset,
     )
@@ -85,6 +91,8 @@ def list_recipes(
         tag_ids=tag_id,
         ingredient_canonical=ingredient,
         search=search,
+        ingredients_status=ingredients_status,
+        verified=verified,
     )
 
     # Pro Item nur die wichtigsten Felder + ingredients_count

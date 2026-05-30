@@ -848,13 +848,17 @@ class Database:
         tag_ids: Optional[List[int]] = None,
         ingredient_canonical: Optional[List[str]] = None,
         search: Optional[str] = None,
+        ingredients_status: Optional[str] = None,
+        verified: Optional[bool] = None,
         limit: int = 200,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """Filter-fähige Rezept-Liste. Alle Filter sind AND-verknüpft.
         - tag_ids: Rezept muss ALLE genannten Tags haben.
         - ingredient_canonical: Rezept muss ALLE genannten Zutaten haben.
-        - search: matcht in name OR description (LIKE)."""
+        - search: matcht in name OR description (LIKE).
+        - ingredients_status: filtert auf KI-Extraktionsstatus (ok|pending|error|skipped).
+        - verified: True = nur user_verified=1, False = nur =0, None = beide."""
         params: List[Any] = []
         where: List[str] = []
         if type:
@@ -890,6 +894,11 @@ class Database:
                     "EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id AND ri.canonical_name=?)"
                 )
                 params.append(ing)
+        if ingredients_status:
+            where.append("r.ingredients_status = ?"); params.append(ingredients_status)
+        if verified is not None:
+            where.append("COALESCE(r.user_verified, 0) = ?")
+            params.append(1 if verified else 0)
         sql = (
             "SELECT r.* FROM recipes r"
             + (" WHERE " + " AND ".join(where) if where else "")
@@ -909,6 +918,8 @@ class Database:
         tag_ids: Optional[List[int]] = None,
         ingredient_canonical: Optional[List[str]] = None,
         search: Optional[str] = None,
+        ingredients_status: Optional[str] = None,
+        verified: Optional[bool] = None,
     ) -> int:
         """Gleiche Filter wie recipe_list, liefert nur den Count."""
         params: List[Any] = []
@@ -941,6 +952,11 @@ class Database:
                     "EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id AND ri.canonical_name=?)"
                 )
                 params.append(ing)
+        if ingredients_status:
+            where.append("r.ingredients_status = ?"); params.append(ingredients_status)
+        if verified is not None:
+            where.append("COALESCE(r.user_verified, 0) = ?")
+            params.append(1 if verified else 0)
         sql = "SELECT COUNT(*) AS n FROM recipes r" + (" WHERE " + " AND ".join(where) if where else "")
         with self.conn() as c:
             return int(c.execute(sql, params).fetchone()["n"])

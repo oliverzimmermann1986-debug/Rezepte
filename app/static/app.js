@@ -56,7 +56,7 @@ function scrapperApp() {
     // ── Recipe-Browser + Einkaufskorb (feat/recipe-browser-and-cart) ─────
     recipes: {
       items: [], total: 0, loading: false,
-      filters: { search: '', type: '', category: '', tag_ids: [], ingredients: [], limit: 60, offset: 0 },
+      filters: { search: '', type: '', category: '', tag_ids: [], ingredients: [], ingredients_status: '', verified: '', limit: 60, offset: 0 },
       filterDrawerOpen: false,  // nur auf Mobile sichtbar: Filter als Drawer statt Sidebar
       facets: { types: [], categories: [], tags: [], ingredients: [] },
       extractionRunning: false, extractionPending: 0,
@@ -1641,6 +1641,10 @@ function scrapperApp() {
       if (f.search) params.set('search', f.search);
       if (f.type) params.set('type', f.type);
       if (f.category) params.set('category', f.category);
+      if (f.ingredients_status) params.set('ingredients_status', f.ingredients_status);
+      if (f.verified !== '' && f.verified !== undefined && f.verified !== null) {
+        params.set('verified', f.verified ? 'true' : 'false');
+      }
       f.tag_ids.forEach(id => params.append('tag_id', id));
       f.ingredients.forEach(name => params.append('ingredient', name));
       params.set('limit', f.limit);
@@ -1673,6 +1677,7 @@ function scrapperApp() {
     resetFilters() {
       this.recipes.filters = {
         search: '', type: '', category: '', tag_ids: [], ingredients: [],
+        ingredients_status: '', verified: '',
         limit: 60, offset: 0,
       };
       this.loadRecipes();
@@ -1694,6 +1699,8 @@ function scrapperApp() {
       if (f.search) n++;
       if (f.type) n++;
       if (f.category) n++;
+      if (f.ingredients_status) n++;
+      if (f.verified !== '' && f.verified !== undefined && f.verified !== null) n++;
       n += (f.tag_ids || []).length;
       n += (f.ingredients || []).length;
       return n;
