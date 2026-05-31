@@ -83,6 +83,8 @@ CREATE TABLE IF NOT EXISTS recipes (
 CREATE INDEX IF NOT EXISTS idx_recipes_type     ON recipes(type, category);
 CREATE INDEX IF NOT EXISTS idx_recipes_added    ON recipes(source_added_at DESC);
 CREATE INDEX IF NOT EXISTS idx_recipes_extract  ON recipes(ingredients_status, ingredients_extracted_at);
+-- Soft-Delete-Index: schnelles Filtern aktiv/Papierkorb + Cleanup-Job
+CREATE INDEX IF NOT EXISTS idx_recipes_deleted  ON recipes(deleted_at);
 
 -- recipe_ingredients: pro Rezept N Zutaten. Kein FK auf eine Master-Tabelle —
 -- canonical_name reicht für Merge & Filter und ist robust gegen Tippfehler
@@ -283,6 +285,14 @@ class Database:
             ("user_verified", "INTEGER NOT NULL DEFAULT 0"),
             ("verified_at", "REAL"),
             ("verified_by", "TEXT"),
+            # Soft-Delete: Unix-Timestamp wann das Rezept in den Papierkorb
+            # verschoben wurde. NULL = aktiv. NOT NULL = im Papierkorb.
+            # Nach 30 Tagen wird durch Background-Job endgültig gelöscht
+            # (inkl. Files). User kann via Restore wiederherstellen.
+            ("deleted_at", "REAL"),
+            # Wurde der Folder beim Soft-Delete schon entfernt? Wenn ja,
+            # kann Restore die Files nicht wiederherstellen. Default 0.
+            ("files_deleted", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if col not in cols:
                 c.execute(f"ALTER TABLE recipes ADD COLUMN {col} {sqltype}")
@@ -836,8 +846,57 @@ class Database:
             return dict(row) if row else None
 
     def recipe_delete(self, recipe_id: int) -> None:
+        """Endgültig aus DB löschen (HARD-DELETE). Nur für Cleanup-Job
+        oder explizit-purge aus dem Papierkorb. Normales DELETE soll
+        via recipe_soft_delete laufen, nicht hier."""
         with self.conn() as c:
             c.execute("DELETE FROM recipes WHERE id=?", (recipe_id,))
+
+    def recipe_soft_delete(self, recipe_id: int, files_deleted: bool = False) -> None:
+        """Markiert Rezept als gelöscht (deleted_at = now). Wird in Listings
+        gefiltert und in Trash-View sichtbar. files_deleted=True heißt der
+        FS-Folder wurde zusätzlich entfernt → Restore kann Files nicht
+        wiederherstellen, nur DB-Eintrag."""
+        import time
+        with self.conn() as c:
+            c.execute(
+                "UPDATE recipes SET deleted_at=?, files_deleted=? WHERE id=?",
+                (time.time(), 1 if files_deleted else 0, recipe_id),
+            )
+
+    def recipe_restore(self, recipe_id: int) -> Dict[str, Any]:
+        """Aus Papierkorb wiederherstellen (deleted_at = NULL).
+        Returns dict mit ok + files_deleted (war Folder weg?)."""
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT folder_path, files_deleted FROM recipes WHERE id=?",
+                (recipe_id,)
+            ).fetchone()
+            if not row:
+                return {"ok": False, "error": "Rezept nicht gefunden"}
+            c.execute(
+                "UPDATE recipes SET deleted_at=NULL, files_deleted=0 WHERE id=?",
+                (recipe_id,)
+            )
+            return {"ok": True, "folder_path": row["folder_path"],
+                    "files_deleted": bool(row["files_deleted"])}
+
+    def recipe_list_trash_expired(self, days: int = 30) -> List[Dict[str, Any]]:
+        """Alle Rezepte im Papierkorb die älter als N Tage sind.
+        Verwendet vom Cleanup-Background-Job."""
+        import time
+        cutoff = time.time() - (days * 86400)
+        with self.conn() as c:
+            return [dict(r) for r in c.execute(
+                "SELECT * FROM recipes WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+                (cutoff,)
+            ).fetchall()]
+
+    def recipe_count_trash(self) -> int:
+        with self.conn() as c:
+            return int(c.execute(
+                "SELECT COUNT(*) AS n FROM recipes WHERE deleted_at IS NOT NULL"
+            ).fetchone()["n"])
 
     def recipe_list(
         self,
@@ -850,6 +909,8 @@ class Database:
         search: Optional[str] = None,
         ingredients_status: Optional[str] = None,
         verified: Optional[bool] = None,
+        include_deleted: bool = False,
+        only_deleted: bool = False,
         limit: int = 200,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -858,7 +919,9 @@ class Database:
         - ingredient_canonical: Rezept muss ALLE genannten Zutaten haben.
         - search: matcht in name OR description (LIKE).
         - ingredients_status: filtert auf KI-Extraktionsstatus (ok|pending|error|skipped).
-        - verified: True = nur user_verified=1, False = nur =0, None = beide."""
+        - verified: True = nur user_verified=1, False = nur =0, None = beide.
+        - include_deleted=False: Default. Filtert deleted_at IS NULL (nur aktive).
+        - only_deleted=True: Papierkorb-View, deleted_at IS NOT NULL."""
         params: List[Any] = []
         where: List[str] = []
         if type:
@@ -899,10 +962,15 @@ class Database:
         if verified is not None:
             where.append("COALESCE(r.user_verified, 0) = ?")
             params.append(1 if verified else 0)
+        if only_deleted:
+            where.append("r.deleted_at IS NOT NULL")
+        elif not include_deleted:
+            where.append("r.deleted_at IS NULL")
+        order_col = "r.deleted_at DESC" if only_deleted else "COALESCE(r.source_added_at, r.indexed_at) DESC"
         sql = (
             "SELECT r.* FROM recipes r"
             + (" WHERE " + " AND ".join(where) if where else "")
-            + " ORDER BY COALESCE(r.source_added_at, r.indexed_at) DESC"
+            + f" ORDER BY {order_col}"
             + " LIMIT ? OFFSET ?"
         )
         params.append(limit); params.append(offset)
@@ -920,6 +988,8 @@ class Database:
         search: Optional[str] = None,
         ingredients_status: Optional[str] = None,
         verified: Optional[bool] = None,
+        include_deleted: bool = False,
+        only_deleted: bool = False,
     ) -> int:
         """Gleiche Filter wie recipe_list, liefert nur den Count."""
         params: List[Any] = []
@@ -957,6 +1027,10 @@ class Database:
         if verified is not None:
             where.append("COALESCE(r.user_verified, 0) = ?")
             params.append(1 if verified else 0)
+        if only_deleted:
+            where.append("r.deleted_at IS NOT NULL")
+        elif not include_deleted:
+            where.append("r.deleted_at IS NULL")
         sql = "SELECT COUNT(*) AS n FROM recipes r" + (" WHERE " + " AND ".join(where) if where else "")
         with self.conn() as c:
             return int(c.execute(sql, params).fetchone()["n"])

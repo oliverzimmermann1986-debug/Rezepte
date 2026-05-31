@@ -18,6 +18,7 @@ function scrapperApp() {
         case 'config':    this.loadConfig(); this.loadUsers(); break;
         case 'recipes':   this.loadRecipes(); this.loadFacets(); break;
         case 'cart':      this.loadCart(); if (!this.config?.einkauf) this.loadConfig(); break;
+        case 'trash':     this.loadTrash(); break;
         case 'audit':     this.loadAudit(); break;
         case 'master':    this.loadMaster(); break;
         // dashboard: keine spezielle Loader, x-show triggert die Widgets
@@ -69,6 +70,9 @@ function scrapperApp() {
       add: { name: '', amount: null, unit: '' },
     },
     pushingToEinkauf: false,    // Loading-state für Push-Button
+    trash: {
+      items: [], totalCount: 0, loading: false, emptying: false,
+    },
     audit: {
       data: null,
       summary: null,
@@ -2470,7 +2474,53 @@ function scrapperApp() {
       }
     },
 
-    // ─── Re-Scrape: yt-dlp nochmal für die URL ──────────────────────────
+    // ─── Papierkorb ─────────────────────────────────────────────────────
+    async loadTrash() {
+      this.trash.loading = true;
+      try {
+        const r = await this.api('GET', '/api/recipes/trash/list?limit=500');
+        if (r) {
+          this.trash.items = r.items || [];
+          this.trash.totalCount = r.total || 0;
+        }
+      } finally {
+        this.trash.loading = false;
+      }
+    },
+    async restoreRecipe(id) {
+      const r = await this.api('POST', `/api/recipes/${id}/restore`);
+      if (r?.ok) {
+        if (r.files_deleted) {
+          this.showToast('↺ Wiederhergestellt — Files waren beim Löschen entfernt');
+        } else {
+          this.showToast('↺ Wiederhergestellt');
+        }
+        await this.loadTrash();
+      }
+    },
+    async purgeRecipe(id, name) {
+      if (!confirm(`"${name}" ENDGÜLTIG löschen?\n\nDB-Eintrag + Folder + Files — nicht reversibel.`)) return;
+      const r = await this.api('DELETE', `/api/recipes/${id}?hard=true&delete_files=true`);
+      if (r?.ok) {
+        this.showToast(`✓ "${name}" endgültig gelöscht`);
+        await this.loadTrash();
+      }
+    },
+    async emptyTrash() {
+      const n = this.trash.totalCount;
+      if (!confirm(`Papierkorb leeren? ${n} Rezepte werden ENDGÜLTIG gelöscht (DB + Files).`)) return;
+      if (!confirm(`Wirklich sicher? ${n} Rezepte für immer weg, nicht reversibel.`)) return;
+      this.trash.emptying = true;
+      try {
+        const r = await this.api('DELETE', '/api/recipes/trash/empty?delete_files=true');
+        if (r?.ok) {
+          this.showToast(`✓ ${r.purged} Rezepte endgültig gelöscht${r.errors?.length ? ` · ${r.errors.length} Fehler` : ''}`);
+          await this.loadTrash();
+        }
+      } finally {
+        this.trash.emptying = false;
+      }
+    },
     async rescrapeRecipe(recipeId) {
       this.audit.rescrapingId = recipeId;
       try {

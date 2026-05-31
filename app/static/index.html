@@ -184,6 +184,10 @@
     <div class="nav-item nav-secondary" :class="page==='master' && 'active'" @click="navTo('master')" title="Stammdaten">
       <span class="nav-icon">📚</span><span class="nav-label">Stammdaten</span>
     </div>
+    <div class="nav-item nav-secondary" :class="page==='trash' && 'active'" @click="navTo('trash')" title="Papierkorb">
+      <span class="nav-icon">🗑</span>
+      <span class="nav-label">Papierkorb<span x-show="trash.totalCount > 0" class="nav-badge" x-text="trash.totalCount"></span></span>
+    </div>
 
     <!-- Mehr-Button (nur Mobile sichtbar) -->
     <div class="nav-item nav-more" :class="moreDrawerOpen && 'active'" @click="moreDrawerOpen = !moreDrawerOpen" title="Mehr">
@@ -222,6 +226,10 @@
     <div class="more-drawer-item" :class="page==='master' && 'active'"
          @click="navTo('master'); moreDrawerOpen = false">
       <span class="more-icon">📚</span><span>Stammdaten</span>
+    </div>
+    <div class="more-drawer-item" :class="page==='trash' && 'active'"
+         @click="navTo('trash'); moreDrawerOpen = false">
+      <span class="more-icon">🗑</span><span>Papierkorb<span x-show="trash.totalCount > 0" style="margin-left:6px; color:var(--accent);">(<span x-text="trash.totalCount"></span>)</span></span>
     </div>
   </div>
 
@@ -2524,6 +2532,70 @@
           ✓ Keine Findings. Alles sauber.
         </div>
       </div>
+    </section>
+
+    <!-- ========== PAPIERKORB ========== -->
+    <section x-show="page==='trash'">
+      <div class="page-head">
+        <div>
+          <h1>🗑 Papierkorb</h1>
+          <div class="subtitle">
+            Gelöschte Rezepte. Werden nach 30 Tagen endgültig entfernt.
+            <span x-show="trash.totalCount > 0" x-text="'· ' + trash.totalCount + ' Rezepte'"></span>
+          </div>
+        </div>
+        <div class="flex" style="gap:6px;">
+          <button class="btn btn-secondary" @click="loadTrash()" :disabled="trash.loading">↻ Aktualisieren</button>
+          <button class="btn btn-danger" @click="emptyTrash()"
+                  :disabled="trash.emptying || trash.totalCount === 0"
+                  title="Alle Rezepte im Papierkorb endgültig löschen (mit Files)">
+            <span x-show="!trash.emptying">🗑 Papierkorb leeren</span>
+            <span x-show="trash.emptying">… leeren</span>
+          </button>
+        </div>
+      </div>
+
+      <template x-if="trash.totalCount === 0 && !trash.loading">
+        <div class="card" style="text-align:center; padding:40px 20px;">
+          <div style="font-size:48px; opacity:0.4;">🗑</div>
+          <div class="muted" style="margin-top:10px;">Papierkorb ist leer.</div>
+        </div>
+      </template>
+
+      <template x-if="trash.totalCount > 0">
+        <div class="card">
+          <div class="audit-section">
+            <template x-for="r in trash.items" :key="r.id">
+              <div class="audit-finding" style="align-items:center;">
+                <div class="audit-finding-main" style="min-width:0;">
+                  <div><strong x-text="r.name"></strong></div>
+                  <div class="muted" style="font-size:12px;">
+                    <span x-text="r.type"></span> · <span x-text="r.category"></span>
+                    · gelöscht <span x-text="formatTs(r.deleted_at)"></span>
+                    <span x-show="r.days_until_purge > 0"
+                          :style="`color: ${r.days_until_purge < 7 ? 'var(--accent)' : 'var(--fg-mute)'}; margin-left:6px;`">
+                      · noch <span x-text="r.days_until_purge"></span> Tage
+                    </span>
+                    <span x-show="r.files_deleted" class="muted" style="margin-left:6px;" title="Files wurden beim Löschen mit entfernt">
+                      · 📁 Files weg
+                    </span>
+                  </div>
+                  <div class="muted" style="font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                       x-text="r.folder_path" :title="r.folder_path"></div>
+                </div>
+                <div class="audit-finding-actions">
+                  <button class="btn btn-sm btn-primary" @click="restoreRecipe(r.id)"
+                          title="Wiederherstellen — Rezept ist wieder aktiv">
+                    ↺ Wiederherstellen
+                  </button>
+                  <button class="btn btn-sm btn-danger" @click="purgeRecipe(r.id, r.name)"
+                          title="Endgültig löschen (Files + DB)">🗑</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
     </section>
 
   </main>

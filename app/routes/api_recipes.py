@@ -683,15 +683,69 @@ class DeletePayload(BaseModel):
 
 
 @router.delete("/{recipe_id}")
-def delete_recipe(recipe_id: int, delete_files: bool = True):
-    """DELETE mit Query-Param `?delete_files=false` falls Files behalten werden sollen."""
+def delete_recipe(recipe_id: int, delete_files: bool = False, hard: bool = False):
+    """Soft-Delete in Papierkorb (Default). Mit ?hard=true endgültig.
+    ?delete_files=true entfernt den Folder zusätzlich (auch beim Soft-Delete —
+    dann kann Restore die Files nicht zurückholen, nur den DB-Eintrag)."""
     from ..recipes.manage import safe_delete_recipe
     try:
-        return safe_delete_recipe(get_db(), recipe_id, delete_files=delete_files)
+        return safe_delete_recipe(get_db(), recipe_id,
+                                  delete_files=delete_files, hard=hard)
     except ValueError as e:
         raise HTTPException(404, str(e))
     except RuntimeError as e:
         raise HTTPException(409, str(e))
+
+
+# ════════ Papierkorb ════════════════════════════════════════════════════
+@router.get("/trash/list")
+def trash_list(limit: int = Query(200, ge=1, le=500),
+               offset: int = Query(0, ge=0)) -> Dict[str, Any]:
+    """Liste der Rezepte im Papierkorb (deleted_at IS NOT NULL),
+    sortiert nach Löschzeit absteigend (zuletzt gelöscht oben)."""
+    db = get_db()
+    items = db.recipe_list(only_deleted=True, limit=limit, offset=offset)
+    total = db.recipe_count_trash()
+    # Für jedes Item: Anzahl Tage im Papierkorb + days_until_purge
+    import time
+    now = time.time()
+    for it in items:
+        if it.get("deleted_at"):
+            age_days = (now - it["deleted_at"]) / 86400.0
+            it["days_in_trash"] = round(age_days, 1)
+            it["days_until_purge"] = max(0, round(30 - age_days, 1))
+    return {"items": items, "total": total}
+
+
+@router.post("/{recipe_id}/restore")
+def restore_recipe(recipe_id: int) -> Dict[str, Any]:
+    """Aus Papierkorb wiederherstellen (deleted_at = NULL)."""
+    db = get_db()
+    result = db.recipe_restore(recipe_id)
+    if not result.get("ok"):
+        raise HTTPException(404, result.get("error", "Restore fehlgeschlagen"))
+    logger.info(f"recipe #{recipe_id} restored (files_deleted was {result['files_deleted']})")
+    return result
+
+
+@router.delete("/trash/empty")
+def empty_trash(delete_files: bool = True) -> Dict[str, Any]:
+    """Papierkorb endgültig leeren — alle Rezepte mit deleted_at IS NOT NULL
+    werden HARD-DELETE'd. delete_files=True entfernt zusätzlich die FS-Folder
+    (falls noch da)."""
+    from ..recipes.manage import safe_delete_recipe
+    db = get_db()
+    trash_items = db.recipe_list(only_deleted=True, limit=500, offset=0)
+    deleted = 0
+    errors = []
+    for item in trash_items:
+        try:
+            safe_delete_recipe(db, item["id"], delete_files=delete_files, hard=True)
+            deleted += 1
+        except Exception as e:
+            errors.append({"id": item["id"], "name": item.get("name"), "error": str(e)})
+    logger.info(f"empty_trash: {deleted} purged, {len(errors)} errors")
+    return {"ok": True, "purged": deleted, "errors": errors}
 
 
 class MergePayload(BaseModel):

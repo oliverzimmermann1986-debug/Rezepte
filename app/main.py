@@ -80,6 +80,50 @@ def _sd_notify(state: str) -> None:
 from contextlib import asynccontextmanager
 
 
+_trash_cleanup_thread_started = False
+
+
+def _start_trash_cleanup_thread():
+    """Spawnt einen Daemon-Thread der einmal pro Tag den Papierkorb auf
+    Items > 30 Tage prüft und sie endgültig löscht. Idempotent — wird
+    bei Re-Start des FastAPI-Lifespans nicht doppelt gestartet."""
+    global _trash_cleanup_thread_started
+    if _trash_cleanup_thread_started:
+        return
+    _trash_cleanup_thread_started = True
+    import threading, time as _t
+    def _loop():
+        # Erste Iteration nach 60s, dann alle 24h. So sieht der Job auch
+        # Items die durch laufende Tests/Sessions reingekommen sind ohne
+        # gleich beim Boot auf DB-Locks zu kollidieren.
+        _t.sleep(60)
+        while True:
+            try:
+                _purge_old_trash_items()
+            except Exception as e:
+                logger.exception(f"trash cleanup loop fail: {e}")
+            _t.sleep(24 * 3600)
+    threading.Thread(target=_loop, name="trash-cleanup", daemon=True).start()
+    logger.info("Trash-cleanup-thread started (24h interval, >30d purge)")
+
+
+def _purge_old_trash_items(days: int = 30):
+    """Endgültig löschen aller Trash-Items deren deleted_at > days Tage her ist."""
+    from .recipes.manage import safe_delete_recipe
+    items = _db.recipe_list_trash_expired(days=days)
+    if not items:
+        return
+    logger.info(f"trash-cleanup: {len(items)} items >{days}d found")
+    for it in items:
+        try:
+            # delete_files=True nur wenn die Files noch da sind (files_deleted=0).
+            # Falls files_deleted=1, nur DB-Eintrag noch.
+            delete_files = not it.get("files_deleted")
+            safe_delete_recipe(_db, it["id"], delete_files=delete_files, hard=True)
+        except Exception as e:
+            logger.warning(f"trash-purge #{it['id']} '{it.get('name')}' fail: {e}")
+
+
 @asynccontextmanager
 async def _lifespan(app):
     # READY=1 sobald der App-Startup durch ist (DB-Pings, Routes registriert).
@@ -87,6 +131,9 @@ async def _lifespan(app):
     # damit ist ein 'restart' ohne 502-Lücke am Reverse-Proxy möglich.
     _sd_notify("READY=1")
     logger.info("App ready (sd_notify READY=1 sent)")
+    # Trash-Cleanup-Background-Thread starten: einmal pro Tag prüft er ob
+    # Rezepte im Papierkorb älter als 30 Tage sind und purged sie endgültig.
+    _start_trash_cleanup_thread()
     try:
         yield
     finally:

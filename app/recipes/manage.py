@@ -216,17 +216,27 @@ def safe_delete_recipe(
     db: Database,
     recipe_id: int,
     *,
-    delete_files: bool = True,
+    delete_files: bool = False,
+    hard: bool = False,
 ) -> Dict[str, Any]:
-    """Löscht ein Rezept aus DB + optional Filesystem.
+    """Löscht ein Rezept. Standardmäßig SOFT-DELETE (→ Papierkorb).
 
-    delete_files=True (Default): kompletter Folder via shutil.rmtree.
-    Path-Traversal-geschützt — kann nur unterhalb recipe_dir löschen.
+    - hard=False (Default): Soft-Delete — deleted_at=now, Rezept verschwindet
+      aus Listings, taucht im Papierkorb auf. Wird nach 30 Tagen via
+      Cleanup-Job endgültig entfernt. Restore möglich via recipe_restore.
+    - hard=True: Endgültiges Löschen (HARD-DELETE) — DB-Zeile weg, cascade
+      auf ingredients/steps/tags, optional auch FS-Folder. Verwendet vom
+      Papierkorb-Endpunkt 'endgültig löschen' und vom Cleanup-Job.
 
-    DB: recipe_delete cascadet ingredients/steps/tags. shopping_cart wird
-    manuell aufgeräumt (source_recipe_ids ist JSON, kein FK).
+    - delete_files=True: bei soft-delete wird der Folder zusätzlich entfernt
+      (files_deleted=1 gesetzt — Restore kann Files dann nicht wiederherstellen).
+      Bei hard-delete wird der Folder gelöscht falls er noch existiert.
 
-    Returns: {ok, deleted_id, name, folder_deleted, cart_entries_updated}
+    Cart wird bei BEIDEN Modi aufgeräumt (Cart-Einträge die auf das Rezept
+    referenzieren werden upgedatet), damit Cart nicht auf 'unsichtbare'
+    Rezepte zeigt.
+
+    Returns: {ok, deleted_id, name, folder_deleted, cart_entries_updated, soft}
     """
     recipe = db.recipe_get(recipe_id)
     if not recipe:
@@ -234,11 +244,10 @@ def safe_delete_recipe(
     folder = recipe.get("folder_path")
     name = recipe.get("name")
 
-    # 1. Shopping-Cart aufräumen: aus jeder source_recipe_ids-JSON-Liste diese ID rauswerfen
+    # Cart aufräumen
     cart_updates = _purge_recipe_from_cart(db, recipe_id)
 
-    # 2. FS löschen (optional, vor DB-Delete damit wir bei Fehler nicht
-    #    schon die DB-Zeile weg haben)
+    # FS löschen (bei delete_files=True, beide Modi)
     folder_deleted = False
     if delete_files and folder:
         folder_path = Path(folder)
@@ -250,9 +259,14 @@ def safe_delete_recipe(
         else:
             logger.info(f"Recipe #{recipe_id}: folder {folder_path} existierte nicht mehr")
 
-    # 3. DB-Delete (cascade räumt ingredients/steps/tags)
-    db.recipe_delete(recipe_id)
-    logger.info(f"Recipe #{recipe_id} '{name}' aus DB entfernt")
+    if hard:
+        # Endgültig: cascade weg
+        db.recipe_delete(recipe_id)
+        logger.info(f"Recipe #{recipe_id} '{name}' HARD-DELETE")
+    else:
+        # Soft: deleted_at setzen, files_deleted-Flag wenn Folder mit weg
+        db.recipe_soft_delete(recipe_id, files_deleted=folder_deleted)
+        logger.info(f"Recipe #{recipe_id} '{name}' → Papierkorb (files_deleted={folder_deleted})")
 
     return {
         "ok": True,
@@ -260,6 +274,7 @@ def safe_delete_recipe(
         "name": name,
         "folder_deleted": folder_deleted,
         "cart_entries_updated": cart_updates,
+        "soft": not hard,
     }
 
 
