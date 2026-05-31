@@ -58,6 +58,8 @@ function scrapperApp() {
       items: [], total: 0, loading: false,
       filters: { search: '', type: '', category: '', tag_ids: [], ingredients: [], ingredients_status: '', verified: '', limit: 60, offset: 0 },
       filterDrawerOpen: false,  // nur auf Mobile sichtbar: Filter als Drawer statt Sidebar
+      ingredientSearch: '',     // Such-Input im Zutaten-Filter-Block
+      _ingFacetsLimited: false, // True wenn die Chip-Liste auf MAX geclipped wurde
       facets: { types: [], categories: [], tags: [], ingredients: [] },
       extractionRunning: false, extractionPending: 0,
       extractionStats: {}, _pollTimer: null,
@@ -1712,6 +1714,31 @@ function scrapperApp() {
       if (i >= 0) arr.splice(i, 1); else arr.push(canonicalName);
       this.recipes.filters.offset = 0;
       this.loadRecipes();
+    },
+
+    // Zutaten-Chip-Liste filtern: Suche im Display-Name, Limit 60
+    // (sonst rendert bei vielen Rezepten 200+ Chips → unbenutzbar).
+    // Bereits ausgewählte werden eh oben separat angezeigt, hier ausschließen.
+    filteredIngredientFacets() {
+      const all = this.recipes.facets.ingredients || [];
+      const selected = new Set(this.recipes.filters.ingredients);
+      const q = (this.recipes.ingredientSearch || '').toLowerCase().trim();
+      let filtered = all.filter(i => !selected.has(i.canonical_name));
+      if (q) {
+        filtered = filtered.filter(i =>
+          (i.display_name || '').toLowerCase().includes(q) ||
+          (i.canonical_name || '').toLowerCase().includes(q)
+        );
+      }
+      const MAX = 60;
+      this.recipes._ingFacetsLimited = filtered.length > MAX;
+      return filtered.slice(0, MAX);
+    },
+
+    // Getter für das x-show im Template (würde Methodaufruf jedes Render
+    // triggern; einfaches Property reicht)
+    get ingredientFacetsLimited() {
+      return this.recipes._ingFacetsLimited;
     },
 
     async syncRecipes() {

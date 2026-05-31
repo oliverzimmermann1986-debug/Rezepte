@@ -1553,10 +1553,22 @@
 
           <div class="filter-block">
             <label>Zutaten <span class="muted" x-text="recipes.filters.ingredients.length ? '('+recipes.filters.ingredients.length+' aktiv)' : ''"></span></label>
+            <input type="text" x-model="recipes.ingredientSearch"
+                   placeholder="🔍 Zutat suchen…"
+                   style="width:100%; margin-bottom:8px; padding:6px 10px;
+                          background:var(--bg); border:1px solid var(--border);
+                          border-radius:5px; color:var(--fg); font-size:13px;">
             <div class="chip-list">
-              <template x-for="i in recipes.facets.ingredients" :key="i.canonical_name">
-                <span class="chip" :class="recipes.filters.ingredients.includes(i.canonical_name) && 'on'"
-                      @click="toggleIngredientFilter(i.canonical_name)">
+              <!-- Ausgewählte immer zuerst, durchstreichbar -->
+              <template x-for="canonical in recipes.filters.ingredients" :key="'sel-'+canonical">
+                <span class="chip on" @click="toggleIngredientFilter(canonical)">
+                  <span x-text="(recipes.facets.ingredients.find(i => i.canonical_name === canonical) || {}).display_name || canonical"></span>
+                  <span style="margin-left:4px;">✗</span>
+                </span>
+              </template>
+              <!-- Restliche Facets, gefiltert + auf 60 begrenzt -->
+              <template x-for="i in filteredIngredientFacets()" :key="i.canonical_name">
+                <span class="chip" @click="toggleIngredientFilter(i.canonical_name)">
                   <span x-text="i.display_name"></span>
                   <span class="muted">·<span x-text="i.n"></span></span>
                 </span>
@@ -1565,6 +1577,15 @@
                 <span x-show="recipes.extractionPending > 0">Zutaten werden noch extrahiert…</span>
                 <span x-show="recipes.extractionPending === 0">— keine Zutaten —</span>
               </span>
+              <span x-show="recipes.facets.ingredients.length > 0 && filteredIngredientFacets().length === 0 && !recipes.ingredientSearch" class="muted small">
+                — alle ausgewählt —
+              </span>
+              <span x-show="recipes.ingredientSearch && filteredIngredientFacets().length === 0" class="muted small">
+                kein Treffer für „<span x-text="recipes.ingredientSearch"></span>"
+              </span>
+            </div>
+            <div x-show="ingredientFacetsLimited" class="muted small" style="margin-top:4px;">
+              … weitere ausgeblendet. Mehr Treffer? Suche eingrenzen.
             </div>
           </div>
 
