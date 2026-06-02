@@ -2591,6 +2591,41 @@ function scrapperApp() {
       }
     },
 
+    // Eigenes Bild hochladen — fallback wenn Frame-Extract+Re-Scrape nichts taugen.
+    // Akzeptiert JPEG/PNG/WebP, max 10MB.
+    async uploadThumbnail(recipeId, file) {
+      if (!file) return;
+      if (file.size > 10 * 1024 * 1024) {
+        this.showToast('Datei zu groß (max 10MB)', 'err'); return;
+      }
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const resp = await fetch(`/api/recipes/${recipeId}/upload-thumbnail`, {
+          method: 'POST',
+          body: fd,
+          credentials: 'same-origin',
+        });
+        if (resp.status === 401) { window.location = '/login'; return; }
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+          this.showToast('Upload: ' + (err.detail || 'Fehler'), 'err');
+          return;
+        }
+        const r = await resp.json();
+        if (r?.ok) {
+          this.showToast(`✓ Bild gesetzt (${(r.size_bytes/1024).toFixed(0)} KB)`);
+          if (this.recipeDetail?.data?.id === recipeId) {
+            this.recipeDetail.data.thumb_filename = r.thumbnail;
+          }
+          await this.loadAudit();
+          if (typeof this.loadRecipes === 'function') await this.loadRecipes();
+        }
+      } catch (e) {
+        this.showToast('Upload fehlgeschlagen: ' + e.message, 'err');
+      }
+    },
+
     // Bulk Frame-Extract — sequenziell für die ersten 20.
     async bulkExtractFrames() {
       const list = (this.audit.data?.data_gaps?.no_image || []).slice(0, 20);

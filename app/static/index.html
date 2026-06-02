@@ -2033,6 +2033,13 @@
                   <span x-show="audit.extractingId !== r.id">🎬</span>
                   <span x-show="audit.extractingId === r.id">…</span>
                 </button>
+                <label class="btn btn-sm" :title="'Eigenes Bild hochladen (max 10MB)'"
+                       style="cursor:pointer;">
+                  📤
+                  <input type="file" accept="image/jpeg,image/png,image/webp"
+                         @change="uploadThumbnail(r.id, $event.target.files[0]); $event.target.value=''"
+                         style="display:none;">
+                </label>
                 <button class="btn btn-sm btn-primary" @click="rescrapeRecipe(r.id)"
                         :disabled="audit.rescrapingId === r.id"
                         title="yt-dlp neu pullen">
@@ -2728,6 +2735,12 @@
             <span x-show="!recipeDetail.cookMode">👨‍🍳 Kochen</span>
             <span x-show="recipeDetail.cookMode">← Zurück</span>
           </button>
+          <label class="btn-icon" title="Eigenes Bild hochladen" style="cursor:pointer;">
+            🖼
+            <input type="file" accept="image/jpeg,image/png,image/webp"
+                   @change="uploadThumbnail(recipeDetail.data?.id, $event.target.files[0]); $event.target.value=''"
+                   style="display:none;">
+          </label>
           <button class="btn-icon" @click="deleteRecipeFromDetail()"
                   title="Rezept + Files löschen"
                   style="color: var(--err);">🗑</button>

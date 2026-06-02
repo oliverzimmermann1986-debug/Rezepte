@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -421,6 +421,73 @@ def rescrape_recipe(recipe_id: int) -> Dict[str, Any]:
         "thumbnail_updated": changed["thumbnail"],
         "any_change": changed["description"] or changed["thumbnail"],
     }
+
+
+@router.post("/{recipe_id}/upload-thumbnail")
+async def upload_thumbnail(recipe_id: int, file: UploadFile = File(...)) -> Dict[str, Any]:
+    """Lädt ein Bild als Thumbnail für ein Rezept hoch.
+    Akzeptiert JPEG/PNG/WebP, max 10MB. Speichert als thumb.<ext> im
+    folder_path, setzt thumb_filename in DB. Existing thumbs werden ersetzt."""
+    import shutil as _sh
+    db = get_db()
+    rec = db.recipe_get(recipe_id)
+    if not rec:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    folder = rec.get("folder_path")
+    if not folder or not Path(folder).exists():
+        raise HTTPException(400, f"Folder fehlt: {folder}")
+
+    # Content-type / Extension prüfen
+    ct = (file.content_type or "").lower()
+    ext_map = {"image/jpeg": ".jpg", "image/jpg": ".jpg",
+               "image/png": ".png", "image/webp": ".webp"}
+    ext = ext_map.get(ct)
+    if not ext:
+        # Fallback: Filename-Extension
+        if file.filename:
+            fext = Path(file.filename).suffix.lower()
+            if fext in (".jpg", ".jpeg", ".png", ".webp"):
+                ext = ".jpg" if fext == ".jpeg" else fext
+        if not ext:
+            raise HTTPException(400, f"Unsupported type: {ct}. Erlaubt: JPEG, PNG, WebP")
+
+    folder_p = Path(folder)
+    # Existing thumbs entfernen (alle Varianten thumb.jpg/png/webp)
+    for old in folder_p.glob("thumb.*"):
+        if old.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    target = folder_p / f"thumb{ext}"
+    size = 0
+    MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+    try:
+        with open(target, "wb") as out:
+            while True:
+                chunk = await file.read(64 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_SIZE:
+                    out.close()
+                    target.unlink()
+                    raise HTTPException(400, f"File zu groß (max {MAX_SIZE} bytes)")
+                out.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if target.exists():
+            try: target.unlink()
+            except OSError: pass
+        raise HTTPException(500, f"Upload fehlgeschlagen: {e}")
+
+    with db.conn() as c:
+        c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?",
+                  (target.name, recipe_id))
+    logger.info(f"thumbnail upload #{recipe_id} '{rec.get('name')}' → {target.name} ({size} B)")
+    return {"ok": True, "thumbnail": target.name, "size_bytes": size}
 
 
 @router.post("/{recipe_id}/extract-frame")
