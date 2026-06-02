@@ -1624,7 +1624,7 @@
             <template x-for="r in recipes.items" :key="r.id">
               <div class="recipe-card" @click="openRecipe(r.id)">
                 <div class="recipe-thumb">
-                  <img :src="'/api/recipes/'+r.id+'/thumb'" loading="lazy" @error="$el.style.display='none'" alt="" />
+                  <img :src="'/api/recipes/'+r.id+'/thumb'" loading="lazy" decoding="async" @error="$el.style.display='none'" alt="" />
                   <div class="recipe-thumb-placeholder">🎬</div>
                 </div>
                 <div class="recipe-meta">

@@ -856,7 +856,16 @@ def get_thumb(recipe_id: int):
     fp = Path(r["folder_path"]) / r["thumb_filename"]
     if not fp.exists() or not fp.is_file():
         raise HTTPException(404, "thumbnail-datei fehlt")
-    return FileResponse(str(fp))
+    # Cache-Header: thumbnails ändern sich selten. mtime als ETag für
+    # Conditional-Requests (304 Not Modified bei If-None-Match-Match).
+    mtime = fp.stat().st_mtime
+    return FileResponse(
+        str(fp),
+        headers={
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            "ETag": f'"{int(mtime)}-{fp.stat().st_size}"',
+        },
+    )
 
 
 @router.get("/{recipe_id}/video")
@@ -869,7 +878,14 @@ def get_video(recipe_id: int):
     fp = Path(r["folder_path"]) / r["video_filename"]
     if not fp.exists() or not fp.is_file():
         raise HTTPException(404, "video-datei fehlt")
-    # FileResponse setzt automatisch korrekten Content-Type via Mimetype.
     # Range-Requests werden von FileResponse direkt unterstützt — wichtig
     # damit das <video>-Element im Browser Seek-Operationen kann.
-    return FileResponse(str(fp))
+    # Videos sind ~10-50MB pro Stück, cachen sich daher schnell auf.
+    mtime = fp.stat().st_mtime
+    return FileResponse(
+        str(fp),
+        headers={
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            "ETag": f'"{int(mtime)}-{fp.stat().st_size}"',
+        },
+    )

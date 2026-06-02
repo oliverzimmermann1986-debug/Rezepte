@@ -1,13 +1,18 @@
 // Service Worker für Scrapper-PWA
-// Strategy: cache-first für /static/*, network-first für alles andere.
-// Bei Offline: Fallback auf gecachte index.html für Navigation.
-const CACHE_NAME = 'scrapper-v1';
+// Strategy:
+// - cache-first für /static/* (CSS, JS, Alpine)
+// - cache-first stale-while-revalidate für /api/recipes/{id}/thumb
+//   (Bilder ändern sich selten — Liste lädt instant aus dem Cache)
+// - network-first für alles andere
+// - Offline: Fallback auf cached '/'
+const CACHE_NAME = 'scrapper-v2';
+const THUMB_CACHE = 'scrapper-thumbs-v1';
 const STATIC_CACHE_URLS = [
   '/',
   '/static/style.css',
   '/static/app.js',
   '/static/alpine.min.js',
-  '/static/manifest.json',
+  '/manifest.json',
 ];
 
 self.addEventListener('install', (event) => {
@@ -21,14 +26,35 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((names) =>
-      Promise.all(names.filter(n => n !== CACHE_NAME).map(n => caches.delete(n)))
+      Promise.all(names
+        .filter(n => n !== CACHE_NAME && n !== THUMB_CACHE)
+        .map(n => caches.delete(n))
+      )
     ).then(() => self.clients.claim())
   );
 });
 
 self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
-  // API + auth: immer network, kein cache
+
+  // Thumbnails: cache-first stale-while-revalidate. Erster Load aus Network,
+  // alle weiteren instant aus Cache. Background-Fetch updated im Hintergrund.
+  if (url.pathname.match(/^\/api\/recipes\/\d+\/thumb$/)) {
+    event.respondWith(
+      caches.open(THUMB_CACHE).then(async (cache) => {
+        const cached = await cache.match(event.request);
+        const networkPromise = fetch(event.request).then(resp => {
+          if (resp.ok) cache.put(event.request, resp.clone());
+          return resp;
+        }).catch(() => cached);
+        return cached || networkPromise;
+      })
+    );
+    return;
+  }
+
+  // API + auth: immer network
   if (url.pathname.startsWith('/api/') || url.pathname === '/login' || url.pathname === '/logout') {
     return; // default browser handling
   }
@@ -47,7 +73,7 @@ self.addEventListener('fetch', (event) => {
     );
     return;
   }
-  // Navigation (HTML pages): network-first, fallback auf cached '/'
+  // Navigation: network-first
   if (event.request.mode === 'navigate') {
     event.respondWith(
       fetch(event.request).catch(() => caches.match('/'))
