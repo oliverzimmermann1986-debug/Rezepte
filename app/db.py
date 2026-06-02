@@ -83,8 +83,8 @@ CREATE TABLE IF NOT EXISTS recipes (
 CREATE INDEX IF NOT EXISTS idx_recipes_type     ON recipes(type, category);
 CREATE INDEX IF NOT EXISTS idx_recipes_added    ON recipes(source_added_at DESC);
 CREATE INDEX IF NOT EXISTS idx_recipes_extract  ON recipes(ingredients_status, ingredients_extracted_at);
--- Soft-Delete-Index: schnelles Filtern aktiv/Papierkorb + Cleanup-Job
-CREATE INDEX IF NOT EXISTS idx_recipes_deleted  ON recipes(deleted_at);
+-- idx_recipes_deleted wird in _migrate erstellt NACHDEM die deleted_at-Spalte
+-- via ALTER COLUMN hinzugefügt ist (DDL läuft auf bestehender DB sonst vor Migration).
 
 -- recipe_ingredients: pro Rezept N Zutaten. Kein FK auf eine Master-Tabelle —
 -- canonical_name reicht für Merge & Filter und ist robust gegen Tippfehler
@@ -296,6 +296,9 @@ class Database:
         ):
             if col not in cols:
                 c.execute(f"ALTER TABLE recipes ADD COLUMN {col} {sqltype}")
+
+        # Soft-Delete-Index NACH der Spalten-Migration (Index braucht die Spalte).
+        c.execute("CREATE INDEX IF NOT EXISTS idx_recipes_deleted ON recipes(deleted_at)")
 
         rt_cols = {r[1] for r in c.execute("PRAGMA table_info(recipe_tags)").fetchall()}
         if "auto" not in rt_cols:
