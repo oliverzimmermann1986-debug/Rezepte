@@ -27,7 +27,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((names) =>
       Promise.all(names
-        .filter(n => n !== CACHE_NAME && n !== THUMB_CACHE)
+        .filter(n => n !== CACHE_NAME && n !== THUMB_CACHE && n !== 'scrapper-api-v1')
         .map(n => caches.delete(n))
       )
     ).then(() => self.clients.claim())
@@ -43,6 +43,24 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.match(/^\/api\/recipes\/\d+\/thumb$/)) {
     event.respondWith(
       caches.open(THUMB_CACHE).then(async (cache) => {
+        const cached = await cache.match(event.request);
+        const networkPromise = fetch(event.request).then(resp => {
+          if (resp.ok) cache.put(event.request, resp.clone());
+          return resp;
+        }).catch(() => cached);
+        return cached || networkPromise;
+      })
+    );
+    return;
+  }
+
+
+  // /api/recipes Liste: stale-while-revalidate. Zeigt sofort die letzte Antwort
+  // aus dem Cache während im Hintergrund die frische Liste geladen wird.
+  // Query-Params sind Teil des Cache-Keys (Filter/Pagination separat gecached).
+  if (url.pathname === '/api/recipes' || url.pathname === '/api/recipes/facets') {
+    event.respondWith(
+      caches.open('scrapper-api-v1').then(async (cache) => {
         const cached = await cache.match(event.request);
         const networkPromise = fetch(event.request).then(resp => {
           if (resp.ok) cache.put(event.request, resp.clone());
