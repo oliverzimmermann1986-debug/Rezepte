@@ -902,20 +902,23 @@ def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
 
     serve = src
     if w:
-        # Cache-Path: thumb-w<width>.jpg im selben Folder.
-        cache_name = f"thumb-w{w}{src.suffix.lower()}"
+        # Cache-Path: IMMER als .jpg cachen — kompatibler als webp/png falls
+        # ffmpeg ohne libwebp kompiliert ist. JPEG-Quality 3 ist visually
+        # lossless für Thumbnails.
+        cache_name = f"thumb-w{w}.jpg"
         cache = src.parent / cache_name
         # Cache hit nur wenn er existiert UND neuer als Original ist
         if cache.exists() and cache.stat().st_mtime >= src.stat().st_mtime:
             serve = cache
         else:
-            # ffmpeg-resize: -2 = Höhe automatisch, Quality 3 (=visually lossless),
-            # overwrite (-y) damit veraltete Caches überschrieben werden.
+            # ffmpeg-resize: -2 = Höhe automatisch (gerade Zahl), Quality 3.
+            # -pix_fmt yuvj420p sorgt für maximale JPEG-Kompatibilität.
             try:
                 _sp.run(
                     ["ffmpeg", "-y", "-loglevel", "error",
                      "-i", str(src),
                      "-vf", f"scale={w}:-2",
+                     "-pix_fmt", "yuvj420p",
                      "-q:v", "3",
                      str(cache)],
                     check=True, timeout=10,
