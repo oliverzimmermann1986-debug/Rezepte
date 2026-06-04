@@ -934,11 +934,24 @@ class Database:
         if folder_prefix:
             where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
         if search:
-            # FTS5 statt LIKE — O(log n) statt O(n), Multi-Word AND-verknüpft,
-            # Diakritika-Folding. Bei Build-Fail (nur Sonderzeichen) fallback
-            # auf LIKE damit der Aufruf nicht 0 Treffer returnt.
+            # FTS5 für name/description/type/category + zusätzlich LIKE auf
+            # recipe_ingredients. So findet "tomate" Rezepte mit Tomaten in
+            # der Zutatenliste, auch wenn das Wort nicht im Namen/Description
+            # steht. OR-verknüpft — beide Quellen tragen bei.
             fts_q = _build_fts_query(search)
-            if fts_q:
+            # cleaned-Plain für ingredient-LIKE (FTS5-Syntax nicht für LIKE)
+            import re as _re
+            ing_q = _re.sub(r'[^\w\s\u00C0-\u017F-]+', ' ', search, flags=_re.UNICODE).strip()
+            if fts_q and ing_q and len(ing_q) >= 2:
+                where.append(
+                    "(r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?) "
+                    "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
+                    "  AND (ri.canonical_name LIKE ? OR ri.display_name LIKE ?)))"
+                )
+                params.append(fts_q)
+                params.append(f"%{ing_q}%")
+                params.append(f"%{ing_q}%")
+            elif fts_q:
                 where.append(
                     "r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?)"
                 )
@@ -1005,7 +1018,18 @@ class Database:
             where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
         if search:
             fts_q = _build_fts_query(search)
-            if fts_q:
+            import re as _re
+            ing_q = _re.sub(r'[^\w\s\u00C0-\u017F-]+', ' ', search, flags=_re.UNICODE).strip()
+            if fts_q and ing_q and len(ing_q) >= 2:
+                where.append(
+                    "(r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?) "
+                    "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
+                    "  AND (ri.canonical_name LIKE ? OR ri.display_name LIKE ?)))"
+                )
+                params.append(fts_q)
+                params.append(f"%{ing_q}%")
+                params.append(f"%{ing_q}%")
+            elif fts_q:
                 where.append(
                     "r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?)"
                 )

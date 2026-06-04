@@ -70,6 +70,7 @@ function scrapperApp() {
       add: { name: '', amount: null, unit: '' },
     },
     pushingToEinkauf: false,    // Loading-state für Push-Button
+    fab: { open: false },       // Floating-Action-Button auf Mobile
     trash: {
       items: [], totalCount: 0, loading: false, emptying: false,
     },

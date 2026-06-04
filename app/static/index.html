@@ -1645,7 +1645,10 @@
             <template x-for="r in recipes.items" :key="r.id">
               <div class="recipe-card" @click="openRecipe(r.id)">
                 <div class="recipe-thumb">
-                  <img :src="'/api/recipes/'+r.id+'/thumb'" loading="lazy" decoding="async" @error="$el.style.display='none'" alt="" />
+                  <img :src="'/api/recipes/'+r.id+'/thumb?w=400'"
+                       :srcset="'/api/recipes/'+r.id+'/thumb?w=400 1x, /api/recipes/'+r.id+'/thumb?w=800 2x'"
+                       loading="lazy" decoding="async"
+                       @error="$el.style.display='none'" alt="" />
                   <div class="recipe-thumb-placeholder">🎬</div>
                 </div>
                 <div class="recipe-meta">
@@ -2629,6 +2632,29 @@
     </section>
 
   </main>
+
+  <!-- Floating Action Button (nur Mobile sichtbar via CSS) -->
+  <button class="fab" @click="fab.open = !fab.open"
+          :title="fab.open ? 'Schließen' : 'Quick-Nav'"
+          :aria-label="fab.open ? 'Schließen' : 'Quick-Nav'">
+    <span x-text="fab.open ? '✕' : '+'"></span>
+  </button>
+
+  <!-- FAB-Menü (öffnet sich oberhalb des FAB-Buttons) -->
+  <div class="fab-menu" x-show="fab.open" @click.away="fab.open = false" x-transition.opacity>
+    <button class="fab-menu-item" @click="navTo('recipes'); fab.open = false">
+      <span>📖</span><span>Rezepte</span>
+    </button>
+    <button class="fab-menu-item" @click="navTo('cart'); fab.open = false">
+      <span>🛒</span><span>Einkaufskorb<span x-show="cart.items.length > 0" style="opacity:0.7;"> · <span x-text="cart.items.length"></span></span></span>
+    </button>
+    <button class="fab-menu-item" @click="navTo('audit'); fab.open = false">
+      <span>🔍</span><span>Audit</span>
+    </button>
+    <button class="fab-menu-item" @click="navTo('dashboard'); fab.open = false">
+      <span>📊</span><span>Dashboard</span>
+    </button>
+  </div>
 
   <!-- FS-Konflikt-Compare-Modal: Side-by-Side beider Folder -->
   <div x-show="fsCompare.show" class="modal-backdrop" @click.self="fsCompare.show = false" x-transition.opacity>

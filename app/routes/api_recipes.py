@@ -847,23 +847,55 @@ def merge_recipes(payload: MergePayload):
 # die filename-Parameter manipulieren könnte (gibt keine).
 
 @router.get("/{recipe_id}/thumb")
-def get_thumb(recipe_id: int):
+def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
+              description="Optional: Breite in Pixel (z.B. 400). Resized via ffmpeg + cached on-disk.")):
+    """Thumbnail-Endpoint. Mit ?w=400 wird das Original on-the-fly auf
+    Breite 400px resized (Höhe proportional), Ergebnis als thumb-w400.jpg
+    im Folder gecached. Beim nächsten Aufruf direkt vom Cache, kein
+    ffmpeg-Aufruf mehr. ETag basiert auf Source-mtime damit invalidiert
+    wenn das Original ersetzt wird."""
     from pathlib import Path
+    import subprocess as _sp
     db = get_db()
     r = db.recipe_get(recipe_id)
     if not r or not r.get("thumb_filename"):
         raise HTTPException(404, "kein thumbnail")
-    fp = Path(r["folder_path"]) / r["thumb_filename"]
-    if not fp.exists() or not fp.is_file():
+    src = Path(r["folder_path"]) / r["thumb_filename"]
+    if not src.exists() or not src.is_file():
         raise HTTPException(404, "thumbnail-datei fehlt")
-    # Cache-Header: thumbnails ändern sich selten. mtime als ETag für
-    # Conditional-Requests (304 Not Modified bei If-None-Match-Match).
-    mtime = fp.stat().st_mtime
+
+    serve = src
+    if w:
+        # Cache-Path: thumb-w<width>.jpg im selben Folder.
+        cache_name = f"thumb-w{w}{src.suffix.lower()}"
+        cache = src.parent / cache_name
+        # Cache hit nur wenn er existiert UND neuer als Original ist
+        if cache.exists() and cache.stat().st_mtime >= src.stat().st_mtime:
+            serve = cache
+        else:
+            # ffmpeg-resize: -2 = Höhe automatisch, Quality 3 (=visually lossless),
+            # overwrite (-y) damit veraltete Caches überschrieben werden.
+            try:
+                _sp.run(
+                    ["ffmpeg", "-y", "-loglevel", "error",
+                     "-i", str(src),
+                     "-vf", f"scale={w}:-2",
+                     "-q:v", "3",
+                     str(cache)],
+                    check=True, timeout=10,
+                )
+                serve = cache
+            except (_sp.CalledProcessError, _sp.TimeoutExpired, FileNotFoundError) as e:
+                # Fallback: Original ausliefern wenn Resize fehlschlägt
+                logger.warning(f"thumb resize w={w} fail für #{recipe_id}: {e}")
+                serve = src
+
+    mtime = src.stat().st_mtime  # ETag immer auf SOURCE-mtime, nicht Cache
     return FileResponse(
-        str(fp),
+        str(serve),
         headers={
             "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
-            "ETag": f'"{int(mtime)}-{fp.stat().st_size}"',
+            "ETag": f'"{int(mtime)}-{serve.stat().st_size}"',
         },
     )
 
