@@ -5,7 +5,7 @@
 //   (Bilder ändern sich selten — Liste lädt instant aus dem Cache)
 // - network-first für alles andere
 // - Offline: Fallback auf cached '/'
-const CACHE_NAME = 'scrapper-v2';
+const CACHE_NAME = 'scrapper-v3';
 const THUMB_CACHE = 'scrapper-thumbs-v1';
 const STATIC_CACHE_URLS = [
   '/',
@@ -27,7 +27,9 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((names) =>
       Promise.all(names
-        .filter(n => n !== CACHE_NAME && n !== THUMB_CACHE && n !== 'scrapper-api-v1')
+        // scrapper-api-v1 wird absichtlich nicht mehr aktiv genutzt — löschen
+        // damit alter Cache nicht mehr lebt nach SW-Update.
+        .filter(n => n !== CACHE_NAME && n !== THUMB_CACHE)
         .map(n => caches.delete(n))
       )
     ).then(() => self.clients.claim())
@@ -55,22 +57,11 @@ self.addEventListener('fetch', (event) => {
   }
 
 
-  // /api/recipes Liste: stale-while-revalidate. Zeigt sofort die letzte Antwort
-  // aus dem Cache während im Hintergrund die frische Liste geladen wird.
-  // Query-Params sind Teil des Cache-Keys (Filter/Pagination separat gecached).
-  if (url.pathname === '/api/recipes' || url.pathname === '/api/recipes/facets') {
-    event.respondWith(
-      caches.open('scrapper-api-v1').then(async (cache) => {
-        const cached = await cache.match(event.request);
-        const networkPromise = fetch(event.request).then(resp => {
-          if (resp.ok) cache.put(event.request, resp.clone());
-          return resp;
-        }).catch(() => cached);
-        return cached || networkPromise;
-      })
-    );
-    return;
-  }
+  // /api/recipes Liste: KEIN Cache. Stale-while-revalidate erzeugte das
+  // klassische 'erste Anzeige = alte Daten'-Problem (User muss Tab wechseln
+  // damit der Background-Fetch sichtbar wird). Performance kommt jetzt aus
+  // HTTP-Cache-Headern + resized Thumbnails, nicht aus SW-Cache.
+  // Cache wird beim Aktivieren des neuen SW automatisch geleert (siehe activate).
 
   // API + auth: immer network
   if (url.pathname.startsWith('/api/') || url.pathname === '/login' || url.pathname === '/logout') {
