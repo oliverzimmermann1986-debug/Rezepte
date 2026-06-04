@@ -200,8 +200,9 @@
       </div>
       <div style="margin-top: 12px">
         v1.0 · <a href="/logout">Logout</a> ·
-        <a href="#" @click.prevent="toggleTheme()" :title="theme === 'dark' ? 'Auf hellen Modus wechseln' : 'Auf dunklen Modus wechseln'">
-          <span x-text="theme === 'dark' ? '☀️ Hell' : '🌙 Dunkel'"></span>
+        <a href="#" @click.prevent="cycleTheme()"
+           :title="'Aktuelles Theme: ' + currentTheme().label + '. Klick = nächstes Theme.'">
+          <span x-text="currentTheme().icon + ' ' + currentTheme().label"></span>
         </a>
       </div>
     </div>
@@ -236,9 +237,20 @@
          @click="navTo('trash'); moreDrawerOpen = false">
       <span class="more-icon">🗑</span><span>Papierkorb<span x-show="trash.totalCount > 0" style="margin-left:6px; color:var(--accent);">(<span x-text="trash.totalCount"></span>)</span></span>
     </div>
-    <div class="more-drawer-item" @click="toggleTheme()">
-      <span class="more-icon" x-text="theme === 'dark' ? '☀️' : '🌙'"></span>
-      <span x-text="theme === 'dark' ? 'Heller Modus' : 'Dunkler Modus'"></span>
+    <!-- Theme-Picker im Drawer: alle Themes als Chips zum direkten Auswählen.
+         Aktuelles Theme ist visuell markiert. -->
+    <div style="padding: 10px 14px; border-top: 1px solid var(--border); margin-top: 6px;">
+      <div style="font-size: 11px; color: var(--fg-mute); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">Theme</div>
+      <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+        <template x-for="t in themes" :key="t.id">
+          <button class="btn btn-sm"
+                  :class="t.id === theme ? 'btn-primary' : ''"
+                  @click="setTheme(t.id); moreDrawerOpen = false"
+                  style="flex: 0 0 auto; padding: 4px 10px;">
+            <span x-text="t.icon + ' ' + t.label"></span>
+          </button>
+        </template>
+      </div>
     </div>
   </div>
 

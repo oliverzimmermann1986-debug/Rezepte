@@ -141,13 +141,22 @@ function scrapperApp() {
     // Bewusst auf scrapperApp-Top-Level damit Alpine reactivity trackt.
     timers: {},
     _audioCtx: null,
-    theme: 'dark',  // 'dark' | 'light' — persistiert in localStorage
+    theme: 'dark',  // 'dark' | 'light' | 'butter' | 'ocean' | 'forest' | 'lavender'
+    // Themes in Reihenfolge für cycleTheme(). Label + Emoji für UI.
+    themes: [
+      { id: 'dark',     label: 'Dunkel',   icon: '🌙', bg: '#0a0d12' },
+      { id: 'light',    label: 'Hell',     icon: '☀️', bg: '#faf7f2' },
+      { id: 'butter',   label: 'Butter',   icon: '🧈', bg: '#fdf6d8' },
+      { id: 'ocean',    label: 'Ocean',    icon: '🌊', bg: '#eef5fa' },
+      { id: 'forest',   label: 'Forest',   icon: '🌿', bg: '#f3efe5' },
+      { id: 'lavender', label: 'Lavender', icon: '💜', bg: '#f3eef7' },
+    ],
 
     init() {
       // Theme aus localStorage laden bevor irgendwas anderes rendert
       try {
         const stored = localStorage.getItem('theme');
-        if (stored === 'light' || stored === 'dark') this.theme = stored;
+        if (this.themes.some(t => t.id === stored)) this.theme = stored;
       } catch (_) {}
       document.documentElement.setAttribute('data-theme', this.theme);
       this._updateThemeColorMeta();
@@ -168,22 +177,35 @@ function scrapperApp() {
       // Pull-to-Refresh nach DOM-Init (nextTick) damit ptr-indicator da ist
       this.$nextTick(() => this.initPullToRefresh());
     },
-    toggleTheme() {
-      this.theme = this.theme === 'dark' ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', this.theme);
-      try { localStorage.setItem('theme', this.theme); } catch (_) {}
+    // Theme direkt setzen (id aus this.themes).
+    setTheme(id) {
+      if (!this.themes.some(t => t.id === id)) return;
+      this.theme = id;
+      document.documentElement.setAttribute('data-theme', id);
+      try { localStorage.setItem('theme', id); } catch (_) {}
       this._updateThemeColorMeta();
     },
+    // Klick-Cycle: next theme in der Liste.
+    cycleTheme() {
+      const idx = this.themes.findIndex(t => t.id === this.theme);
+      const next = this.themes[(idx + 1) % this.themes.length];
+      this.setTheme(next.id);
+    },
+    // Backwards-compat (existing Buttons rufen toggleTheme).
+    toggleTheme() { this.cycleTheme(); },
+    // Aktuelles Theme-Objekt für UI-Anzeige.
+    currentTheme() {
+      return this.themes.find(t => t.id === this.theme) || this.themes[0];
+    },
     _updateThemeColorMeta() {
-      // Theme-Color für PWA-Statusbar an aktuelles Theme anpassen
-      const color = this.theme === 'light' ? '#faf7f2' : '#0a0d12';
+      const t = this.currentTheme();
       let meta = document.querySelector('meta[name="theme-color"]');
       if (!meta) {
         meta = document.createElement('meta');
         meta.setAttribute('name', 'theme-color');
         document.head.appendChild(meta);
       }
-      meta.setAttribute('content', color);
+      meta.setAttribute('content', t.bg);
     },
 
     _startEventStream() {

@@ -51,6 +51,91 @@
   --shadow: 0 1px 3px rgba(20, 15, 5, 0.08);
 }
 
+/* Butter Yellow — Pastell-buttergelb, leicht cremig.
+   Warm, fröhlich, küchen-tauglich. */
+:root[data-theme="butter"] {
+  --bg: #fdf6d8;          /* Buttergelb hauptbg */
+  --bg-elev: #fffdf2;     /* Cards fast-weiß mit Hauch Gelb */
+  --bg-elev-2: #f5ecc4;
+  --card: #fffdf2;
+  --border: #e0d49a;
+  --border-hot: #c4b674;
+  --fg: #3a2f0f;          /* Tiefes Braun-Olive für Text */
+  --fg-dim: #6b5a30;
+  --fg-mute: #998a5e;
+  --accent: #b8651e;      /* Karamell-Orange */
+  --accent-rgb: 184, 101, 30;
+  --accent-2: #d68b3f;
+  --ok: #5a8f3c;
+  --warn: #c98603;
+  --err: #b53838;
+  --pending: #4a7daf;
+  --shadow: 0 1px 3px rgba(80, 60, 10, 0.1);
+}
+
+/* Ocean — kühles Hell-Blau, ruhig, professionell. */
+:root[data-theme="ocean"] {
+  --bg: #eef5fa;          /* Hellbau-grau */
+  --bg-elev: #ffffff;
+  --bg-elev-2: #dde9f1;
+  --card: #ffffff;
+  --border: #c5d6e3;
+  --border-hot: #a3bccf;
+  --fg: #15303f;          /* Tiefes Navy */
+  --fg-dim: #4d6878;
+  --fg-mute: #7d92a1;
+  --accent: #1d6da3;
+  --accent-rgb: 29, 109, 163;
+  --accent-2: #3a96d4;
+  --ok: #2d8773;
+  --warn: #b48508;
+  --err: #c84141;
+  --pending: #5089c4;
+  --shadow: 0 1px 3px rgba(20, 50, 80, 0.08);
+}
+
+/* Forest — Moosgrün + warm Beige, Natur-Theme. */
+:root[data-theme="forest"] {
+  --bg: #f3efe5;          /* Beige-Sand */
+  --bg-elev: #faf7ee;
+  --bg-elev-2: #e7e1d0;
+  --card: #faf7ee;
+  --border: #cfc5a8;
+  --border-hot: #ab9f7e;
+  --fg: #2a3624;          /* Tiefes Waldgrün */
+  --fg-dim: #5a6a4e;
+  --fg-mute: #8a9778;
+  --accent: #5a7d3a;      /* Moosgrün */
+  --accent-rgb: 90, 125, 58;
+  --accent-2: #84a657;
+  --ok: #4a7e3a;
+  --warn: #b4843e;
+  --err: #a64a3a;
+  --pending: #4a6d8f;
+  --shadow: 0 1px 3px rgba(40, 50, 25, 0.08);
+}
+
+/* Lavender — Lila-Pastell, soft. */
+:root[data-theme="lavender"] {
+  --bg: #f3eef7;
+  --bg-elev: #fbf8fd;
+  --bg-elev-2: #e6dceb;
+  --card: #fbf8fd;
+  --border: #d4c6dc;
+  --border-hot: #b39ec0;
+  --fg: #2a1f33;
+  --fg-dim: #5c4d68;
+  --fg-mute: #8d7e9a;
+  --accent: #7a4ba3;
+  --accent-rgb: 122, 75, 163;
+  --accent-2: #a274c4;
+  --ok: #3f8757;
+  --warn: #b4830d;
+  --err: #b53e3e;
+  --pending: #4d7ab8;
+  --shadow: 0 1px 3px rgba(50, 30, 70, 0.08);
+}
+
 * { box-sizing: border-box; }
 
 html, body {
