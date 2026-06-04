@@ -1315,10 +1315,13 @@ class Database:
     # ─── User-Verwaltung (Multi-User-Auth) ──────────────────────────────
     def user_get_by_name(self, username: str) -> Optional[Dict[str, Any]]:
         """Liefert User-Row inkl. password_hash. Auch disabled-Users werden
-        zurückgegeben — Caller entscheidet (Login: ablehnen; Settings: anzeigen)."""
+        zurückgegeben — Caller entscheidet (Login: ablehnen; Settings: anzeigen).
+        Username-Match ist case-insensitiv (COLLATE NOCASE) — 'Admin', 'admin'
+        und 'ADMIN' treffen denselben User. Das UNIQUE-Constraint auf username
+        bleibt case-sensitiv (BINARY), daher hier explizit NOCASE im WHERE."""
         with self.conn() as c:
             row = c.execute(
-                "SELECT * FROM users WHERE username=?", (username,)
+                "SELECT * FROM users WHERE username=? COLLATE NOCASE", (username,)
             ).fetchone()
             return dict(row) if row else None
 
