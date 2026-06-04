@@ -1502,9 +1502,10 @@
             <span style="float:right; display:flex; gap:6px; flex-wrap:wrap;">
               <button class="btn btn-sm" @click="bulkExtractFrames()"
                       :disabled="audit.extractingBulk"
-                      title="Frame aus Video extrahieren (max 20) — schnell, lokal, ohne Internet">
-                <span x-show="!audit.extractingBulk">🎬 Bulk Frame-Extract (max 20)</span>
-                <span x-show="audit.extractingBulk" x-text="'… ' + audit.extractProgress + '/' + audit.extractTotal"></span>
+                      title="Frame aus Video extrahieren — alle ohne Bild, ~1s pro Rezept">
+                <span x-show="!audit.extractingBulk">🎬 Bulk Frame-Extract (alle)</span>
+                <span x-show="audit.extractingBulk" x-text="'… ' + audit.extractProgress + '/' + audit.extractTotal + ' (Klick=Cancel)'"
+                      @click.stop="audit.extractingBulk = false"></span>
               </button>
               <button class="btn btn-sm" @click="bulkVerifyDetection('no_image')"
                       title="Alle als geprüft markieren (Files bleiben)">
@@ -1517,9 +1518,10 @@
               <button class="btn btn-sm btn-primary"
                       @click="rescrapeBulkNoImage()"
                       :disabled="audit.rescrapingBulk"
-                      title="yt-dlp neu pullen (~10-30s pro Rezept)">
-                <span x-show="!audit.rescrapingBulk">🔄 Bulk-Re-Scrape (max 20)</span>
-                <span x-show="audit.rescrapingBulk" x-text="'… ' + audit.rescrapeProgress + '/' + audit.rescrapeTotal"></span>
+                      title="yt-dlp neu pullen für alle ohne Bild (~15s pro Rezept)">
+                <span x-show="!audit.rescrapingBulk">🔄 Bulk-Re-Scrape (alle)</span>
+                <span x-show="audit.rescrapingBulk" x-text="'… ' + audit.rescrapeProgress + '/' + audit.rescrapeTotal + ' (Klick=Cancel)'"
+                      @click.stop="audit.rescrapingBulk = false"></span>
               </button>
             </span>
           </h3>

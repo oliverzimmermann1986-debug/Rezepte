@@ -2788,11 +2788,14 @@ function scrapperApp() {
       }
     },
 
-    // Bulk Frame-Extract — sequenziell für die ersten 20.
+    // Bulk Frame-Extract — sequenziell für ALLE Rezepte ohne Bild.
+    // Lokal, ~1s pro Rezept → bei 100 Rezepten ca. 2 Min. Cancel-Knopf
+    // (state-flip extractingBulk) bricht laufende Schleife sauber ab.
     async bulkExtractFrames() {
-      const list = (this.audit.data?.data_gaps?.no_image || []).slice(0, 20);
+      const list = (this.audit.data?.data_gaps?.no_image || []);
       if (list.length === 0) return;
-      if (!confirm(`${list.length} Rezepte Frame-Extract (lokal, ~1s pro Rezept)?`)) return;
+      const eta = Math.ceil(list.length * 1.5 / 60);
+      if (!confirm(`${list.length} Rezepte Frame-Extract starten?\nEstimated ~${list.length}s (≈${eta}min). Cancel jederzeit möglich.`)) return;
       this.audit.extractingBulk = true;
       this.audit.extractProgress = 0;
       this.audit.extractTotal = list.length;
@@ -2875,18 +2878,22 @@ function scrapperApp() {
       await this.loadAudit();
     },
 
-    // Bulk: max 20 'Kein Bild'-Rezepte hintereinander re-scrapen.
+    // Bulk: ALLE 'Kein Bild'-Rezepte hintereinander re-scrapen.
     // Sequentiell (nicht parallel) damit yt-dlp nicht rate-limited wird.
+    // Cancel via state-flip rescrapingBulk = false (z.B. erneuter Button-Klick).
     async rescrapeBulkNoImage() {
-      const list = (this.audit.data?.data_gaps?.no_image || []).slice(0, 20);
+      const list = (this.audit.data?.data_gaps?.no_image || []);
       if (list.length === 0) return;
-      if (!confirm(`${list.length} Rezepte sequenziell re-scrapen?\n\nDauert ~${list.length * 15}s. Bei Fehlern (URL down/geo-blocked) wird das Rezept übersprungen.`)) return;
+      const eta_sec = list.length * 15;
+      const eta_str = eta_sec > 60 ? `~${Math.ceil(eta_sec/60)} Min` : `~${eta_sec}s`;
+      if (!confirm(`${list.length} Rezepte sequenziell re-scrapen?\n\nDauert ${eta_str}. Bei Fehlern (URL down/geo-blocked) wird das Rezept übersprungen.\n\nCancel: erneut auf den Button klicken.`)) return;
       this.audit.rescrapingBulk = true;
       this.audit.rescrapeProgress = 0;
       this.audit.rescrapeTotal = list.length;
       let ok = 0, fail = 0;
       try {
         for (const r of list) {
+          if (!this.audit.rescrapingBulk) break;  // cancel
           this.audit.rescrapeProgress++;
           try {
             const resp = await this.api('POST', `/api/recipes/${r.id}/rescrape`);
