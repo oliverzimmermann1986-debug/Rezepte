@@ -1,6 +1,6 @@
 {
-  "name": "Scrapper",
-  "short_name": "Scrapper",
+  "name": "Rezepte",
+  "short_name": "Rezepte",
   "description": "Rezepte + Hochzeit · TikTok/Instagram Scraper mit Einkaufsliste",
   "start_url": "/",
   "scope": "/",

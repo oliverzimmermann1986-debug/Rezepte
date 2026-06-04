@@ -2,14 +2,14 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <title>Scrapper</title>
+  <title>Rezepte</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, viewport-fit=cover">
   <meta name="theme-color" content="#0f1419">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Scrapper">
+  <meta name="apple-mobile-web-app-title" content="Rezepte">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="application-name" content="Scrapper">
+  <meta name="application-name" content="Rezepte">
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/png" href="/static/icon-192.png">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -37,7 +37,7 @@
      z-index:5000; box-shadow:0 4px 20px rgba(0,0,0,.5); align-items:center; gap:12px;">
   <span style="font-size:24px;">📱</span>
   <div style="flex:1; font-size:13px; color:#e7edf5;">
-    <div style="font-weight:500;" id="pwa-banner-title">Scrapper als App installieren?</div>
+    <div style="font-weight:500;" id="pwa-banner-title">Rezepte als App installieren?</div>
     <div style="color:#8e9aae; font-size:11px; margin-top:2px;" id="pwa-banner-sub">Vollbild, Homescreen-Icon, schneller Start.</div>
   </div>
   <button id="pwa-install-btn" style="padding:8px 14px; background:#06b6d4; color:#fff; border:0; border-radius:6px; cursor:pointer; font-size:13px;">Installieren</button>
@@ -436,7 +436,7 @@
             <div class="stats-label">KI-Confidence-Verteilung (Pending)</div>
             <div class="stats-chart" x-html="renderConfChart()"></div>
             <div class="stats-hint" x-show="stats && stats.conf && stats.conf.total > 0">
-              <span x-text="stats.conf.total"></span> Pending-Items analysiert
+              <span x-text="stats?.conf?.total || 0"></span> Pending-Items analysiert
             </div>
             <div class="stats-hint muted" x-show="!stats || !stats.conf || stats.conf.total === 0">
               Keine Pending-Daten zum Anzeigen
@@ -743,10 +743,10 @@
           <h3>History-Reanalyze
             <span class="muted" style="font-weight: normal; font-size: 12px;"
                   x-show="historyReanalyzeStatus && historyReanalyzeStatus.running"
-                  x-text="' · läuft seit ' + (historyReanalyzeStatus.elapsed_sec || 0) + 's'"></span>
+                  x-text="' · läuft seit ' + (historyReanalyzeStatus?.elapsed_sec || 0) + 's'"></span>
             <span class="muted" style="font-weight: normal; font-size: 12px;"
                   x-show="historyReanalyzeStatus && !historyReanalyzeStatus.running && historyReanalyzeStatus.last"
-                  x-text="' · ' + (historyReanalyzeStatus.last.status || '?')"></span>
+                  x-text="' · ' + (historyReanalyzeStatus?.last?.status || '?')"></span>
           </h3>
           <button class="btn btn-ghost" @click="historyReanalyzeStatus = null" x-show="!historyReanalyzing">✗ Schließen</button>
         </div>
@@ -2504,7 +2504,7 @@
 
         <!-- 5) Schlechte Namen -->
         <div class="audit-section" x-show="audit.data?.bad_names?.length > 0">
-          <h3>Schlechte / unklare Namen <span class="muted" x-text="'(' + audit.data.bad_names.length + ')'"></span></h3>
+          <h3>Schlechte / unklare Namen <span class="muted" x-text="'(' + (audit.data?.bad_names?.length || 0) + ')'"></span></h3>
           <template x-for="b in groupedBadNames()" :key="b.reason">
             <div class="audit-group">
               <div class="audit-group-head" x-text="b.reason + ' (' + b.items.length + ')'"></div>
@@ -2811,7 +2811,7 @@
               </div>
               <div class="cook-hint muted" x-show="recipeDetail.data?.servings && recipeDetail.multiplier !== 1">
                 Original für <span x-text="recipeDetail.data?.servings"></span> →
-                gerechnet für <span x-text="Math.round(recipeDetail.data.servings * recipeDetail.multiplier * 10) / 10"></span> Portion(en)
+                gerechnet für <span x-text="Math.round((recipeDetail.data?.servings || 0) * recipeDetail.multiplier * 10) / 10"></span> Portion(en)
               </div>
               <button class="btn btn-primary" style="width: 100%;" @click="cookRecipe()"
                       :disabled="!(recipeDetail.data?.ingredients?.length) || recipeDetail.cooking">

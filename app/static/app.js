@@ -2594,10 +2594,12 @@ function scrapperApp() {
     // Eigenes Bild hochladen — fallback wenn Frame-Extract+Re-Scrape nichts taugen.
     // Akzeptiert JPEG/PNG/WebP, max 10MB.
     async uploadThumbnail(recipeId, file) {
-      if (!file) return;
+      console.log('[uploadThumbnail] called', recipeId, file);
+      if (!file) { console.log('[uploadThumbnail] no file selected'); return; }
       if (file.size > 10 * 1024 * 1024) {
         this.showToast('Datei zu groß (max 10MB)', 'err'); return;
       }
+      this.showToast('Lade hoch…');
       const fd = new FormData();
       fd.append('file', file);
       try {
@@ -2606,22 +2608,28 @@ function scrapperApp() {
           body: fd,
           credentials: 'same-origin',
         });
+        console.log('[uploadThumbnail] response status', resp.status);
         if (resp.status === 401) { window.location = '/login'; return; }
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-          this.showToast('Upload: ' + (err.detail || 'Fehler'), 'err');
+          this.showToast('Upload: ' + (err.detail || 'Fehler ' + resp.status), 'err');
           return;
         }
         const r = await resp.json();
+        console.log('[uploadThumbnail] response body', r);
         if (r?.ok) {
           this.showToast(`✓ Bild gesetzt (${(r.size_bytes/1024).toFixed(0)} KB)`);
           if (this.recipeDetail?.data?.id === recipeId) {
-            this.recipeDetail.data.thumb_filename = r.thumbnail;
+            // Cache-Bust: ETag-Header gilt nur bei Reload, hier direkt rendern
+            this.recipeDetail.data.thumb_filename = r.thumbnail + '?t=' + Date.now();
           }
-          await this.loadAudit();
+          if (typeof this.loadAudit === 'function') await this.loadAudit();
           if (typeof this.loadRecipes === 'function') await this.loadRecipes();
+        } else {
+          this.showToast('Upload: unerwartete Server-Antwort', 'err');
         }
       } catch (e) {
+        console.error('[uploadThumbnail] fail', e);
         this.showToast('Upload fehlgeschlagen: ' + e.message, 'err');
       }
     },
