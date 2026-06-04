@@ -293,12 +293,18 @@ class Database:
             # Wurde der Folder beim Soft-Delete schon entfernt? Wenn ja,
             # kann Restore die Files nicht wiederherstellen. Default 0.
             ("files_deleted", "INTEGER NOT NULL DEFAULT 0"),
+            # Favorit (User-Stern). 0 = unmarkiert, 1 = Favorit.
+            ("is_favorite", "INTEGER NOT NULL DEFAULT 0"),
+            # Bewertung 1-5 Sterne (0 = unbewertet). Persönlich pro Rezept.
+            ("rating", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if col not in cols:
                 c.execute(f"ALTER TABLE recipes ADD COLUMN {col} {sqltype}")
 
         # Soft-Delete-Index NACH der Spalten-Migration (Index braucht die Spalte).
         c.execute("CREATE INDEX IF NOT EXISTS idx_recipes_deleted ON recipes(deleted_at)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_recipes_favorite ON recipes(is_favorite) WHERE is_favorite=1")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_recipes_rating ON recipes(rating) WHERE rating>0")
 
         rt_cols = {r[1] for r in c.execute("PRAGMA table_info(recipe_tags)").fetchall()}
         if "auto" not in rt_cols:
@@ -912,6 +918,8 @@ class Database:
         search: Optional[str] = None,
         ingredients_status: Optional[str] = None,
         verified: Optional[bool] = None,
+        favorite_only: bool = False,
+        min_rating: int = 0,
         include_deleted: bool = False,
         only_deleted: bool = False,
         limit: int = 200,
@@ -978,6 +986,10 @@ class Database:
         if verified is not None:
             where.append("COALESCE(r.user_verified, 0) = ?")
             params.append(1 if verified else 0)
+        if favorite_only:
+            where.append("r.is_favorite = 1")
+        if min_rating > 0:
+            where.append("r.rating >= ?"); params.append(min_rating)
         if only_deleted:
             where.append("r.deleted_at IS NOT NULL")
         elif not include_deleted:
@@ -1004,6 +1016,8 @@ class Database:
         search: Optional[str] = None,
         ingredients_status: Optional[str] = None,
         verified: Optional[bool] = None,
+        favorite_only: bool = False,
+        min_rating: int = 0,
         include_deleted: bool = False,
         only_deleted: bool = False,
     ) -> int:
@@ -1054,6 +1068,10 @@ class Database:
         if verified is not None:
             where.append("COALESCE(r.user_verified, 0) = ?")
             params.append(1 if verified else 0)
+        if favorite_only:
+            where.append("r.is_favorite = 1")
+        if min_rating > 0:
+            where.append("r.rating >= ?"); params.append(min_rating)
         if only_deleted:
             where.append("r.deleted_at IS NOT NULL")
         elif not include_deleted:

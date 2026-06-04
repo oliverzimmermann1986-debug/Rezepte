@@ -58,6 +58,10 @@ def list_recipes(
         description="Filter auf KI-Extraktions-Status: 'ok' | 'pending' | 'error' | 'skipped'"),
     verified: Optional[bool] = Query(None,
         description="Nur user_verified=1 (True) bzw =0 (False) Rezepte"),
+    favorite_only: bool = Query(False,
+        description="Nur favorisierte Rezepte (is_favorite=1)"),
+    min_rating: int = Query(0, ge=0, le=5,
+        description="Mindestbewertung (0=alle, 1-5=Sterne)"),
     limit: int = Query(60, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -81,6 +85,8 @@ def list_recipes(
         search=search,
         ingredients_status=ingredients_status,
         verified=verified,
+        favorite_only=favorite_only,
+        min_rating=min_rating,
         limit=limit,
         offset=offset,
     )
@@ -93,6 +99,8 @@ def list_recipes(
         search=search,
         ingredients_status=ingredients_status,
         verified=verified,
+        favorite_only=favorite_only,
+        min_rating=min_rating,
     )
 
     # Pro Item nur die wichtigsten Felder + ingredients_count
@@ -110,6 +118,8 @@ def list_recipes(
             "video_filename": r.get("video_filename"),
             "source_added_at": r.get("source_added_at"),
             "ingredients_status": r.get("ingredients_status"),
+            "is_favorite": bool(r.get("is_favorite")),
+            "rating": r.get("rating") or 0,
         })
     return {"total": total, "items": out, "extraction_running": is_extraction_running()}
 
@@ -845,6 +855,32 @@ def merge_recipes(payload: MergePayload):
 #   - bedienen NUR die zwei DB-bekannten Filenames (thumb_filename, video_filename)
 # Damit kann ein User unmöglich beliebige FS-Pfade rausziehen, selbst wenn er
 # die filename-Parameter manipulieren könnte (gibt keine).
+
+@router.post("/{recipe_id}/favorite")
+def toggle_favorite(recipe_id: int) -> Dict[str, Any]:
+    """Toggle is_favorite (0↔1) für ein Rezept."""
+    db = get_db()
+    rec = db.recipe_get(recipe_id)
+    if not rec:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    new_state = 0 if rec.get("is_favorite") else 1
+    with db.conn() as c:
+        c.execute("UPDATE recipes SET is_favorite=? WHERE id=?", (new_state, recipe_id))
+    return {"ok": True, "is_favorite": bool(new_state)}
+
+
+@router.post("/{recipe_id}/rating")
+def set_rating(recipe_id: int, value: int = Query(..., ge=0, le=5,
+               description="Bewertung 0=ungerated, 1-5=Sterne")) -> Dict[str, Any]:
+    """Setzt rating (0-5) für ein Rezept. 0 = unbewertet."""
+    db = get_db()
+    rec = db.recipe_get(recipe_id)
+    if not rec:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    with db.conn() as c:
+        c.execute("UPDATE recipes SET rating=? WHERE id=?", (value, recipe_id))
+    return {"ok": True, "rating": value}
+
 
 @router.get("/{recipe_id}/thumb")
 def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,

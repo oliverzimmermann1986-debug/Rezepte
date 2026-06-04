@@ -57,7 +57,7 @@ function scrapperApp() {
     // ── Recipe-Browser + Einkaufskorb (feat/recipe-browser-and-cart) ─────
     recipes: {
       items: [], total: 0, loading: false,
-      filters: { search: '', type: '', category: '', tag_ids: [], ingredients: [], ingredients_status: '', verified: '', limit: 60, offset: 0 },
+      filters: { search: '', type: '', category: '', tag_ids: [], ingredients: [], ingredients_status: '', verified: '', favorite_only: false, min_rating: 0, limit: 60, offset: 0 },
       filterDrawerOpen: false,  // nur auf Mobile sichtbar: Filter als Drawer statt Sidebar
       ingredientSearch: '',     // Such-Input im Zutaten-Filter-Block
       _ingFacetsLimited: false, // True wenn die Chip-Liste auf MAX geclipped wurde
@@ -1701,6 +1701,8 @@ function scrapperApp() {
       if (f.verified !== '' && f.verified !== undefined && f.verified !== null) {
         params.set('verified', f.verified ? 'true' : 'false');
       }
+      if (f.favorite_only) params.set('favorite_only', 'true');
+      if (f.min_rating > 0) params.set('min_rating', f.min_rating);
       f.tag_ids.forEach(id => params.append('tag_id', id));
       f.ingredients.forEach(name => params.append('ingredient', name));
       params.set('limit', f.limit);
@@ -1710,6 +1712,10 @@ function scrapperApp() {
 
     // ── Recipe-Liste + Facets ─────────────────────────────────────────
     async loadRecipes() {
+      // Bei normalem loadRecipes-Aufruf: offset zurücksetzen → wir starten
+      // immer beim Anfang. Infinite-Scroll nutzt loadMoreRecipes(), das
+      // den offset on-the-fly berechnet ohne filters.offset zu mutieren.
+      this.recipes.filters.offset = 0;
       this.recipes.loading = true;
       try {
         const r = await this.api('GET', '/api/recipes?' + this._buildRecipeQuery());
@@ -1717,7 +1723,6 @@ function scrapperApp() {
         this.recipes.items = r.items || [];
         this.recipes.total = r.total || 0;
         this.recipes.extractionRunning = !!r.extraction_running;
-        // Wenn die Extraction läuft, periodisch refreshen (Status + Liste)
         this._scheduleExtractionPoll();
       } finally {
         this.recipes.loading = false;
@@ -1733,7 +1738,7 @@ function scrapperApp() {
     resetFilters() {
       this.recipes.filters = {
         search: '', type: '', category: '', tag_ids: [], ingredients: [],
-        ingredients_status: '', verified: '',
+        ingredients_status: '', verified: '', favorite_only: false, min_rating: 0,
         limit: 60, offset: 0,
       };
       this.loadRecipes();
@@ -1757,6 +1762,8 @@ function scrapperApp() {
       if (f.category) n++;
       if (f.ingredients_status) n++;
       if (f.verified !== '' && f.verified !== undefined && f.verified !== null) n++;
+      if (f.favorite_only) n++;
+      if (f.min_rating > 0) n++;
       n += (f.tag_ids || []).length;
       n += (f.ingredients || []).length;
       return n;
@@ -2522,6 +2529,80 @@ function scrapperApp() {
       } finally {
         this.audit.verifyingBulk = false;
       }
+    },
+
+    // ─── Favorit + Bewertung + Share ────────────────────────────────────
+    async toggleFavorite(recipeId) {
+      const r = await this.api('POST', `/api/recipes/${recipeId}/favorite`);
+      if (r?.ok) {
+        const item = this.recipes.items.find(i => i.id === recipeId);
+        if (item) item.is_favorite = r.is_favorite;
+        if (this.recipeDetail?.data?.id === recipeId) {
+          this.recipeDetail.data.is_favorite = r.is_favorite;
+        }
+        this.showToast(r.is_favorite ? '⭐ Favorit gesetzt' : 'Favorit entfernt');
+      }
+    },
+    async setRating(recipeId, value) {
+      const r = await this.api('POST', `/api/recipes/${recipeId}/rating?value=${value}`);
+      if (r?.ok) {
+        const item = this.recipes.items.find(i => i.id === recipeId);
+        if (item) item.rating = r.rating;
+        if (this.recipeDetail?.data?.id === recipeId) {
+          this.recipeDetail.data.rating = r.rating;
+        }
+        this.showToast(value === 0 ? 'Bewertung entfernt' : `${'★'.repeat(value)} Bewertet`);
+      }
+    },
+    // Web-Share-API: native iOS-Share-Sheet. Fallback auf Clipboard.
+    async shareRecipe(recipe) {
+      const url = recipe.url || (window.location.origin + '/?recipe=' + recipe.id);
+      const shareData = { title: recipe.name, text: `Rezept: ${recipe.name}`, url };
+      try {
+        if (navigator.share) {
+          await navigator.share(shareData);
+        } else {
+          await navigator.clipboard.writeText(url);
+          this.showToast('🔗 Link kopiert');
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          this.showToast('Teilen fehlgeschlagen: ' + e.message, 'err');
+        }
+      }
+    },
+
+    // ─── Infinite-Scroll: lade nächste Seite an aktuelle items ─────────
+    async loadMoreRecipes() {
+      if (this.recipes.loading || this.recipes.items.length >= this.recipes.total) return;
+      this.recipes.loading = true;
+      try {
+        const nextOffset = this.recipes.items.length;
+        const query = this._buildRecipeQuery().replace(/offset=\d+/, 'offset=' + nextOffset);
+        const r = await this.api('GET', '/api/recipes?' + query);
+        if (r?.items) {
+          this.recipes.items.push(...r.items);
+          this.recipes.total = r.total;
+        }
+      } finally {
+        this.recipes.loading = false;
+      }
+    },
+
+    // IntersectionObserver für Infinite-Scroll. Wird beim ersten Render des
+    // Sentinel-Elements initialisiert (x-init). Re-erstellt sich selbst nicht —
+    // einmaliges Setup reicht, Observer beobachtet das gleiche Element.
+    _scrollObserver: null,
+    initScrollObserver() {
+      if (this._scrollObserver) return;
+      const sentinel = this.$refs.scrollSentinel;
+      if (!sentinel) return;
+      this._scrollObserver = new IntersectionObserver(entries => {
+        if (entries[0]?.isIntersecting) {
+          this.loadMoreRecipes();
+        }
+      }, { rootMargin: '200px' });  // 200px vor Sichtbarkeit triggern
+      this._scrollObserver.observe(sentinel);
     },
 
     // ─── Papierkorb ─────────────────────────────────────────────────────

@@ -2714,3 +2714,23 @@ input[type="checkbox"] { width: auto !important; }
   .fab-menu-item:active { background: var(--bg-elev-2); }
   .fab-menu-item > span:first-child { font-size: 18px; }
 }
+
+/* Favorit-Overlay auf Recipe-Cards (top-right) */
+.recipe-card .recipe-thumb { position: relative; }
+.recipe-fav {
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 32px; height: 32px;
+  border: none; border-radius: 50%;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  z-index: 2;
+  transition: background 0.15s, transform 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.recipe-fav:hover { background: rgba(0,0,0,0.75); transform: scale(1.05); }
+.recipe-fav.active { background: rgba(0,0,0,0.55); color: var(--accent); }
+.recipe-fav.active:hover { background: rgba(0,0,0,0.75); }

@@ -1567,6 +1567,27 @@
           </div>
 
           <div class="filter-block">
+            <label>Favoriten</label>
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 6px 0;">
+              <input type="checkbox" x-model="recipes.filters.favorite_only"
+                     @change="loadRecipes()" />
+              <span>⭐ Nur Favoriten anzeigen</span>
+            </label>
+          </div>
+
+          <div class="filter-block">
+            <label>Mindestbewertung</label>
+            <select x-model.number="recipes.filters.min_rating" @change="loadRecipes()">
+              <option :value="0">— alle —</option>
+              <option :value="1">★ mind. 1 Stern</option>
+              <option :value="2">★★ mind. 2 Sterne</option>
+              <option :value="3">★★★ mind. 3 Sterne</option>
+              <option :value="4">★★★★ mind. 4 Sterne</option>
+              <option :value="5">★★★★★ nur 5 Sterne</option>
+            </select>
+          </div>
+
+          <div class="filter-block">
             <label>Tags <span class="muted" x-text="recipes.filters.tag_ids.length ? '('+recipes.filters.tag_ids.length+' aktiv)' : ''"></span></label>
             <div class="chip-list">
               <template x-for="t in recipes.facets.tags" :key="t.id">
@@ -1650,6 +1671,13 @@
                        loading="lazy" decoding="async"
                        @error="$el.style.display='none'" alt="" />
                   <div class="recipe-thumb-placeholder">🎬</div>
+                  <!-- Favorit-Overlay oben rechts -->
+                  <button class="recipe-fav"
+                          @click.stop="toggleFavorite(r.id)"
+                          :class="r.is_favorite && 'active'"
+                          :title="r.is_favorite ? 'Favorit entfernen' : 'Als Favorit markieren'">
+                    <span x-text="r.is_favorite ? '⭐' : '☆'"></span>
+                  </button>
                 </div>
                 <div class="recipe-meta">
                   <div class="recipe-name" x-text="r.name"></div>
@@ -1657,11 +1685,15 @@
                     <span class="pill" x-text="r.type" x-show="r.type"></span>
                     <span class="pill muted" x-text="r.category" x-show="r.category"></span>
                   </div>
-                  <div class="recipe-status muted" style="font-size: 11px; margin-top: 6px;">
-                    <span x-show="r.ingredients_status === 'pending'">⏳ wartet auf KI</span>
-                    <span x-show="r.ingredients_status === 'ok'">✓ Zutaten</span>
-                    <span x-show="r.ingredients_status === 'error'">⚠ Fehler</span>
-                    <span x-show="r.ingredients_status === 'skipped'">— keine Beschreibung</span>
+                  <div class="recipe-status muted" style="font-size: 11px; margin-top: 6px; display: flex; justify-content: space-between; align-items: center;">
+                    <span>
+                      <span x-show="r.ingredients_status === 'pending'">⏳ wartet auf KI</span>
+                      <span x-show="r.ingredients_status === 'ok'">✓ Zutaten</span>
+                      <span x-show="r.ingredients_status === 'error'">⚠ Fehler</span>
+                      <span x-show="r.ingredients_status === 'skipped'">— keine Beschreibung</span>
+                    </span>
+                    <span x-show="r.rating > 0" style="color: var(--accent); letter-spacing: 1px;"
+                          x-text="'★'.repeat(r.rating)" :title="r.rating + ' / 5'"></span>
                   </div>
                 </div>
               </div>
@@ -1671,15 +1703,19 @@
             </div>
           </div>
 
-          <div class="pagination" x-show="recipes.total > recipes.filters.limit">
-            <button class="btn btn-secondary" :disabled="recipes.filters.offset === 0" @click="recipes.filters.offset = Math.max(0, recipes.filters.offset - recipes.filters.limit); loadRecipes()">← Vorherige</button>
-            <span class="muted">
-              <span x-text="recipes.filters.offset + 1"></span>
-              –
-              <span x-text="Math.min(recipes.filters.offset + recipes.filters.limit, recipes.total)"></span>
-              / <span x-text="recipes.total"></span>
-            </span>
-            <button class="btn btn-secondary" :disabled="recipes.filters.offset + recipes.filters.limit >= recipes.total" @click="recipes.filters.offset += recipes.filters.limit; loadRecipes()">Nächste →</button>
+          <!-- Infinite-Scroll-Sentinel: wird via IntersectionObserver beobachtet.
+               Wenn sichtbar im Viewport → loadMoreRecipes() lädt die nächsten 60.
+               Counter darunter zeigt 'X von Y geladen'. -->
+          <div x-show="recipes.items.length > 0" x-ref="scrollSentinel"
+               x-init="$nextTick(() => initScrollObserver())"
+               style="text-align: center; padding: 24px 0; color: var(--fg-mute); font-size: 12px;">
+            <div x-show="recipes.loading">… wird geladen</div>
+            <div x-show="!recipes.loading && recipes.items.length < recipes.total">
+              Scrolle weiter — <span x-text="recipes.items.length"></span> von <span x-text="recipes.total"></span> geladen
+            </div>
+            <div x-show="!recipes.loading && recipes.items.length >= recipes.total && recipes.total > 0">
+              ✓ Alle <span x-text="recipes.total"></span> Rezepte geladen
+            </div>
           </div>
         </div>
       </div>
@@ -2784,6 +2820,13 @@
             <span x-show="!recipeDetail.cookMode">👨‍🍳 Kochen</span>
             <span x-show="recipeDetail.cookMode">← Zurück</span>
           </button>
+          <button class="btn-icon" @click="toggleFavorite(recipeDetail.data?.id)"
+                  :title="recipeDetail.data?.is_favorite ? 'Favorit entfernen' : 'Als Favorit'">
+            <span x-text="recipeDetail.data?.is_favorite ? '⭐' : '☆'"
+                  :style="recipeDetail.data?.is_favorite ? 'color: var(--accent); font-size: 20px;' : 'font-size: 20px;'"></span>
+          </button>
+          <button class="btn-icon" @click="shareRecipe(recipeDetail.data)"
+                  title="Teilen (Mail, iMessage, WhatsApp…)">📤</button>
           <label class="btn-icon" title="Eigenes Bild hochladen" style="cursor:pointer;">
             🖼
             <input type="file" accept="image/jpeg,image/png,image/webp"
@@ -2795,6 +2838,22 @@
                   style="color: var(--err);">🗑</button>
           <button class="btn-icon" @click="closeRecipeDetail()">✕</button>
         </div>
+      </div>
+
+      <!-- Rating-Picker direkt unter dem Modal-Header.
+           Klick auf Stern setzt Rating. Klick auf den gleichen Stern nochmal = 0 (entfernen). -->
+      <div x-show="recipeDetail.data" style="padding: 8px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px;">
+        <span style="font-size: 12px; color: var(--fg-mute);">Meine Bewertung:</span>
+        <div style="display: flex; gap: 2px; font-size: 22px; line-height: 1; cursor: pointer;">
+          <template x-for="n in [1,2,3,4,5]" :key="n">
+            <span @click="setRating(recipeDetail.data.id, (recipeDetail.data?.rating === n) ? 0 : n)"
+                  :style="'color: ' + ((recipeDetail.data?.rating || 0) >= n ? 'var(--accent)' : 'var(--fg-mute)') + '; transition: color 0.1s; -webkit-tap-highlight-color: transparent;'"
+                  x-text="(recipeDetail.data?.rating || 0) >= n ? '★' : '☆'"></span>
+          </template>
+        </div>
+        <span x-show="(recipeDetail.data?.rating || 0) > 0" class="muted" style="font-size: 12px;"
+              x-text="(recipeDetail.data?.rating) + ' / 5'"></span>
+      </div>
       </div>
       <div class="modal-body recipe-detail-body" x-show="recipeDetail.data">
         <div class="recipe-detail-grid">
