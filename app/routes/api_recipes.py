@@ -894,11 +894,57 @@ def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
     import subprocess as _sp
     db = get_db()
     r = db.recipe_get(recipe_id)
-    if not r or not r.get("thumb_filename"):
+    if not r:
+        raise HTTPException(404, "rezept nicht gefunden")
+
+    folder = Path(r["folder_path"])
+    src = None
+
+    # 1. Registriertes Thumbnail bevorzugen
+    if r.get("thumb_filename"):
+        cand = folder / r["thumb_filename"]
+        if cand.exists() and cand.is_file():
+            src = cand
+
+    # 2. Fallback: kein registriertes Thumb → im Folder nach Medien suchen.
+    #    Deckt Email-Importe (PDF/Bild-Attachment) und nicht-registrierte
+    #    Bilder ab. Reihenfolge: echtes Bild zuerst, dann PDF (1. Seite
+    #    rendern). thumb-w*-Caches werden ignoriert (sind selbst erzeugt).
+    if src is None and folder.is_dir():
+        img_exts = {".jpg", ".jpeg", ".png", ".webp"}
+        images = sorted(
+            p for p in folder.iterdir()
+            if p.is_file() and p.suffix.lower() in img_exts
+            and not p.name.startswith("thumb-w")
+        )
+        if images:
+            src = images[0]
+        else:
+            # PDF → erste Seite zu JPG rendern, on-disk cachen (pdf-page1.jpg)
+            pdfs = sorted(p for p in folder.iterdir()
+                          if p.is_file() and p.suffix.lower() == ".pdf")
+            if pdfs:
+                pdf = pdfs[0]
+                rendered = folder / "pdf-page1.jpg"
+                if rendered.exists() and rendered.stat().st_mtime >= pdf.stat().st_mtime:
+                    src = rendered
+                else:
+                    # pdftoppm rendert Seite 1; -singlefile hängt KEINE Endung
+                    # an wenn man -o mit vollem Namen nutzt → wir geben den
+                    # Prefix ohne .jpg an, pdftoppm ergänzt es.
+                    try:
+                        _sp.run(
+                            ["pdftoppm", "-jpeg", "-r", "150", "-f", "1", "-l", "1",
+                             "-singlefile", str(pdf), str(folder / "pdf-page1")],
+                            check=True, timeout=20,
+                        )
+                        if rendered.exists():
+                            src = rendered
+                    except (_sp.CalledProcessError, _sp.TimeoutExpired, FileNotFoundError) as e:
+                        logger.warning(f"pdf-render fail für #{recipe_id}: {e}")
+
+    if src is None:
         raise HTTPException(404, "kein thumbnail")
-    src = Path(r["folder_path"]) / r["thumb_filename"]
-    if not src.exists() or not src.is_file():
-        raise HTTPException(404, "thumbnail-datei fehlt")
 
     serve = src
     if w:
