@@ -24,6 +24,31 @@
   --radius: 4px;
   --mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
   --sans: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+/* Light Theme — wird per <html data-theme="light"> aktiviert
+   (über LocalStorage-Toggle in app.js). Warm, leicht entsättigt
+   (kein Stahl-blau) — Beige-Weiß für Backgrounds + dunkles Anthrazit
+   für Text. Accent (Orange) bleibt gleich = Marken-Wiedererkennung. */
+:root[data-theme="light"] {
+  --bg: #faf7f2;          /* Off-white warm Beige */
+  --bg-elev: #ffffff;     /* Cards reines Weiß */
+  --bg-elev-2: #f3eee6;   /* Drawer / Sub-Layer */
+  --card: #ffffff;
+  --border: #e3dccf;
+  --border-hot: #c9beac;
+  --fg: #1c1c1c;          /* Anthrazit, kein purer Schwarz */
+  --fg-dim: #555555;
+  --fg-mute: #888888;
+  --accent: #d6571f;      /* Etwas tiefer als Dark-Accent für Kontrast auf Weiß */
+  --accent-rgb: 214, 87, 31;
+  --accent-2: #e88c3c;
+  --ok: #2f8a4d;
+  --warn: #c98603;
+  --err: #c93232;
+  --pending: #2e6fb8;
+  --shadow: 0 1px 3px rgba(20, 15, 5, 0.08);
 }
 
 * { box-sizing: border-box; }

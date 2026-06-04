@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <title>Rezepte</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, viewport-fit=cover">
-  <meta name="theme-color" content="#0f1419">
+  <meta name="theme-color" content="#0a0d12"><!-- wird in app.js dynamisch ans aktuelle Theme angepasst -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Rezepte">
@@ -198,7 +198,12 @@
       <div x-show="status.scraper">
         <span class="pill running">scraper</span> läuft
       </div>
-      <div style="margin-top: 12px">v1.0 · <a href="/logout">Logout</a></div>
+      <div style="margin-top: 12px">
+        v1.0 · <a href="/logout">Logout</a> ·
+        <a href="#" @click.prevent="toggleTheme()" :title="theme === 'dark' ? 'Auf hellen Modus wechseln' : 'Auf dunklen Modus wechseln'">
+          <span x-text="theme === 'dark' ? '☀️ Hell' : '🌙 Dunkel'"></span>
+        </a>
+      </div>
     </div>
   </aside>
 
@@ -230,6 +235,10 @@
     <div class="more-drawer-item" :class="page==='trash' && 'active'"
          @click="navTo('trash'); moreDrawerOpen = false">
       <span class="more-icon">🗑</span><span>Papierkorb<span x-show="trash.totalCount > 0" style="margin-left:6px; color:var(--accent);">(<span x-text="trash.totalCount"></span>)</span></span>
+    </div>
+    <div class="more-drawer-item" @click="toggleTheme()">
+      <span class="more-icon" x-text="theme === 'dark' ? '☀️' : '🌙'"></span>
+      <span x-text="theme === 'dark' ? 'Heller Modus' : 'Dunkler Modus'"></span>
     </div>
   </div>
 

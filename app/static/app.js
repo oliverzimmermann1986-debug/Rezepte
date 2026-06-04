@@ -141,8 +141,17 @@ function scrapperApp() {
     // Bewusst auf scrapperApp-Top-Level damit Alpine reactivity trackt.
     timers: {},
     _audioCtx: null,
+    theme: 'dark',  // 'dark' | 'light' — persistiert in localStorage
 
     init() {
+      // Theme aus localStorage laden bevor irgendwas anderes rendert
+      try {
+        const stored = localStorage.getItem('theme');
+        if (stored === 'light' || stored === 'dark') this.theme = stored;
+      } catch (_) {}
+      document.documentElement.setAttribute('data-theme', this.theme);
+      this._updateThemeColorMeta();
+
       this.loadRecentJobs();
       this.loadStats();
       this.loadHddStatus();   // Externe-HDD-Card auf dem Dashboard
@@ -159,6 +168,24 @@ function scrapperApp() {
       // Pull-to-Refresh nach DOM-Init (nextTick) damit ptr-indicator da ist
       this.$nextTick(() => this.initPullToRefresh());
     },
+    toggleTheme() {
+      this.theme = this.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', this.theme);
+      try { localStorage.setItem('theme', this.theme); } catch (_) {}
+      this._updateThemeColorMeta();
+    },
+    _updateThemeColorMeta() {
+      // Theme-Color für PWA-Statusbar an aktuelles Theme anpassen
+      const color = this.theme === 'light' ? '#faf7f2' : '#0a0d12';
+      let meta = document.querySelector('meta[name="theme-color"]');
+      if (!meta) {
+        meta = document.createElement('meta');
+        meta.setAttribute('name', 'theme-color');
+        document.head.appendChild(meta);
+      }
+      meta.setAttribute('content', color);
+    },
+
     _startEventStream() {
       try {
         const es = new EventSource('/api/events');
