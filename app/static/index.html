@@ -1685,19 +1685,21 @@
     <!-- ========== EINKAUFSKORB ========== -->
     <section x-show="page==='cart'" class="cart-page">
       <div class="card">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 16px;">
-          <h2 style="margin:0">🛒 Einkaufskorb <span class="muted" x-text="'('+cart.items.length+' Posten)'"></span></h2>
-          <div style="display: flex; gap: 8px;">
+        <div class="page-head" style="margin-bottom: 16px; border-bottom: none; padding-bottom: 0;">
+          <div>
+            <h1 style="margin:0; font-size: 22px;">🛒 Einkaufskorb <span class="muted" style="font-weight: normal; font-size: 14px;" x-text="'('+cart.items.length+' Posten)'"></span></h1>
+          </div>
+          <div class="flex" style="gap: 8px;">
             <button class="btn btn-primary" @click="pushToEinkauf()"
                     :disabled="cart.items.length === 0 || pushingToEinkauf"
                     x-show="config?.einkauf?.api_url"
                     :title="'Items an ' + (config?.einkauf?.api_url || 'Einkauf-App') + ' senden'">
-              <span x-show="!pushingToEinkauf">📦 An Einkauf-App senden</span>
+              <span x-show="!pushingToEinkauf">📦 Senden</span>
               <span x-show="pushingToEinkauf">… sende</span>
             </button>
-            <button class="btn btn-secondary" @click="exportCart()" :disabled="cart.items.length === 0">Als Text exportieren</button>
-            <button class="btn btn-secondary" @click="clearCheckedFromCart()" :disabled="!cart.items.some(i => i.checked)">Erledigte löschen</button>
-            <button class="btn btn-danger" @click="clearCart()" :disabled="cart.items.length === 0">Alles löschen</button>
+            <button class="btn btn-secondary" @click="exportCart()" :disabled="cart.items.length === 0">📋 Export</button>
+            <button class="btn btn-secondary" @click="clearCheckedFromCart()" :disabled="!cart.items.some(i => i.checked)">✓ Erledigte weg</button>
+            <button class="btn btn-danger" @click="clearCart()" :disabled="cart.items.length === 0">🗑 Alles</button>
           </div>
         </div>
 
