@@ -172,6 +172,11 @@ function scrapperApp() {
       this.loadRecentJobs();
       this.loadStats();
       this.loadHddStatus();   // Externe-HDD-Card auf dem Dashboard
+      // Initial-Page-Daten laden. page-state ist beim Boot 'recipes' (default),
+      // bei direktem Aufruf via URL-Hash könnte was anderes sein → navTo
+      // hat die Page-spezifischen Loader, hier rufen wir das für die aktuelle
+      // Page einmal selbst auf damit Inhalt nicht erst nach Tab-Wechsel kommt.
+      this.navTo(this.page);
       // Job-/Stats-Karten brauchen weiterhin gelegentliches Reload (kein
       // Live-Update, da nur Snapshot-Daten)
       this._jobsTimer = setInterval(() => this.loadRecentJobs(), 15000);
