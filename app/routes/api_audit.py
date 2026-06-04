@@ -126,11 +126,16 @@ def get_audit(
     unverified = []     # 'Zutaten extrahiert aber nicht manuell geprüft'
     for row in all_rows:
         d = dict(row)
-        # Verifizierte Rezepte werden ÜBERALL übersprungen — User-Override.
-        if d.get("user_verified"):
-            continue
+        # Bild-Check ist ORTHOGONAL zur Zutaten-Verifikation: ein Rezept kann
+        # verifizierte Zutaten haben und trotzdem kein Thumbnail. Daher VOR
+        # dem user_verified-skip prüfen, sonst verschwinden verifizierte
+        # Rezepte ohne Bild aus der Liste (Bug: 58 ohne Bild in DB, aber
+        # Audit zeigte nur die unverifizierten).
         if not d.get("thumb_filename"):
             no_image.append(d)
+        # Alle ANDEREN Findings überspringen verifizierte Rezepte — User-Override.
+        if d.get("user_verified"):
+            continue
         if d["ing_count"] > 0 and d["step_count"] == 0:
             no_steps.append(d)
         if not d.get("url"):
