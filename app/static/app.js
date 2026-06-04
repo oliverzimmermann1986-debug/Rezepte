@@ -1850,9 +1850,37 @@ function scrapperApp() {
     },
 
     // ── Detail-Modal ──────────────────────────────────────────────────
-    // Prefetch-Cache: kleine in-memory Map. Wenn User auf eine Card mit
-    // pointerenter/touchstart triggert, holen wir die Detail-Daten schon
-    // im Hintergrund. openRecipe nutzt dann den Cache wenn vorhanden.
+    // Platzhalter-Emoji für Rezepte ohne Bild — nach Kategorie/Typ.
+    // Reihenfolge: spezifische Kategorie zuerst, dann Typ-Fallback.
+    recipeEmoji(r) {
+      const hay = ((r.category || '') + ' ' + (r.type || '') + ' ' + (r.name || '')).toLowerCase();
+      const map = [
+        ['curry', '🍛'], ['suppe', '🍲'], ['eintopf', '🍲'], ['salat', '🥗'],
+        ['bowl', '🥗'], ['pasta', '🍝'], ['nudel', '🍝'], ['spaghetti', '🍝'],
+        ['pizza', '🍕'], ['burger', '🍔'], ['wrap', '🌯'], ['taco', '🌮'],
+        ['reis', '🍚'], ['risotto', '🍚'], ['auflauf', '🧀'], ['gratin', '🧀'],
+        ['pfannkuchen', '🥞'], ['pancake', '🥞'], ['waffel', '🧇'],
+        ['brot', '🥖'], ['bagel', '🥯'], ['sandwich', '🥪'], ['toast', '🍞'],
+        ['fisch', '🐟'], ['lachs', '🐟'], ['thunfisch', '🐟'], ['garnele', '🦐'],
+        ['fleisch', '🥩'], ['steak', '🥩'], ['hähnchen', '🍗'], ['huhn', '🍗'],
+        ['hühnchen', '🍗'], ['ei', '🍳'], ['frühstück', '🍳'],
+        ['dessert', '🍰'], ['kuchen', '🍰'], ['torte', '🎂'], ['keks', '🍪'],
+        ['eis', '🍨'], ['smoothie', '🥤'], ['getränk', '🥤'], ['cocktail', '🍹'],
+        ['kartoffel', '🥔'], ['gemüse', '🥦'], ['vegan', '🥦'],
+      ];
+      for (const [kw, emo] of map) { if (hay.includes(kw)) return emo; }
+      return '🍽️';
+    },
+
+    // Deterministischer Farbverlauf aus dem Namen — gleiches Rezept bekommt
+    // immer denselben Verlauf. Hash → Hue, zwei nah beieinanderliegende Töne.
+    recipePlaceholderGradient(name) {
+      let h = 0;
+      const s = name || 'x';
+      for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+      const h2 = (h + 35) % 360;
+      return `linear-gradient(135deg, hsl(${h} 45% 38%), hsl(${h2} 50% 28%))`;
+    },
     // Cache wird beim Modal-Close NICHT geleert — der nächste openRecipe
     // dürfte dieselbe ID sein wenn der User schnell wieder klickt.
     _detailPrefetch: new Map(),

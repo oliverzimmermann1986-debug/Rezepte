@@ -1119,7 +1119,10 @@
                        :srcset="'/api/recipes/'+r.id+'/thumb?w=400 1x, /api/recipes/'+r.id+'/thumb?w=800 2x'"
                        loading="lazy" decoding="async"
                        @error="$el.style.display='none'" alt="" />
-                  <div class="recipe-thumb-placeholder">🎬</div>
+                  <div class="recipe-thumb-placeholder" :style="'background:'+recipePlaceholderGradient(r.name)">
+                    <span class="rtp-emoji" x-text="recipeEmoji(r)"></span>
+                    <span class="rtp-name" x-text="r.name"></span>
+                  </div>
                   <!-- Favorit-Overlay oben rechts -->
                   <button class="recipe-fav"
                           @click.stop="toggleFavorite(r.id)"
