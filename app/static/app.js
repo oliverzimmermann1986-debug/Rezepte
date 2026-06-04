@@ -20,7 +20,6 @@ function scrapperApp() {
       if (this.fab) this.fab.open = false;
       switch (targetPage) {
         case 'pending':   this.loadPending(); this.loadFailedDownloads(); break;
-        case 'history':   this.loadHistory(); break;
         case 'jobs':      this.loadJobs(); break;
         case 'config':    this.loadConfig(); this.loadUsers(); break;
         case 'recipes':   this.loadRecipes(); this.loadFacets(); break;
