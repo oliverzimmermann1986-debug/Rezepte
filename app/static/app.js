@@ -11,6 +11,13 @@ function scrapperApp() {
       this.page = targetPage;
       // Drawer immer schließen wenn man eine andere Page wählt
       this.moreDrawerOpen = false;
+      // Defensiv: alle offenen Modals schließen damit kein Modal aus
+      // einem anderen Tab auf der neuen Page hängenbleibt (z.B. der
+      // Verzeichnis-Browser den man in Stammdaten geöffnet hat — der
+      // sollte bei Wechsel auf 'Rezepte' nicht weiter sichtbar sein).
+      if (this.browser?.show) this.browser.show = false;
+      if (this.recipeDetail?.show) this.recipeDetail.show = false;
+      if (this.fab) this.fab.open = false;
       switch (targetPage) {
         case 'pending':   this.loadPending(); this.loadFailedDownloads(); break;
         case 'history':   this.loadHistory(); break;

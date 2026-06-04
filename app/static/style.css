@@ -2751,3 +2751,9 @@ input[type="checkbox"] { width: auto !important; }
 .recipe-fav:hover { background: rgba(0,0,0,0.75); transform: scale(1.05); }
 .recipe-fav.active { background: rgba(0,0,0,0.55); color: var(--accent); }
 .recipe-fav.active:hover { background: rgba(0,0,0,0.75); }
+
+/* x-cloak: verhindert FOUC (flash of unstyled content). Vor Alpine.js-Init
+   sind alle x-show=false-Elemente trotzdem sichtbar — User sieht z.B.
+   Modals kurz aufblitzen. [x-cloak] wird von Alpine nach hydration
+   entfernt. */
+[x-cloak] { display: none !important; }

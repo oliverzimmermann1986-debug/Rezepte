@@ -837,7 +837,7 @@
       </div>
 
       <!-- Edit-Modal -->
-      <div x-show="editingItem" class="modal-backdrop" @click.self="cancelEdit()">
+      <div x-cloak x-show="editingItem" class="modal-backdrop" @click.self="cancelEdit()">
         <div class="modal" @click.stop>
           <div class="modal-head">
             <h3 x-text="'Eintrag bearbeiten · ' + (editingItem && editingItem.content_type === 'recipe' ? 'Rezept' : 'Hochzeit')"></h3>
@@ -925,7 +925,7 @@
       </div>
 
       <!-- Log-Viewer als Modal-Popup -->
-      <div x-show="currentLog" class="modal-backdrop" @click.self="currentLog = ''">
+      <div x-cloak x-show="currentLog" class="modal-backdrop" @click.self="currentLog = ''">
         <div class="modal modal-wide modal-log" @click.stop>
           <div class="modal-head">
             <h3>Log <span class="mono muted" x-text="'#' + currentLogJob"></span></h3>
@@ -2696,7 +2696,7 @@
   </div>
 
   <!-- FS-Konflikt-Compare-Modal: Side-by-Side beider Folder -->
-  <div x-show="fsCompare.show" class="modal-backdrop" @click.self="fsCompare.show = false" x-transition.opacity>
+  <div x-cloak x-show="fsCompare.show" class="modal-backdrop" @click.self="fsCompare.show = false" x-transition.opacity>
     <div class="modal modal-wide fs-compare-modal">
       <div class="modal-head">
         <h3>🔍 FS-Konflikt-Vergleich</h3>
@@ -2784,7 +2784,7 @@
   </div>
 
   <!-- Rezept-Detail-Modal -->
-  <div x-show="recipeDetail.show" class="modal-backdrop" @click.self="closeRecipeDetail()">
+  <div x-cloak x-show="recipeDetail.show" class="modal-backdrop" @click.self="closeRecipeDetail()">
     <div class="modal modal-wide" :class="recipeDetail.cookMode && 'cook-mode'" @click.stop x-show="recipeDetail.data">
       <div class="modal-header">
         <h3 x-text="recipeDetail.data?.name || ''"></h3>
@@ -3188,7 +3188,7 @@
   <div class="toast" :class="toast.type" x-show="toast.show" x-text="toast.message"></div>
 
   <!-- Verzeichnis-Browser Modal -->
-  <div x-show="browser.show" class="modal-backdrop" @click.self="browserCancel()">
+  <div x-cloak x-show="browser.show" class="modal-backdrop" @click.self="browserCancel()">
     <div class="modal modal-wide" @click.stop>
       <div class="modal-head">
         <h3 x-text="browser.title"></h3>

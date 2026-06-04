@@ -292,12 +292,12 @@ def _set_session_cookie(resp, token: str, request: Request) -> None:
 LOGIN_HTML = """\
 <!DOCTYPE html>
 <html lang="de"><head>
-<meta charset="UTF-8"><title>Login · Scrapper</title>
+<meta charset="UTF-8"><title>Login · Rezepte</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/static/style.css">
 </head><body class="login-body">
 <form method="post" action="/login" class="login-card">
-  <h1>Scrapper</h1>
+  <h1>Rezepte</h1>
   <p class="muted">Bitte anmelden</p>
   {error}
   <input type="hidden" name="next" value="{next}">
