@@ -27,14 +27,48 @@ from .security import SecurityHeadersMiddleware, client_ip, login_limiter
 # -------- Logging --------
 log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
 log_dir.mkdir(parents=True, exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(log_dir / "web.log"),
-        logging.StreamHandler(),
-    ],
+
+# Strukturiertes Logging: rotation via RotatingFileHandler (10MB pro Datei,
+# 5 Generationen behalten = max 60MB Logs auf Disk). JSON für File-Output
+# damit Tools wie jq/grep -P darauf operieren können. Console bleibt menschen-
+# lesbar.
+import json
+from logging.handlers import RotatingFileHandler
+
+class JSONFormatter(logging.Formatter):
+    """JSON-Format für File-Output. Inkludiert exception-Traces strukturiert."""
+    def format(self, record):
+        payload = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        # Extra-Felder (z.B. logger.info("...", extra={"recipe_id": 42})) mitnehmen
+        for key, val in record.__dict__.items():
+            if key not in {"name","msg","args","levelname","levelno","pathname",
+                           "filename","module","exc_info","exc_text","stack_info",
+                           "lineno","funcName","created","msecs","relativeCreated",
+                           "thread","threadName","processName","process","getMessage"}:
+                try:
+                    json.dumps(val)
+                    payload[key] = val
+                except (TypeError, ValueError):
+                    payload[key] = str(val)
+        return json.dumps(payload, ensure_ascii=False)
+
+_file_handler = RotatingFileHandler(
+    log_dir / "web.log", maxBytes=10 * 1024 * 1024, backupCount=5,
+    encoding="utf-8"
 )
+_file_handler.setFormatter(JSONFormatter())
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(logging.Formatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+))
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 logger = logging.getLogger(__name__)
 
 # -------- Security-Migration (Erststart) --------
@@ -183,6 +217,13 @@ app = FastAPI(
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+# gzip-Compression für API-Responses + HTML. Spart ~70% Transfer-Bytes auf
+# JSON-Listen, ~50% auf HTML. Schwelle 500 Bytes — kleinere Responses bleiben
+# unkomprimiert (Overhead lohnt sich nicht). Bilder (JPEG/PNG) werden nicht
+# komprimiert weil sie schon komprimiert sind.
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=5)
 
 # Statisch (Frontend)
 STATIC_DIR = Path(__file__).parent / "static"

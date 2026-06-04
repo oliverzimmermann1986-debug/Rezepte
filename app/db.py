@@ -954,7 +954,7 @@ class Database:
                 where.append(
                     "(r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?) "
                     "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
-                    "  AND (ri.canonical_name LIKE ? OR ri.display_name LIKE ?)))"
+                    "  AND (ri.canonical_name LIKE ? OR ri.name LIKE ?)))"
                 )
                 params.append(fts_q)
                 params.append(f"%{ing_q}%")
@@ -1038,7 +1038,7 @@ class Database:
                 where.append(
                     "(r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?) "
                     "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
-                    "  AND (ri.canonical_name LIKE ? OR ri.display_name LIKE ?)))"
+                    "  AND (ri.canonical_name LIKE ? OR ri.name LIKE ?)))"
                 )
                 params.append(fts_q)
                 params.append(f"%{ing_q}%")

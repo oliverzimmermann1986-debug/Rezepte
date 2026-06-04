@@ -1664,7 +1664,10 @@
 
           <div class="recipes-grid">
             <template x-for="r in recipes.items" :key="r.id">
-              <div class="recipe-card" @click="openRecipe(r.id)">
+              <div class="recipe-card"
+                   @click="openRecipe(r.id)"
+                   @pointerenter="prefetchRecipeDetail(r.id)"
+                   @touchstart.passive="prefetchRecipeDetail(r.id)">
                 <div class="recipe-thumb">
                   <img :src="'/api/recipes/'+r.id+'/thumb?w=400'"
                        :srcset="'/api/recipes/'+r.id+'/thumb?w=400 1x, /api/recipes/'+r.id+'/thumb?w=800 2x'"

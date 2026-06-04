@@ -5,8 +5,10 @@
 //   (Bilder ändern sich selten — Liste lädt instant aus dem Cache)
 // - network-first für alles andere
 // - Offline: Fallback auf cached '/'
-const CACHE_NAME = 'scrapper-v3';
+const CACHE_NAME = 'scrapper-v4';
 const THUMB_CACHE = 'scrapper-thumbs-v1';
+const DETAIL_CACHE = 'scrapper-detail-v1';   // /api/recipes/{id} responses
+const VIDEO_CACHE = 'scrapper-videos-v1';    // /api/recipes/{id}/video
 const STATIC_CACHE_URLS = [
   '/',
   '/static/style.css',
@@ -27,9 +29,8 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((names) =>
       Promise.all(names
-        // scrapper-api-v1 wird absichtlich nicht mehr aktiv genutzt — löschen
-        // damit alter Cache nicht mehr lebt nach SW-Update.
-        .filter(n => n !== CACHE_NAME && n !== THUMB_CACHE)
+        .filter(n => n !== CACHE_NAME && n !== THUMB_CACHE
+                  && n !== DETAIL_CACHE && n !== VIDEO_CACHE)
         .map(n => caches.delete(n))
       )
     ).then(() => self.clients.claim())
@@ -51,6 +52,62 @@ self.addEventListener('fetch', (event) => {
           return resp;
         }).catch(() => cached);
         return cached || networkPromise;
+      })
+    );
+    return;
+  }
+
+  // Detail-API /api/recipes/{id} — cache-first für Offline-Fähigkeit.
+  // Wenn online: network bevorzugt (frische Daten), Network-Result wird
+  // gecached. Wenn offline: Cache-Fallback.
+  // Limit: nur letzte 50 Rezepte cachen (Cleanup wenn voll).
+  if (url.pathname.match(/^\/api\/recipes\/\d+$/)) {
+    event.respondWith(
+      caches.open(DETAIL_CACHE).then(async (cache) => {
+        try {
+          const resp = await fetch(event.request);
+          if (resp.ok) {
+            cache.put(event.request, resp.clone());
+            // Async cleanup: keep last 50
+            cache.keys().then(keys => {
+              if (keys.length > 50) {
+                keys.slice(0, keys.length - 50).forEach(k => cache.delete(k));
+              }
+            });
+          }
+          return resp;
+        } catch (_) {
+          const cached = await cache.match(event.request);
+          return cached || new Response(JSON.stringify({error: 'offline'}),
+            { status: 503, headers: {'Content-Type':'application/json'}});
+        }
+      })
+    );
+    return;
+  }
+
+  // Videos: cache-first, da groß (10-50MB pro Stück) und ändern sich nie.
+  // Limit: 20 zuletzt geöffnete Videos. So passt offline-Cache in
+  // vernünftige ~500MB Browser-Quota.
+  if (url.pathname.match(/^\/api\/recipes\/\d+\/video$/)) {
+    event.respondWith(
+      caches.open(VIDEO_CACHE).then(async (cache) => {
+        const cached = await cache.match(event.request);
+        if (cached) return cached;
+        try {
+          const resp = await fetch(event.request);
+          if (resp.ok && resp.status === 200) {  // nicht range-206
+            cache.put(event.request, resp.clone());
+            cache.keys().then(keys => {
+              if (keys.length > 20) {
+                keys.slice(0, keys.length - 20).forEach(k => cache.delete(k));
+              }
+            });
+          }
+          return resp;
+        } catch (_) {
+          return new Response('', {status: 503});
+        }
       })
     );
     return;

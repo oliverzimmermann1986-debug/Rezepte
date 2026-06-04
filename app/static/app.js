@@ -1839,23 +1839,35 @@ function scrapperApp() {
     },
 
     // ── Detail-Modal ──────────────────────────────────────────────────
+    // Prefetch-Cache: kleine in-memory Map. Wenn User auf eine Card mit
+    // pointerenter/touchstart triggert, holen wir die Detail-Daten schon
+    // im Hintergrund. openRecipe nutzt dann den Cache wenn vorhanden.
+    // Cache wird beim Modal-Close NICHT geleert — der nächste openRecipe
+    // dürfte dieselbe ID sein wenn der User schnell wieder klickt.
+    _detailPrefetch: new Map(),
+    prefetchRecipeDetail(id) {
+      if (this._detailPrefetch.has(id)) return;  // already fetched
+      this._detailPrefetch.set(id, this.api('GET', '/api/recipes/' + id));
+      // Cache nach 30s expirieren damit stale Daten nicht ewig leben
+      setTimeout(() => this._detailPrefetch.delete(id), 30000);
+    },
+
     async openRecipe(id) {
       this.recipeDetail.show = true;
       this.recipeDetail.data = null;
       this.recipeDetail.newTag = '';
       this.recipeDetail.multiplier = 1;
       this.recipeDetail.cookMode = false;
-      // KRITISCH: Edit-State zurücksetzen damit die Zutaten vom vorigen
-      // Rezept nicht ins neue Rezept leaken. Bug zuvor: ein Rezept im
-      // Edit-Modus → openRecipe(anderes) → Modal zeigte alte Zutaten +
-      // Speichern hätte sie ins neue Rezept geschrieben.
       this.recipeDetail.editingIngredients = false;
       this.recipeDetail.editIngs = [];
       this.recipeDetail.savingIngredients = false;
       this.recipeDetail.extracting = false;
       this.recipeDetail.verifying = false;
       this.recipeDetail.rescraping = false;
-      const r = await this.api('GET', '/api/recipes/' + id);
+      // Prefetched-Promise nutzen falls da, sonst fresh fetch
+      const cached = this._detailPrefetch.get(id);
+      const r = cached ? await cached : await this.api('GET', '/api/recipes/' + id);
+      this._detailPrefetch.delete(id);  // einmalig konsumieren
       if (r) this.recipeDetail.data = r;
     },
 
