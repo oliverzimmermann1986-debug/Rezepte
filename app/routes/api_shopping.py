@@ -198,6 +198,17 @@ def push_to_einkauf(payload: PushPayload):
             "'Einkauf-App-Integration' eintragen (z.B. https://einkaufen.mausbaeren.me).",
         )
 
+    # Cloudflare-Access-Service-Token (für Zero-Trust-geschützte Ziele).
+    # Ohne diese Header wird ein geschütztes Ziel mit 302 auf die CF-Login-
+    # Seite umgeleitet → Push schlägt still fehl. Token anlegen unter:
+    # Cloudflare Zero Trust → Access → Service Auth → Service Tokens.
+    cf_id = (cfg.get("einkauf", "cf_access_client_id", default="") or "").strip()
+    cf_secret = (cfg.get("einkauf", "cf_access_client_secret", default="") or "").strip()
+    base_headers = {}
+    if cf_id and cf_secret:
+        base_headers["CF-Access-Client-Id"] = cf_id
+        base_headers["CF-Access-Client-Secret"] = cf_secret
+
     db = get_db()
     items = db.cart_list()
     if payload.only_unchecked:
@@ -207,6 +218,7 @@ def push_to_einkauf(payload: PushPayload):
 
     pushed_ids: list = []
     failed: list = []
+    auth_redirect = False  # Flag: mind. ein Request lief in CF-Access-Redirect
     session = requests.Session()
     for it in items:
         raw_text = _format_raw_text(it)
@@ -214,16 +226,23 @@ def push_to_einkauf(payload: PushPayload):
             r = session.post(
                 f"{base_url}/items",
                 json={"raw_text": raw_text},
+                headers=base_headers,
                 timeout=(5, 10),  # (connect, read)
-                allow_redirects=True,
+                allow_redirects=False,  # KRITISCH: 302 nicht folgen, sonst
+                                        # wird die Login-Seite als 'Erfolg'
+                                        # fehlinterpretiert.
             )
-            if r.status_code >= 400:
+            # 2xx = echt erfolgreich. 3xx = Redirect (i.d.R. CF-Access-Login)
+            # → als Fehler werten. 4xx/5xx = Fehler.
+            if 200 <= r.status_code < 300:
+                pushed_ids.append(it["id"])
+            else:
+                if 300 <= r.status_code < 400:
+                    auth_redirect = True
                 failed.append({
                     "id": it["id"], "raw_text": raw_text,
                     "status": r.status_code, "error": r.text[:200],
                 })
-            else:
-                pushed_ids.append(it["id"])
         except Exception as e:
             failed.append({
                 "id": it["id"], "raw_text": raw_text, "error": str(e)[:200],
@@ -233,8 +252,9 @@ def push_to_einkauf(payload: PushPayload):
     consolidated = False
     if payload.consolidate and pushed_ids:
         try:
-            cr = session.post(f"{base_url}/consolidate", timeout=(5, 15))
-            consolidated = cr.status_code < 400
+            cr = session.post(f"{base_url}/consolidate", headers=base_headers,
+                              timeout=(5, 15), allow_redirects=False)
+            consolidated = 200 <= cr.status_code < 300
             if not consolidated:
                 logger.warning(f"consolidate returned {cr.status_code}: {cr.text[:200]}")
         except Exception as e:
@@ -247,8 +267,21 @@ def push_to_einkauf(payload: PushPayload):
 
     logger.info(
         f"push-to-einkauf: {len(pushed_ids)}/{len(items)} Items zu {base_url} "
-        f"(failed={len(failed)}, consolidated={consolidated}, cleared={cleared})"
+        f"(failed={len(failed)}, consolidated={consolidated}, cleared={cleared}, "
+        f"auth_redirect={auth_redirect})"
     )
+    # Wenn ALLES an einem Auth-Redirect scheiterte: klare Fehlermeldung statt
+    # stiller 'ok'. Frontend kann das anzeigen.
+    if auth_redirect and not pushed_ids:
+        return {
+            "ok": False,
+            "error": "Cloudflare-Access blockiert den Push (302 → Login). "
+                     "Service-Token in den Einstellungen hinterlegen "
+                     "(cf_access_client_id / cf_access_client_secret) oder eine "
+                     "interne URL ohne Cloudflare-Schutz verwenden.",
+            "pushed": 0, "total": len(items), "failed": failed,
+            "consolidated": False, "cleared": 0, "target": base_url,
+        }
     return {
         "ok": True,
         "pushed": len(pushed_ids),
