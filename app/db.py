@@ -1185,6 +1185,143 @@ class Database:
         with self.conn() as c:
             c.execute("UPDATE recipes SET servings=? WHERE id=?", (servings, recipe_id))
 
+    def _recipe_where(
+        self,
+        *,
+        type: Optional[str] = None,
+        category: Optional[str] = None,
+        folder_prefix: Optional[str] = None,
+        tag_ids: Optional[List[int]] = None,
+        ingredient_canonical: Optional[List[str]] = None,
+        search: Optional[str] = None,
+        ingredients_status: Optional[str] = None,
+        verified: Optional[bool] = None,
+        favorite_only: bool = False,
+        min_rating: int = 0,
+        include_deleted: bool = False,
+        only_deleted: bool = False,
+    ):
+        """WHERE-Bedingungen + Params für Rezept-Filter (Alias r). Spiegelt die
+        Logik aus recipe_count, damit die Facetten-Trefferzahlen exakt zur
+        Listen-Filterung passen."""
+        params: List[Any] = []
+        where: List[str] = []
+        if type:
+            where.append("r.type = ?"); params.append(type)
+        if category:
+            where.append("r.category = ?"); params.append(category)
+        if folder_prefix:
+            where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
+        if search:
+            fts_q = _build_fts_query(search)
+            import re as _re
+            ing_q = _re.sub(r'[^\w\s\u00C0-\u017F-]+', ' ', search, flags=_re.UNICODE).strip()
+            if fts_q and ing_q and len(ing_q) >= 2:
+                where.append(
+                    "(r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?) "
+                    "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
+                    "  AND (ri.canonical_name LIKE ? OR ri.name LIKE ?)))"
+                )
+                params.append(fts_q)
+                params.append(f"%{ing_q}%")
+                params.append(f"%{ing_q}%")
+            elif fts_q:
+                where.append(
+                    "r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?)"
+                )
+                params.append(fts_q)
+            else:
+                where.append("(r.name LIKE ? OR r.description LIKE ?)")
+                params.append(f"%{search}%"); params.append(f"%{search}%")
+        if tag_ids:
+            for tid in tag_ids:
+                where.append(
+                    "EXISTS (SELECT 1 FROM recipe_tags rt WHERE rt.recipe_id=r.id AND rt.tag_id=?)"
+                )
+                params.append(tid)
+        if ingredient_canonical:
+            for ing in ingredient_canonical:
+                where.append(
+                    "EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id AND ri.canonical_name=?)"
+                )
+                params.append(ing)
+        if ingredients_status:
+            where.append("r.ingredients_status = ?"); params.append(ingredients_status)
+        if verified is not None:
+            where.append("COALESCE(r.user_verified, 0) = ?")
+            params.append(1 if verified else 0)
+        if favorite_only:
+            where.append("r.is_favorite = 1")
+        if min_rating > 0:
+            where.append("r.rating >= ?"); params.append(min_rating)
+        if only_deleted:
+            where.append("r.deleted_at IS NOT NULL")
+        elif not include_deleted:
+            where.append("r.deleted_at IS NULL")
+        return where, params
+
+    def tag_facets(
+        self,
+        *,
+        type: Optional[str] = None,
+        category: Optional[str] = None,
+        ingredient_canonical: Optional[List[str]] = None,
+        search: Optional[str] = None,
+        ingredients_status: Optional[str] = None,
+        verified: Optional[bool] = None,
+        favorite_only: bool = False,
+        min_rating: int = 0,
+        **_ignore,
+    ) -> List[Dict[str, Any]]:
+        """Tags mit Recipe-Count unter den aktiven Filtern — der Tag-Filter selbst
+        wird ausgeklammert (Standard-Facetten-Drilldown). Tags ohne Treffer
+        fallen raus, die Liste schrumpft also passend mit."""
+        where, params = self._recipe_where(
+            type=type, category=category, ingredient_canonical=ingredient_canonical,
+            search=search, ingredients_status=ingredients_status, verified=verified,
+            favorite_only=favorite_only, min_rating=min_rating,
+        )
+        sql = (
+            "SELECT t.id, t.name, COUNT(DISTINCT r.id) AS n "
+            "FROM tags t JOIN recipe_tags rt ON rt.tag_id = t.id "
+            "JOIN recipes r ON r.id = rt.recipe_id "
+            "WHERE " + " AND ".join(where) +
+            " GROUP BY t.id, t.name ORDER BY n DESC, t.name"
+        )
+        with self.conn() as c:
+            return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+    def ingredient_facets(
+        self,
+        *,
+        type: Optional[str] = None,
+        category: Optional[str] = None,
+        tag_ids: Optional[List[int]] = None,
+        search: Optional[str] = None,
+        ingredients_status: Optional[str] = None,
+        verified: Optional[bool] = None,
+        favorite_only: bool = False,
+        min_rating: int = 0,
+        **_ignore,
+    ) -> List[Dict[str, Any]]:
+        """Zutaten mit Recipe-Count unter den aktiven Filtern — der Zutaten-Filter
+        selbst wird ausgeklammert. Zutaten ohne Treffer fallen raus."""
+        where, params = self._recipe_where(
+            type=type, category=category, tag_ids=tag_ids,
+            search=search, ingredients_status=ingredients_status, verified=verified,
+            favorite_only=favorite_only, min_rating=min_rating,
+        )
+        sql = (
+            "SELECT ing.canonical_name, MIN(ing.name) AS display_name, "
+            "COUNT(DISTINCT r.id) AS n "
+            "FROM recipe_ingredients ing JOIN recipes r ON r.id = ing.recipe_id "
+            "WHERE ing.canonical_name IS NOT NULL AND ing.canonical_name != '' "
+            "AND " + " AND ".join(where) +
+            " GROUP BY ing.canonical_name ORDER BY n DESC, ing.canonical_name"
+        )
+        with self.conn() as c:
+            return [dict(r) for r in c.execute(sql, params).fetchall()]
+
     def ingredients_known(self) -> List[Dict[str, Any]]:
         """Distinct Liste aller canonical_names mit Verwendungs-Count.
         Für die Filter-UI: "Tomate (12 Rezepte)", "Knoblauch (8)"."""

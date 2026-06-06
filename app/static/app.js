@@ -1735,13 +1735,15 @@ function scrapperApp() {
         this.recipes.total = r.total || 0;
         this.recipes.extractionRunning = !!r.extraction_running;
         this._scheduleExtractionPoll();
+        this.loadFacets();   // Facetten-Counts an aktuelle Filter anpassen
       } finally {
         this.recipes.loading = false;
       }
     },
 
     async loadFacets() {
-      const r = await this.api('GET', '/api/recipes/facets');
+      // Filter mitschicken → cross-gefilterte Counts. limit/offset ignoriert die Route.
+      const r = await this.api('GET', '/api/recipes/facets?' + this._buildRecipeQuery());
       if (!r) return;
       this.recipes.facets = r;
     },

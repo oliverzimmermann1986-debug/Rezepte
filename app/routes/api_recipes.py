@@ -125,9 +125,21 @@ def list_recipes(
 
 
 @router.get("/facets")
-def facets():
-    """Filter-Optionen für die Sidebar: distincts Types, Categories, Tags,
-       und Top-20-Zutaten nach Frequenz."""
+def facets(
+    type: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    tag_id: Optional[List[int]] = Query(None),
+    ingredient: Optional[List[str]] = Query(None),
+    search: Optional[str] = Query(None),
+    ingredients_status: Optional[str] = Query(None),
+    verified: Optional[bool] = Query(None),
+    favorite_only: bool = Query(False),
+    min_rating: int = Query(0, ge=0, le=5),
+):
+    """Filter-Optionen für die Sidebar. Tag-/Zutaten-Counts sind cross-gefiltert:
+       jede Option zeigt die Treffer unter den übrigen aktiven Filtern, sodass
+       die Zahlen beim Setzen eines Filters in den anderen Feldern schrumpfen.
+       Types/Categories bleiben die volle Distinct-Liste (keine Counts in der UI)."""
     db = get_db()
     with db.conn() as c:
         types = [r[0] for r in c.execute(
@@ -136,11 +148,16 @@ def facets():
         cats = [r[0] for r in c.execute(
             "SELECT DISTINCT category FROM recipes WHERE category IS NOT NULL AND category != '' ORDER BY category"
         ).fetchall()]
+    flt = dict(
+        type=type, category=category, tag_ids=tag_id, ingredient_canonical=ingredient,
+        search=search, ingredients_status=ingredients_status, verified=verified,
+        favorite_only=favorite_only, min_rating=min_rating,
+    )
     return {
         "types": types,
         "categories": cats,
-        "tags": db.tag_list(),
-        "ingredients": db.ingredients_known()[:50],  # Top 50 für Sidebar
+        "tags": db.tag_facets(**flt),
+        "ingredients": db.ingredient_facets(**flt)[:50],  # Top 50 für Sidebar
     }
 
 
