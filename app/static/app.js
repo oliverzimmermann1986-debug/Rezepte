@@ -1830,6 +1830,7 @@ function scrapperApp() {
         try {
           const s = await this.api('GET', '/api/recipes/extraction/status');
           if (!s) return;
+          const wasRunning = this.recipes.extractionRunning;
           this.recipes.extractionRunning = !!s.running;
           this.recipes.extractionStats = s.stats || {};
           this.recipes.extractionPending = s.stats?.pending || 0;
@@ -1838,7 +1839,7 @@ function scrapperApp() {
             // jetzt belegt ist, und Polling stoppen
             clearInterval(this.recipes._pollTimer);
             this.recipes._pollTimer = null;
-            if (this.page === 'recipes') {
+            if (wasRunning && this.page === 'recipes') {
               this.loadRecipes();
               this.loadFacets();
             }
@@ -1846,6 +1847,7 @@ function scrapperApp() {
         } catch(e) {}
       };
       tick();  // sofort einmal
+      if (this.recipes._pollTimer) clearInterval(this.recipes._pollTimer);
       this.recipes._pollTimer = setInterval(tick, 5000);
     },
 
