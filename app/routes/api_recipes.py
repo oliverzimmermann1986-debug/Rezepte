@@ -20,6 +20,7 @@ Endpoint schnell auch bei 500+ Rezepten.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
@@ -42,6 +43,12 @@ from ..recipes.indexer import (
 from ..recipes.units import normalize_unit
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"], dependencies=[Depends(require_auth)])
+
+# Auto-Sync-Drossel: FS→DB-Scan höchstens alle _SYNC_THROTTLE_S Sekunden,
+# damit vom Scraper neu abgelegte Rezepte ohne manuellen Sync erscheinen,
+# ohne bei jedem Filter-Klick das ganze Filesystem zu scannen.
+_SYNC_THROTTLE_S = 30.0
+_last_sync_ts = 0.0
 
 
 # ── Listing ─────────────────────────────────────────────────────────────
@@ -68,10 +75,13 @@ def list_recipes(
     """Hauptlisten-Endpoint. Lazy-Sync + lazy-Extraction Trigger."""
     db = get_db()
 
-    # Lazy-Sync: beim ERSTEN Aufruf (oder wenn 0 Rezepte indiziert sind)
-    # einmal das FS scannen. Schnell auch bei >500 Ordnern (~100ms).
-    if db.recipe_count() == 0:
+    # Auto-Sync: bei leerem Index sofort, sonst gedrosselt (siehe _SYNC_THROTTLE_S),
+    # damit vom Scraper neu abgelegte Rezept-Ordner ohne manuellen Sync auftauchen.
+    global _last_sync_ts
+    _now = time.monotonic()
+    if db.recipe_count() == 0 or (_now - _last_sync_ts) > _SYNC_THROTTLE_S:
         sync_filesystem(db)
+        _last_sync_ts = _now
 
     # Lazy-Background-Extraction starten (no-op wenn nichts pending)
     ensure_extraction_running()
