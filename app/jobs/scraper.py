@@ -539,6 +539,22 @@ class ScraperJob:
         shutil.copy2(video, dst)
         return dst
 
+    def _stash_for_pending(self, video: Path) -> Optional[str]:
+        """Kopiert das Temp-Video an einen persistenten Pending-Ort, da der
+        Temp-Download-Ordner danach via _cleanup_temp gelöscht wird. Rückgabe
+        = Pfad für pending.video_path (Auslieferung via /api/pending/video,
+        Aufräumen via _remove_pending_files). None bei Fehler — Pending-Eintrag
+        bleibt dann ohne Video, aber der Lauf crasht nicht."""
+        try:
+            pending_dir = self.temp_dir / "pending"
+            pending_dir.mkdir(parents=True, exist_ok=True)
+            dest = pending_dir / f"{video.parent.name}{video.suffix or '.mp4'}"
+            shutil.copy2(video, dest)
+            return str(dest)
+        except Exception as e:
+            logger.warning(f"Stash für Pending fehlgeschlagen ({video}): {e}")
+            return None
+
     def _cleanup_temp(self, video: Path) -> None:
         try:
             if video and video.parent.exists() and video.parent.parent == self.temp_dir:
