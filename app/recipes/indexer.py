@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -167,6 +168,35 @@ def _try_media_extract(folder: Path, analyzer) -> Optional[str]:
     return None
 
 
+def _pdf_thumb(folder: Path) -> Optional[str]:
+    """Rendert Seite 1 des ersten PDFs im Ordner nach thumb.jpg (pdftoppm).
+    Für PDF-Rezepte ohne Bild. Returns 'thumb.jpg' bei Erfolg, sonst None.
+    Nicht-fatal: fehlendes pdftoppm/Fehler → None, Sync läuft weiter.
+    Einmalig pro Rezept — sobald thumb.jpg existiert, greift schon die
+    Bild-Erkennung in _index_one und _pdf_thumb wird nicht mehr aufgerufen."""
+    pdfs = sorted(folder.glob("*.pdf"))
+    if not pdfs:
+        return None
+    target = folder / "thumb.jpg"
+    try:
+        r = subprocess.run(
+            ["pdftoppm", "-jpeg", "-scale-to", "1024", "-f", "1", "-l", "1",
+             "-singlefile", str(pdfs[0]), str(folder / "thumb")],
+            capture_output=True, text=True, timeout=60,
+        )
+    except FileNotFoundError:
+        logger.warning("pdftoppm nicht installiert — PDF-Thumbnail übersprungen")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning(f"pdftoppm Timeout: {folder.name}")
+        return None
+    if r.returncode == 0 and target.exists():
+        logger.info(f"PDF-Thumbnail erzeugt: {folder.name}")
+        return target.name
+    logger.warning(f"pdftoppm fehlgeschlagen ({folder.name}): {(r.stderr or '').strip()[:120]}")
+    return None
+
+
 def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str:
     """Legt EINEN Recipe-Ordner als DB-Zeile an oder aktualisiert ihn.
     Returns: 'added' | 'updated' | 'skipped'."""
@@ -237,6 +267,10 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
             thumb = f.name
         elif suffix in (".mp4", ".webm", ".mov", ".mkv"):
             video = f.name
+
+    # PDF-Rezepte ohne Bild: Seite 1 nach thumb.jpg rendern (einmalig).
+    if thumb is None:
+        thumb = _pdf_thumb(folder)
 
     existed = db.recipe_get_by_folder(str(folder))
     db.recipe_upsert(
