@@ -2236,7 +2236,7 @@
     <div class="modal modal-wide" :class="recipeDetail.cookMode && 'cook-mode'" @click.stop x-show="recipeDetail.data">
       <div class="modal-header">
         <h3 x-text="recipeDetail.data?.name || ''"></h3>
-        <div style="display:flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <div style="display:flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-right: 40px;">
           <span x-show="recipeDetail.wakeLockActive" class="wake-lock-indicator" title="Bildschirm bleibt wach">🔆 wach</span>
           <!-- Re-Scrape: yt-dlp nochmal für die URL — frische Caption + Bild -->
           <button class="btn btn-secondary btn-sm"
