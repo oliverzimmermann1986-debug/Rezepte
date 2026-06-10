@@ -34,6 +34,9 @@ class VideoDownloader:
             "-o", str(sub / "video.%(ext)s"),
             "--no-playlist", "--quiet", "--no-warnings",
             "--write-description",
+            # Cover direkt mitladen — sonst startet jedes Rezept ohne Thumbnail
+            # und landet im Audit unter "Kein Bild" (nur Re-Scrape holte es bisher).
+            "--write-thumbnail", "--convert-thumbnails", "jpg",
         ]
         if self.cookies_file:
             cmd += ["--cookies", self.cookies_file]

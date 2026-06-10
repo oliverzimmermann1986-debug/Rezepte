@@ -2459,6 +2459,25 @@ function scrapperApp() {
       }
     },
 
+    // Endgültig fehlgeschlagene Downloads: Retry (Zähler reset) / Verwerfen (History-Sperre)
+    async retryFailedDownload(url) {
+      const r = await this.api('POST', `/api/pending/failed/${encodeURIComponent(url)}/retry`);
+      if (r?.ok) {
+        this.showToast('Zähler zurückgesetzt — nächster Lauf versucht es neu');
+        this.audit.data.failed_downloads = this.audit.data.failed_downloads.filter(f => f.url !== url);
+        if (this.audit.summary) this.audit.summary.failed_download_count = Math.max(0, (this.audit.summary.failed_download_count || 1) - 1);
+      }
+    },
+    async discardFailedDownload(url) {
+      if (!confirm('URL dauerhaft verwerfen? Sie wird nie wieder versucht.')) return;
+      const r = await this.api('POST', `/api/pending/failed/${encodeURIComponent(url)}/discard`);
+      if (r?.ok) {
+        this.showToast('Verworfen');
+        this.audit.data.failed_downloads = this.audit.data.failed_downloads.filter(f => f.url !== url);
+        if (this.audit.summary) this.audit.summary.failed_download_count = Math.max(0, (this.audit.summary.failed_download_count || 1) - 1);
+      }
+    },
+
     // KI-Sanity startet Background-Job, dann pollen wir den Status alle 2s
     async startAiSanity() {
       if (this.audit.aiSanity.running) return;

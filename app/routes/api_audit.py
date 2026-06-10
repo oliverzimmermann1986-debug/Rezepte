@@ -185,6 +185,17 @@ def get_audit(
     }
     result["data_gaps"] = data_gaps
 
+    # Endgültig fehlgeschlagene Downloads (>= MAX Versuche, kein Rezept entstanden).
+    # Sichtbar machen statt still skippen — Retry setzt den Zähler zurück,
+    # Verwerfen löscht den Eintrag (URL würde beim nächsten Lauf wieder von 0 starten,
+    # solange die Mail im Postfach liegt → vorher Mail löschen).
+    from ..jobs.scraper import MAX_DOWNLOAD_ATTEMPTS
+    failed_final = [
+        f for f in db.download_failures_list(limit=100)
+        if (f.get("attempts") or 0) >= MAX_DOWNLOAD_ATTEMPTS
+    ]
+    result["failed_downloads"] = failed_final
+
     # Summary erweitert um die drei neuen Kategorien + Daten-Lücken
     result["summary"] = {
         "exact_count": sum(len(g["items"]) for g in result["exact_duplicates"]),
@@ -212,6 +223,7 @@ def get_audit(
         "no_nutrition_count": len(no_nutrition),
         "fs_missing_count": len(fs_missing),
         "unverified_count": len(unverified),
+        "failed_download_count": len(failed_final),
     }
     return result
 

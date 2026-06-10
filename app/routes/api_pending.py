@@ -275,6 +275,21 @@ def retry_failed(url: str) -> Dict[str, Any]:
     return {"ok": True, "url": url, "reset": True}
 
 
+@router.post("/failed/{url:path}/discard")
+def discard_failed(url: str) -> Dict[str, Any]:
+    """Verwirft eine endgültig fehlgeschlagene URL dauerhaft.
+
+    Schreibt sie als '(verworfen)' in die History (→ Mail-Sync überspringt
+    sie ab jetzt, auch wenn die Mail im Postfach bleibt) und entfernt den
+    Failure-Eintrag. Bewusste User-Entscheidung — das frühere automatische
+    History-Schreiben nach MAX Versuchen wurde entfernt.
+    """
+    db = get_db()
+    db.history_add(url, content_type="recipe", name="(verworfen)")
+    db.download_failure_clear(url)
+    return {"ok": True, "url": url, "discarded": True}
+
+
 @router.post("/failed/clear-all")
 def clear_all_failed() -> Dict[str, Any]:
     """Alle Failure-Counter löschen. Bei nächstem Mail-Sync werden alle

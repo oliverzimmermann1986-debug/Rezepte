@@ -1737,6 +1737,31 @@
           </template>
         </div>
 
+        <!-- 💥 Endgültig fehlgeschlagene Downloads (>= MAX Versuche, kein Rezept) -->
+        <div class="audit-section" x-show="(audit.data?.failed_downloads?.length || 0) > 0">
+          <h3>💥 Endgültig fehlgeschlagen (<span x-text="audit.summary?.failed_download_count"></span>)</h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Download scheiterte mehrfach (z.B. IG-Login, gelöschtes Video).
+            🔄 Retry setzt den Zähler zurück — Voraussetzung: Mail mit der URL
+            liegt noch im Postfach. 🗑 Verwerfen sperrt die URL dauerhaft.
+          </div>
+          <template x-for="f in (audit.data?.failed_downloads || [])" :key="f.url">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><code style="font-size: 12px; word-break: break-all;" x-text="f.url"></code></div>
+                <div class="muted" style="font-size: 12px;">
+                  <span x-text="f.attempts"></span> Versuche ·
+                  <span x-text="f.last_error || 'kein Fehlertext'"></span>
+                </div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="retryFailedDownload(f.url)" title="Zähler zurücksetzen — nächster Lauf versucht es neu">🔄</button>
+                <button class="btn btn-sm btn-danger" @click="discardFailedDownload(f.url)" title="Dauerhaft verwerfen (URL wird nie wieder versucht)">🗑</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
         <!-- ⚡ Nährwerte fehlen (>= 3 Zutaten aber kein calories_per_serving) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.no_nutrition?.length || 0) > 0">
           <h3>⚡ Nährwerte fehlen (<span x-text="audit.summary?.no_nutrition_count"></span>)

@@ -83,6 +83,11 @@ def _save_video_files(target_dir: Path, video_path: Path,
     file_base = target_dir.name
     if video_path and video_path.exists():
         shutil.copy2(video_path, target_dir / f"{file_base}{video_path.suffix}")
+        # yt-dlp legt das Cover als video.jpg neben das Video (--write-thumbnail).
+        # Mitkopieren als thumb.jpg → Indexer setzt thumb_filename, kein "Kein Bild".
+        for t in sorted(video_path.parent.glob("*.jpg")) + sorted(video_path.parent.glob("*.webp")) + sorted(video_path.parent.glob("*.png")):
+            shutil.copy2(t, target_dir / f"thumb{t.suffix}")
+            break
     if description:
         (target_dir / "description.txt").write_text(description, encoding="utf-8")
     if description_original:
@@ -612,12 +617,14 @@ class ScraperJob:
 
             url = item["url"]
 
-            # yt-dlp Failed-Tracking: nach MAX_DOWNLOAD_ATTEMPTS aufgeben
-            # und URL wie 'resolved' behandeln (kommt nicht wieder durch).
+            # yt-dlp Failed-Tracking: nach MAX_DOWNLOAD_ATTEMPTS überspringen.
+            # WICHTIG: NICHT in die History schreiben — sonst gilt die URL für
+            # immer als erledigt und ein Retry ist nur per SQL möglich (unsichtbar).
+            # Sie bleibt in download_failures und erscheint im Audit unter
+            # "Endgültig fehlgeschlagen" mit Retry-/Verwerfen-Aktion.
             attempts = self.db.download_failure_attempts(url)
             if attempts >= MAX_DOWNLOAD_ATTEMPTS:
-                logger.info(f"Skip {url}: {attempts} Download-Fehlversuche, aufgegeben")
-                self.db.history_add(url, content_type=item["type"], name="(download failed)")
+                logger.info(f"Skip {url}: {attempts} Download-Fehlversuche, aufgegeben (Audit → Retry/Verwerfen)")
                 summary["skipped_failed"] += 1
                 continue
 
