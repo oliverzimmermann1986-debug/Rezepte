@@ -312,6 +312,12 @@ class Database:
             # Beim Re-Extract werden NUR Tags mit auto=1 ersetzt, User-Tags bleiben.
             c.execute("ALTER TABLE recipe_tags ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
 
+        df_cols = {r[1] for r in c.execute("PRAGMA table_info(download_failures)").fetchall()}
+        if "content_type" not in df_cols:
+            # recipe|wedding. Nötig seit Mails nach Verarbeitung gelöscht werden:
+            # Retries kommen aus dieser Tabelle, der Typ muss überleben.
+            c.execute("ALTER TABLE download_failures ADD COLUMN content_type TEXT NOT NULL DEFAULT 'recipe'")
+
         # FTS5-Backfill: wenn recipes_fts existiert aber leer ist (Migration auf
         # bestehende DB ohne FTS), alle Rezepte indizieren. Triggers übernehmen
         # ab da Pflege. Idempotent: fts_count > 0 → skip.
@@ -517,23 +523,45 @@ class Database:
             return int(row["n"]) if row else 0
 
     # ---------------- Download-Failures ----------------
-    def download_failure_record(self, url: str, error: str) -> int:
+    def download_failure_record(self, url: str, error: str,
+                                content_type: str = "recipe") -> int:
         """Zählt einen Download-Fehlversuch. Returnt die neue Versuchszahl."""
         now = time.time()
         with self.conn() as c:
             c.execute(
-                "INSERT INTO download_failures (url, first_seen, last_try, attempts, last_error) "
-                "VALUES (?, ?, ?, 1, ?) "
+                "INSERT INTO download_failures (url, first_seen, last_try, attempts, last_error, content_type) "
+                "VALUES (?, ?, ?, 1, ?, ?) "
                 "ON CONFLICT(url) DO UPDATE SET "
                 "  last_try=excluded.last_try, "
                 "  attempts=attempts + 1, "
                 "  last_error=excluded.last_error",
-                (url, now, now, (error or "")[:500]),
+                (url, now, now, (error or "")[:500], content_type or "recipe"),
             )
             row = c.execute(
                 "SELECT attempts FROM download_failures WHERE url=?", (url,)
             ).fetchone()
             return int(row["attempts"]) if row else 1
+
+    def download_failure_reset(self, url: str) -> None:
+        """Setzt den Versuchszähler zurück, behält die Zeile. Der nächste
+        Scraper-Lauf nimmt die URL als Retry-Kandidat wieder auf — die
+        Quell-Mail ist nach Auto-Delete nicht mehr nötig."""
+        with self.conn() as c:
+            c.execute(
+                "UPDATE download_failures SET attempts=0, last_error='(retry angefordert)' WHERE url=?",
+                (url,),
+            )
+
+    def download_failures_retry_candidates(self, max_attempts: int) -> List[Dict[str, Any]]:
+        """URLs mit attempts < max — werden vom Scraper-Lauf erneut versucht.
+        Ersetzt das frühere Re-Lesen aus der Mail (Mails werden gelöscht)."""
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT url, content_type, attempts FROM download_failures "
+                "WHERE attempts < ? ORDER BY last_try ASC LIMIT 50",
+                (max_attempts,),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def download_failure_attempts(self, url: str) -> int:
         with self.conn() as c:

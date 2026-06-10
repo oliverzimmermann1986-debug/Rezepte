@@ -5,7 +5,7 @@
 //   (Bilder ändern sich selten — Liste lädt instant aus dem Cache)
 // - network-first für alles andere
 // - Offline: Fallback auf cached '/'
-const CACHE_NAME = 'scrapper-v10';
+const CACHE_NAME = 'scrapper-v11';
 const THUMB_CACHE = 'scrapper-thumbs-v1';
 const DETAIL_CACHE = 'scrapper-detail-v1';   // /api/recipes/{id} responses
 const VIDEO_CACHE = 'scrapper-videos-v1';    // /api/recipes/{id}/video

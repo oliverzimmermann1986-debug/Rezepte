@@ -124,6 +124,10 @@ class MailAccount:
         self.max_mails = int(cfg.get("max_mails", 20))
         self.default_category = default_category or cfg.get("default_category")
         self.enabled = bool(cfg.get("enabled", True))
+        # Verarbeitete Mails nach dem Lauf löschen (\Deleted + EXPUNGE).
+        # Bewusst config-gated — destruktiv. Retries brauchen die Mail nicht
+        # mehr (kommen aus download_failures).
+        self.delete_processed = bool(cfg.get("delete_processed", False))
 
     @contextmanager
     def _connect(self):
@@ -189,6 +193,7 @@ class MailAccount:
                     body = _extract_body(msg)
                     full = f"{subject}\n{body}"
                     msg_id = (msg.get("Message-ID") or "").strip() or f"mid-{mid.decode() if isinstance(mid, bytes) else mid}"
+                    mail_uid = mid.decode() if isinstance(mid, bytes) else str(mid)
 
                     # 1. URLs aus Body
                     for url in URL_PATTERN.findall(full):
@@ -202,6 +207,7 @@ class MailAccount:
                             "subject": subject,
                             "default_category": self.default_category,
                             "source_account": self.name,
+                            "mail_uid": mail_uid,
                         })
 
                     # 2. Attachments (PDF/JPG/PNG)
@@ -237,6 +243,7 @@ class MailAccount:
                                 "body_excerpt": body[:500],  # Hinweis für die KI
                                 "default_category": self.default_category,
                                 "source_account": self.name,
+                                "mail_uid": mail_uid,
                             })
 
                 except Exception as e:
@@ -248,6 +255,30 @@ class MailAccount:
     # Bestands-Methode für Backwards-Compat (von Tests / CLI aufgerufen)
     def _fetch_urls_once(self) -> List[Dict]:
         return self._fetch_all_once().get("urls", [])
+
+    def delete_mails(self, mail_uids: Iterable[str]) -> int:
+        """Markiert die Mails als \\Deleted und expunged. Returnt Anzahl.
+        Gmail: je nach IMAP-Einstellung wandert die Mail in den Papierkorb
+        oder nur aus der INBOX (Archiv) — in beiden Fällen liest der
+        nächste Lauf sie nicht mehr."""
+        uids = [u for u in mail_uids if u]
+        if not uids or not self.delete_processed:
+            return 0
+        deleted = 0
+        try:
+            with self._connect() as mail:
+                for uid in uids:
+                    try:
+                        mail.store(uid, "+FLAGS", "\\Deleted")
+                        deleted += 1
+                    except Exception as e:
+                        logger.warning(f"[{self.name}] Delete Mail {uid}: {e}")
+                mail.expunge()
+        except Exception as e:
+            logger.warning(f"[{self.name}] Mail-Delete fehlgeschlagen (non-fatal): {e}")
+        if deleted:
+            logger.info(f"[{self.name}] {deleted} verarbeitete Mails gelöscht")
+        return deleted
 
 
 class EmailRouter:
@@ -288,3 +319,12 @@ class EmailRouter:
                 seen_attach.add(key)
                 attachments.append(att)
         return {"urls": urls, "attachments": attachments}
+
+    def delete_processed_mails(self, uids_by_account: Dict[str, set]) -> int:
+        """Löscht verarbeitete Mails pro Konto (nur Konten mit delete_processed=true)."""
+        total = 0
+        for acc in self.accounts:
+            uids = uids_by_account.get(acc.name) or set()
+            if uids:
+                total += acc.delete_mails(sorted(uids))
+        return total

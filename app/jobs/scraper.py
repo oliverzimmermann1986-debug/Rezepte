@@ -253,9 +253,11 @@ class ScraperJob:
 
         video = self.downloader.download(url)
         if not video:
-            # Download-Fehler: Versuch zählen. Nach MAX_DOWNLOAD_ATTEMPTS
-            # wird die URL im run()-Loop als 'aufgegeben' history_add'd.
-            self.db.download_failure_record(url, "yt-dlp Download fehlgeschlagen")
+            # Download-Fehler: Versuch zählen. Bis MAX_DOWNLOAD_ATTEMPTS wird
+            # die URL in Folgeläufen als Retry-Kandidat erneut versucht,
+            # danach erscheint sie im Audit unter 'Endgültig fehlgeschlagen'.
+            self.db.download_failure_record(url, "yt-dlp Download fehlgeschlagen",
+                                            content_type=content_type)
             result["error"] = "download failed"
             return result
 
@@ -604,8 +606,43 @@ class ScraperJob:
             it for it in url_items
             if not self.db.history_has(it["url"]) and it["url"] not in pending_urls
         ]
+
+        # Retry-Kandidaten aus download_failures (attempts < MAX). Quelle der
+        # Wahrheit für Wiederholungen seit verarbeitete Mails gelöscht werden —
+        # die URL steht in keiner Mail mehr.
+        known = {it["url"] for it in new_items}
+        for cand in self.db.download_failures_retry_candidates(MAX_DOWNLOAD_ATTEMPTS):
+            if cand["url"] in known or self.db.history_has(cand["url"]) \
+                    or cand["url"] in pending_urls:
+                continue
+            new_items.append({"url": cand["url"],
+                              "type": cand.get("content_type") or "recipe",
+                              "source_account": None, "mail_uid": None})
         summary["new"] = len(new_items)
         logger.info(f"Neue URLs: {len(new_items)}, Attachments: {len(attach_items)}")
+
+        # Mail-Accounting: eine Mail darf erst gelöscht werden, wenn ALLE ihre
+        # Items (URLs + Attachments) in diesem Lauf verarbeitet oder als
+        # bereits bekannt geskippt wurden. Bei Cancel wird nichts gelöscht.
+        mail_total: Dict[tuple, int] = {}
+        mail_done: Dict[tuple, int] = {}
+        def _mail_key(it: Dict) -> Optional[tuple]:
+            if it.get("source_account") and it.get("mail_uid"):
+                return (it["source_account"], it["mail_uid"])
+            return None
+        for it in url_items + attach_items:
+            k = _mail_key(it)
+            if k:
+                mail_total[k] = mail_total.get(k, 0) + 1
+        def _mark_done(it: Dict) -> None:
+            k = _mail_key(it)
+            if k:
+                mail_done[k] = mail_done.get(k, 0) + 1
+        # Bereits bekannte URLs (history/pending-Dedup oben) sind erledigt:
+        new_urls = {it["url"] for it in new_items}
+        for it in url_items:
+            if it["url"] not in new_urls:
+                _mark_done(it)
 
         for item in new_items:
             # Cancel zwischen URLs prüfen - laufende process_url-Calls
@@ -626,6 +663,7 @@ class ScraperJob:
             if attempts >= MAX_DOWNLOAD_ATTEMPTS:
                 logger.info(f"Skip {url}: {attempts} Download-Fehlversuche, aufgegeben (Audit → Retry/Verwerfen)")
                 summary["skipped_failed"] += 1
+                _mark_done(item)   # final-failed = accounted, Mail kann weg
                 continue
 
             try:
@@ -641,6 +679,10 @@ class ScraperJob:
             except Exception as e:
                 logger.exception(f"URL fehlgeschlagen {url}: {e}")
                 summary["errors"] += 1
+            finally:
+                # Jedes Outcome (auto/pending/error) ist accounted — Fehlversuche
+                # leben in download_failures weiter, nicht in der Mail.
+                _mark_done(item)
 
         # Attachments verarbeiten (PDF + JPG)
         summary["attach_auto"] = 0
@@ -655,6 +697,7 @@ class ScraperJob:
             synth_url = f"mail-attachment://{att['msg_id']}::{att['filename']}"
             if self.db.history_has(synth_url) or synth_url in pending_urls:
                 summary["attach_skipped"] += 1
+                _mark_done(att)
                 continue
             try:
                 r = self.process_attachment(att, synth_url)
@@ -669,6 +712,22 @@ class ScraperJob:
             except Exception as e:
                 logger.exception(f"Attachment fehlgeschlagen {att.get('filename')}: {e}")
                 summary["errors"] += 1
+            finally:
+                _mark_done(att)
+
+        # Verarbeitete Mails löschen — nur wenn der Lauf nicht abgebrochen wurde
+        # und ALLE Items der Mail accounted sind. Config-gated pro Konto
+        # (email.<konto>.delete_processed: true).
+        if not summary["cancelled"]:
+            try:
+                uids_by_account: Dict[str, set] = {}
+                for (acc_name, uid), total in mail_total.items():
+                    if mail_done.get((acc_name, uid), 0) >= total:
+                        uids_by_account.setdefault(acc_name, set()).add(uid)
+                deleted = self.router.delete_processed_mails(uids_by_account)
+                summary["mails_deleted"] = deleted
+            except Exception as e:
+                logger.warning(f"Mail-Cleanup fehlgeschlagen (non-fatal): {e}")
 
         summary["duration_sec"] = round(time.time() - start, 1)
         summary["total_pending"] = self.db.pending_count()

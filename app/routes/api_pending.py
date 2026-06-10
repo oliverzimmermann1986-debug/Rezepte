@@ -264,14 +264,13 @@ def list_failed_downloads(limit: int = 100) -> List[Dict[str, Any]]:
 
 @router.post("/failed/{url:path}/retry")
 def retry_failed(url: str) -> Dict[str, Any]:
-    """Setzt Failure-Counter für diese URL zurück.
+    """Setzt den Failure-Counter zurück (Zeile bleibt erhalten).
 
-    Hinweis: Damit der Sync sie tatsächlich nochmal versucht, muss die
-    URL noch in einer Email vorhanden sein. Wenn die Mail bereits weg
-    ist, hilft auch Reset nicht - dann muss die URL manuell in eine
-    neue Email gestellt und der Scraper getriggert werden.
+    Der nächste Scraper-Lauf nimmt die URL als Retry-Kandidat direkt aus
+    download_failures auf — die Quell-Mail wird NICHT mehr benötigt
+    (verarbeitete Mails werden gelöscht, wenn delete_processed aktiv ist).
     """
-    get_db().download_failure_clear(url)
+    get_db().download_failure_reset(url)
     return {"ok": True, "url": url, "reset": True}
 
 

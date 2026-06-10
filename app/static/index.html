@@ -1742,8 +1742,8 @@
           <h3>💥 Endgültig fehlgeschlagen (<span x-text="audit.summary?.failed_download_count"></span>)</h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
             Download scheiterte mehrfach (z.B. IG-Login, gelöschtes Video).
-            🔄 Retry setzt den Zähler zurück — Voraussetzung: Mail mit der URL
-            liegt noch im Postfach. 🗑 Verwerfen sperrt die URL dauerhaft.
+            🔄 Retry setzt den Zähler zurück — der nächste Lauf versucht es
+            automatisch neu (Mail nicht nötig). 🗑 Verwerfen sperrt die URL dauerhaft.
           </div>
           <template x-for="f in (audit.data?.failed_downloads || [])" :key="f.url">
             <div class="audit-finding">
