@@ -17,7 +17,6 @@ function scrapperApp() {
       // sollte bei Wechsel auf 'Rezepte' nicht weiter sichtbar sein).
       if (this.browser?.show) this.browser.show = false;
       if (this.recipeDetail?.show) this.recipeDetail.show = false;
-      if (this.fab) this.fab.open = false;
       switch (targetPage) {
         case 'pending':   this.loadPending(); this.loadFailedDownloads(); break;
         case 'jobs':      this.loadJobs(); break;
@@ -76,7 +75,6 @@ function scrapperApp() {
       add: { name: '', amount: null, unit: '' },
     },
     pushingToEinkauf: false,    // Loading-state für Push-Button
-    fab: { open: false },       // Floating-Action-Button auf Mobile
     trash: {
       items: [], totalCount: 0, loading: false, emptying: false,
     },
