@@ -2346,7 +2346,7 @@
         </button>
       </div>
       <div class="modal-body recipe-detail-body" x-show="recipeDetail.data">
-        <div class="recipe-detail-grid">
+        <div class="recipe-detail-grid" :class="recipeDetail.tab !== 'info' && 'single-col'">
           <div class="recipe-detail-video" x-show="recipeDetail.tab === 'info'">
             <video x-show="recipeDetail.data?.video_filename" controls preload="metadata"
                    :src="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/video' : ''"

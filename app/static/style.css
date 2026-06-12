@@ -1491,6 +1491,8 @@ input[type="checkbox"] { width: auto !important; }
   padding: 18px;
 }
 .recipe-detail-video video { border-radius: 6px; max-height: 45vh; }
+/* Zutaten/Schritte-Reiter: Video-Spalte ist versteckt → eine Spalte, kein toter Streifen */
+.recipe-detail-grid.single-col { grid-template-columns: 1fr !important; }
 .recipe-detail-right { min-width: 0; }
 .recipe-detail-section { margin-top: 16px; }
 .recipe-detail-section h4 {
@@ -1663,7 +1665,17 @@ input[type="checkbox"] { width: auto !important; }
 @media (max-width: 900px) {
   .recipes-layout { grid-template-columns: 1fr; }
   .recipes-filters { position: static; max-height: none; }
-  .recipe-detail-grid { grid-template-columns: 1fr; }
+  /* Info-Reiter: Hochkant-Video links schmal, rechts Tags/Meta — der leere
+     Streifen neben dem Video wird genutzt statt alles untereinander zu stapeln. */
+  .recipe-detail-grid {
+    grid-template-columns: minmax(0, 42%) minmax(0, 1fr);
+    gap: 12px;
+    padding: 12px;
+  }
+  .recipe-detail-video video,
+  .recipe-detail-video img { max-height: 30vh; width: 100%; object-fit: cover; }
+  .recipe-detail-section { margin-top: 10px; }
+  .recipe-detail-section:first-child { margin-top: 0; }
 }
 
 /* ── Zubereitungs-Schritte + Timer (feat: steps+timer) ─────────────── */
