@@ -2350,7 +2350,8 @@
           <div class="recipe-detail-video" x-show="recipeDetail.tab === 'info'">
             <video x-show="recipeDetail.data?.video_filename" controls preload="metadata"
                    :src="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/video' : ''"
-                   style="max-width: 100%; max-height: 60vh; background: #000;"></video>
+                   :poster="recipeDetail.data?.thumb_filename ? '/api/recipes/'+recipeDetail.data.id+'/thumb?w=800' : ''"
+                   style="max-width: 100%; max-height: 34vh; background: #000; border-radius: 8px; display: block; margin: 0 auto;"></video>
             <!-- Fallback: Thumbnail wenn kein Video aber Bild vorhanden -->
             <img x-show="!recipeDetail.data?.video_filename && recipeDetail.data?.thumb_filename"
                  :src="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/thumb' : ''"
