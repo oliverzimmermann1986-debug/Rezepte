@@ -2194,6 +2194,29 @@ input[type="checkbox"] { width: auto !important; }
   .audit-ai-sanity-box { flex-direction: column; align-items: stretch; }
   .audit-finding { flex-direction: column; }
   .audit-finding-actions { width: 100%; }
+  /* Mobile-Polish Audit (App wird primär am iPhone genutzt):
+     1) Bulk-Buttons im Section-Header: statt float:right-Wrap-Chaos eine
+        saubere Button-Zeile unter dem Titel, gleiche Höhe, volle Breite. */
+  .audit-section h3 { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+  .audit-section h3 > span[style*="float"] {
+    float: none !important;
+    display: flex !important;
+    flex-wrap: wrap;
+    gap: 6px !important;
+  }
+  .audit-section h3 .btn { flex: 1 1 calc(50% - 6px); min-height: 42px; white-space: nowrap; }
+  /* 2) Aktions-Buttons pro Finding: gleichmäßige Touch-Targets (≥42px),
+        füllen die Zeile statt einzeln umzubrechen. */
+  .audit-finding-actions .btn { flex: 1 1 auto; min-height: 42px; }
+  /* 3) Pfade/URLs: kleiner + max. 2 Zeilen mit Ellipsis statt 3-zeiligem
+        break-all-Block — Details stehen im Rezept selbst. */
+  .audit-finding-main code {
+    font-size: 11px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
 }
 
 /* ── Zutaten-Edit-Mode im Detail-Modal ───────────────────────────────── */
