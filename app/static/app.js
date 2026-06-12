@@ -185,6 +185,15 @@ function scrapperApp() {
       // Drop. Wenn der Endpoint nicht da ist (alte Backend-Version): Fall-
       // back auf setInterval-Polling.
       this._startEventStream();
+      // Akku/Traffic auf Mobile: im Hintergrund alle Timer + SSE stoppen,
+      // beim Zurückkehren sofort frisch laden + Timer/SSE neu starten.
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          this._pauseBackgroundWork();
+        } else {
+          this._resumeBackgroundWork();
+        }
+      });
       // Pull-to-Refresh nach DOM-Init (nextTick) damit ptr-indicator da ist
       this.$nextTick(() => this.initPullToRefresh());
     },
@@ -250,6 +259,29 @@ function scrapperApp() {
       this.refreshProgress();
       this._statusTimer = setInterval(() => this.refreshStatus(), 4000);
       this._progressTimer = setInterval(() => this.refreshProgress(), 3000);
+    },
+
+    // App im Hintergrund (PWA minimiert / Tab inaktiv): alles Periodische
+    // stoppen — iOS drosselt Timer ohnehin, aber SSE hält sonst die
+    // Verbindung + Funkmodul wach.
+    _bgPaused: false,
+    _pauseBackgroundWork() {
+      if (this._bgPaused) return;
+      this._bgPaused = true;
+      for (const t of ['_jobsTimer', '_statsTimer', '_hddTimer', '_statusTimer', '_progressTimer']) {
+        if (this[t]) { clearInterval(this[t]); this[t] = null; }
+      }
+      if (this._eventSource) { this._eventSource.close(); this._eventSource = null; }
+    },
+    _resumeBackgroundWork() {
+      if (!this._bgPaused) return;
+      this._bgPaused = false;
+      // Sofort frische Daten, dann Timer + SSE wie beim Init
+      this.loadRecentJobs(); this.loadStats(); this.loadHddStatus();
+      this._jobsTimer = setInterval(() => this.loadRecentJobs(), 15000);
+      this._statsTimer = setInterval(() => this.loadStats(), 60000);
+      this._hddTimer = setInterval(() => this.loadHddStatus(), 30000);
+      this._startEventStream();
     },
 
     // ------------- Helpers -------------
