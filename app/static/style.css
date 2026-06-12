@@ -1673,7 +1673,7 @@ input[type="checkbox"] { width: auto !important; }
     padding: 12px;
   }
   .recipe-detail-video video,
-  .recipe-detail-video img { max-height: 40vh; width: 100%; object-fit: cover; }
+  .recipe-detail-video img { height: 40vh; max-height: 40vh; width: 100%; object-fit: cover; }
   .recipe-detail-section { margin-top: 10px; }
   .recipe-detail-section:first-child { margin-top: 0; }
 }
