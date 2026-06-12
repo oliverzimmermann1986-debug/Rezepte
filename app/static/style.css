@@ -1077,6 +1077,11 @@ input[type="checkbox"] { width: auto !important; }
     max-width: 100% !important;
     max-height: calc(100vh - 80px);
   }
+  /* Rezept-Detail: feste Höhe — Reiterwechsel (Info/Zutaten/Schritte) ändert
+     sonst die Fenstergröße; Inhalt scrollt stattdessen im modal-body. */
+  .modal:has(.recipe-detail-body) {
+    height: calc(100vh - 80px);
+  }
   .modal-log { max-height: calc(100vh - 80px); }
   .modal-log .log-view {
     font-size: 11px;
