@@ -963,9 +963,12 @@
         <!-- Filter-Sidebar / Drawer -->
         <aside class="recipes-filters" :class="recipes.filterDrawerOpen && 'open'">
           <div class="recipes-filters-head">
-            <strong>Filter</strong>
-            <button class="btn-icon" @click="recipes.filterDrawerOpen = false"
-                    title="Filter schließen">✕</button>
+            <strong>Filter <span class="muted" x-show="activeFilterCount()" x-text="'('+activeFilterCount()+' aktiv)'"></span></strong>
+            <div style="display:flex; gap:6px;">
+              <button class="btn btn-secondary btn-sm" @click="resetFilters()"
+                      x-show="activeFilterCount()">Zurücksetzen</button>
+              <button class="btn btn-primary btn-sm" @click="recipes.filterDrawerOpen = false">Fertig</button>
+            </div>
           </div>
           <div class="filter-block">
             <label>Suche</label>

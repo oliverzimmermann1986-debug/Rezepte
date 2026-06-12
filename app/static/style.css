@@ -2099,24 +2099,39 @@ input[type="checkbox"] { width: auto !important; }
     border-bottom: 1px solid var(--border);
   }
 
-  /* Layout: kein 2-col-Grid mehr — Drawer absolut positioniert */
+  /* Layout: kein 2-col-Grid mehr — Filter als Bottom-Sheet (Daumen-Reichweite,
+     volle Breite, große Touch-Targets) statt schmalem Links-Drawer */
   .recipes-layout { grid-template-columns: 1fr; gap: 0; }
   .recipes-filters {
-    /* Drawer-Verhalten: von links rein-sliden */
     position: fixed;
-    top: 0;
     left: 0;
-    bottom: 64px;            /* Bottom-Nav-Höhe freihalten */
-    width: min(320px, 88vw);
-    max-height: none;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    width: 100%;
+    max-height: 78vh;
     z-index: 100;
-    border-radius: 0;
-    border-right: 1px solid var(--border);
-    transform: translateX(-100%);
-    transition: transform .2s ease;
-    box-shadow: 6px 0 24px rgba(0, 0, 0, .25);
+    border-radius: 14px 14px 0 0;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    transform: translateY(105%);
+    transition: transform .22s ease;
+    box-shadow: 0 -8px 28px rgba(0, 0, 0, .35);
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
   }
-  .recipes-filters.open { transform: translateX(0); }
+  .recipes-filters.open { transform: translateY(0); }
+
+  /* Touch-Targets: 16px Schrift verhindert iOS-Auto-Zoom beim Fokus,
+     42px Höhe für Finger statt Maus. */
+  .recipes-filters .filter-block input[type="text"],
+  .recipes-filters .filter-block select {
+    font-size: 16px;
+    min-height: 42px;
+    padding: 8px 10px;
+  }
+  .recipes-filters .filter-block label { font-size: 12px; }
+  .recipes-filters .chip { padding: 8px 12px; font-size: 14px; }
+  .recipes-filters .filter-block { margin-bottom: 16px; }
 
   .recipes-filters-backdrop {
     display: block;
