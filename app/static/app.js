@@ -133,6 +133,7 @@ function scrapperApp() {
       cooking: false, extracting: false,
       multiplier: 1,    // Portionen-Skalierung beim Kochen
       cookMode: false,  // Koch-Modus: nur Schritte, große Schrift, Wake-Lock
+      tab: 'info',      // Detail-Reiter: info | zutaten | steps (kompaktes Mobile-Layout)
       wakeLockActive: false,  // UI-Indikator ob Wake-Lock greift
       // Zutaten-Edit-Modus: lokaler working-copy bis 'Speichern' geklickt wird
       editingIngredients: false,
@@ -1901,6 +1902,7 @@ function scrapperApp() {
       this.recipeDetail.newTag = '';
       this.recipeDetail.multiplier = 1;
       this.recipeDetail.cookMode = false;
+      this.recipeDetail.tab = 'info';
       this.recipeDetail.editingIngredients = false;
       this.recipeDetail.editIngs = [];
       this.recipeDetail.savingIngredients = false;

@@ -2804,3 +2804,44 @@ input[type="checkbox"] { width: auto !important; }
    Modals kurz aufblitzen. [x-cloak] wird von Alpine nach hydration
    entfernt. */
 [x-cloak] { display: none !important; }
+
+/* ── Detail-Reiter im Rezept-Modal (kompaktes Layout statt Endlos-Scroll) ── */
+.detail-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.detail-tab {
+  flex: 1;
+  padding: 10px 6px;
+  min-height: 42px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-mute);
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.detail-tab.active {
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--fg);
+  font-weight: 600;
+}
+.detail-tab-count {
+  font-size: 11px;
+  background: var(--bg-elev-2);
+  border-radius: 8px;
+  padding: 1px 6px;
+  margin-left: 2px;
+}
+.detail-tab.active .detail-tab-count {
+  background: var(--accent);
+  color: #fff;
+}

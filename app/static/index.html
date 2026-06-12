@@ -2330,9 +2330,24 @@
         <span x-show="(recipeDetail.data?.rating || 0) > 0" class="muted" style="font-size: 12px;"
               x-text="(recipeDetail.data?.rating) + ' / 5'"></span>
       </div>
+      <!-- Detail-Reiter: kompaktes Layout statt Endlos-Scroll (Mobile-first).
+           Im Koch-Modus ausgeblendet — dort zählt nur die Schritt-Ansicht. -->
+      <div class="detail-tabs" x-show="recipeDetail.data && !recipeDetail.cookMode">
+        <button class="detail-tab" :class="recipeDetail.tab === 'info' && 'active'"
+                @click="recipeDetail.tab = 'info'">📋 Info</button>
+        <button class="detail-tab" :class="recipeDetail.tab === 'zutaten' && 'active'"
+                @click="recipeDetail.tab = 'zutaten'">
+          🥕 Zutaten <span class="detail-tab-count" x-show="recipeDetail.data?.ingredients?.length" x-text="recipeDetail.data?.ingredients?.length"></span>
+        </button>
+        <button class="detail-tab" :class="recipeDetail.tab === 'steps' && 'active'"
+                @click="recipeDetail.tab = 'steps'"
+                x-show="(recipeDetail.data?.steps?.length || 0) > 0">
+          👨‍🍳 Schritte <span class="detail-tab-count" x-text="recipeDetail.data?.steps?.length"></span>
+        </button>
+      </div>
       <div class="modal-body recipe-detail-body" x-show="recipeDetail.data">
         <div class="recipe-detail-grid">
-          <div class="recipe-detail-video">
+          <div class="recipe-detail-video" x-show="recipeDetail.tab === 'info'">
             <video x-show="recipeDetail.data?.video_filename" controls preload="metadata"
                    :src="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/video' : ''"
                    style="max-width: 100%; max-height: 60vh; background: #000;"></video>
@@ -2361,7 +2376,7 @@
 
           <div class="recipe-detail-right">
             <!-- Tags -->
-            <div class="recipe-detail-section">
+            <div class="recipe-detail-section" x-show="recipeDetail.tab === 'info'">
               <h4>Tags <span class="muted" style="font-size: 11px; font-weight: normal;">🤖 = automatisch (KI/Regel-Pass)</span></h4>
               <div class="chip-list">
                 <template x-for="t in recipeDetail.data?.tags || []" :key="t.id">
@@ -2379,7 +2394,7 @@
             </div>
 
             <!-- Kochen-Button mit Portionen-Skalierung -->
-            <div class="cook-block">
+            <div class="cook-block" x-show="recipeDetail.tab === 'zutaten'">
               <div class="cook-multiplier">
                 <span class="muted">Portionen:</span>
                 <template x-for="m in [0.5, 1, 2, 4]" :key="m">
@@ -2407,7 +2422,7 @@
             </div>
 
             <!-- Zutaten -->
-            <div class="recipe-detail-section">
+            <div class="recipe-detail-section" x-show="recipeDetail.tab === 'zutaten'">
               <h4 class="ing-section-head">
                 <span>
                   Zutaten
@@ -2524,7 +2539,7 @@
 
             <!-- Nährwerte (pro Portion, KI-Schätzung) -->
             <div class="recipe-detail-section nutrition-section"
-                 x-show="recipeDetail.data?.calories_per_serving || recipeDetail.data?.ingredients?.length >= 3">
+                 x-show="recipeDetail.tab === 'zutaten' && (recipeDetail.data?.calories_per_serving || recipeDetail.data?.ingredients?.length >= 3)">
               <h4>
                 Nährwerte
                 <span class="muted" style="font-size: 12px;"
@@ -2573,7 +2588,7 @@
             </div>
 
             <!-- Zubereitung -->
-            <div class="recipe-detail-section steps-section" x-show="(recipeDetail.data?.steps?.length || 0) > 0">
+            <div class="recipe-detail-section steps-section" x-show="(recipeDetail.tab === 'steps' || recipeDetail.cookMode) && (recipeDetail.data?.steps?.length || 0) > 0">
               <h4>
                 Zubereitung
                 <span class="muted" x-text="'('+(recipeDetail.data?.steps?.length || 0)+' Schritte)'"></span>
@@ -2603,7 +2618,7 @@
 
             <!-- Beschreibung mit Rich-Rendering (Hashtags, Mentions, URLs) -->
             <div class="recipe-detail-section" x-data="{ expanded: false }"
-                 x-show="recipeDetail.data?.description">
+                 x-show="recipeDetail.tab === 'info' && recipeDetail.data?.description">
               <h4 style="display:flex; align-items:center; justify-content: space-between;">
                 <span>Beschreibung</span>
                 <button class="btn btn-secondary btn-sm"
@@ -2635,7 +2650,7 @@
         </div>
       </div>
       <!-- Sticky-Bottom-Bar (Mobile only — Desktop hat den cook-block inline) -->
-      <div class="modal-action-bar" x-show="recipeDetail.data && !recipeDetail.cookMode">
+      <div class="modal-action-bar" x-show="recipeDetail.data && !recipeDetail.cookMode && recipeDetail.tab === 'zutaten'">
         <div class="action-bar-mult">
           <template x-for="m in [0.5, 1, 2, 4]" :key="m">
             <button type="button" class="chip"
