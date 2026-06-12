@@ -372,14 +372,14 @@ def logout():
 def _static_version() -> str:
     """Cache-Buster für /static/app.js und /static/style.css.
 
-    mtime von app.js wird zum Token. Ändert sich bei jedem git pull +
-    systemctl restart — Browser lädt dann automatisch die neue Datei statt
-    aus dem Cache.
-
-    Wird einmal pro Request berechnet (kein hot-reload bei Dev-Edits
-    sonst, aber im Container ist's eh stabil pro Lifecycle)."""
+    Max-mtime von app.js UND style.css als Token. Vorher nur app.js —
+    reine CSS-Deploys änderten die URL nicht und Browser/SW lieferten
+    altes CSS aus dem Cache."""
     try:
-        m = int((STATIC_DIR / "app.js").stat().st_mtime)
+        m = max(
+            int((STATIC_DIR / "app.js").stat().st_mtime),
+            int((STATIC_DIR / "style.css").stat().st_mtime),
+        )
         return str(m)
     except Exception:
         return "0"
