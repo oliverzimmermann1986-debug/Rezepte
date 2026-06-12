@@ -1071,7 +1071,7 @@ input[type="checkbox"] { width: auto !important; }
   .btn[style*="font-size:10px"] { min-height: 28px; }
 
   /* Modals: fast Fullscreen */
-  .modal-backdrop { padding: 8px; align-items: flex-start; padding-top: 24px; }
+  .modal-backdrop { padding: 8px; align-items: center; }
   .modal, .modal-wide, .modal-log {
     width: 100% !important;
     max-width: 100% !important;
