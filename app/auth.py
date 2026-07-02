@@ -174,7 +174,23 @@ def verify_session(token: str) -> bool:
     return session_user(token) is not None
 
 
+def auth_disabled() -> bool:
+    """Login-Abfrage per Config abschaltbar (web.auth_disabled: true).
+
+    SICHERHEIT: Damit ist die App für JEDEN erreichbar, der sie netzwerkseitig
+    sieht — inkl. Löschen von Rezepten und Config-Zugriff. Nur vertretbar,
+    wenn davor eine eigene Zugriffskontrolle liegt (z.B. Cloudflare Access
+    auf dem öffentlichen Hostname) und das LAN vertrauenswürdig ist.
+    """
+    try:
+        return bool((get_config().get("web") or {}).get("auth_disabled", False))
+    except Exception:
+        return False
+
+
 async def require_auth(request: Request) -> None:
+    if auth_disabled():
+        return
     is_api = request.url.path.startswith("/api/")
     token = request.cookies.get(SESSION_COOKIE, "")
     if not token or not verify_session(token):
@@ -192,6 +208,8 @@ async def require_auth(request: Request) -> None:
 async def require_admin(request: Request) -> dict:
     """FastAPI-Dependency für admin-only Endpoints (z.B. /api/users).
     Returnt das User-Dict (für Logging) oder raised 401/403."""
+    if auth_disabled():
+        return {"username": "local", "role": "admin", "disabled": False}
     token = request.cookies.get(SESSION_COOKIE, "")
     username = session_user(token)
     if not username:

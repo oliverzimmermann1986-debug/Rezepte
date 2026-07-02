@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, check_credentials,
+from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, auth_disabled, check_credentials,
                     create_session, migrate_security, migrate_users_to_db,
                     verify_session)
 from .config_store import get_config
@@ -320,6 +320,8 @@ def _safe_next(value: str) -> str:
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(next: str = "/"):
+    if auth_disabled():
+        return RedirectResponse(url="/", status_code=303)
     return LOGIN_HTML.format(error="", next=_safe_next(next))
 
 
@@ -388,7 +390,7 @@ def _static_version() -> str:
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     token = request.cookies.get(SESSION_COOKIE, "")
-    if not token or not verify_session(token):
+    if not auth_disabled() and (not token or not verify_session(token)):
         return RedirectResponse(url="/login", status_code=303)
     # index.html mit {VERSION}-Token rendern — kein Jinja, simple String-replace
     # reicht für genau einen Platzhalter.
