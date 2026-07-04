@@ -2526,13 +2526,22 @@
                       <option value="Flasche">Flasche</option>
                       <option value="Glas">Glas</option>
                     </select>
-                    <input type="text" class="ing-name" x-model="ing.name" placeholder="Zutat">
+                    <input type="text" class="ing-name" x-model="ing.name" placeholder="Zutat"
+                           list="known-ingredients"
+                           :style="isDuplicateIngredient(idx) && 'border-color:#f59e0b; background:rgba(245,158,11,0.08);'"
+                           :title="isDuplicateIngredient(idx) ? 'Diese Zutat ist in dieser Liste bereits vorhanden' : ''">
+                    <span x-show="isDuplicateIngredient(idx)" title="Dublette in dieser Liste" style="font-size:15px;">⚠️</span>
                     <button class="btn-icon" @click="removeIngredientRow(idx)" title="Entfernen">✕</button>
                   </div>
                 </template>
                 <button class="btn btn-secondary btn-sm" @click="addIngredientRow()" style="margin-top: 8px;">
                   + Zutat hinzufügen
                 </button>
+                <datalist id="known-ingredients">
+                  <template x-for="ki in knownIngredients" :key="ki.canonical_name">
+                    <option :value="ki.display_name" x-text="ki.display_name + ' (' + ki.n + ')'"></option>
+                  </template>
+                </datalist>
               </div>
             </div>
 

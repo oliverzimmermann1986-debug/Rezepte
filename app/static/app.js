@@ -126,6 +126,7 @@ function scrapperApp() {
       creating: false,
       addForm: { username: '', password: '', role: 'user' },
     },
+    knownIngredients: [],   // distinct Zutaten-Namen für Edit-Autocomplete
     recipeDetail: {
       show: false, data: null, newTag: '',
       cooking: false, extracting: false,
@@ -2085,7 +2086,7 @@ function scrapperApp() {
     // ── Zutaten-Edit-Mode ────────────────────────────────────────────
     // Kopiert die aktuellen Zutaten in einen lokalen Working-Buffer und
     // wechselt das UI in Edit-Mode. Save schickt PUT, Cancel discardet.
-    startEditIngredients() {
+    async startEditIngredients() {
       const current = this.recipeDetail.data?.ingredients || [];
       // Deep-copy damit Edits nicht direkt durch Alpine in den View
       // durchschlagen (würde Cancel inkonsistent machen)
@@ -2096,6 +2097,21 @@ function scrapperApp() {
         raw: i.raw || null,
       }));
       this.recipeDetail.editingIngredients = true;
+      // Bekannte Zutaten für Autocomplete (Dubletten-Vermeidung) —
+      // einmal pro Session laden, danach aus dem Speicher.
+      if (!this.knownIngredients.length) {
+        const r = await this.api('GET', '/api/recipes/ingredients/known');
+        if (r?.ingredients) this.knownIngredients = r.ingredients;
+      }
+    },
+
+    // true wenn der Name (case-insensitive, getrimmt) in einer ANDEREN
+    // Edit-Zeile schon vorkommt — markiert Dubletten direkt beim Tippen.
+    isDuplicateIngredient(idx) {
+      const name = (this.recipeDetail.editIngs[idx]?.name || '').trim().toLowerCase();
+      if (!name) return false;
+      return this.recipeDetail.editIngs.some((ing, i) =>
+        i !== idx && (ing.name || '').trim().toLowerCase() === name);
     },
 
     addIngredientRow() {

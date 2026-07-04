@@ -173,6 +173,14 @@ def facets(
 
 # ── Detail ──────────────────────────────────────────────────────────────
 
+@router.get("/ingredients/known")
+def known_ingredients():
+    """Distinct Zutaten-Namen (canonical, mit Verwendungs-Count) für die
+    Autocomplete beim Zutaten-Editieren — reduziert Dubletten wie
+    'Zwiebel' vs. 'Zwiebeln' vs. 'rote Zwiebel'."""
+    return {"ingredients": get_db().ingredients_known()}
+
+
 @router.get("/{recipe_id}")
 def get_recipe(recipe_id: int):
     db = get_db()
