@@ -2533,6 +2533,12 @@
                     <span x-show="isDuplicateIngredient(idx)" title="Dublette in dieser Liste" style="font-size:15px;">⚠️</span>
                     <button class="btn-icon" @click="removeIngredientRow(idx)" title="Entfernen">✕</button>
                   </div>
+                  <div x-show="globalIngredientMatch(idx)" class="ing-global-hint"
+                       style="font-size:12px; color:var(--fg-mute); margin:-2px 0 8px 2px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <span>↔ existiert bereits als „<strong x-text="globalIngredientMatch(idx)"></strong>"</span>
+                    <button class="btn btn-secondary btn-sm" style="padding:2px 8px; min-height:0;"
+                            @click="adoptIngredientName(idx, globalIngredientMatch(idx))">übernehmen</button>
+                  </div>
                 </template>
                 <button class="btn btn-secondary btn-sm" @click="addIngredientRow()" style="margin-top: 8px;">
                   + Zutat hinzufügen

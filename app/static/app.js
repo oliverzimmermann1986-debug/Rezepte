@@ -2108,10 +2108,56 @@ function scrapperApp() {
     // true wenn der Name (case-insensitive, getrimmt) in einer ANDEREN
     // Edit-Zeile schon vorkommt — markiert Dubletten direkt beim Tippen.
     isDuplicateIngredient(idx) {
-      const name = (this.recipeDetail.editIngs[idx]?.name || '').trim().toLowerCase();
-      if (!name) return false;
+      const c = this._canonicalLite(this.recipeDetail.editIngs[idx]?.name);
+      if (!c) return false;
       return this.recipeDetail.editIngs.some((ing, i) =>
-        i !== idx && (ing.name || '').trim().toLowerCase() === name);
+        i !== idx && this._canonicalLite(ing.name) === c);
+    },
+
+    // Schlanke Spiegelung von canonical_name (Server): lowercase, führende
+    // Adjektive weg, einfache Plural-Heuristik mit Whitelist. Deckt
+    // Zwiebel/Zwiebeln, Groß/Klein, "frische Tomaten"→tomate. Synonyme
+    // (Bacon→Speck) macht weiterhin der Server beim Speichern.
+    _canonicalLite(name) {
+      if (!name) return '';
+      let t = String(name).replace(/[^\wäöüÄÖÜß\s-]/g, ' ').trim().toLowerCase();
+      if (!t) return '';
+      const adj = new Set(['frische','frischer','frisches','frisch','große','großer','großes','groß',
+        'klein','kleine','kleiner','kleines','reife','reifer','reifes','reif','getrocknete','getrockneter',
+        'getrocknetes','getrocknet','rote','roter','rotes','rot','grüne','grüner','grünes','grün',
+        'gelbe','gelber','gelbes','gelb','weiße','weißer','weißes','weiß','bio']);
+      let parts = t.split(/\s+/);
+      while (parts.length && adj.has(parts[0])) parts.shift();
+      t = parts.join(' ');
+      const wl = new Set(['tomate','zwiebel','kartoffel','karotte','möhre','paprika','gurke','aubergine',
+        'champignon','ei','nudel','frikadelle','kichererbse','linse','bohne','erbse','minze','olive',
+        'scheibe','zehe','tasse','dose']);
+      if (t.endsWith('en') && t.length >= 5) {
+        if (wl.has(t.slice(0,-1))) return t.slice(0,-1);
+        if (wl.has(t.slice(0,-2))) return t.slice(0,-2);
+      }
+      if (t.endsWith('er') && t.length >= 4 && wl.has(t.slice(0,-2))) return t.slice(0,-2);
+      if (t.endsWith('n') && t.length >= 4 && wl.has(t.slice(0,-1))) return t.slice(0,-1);
+      return t;
+    },
+
+    // Globaler Abgleich: existiert die getippte Zutat schon im Katalog unter
+    // ANDERER Schreibweise? Returnt den bekannten Anzeigenamen oder null.
+    globalIngredientMatch(idx) {
+      const typed = (this.recipeDetail.editIngs[idx]?.name || '').trim();
+      if (!typed) return null;
+      const c = this._canonicalLite(typed);
+      if (!c) return null;
+      const hit = this.knownIngredients.find(ki =>
+        ki.canonical_name === c || this._canonicalLite(ki.display_name) === c);
+      if (hit && hit.display_name && hit.display_name.toLowerCase() !== typed.toLowerCase()) {
+        return hit.display_name;
+      }
+      return null;
+    },
+
+    adoptIngredientName(idx, name) {
+      if (this.recipeDetail.editIngs[idx]) this.recipeDetail.editIngs[idx].name = name;
     },
 
     addIngredientRow() {
