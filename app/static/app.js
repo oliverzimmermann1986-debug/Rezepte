@@ -2103,6 +2103,16 @@ function scrapperApp() {
         const r = await this.api('GET', '/api/recipes/ingredients/known');
         if (r?.ingredients) this.knownIngredients = r.ingredients;
       }
+      // datalist per DOM füllen — Alpine-x-for IN <datalist> rendert auf
+      // iOS/Safari nicht zuverlässig. value = reiner Name (label mit Count
+      // würde sonst als Wert übernommen).
+      this.$nextTick(() => {
+        const dl = document.getElementById('known-ingredients');
+        if (!dl) return;
+        dl.innerHTML = this.knownIngredients
+          .map(ki => `<option value="${(ki.display_name || '').replace(/"/g, '&quot;')}">`)
+          .join('');
+      });
     },
 
     // true wenn der Name (case-insensitive, getrimmt) in einer ANDEREN

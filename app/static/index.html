@@ -2543,11 +2543,7 @@
                 <button class="btn btn-secondary btn-sm" @click="addIngredientRow()" style="margin-top: 8px;">
                   + Zutat hinzufügen
                 </button>
-                <datalist id="known-ingredients">
-                  <template x-for="ki in knownIngredients" :key="ki.canonical_name">
-                    <option :value="ki.display_name" x-text="ki.display_name + ' (' + ki.n + ')'"></option>
-                  </template>
-                </datalist>
+                <datalist id="known-ingredients"></datalist>
               </div>
             </div>
 
