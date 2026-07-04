@@ -182,7 +182,32 @@ def get_recipe(recipe_id: int):
     r["ingredients"] = db.recipe_ingredients_get(recipe_id)
     r["steps"] = db.recipe_steps_get(recipe_id)
     r["tags"] = db.recipe_tags_get(recipe_id)
+    # PDF-Rezepte (Mail-Import): Original-PDF melden, damit das Frontend
+    # einen "PDF öffnen"-Button zeigen kann (Bild allein reicht nicht).
+    try:
+        folder = Path(r["folder_path"])
+        pdfs = sorted(p.name for p in folder.iterdir()
+                      if p.is_file() and p.suffix.lower() == ".pdf")
+        r["pdf_filename"] = pdfs[0] if pdfs else None
+    except Exception:
+        r["pdf_filename"] = None
     return r
+
+
+@router.get("/{recipe_id}/pdf")
+def get_recipe_pdf(recipe_id: int):
+    """Liefert das Original-PDF eines Rezepts (inline, Browser-Viewer)."""
+    db = get_db()
+    r = db.recipe_get(recipe_id)
+    if not r:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    folder = Path(r["folder_path"])
+    pdfs = sorted(p for p in folder.iterdir()
+                  if p.is_file() and p.suffix.lower() == ".pdf") if folder.is_dir() else []
+    if not pdfs:
+        raise HTTPException(404, "Kein PDF vorhanden")
+    return FileResponse(pdfs[0], media_type="application/pdf",
+                        headers={"Content-Disposition": f'inline; filename="{pdfs[0].name}"'})
 
 
 # ── Mutation ────────────────────────────────────────────────────────────

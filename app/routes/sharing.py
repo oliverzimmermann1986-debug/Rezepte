@@ -244,7 +244,7 @@ def _render_print_html(
 <div class="no-print" style="position:fixed; top:10px; right:10px; z-index:50; display:flex; gap:8px;">
   <button onclick="window.print()"
           style="min-height:42px; padding:8px 14px; border-radius:21px; border:1px solid #ddd; background:#fff; font-size:15px; box-shadow:0 2px 8px rgba(0,0,0,.18); cursor:pointer;">🖨 Drucken</button>
-  <button onclick="if(history.length>1){history.back()}else{window.close()}"
+  <button onclick="if(history.length>1){{history.back()}}else{{window.close()}}"
           style="min-height:42px; min-width:42px; padding:8px 14px; border-radius:21px; border:1px solid #ddd; background:#fff; font-size:16px; font-weight:600; box-shadow:0 2px 8px rgba(0,0,0,.18); cursor:pointer;">✕ Schließen</button>
 </div>
 {share_banner}

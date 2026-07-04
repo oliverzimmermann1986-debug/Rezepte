@@ -2352,6 +2352,13 @@
             <div x-show="!recipeDetail.data?.video_filename && !recipeDetail.data?.thumb_filename"
                  class="muted">Kein Video, kein Bild.</div>
             <div class="recipe-detail-meta muted" style="margin-top: 8px; font-size: 12px; min-width: 0; overflow: hidden;">
+              <a x-show="recipeDetail.data?.pdf_filename"
+                 :href="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/pdf' : '#'"
+                 target="_blank" rel="noopener"
+                 class="btn btn-secondary btn-sm"
+                 style="display:inline-flex; align-items:center; gap:6px; min-height:38px; margin-bottom:8px;">
+                📄 PDF öffnen
+              </a>
               <div><span x-text="recipeDetail.data?.type"></span> · <span x-text="recipeDetail.data?.category"></span></div>
               <div x-show="recipeDetail.data?.url" style="overflow:hidden;">
                 <a :href="recipeDetail.data?.url" target="_blank" rel="noopener"
