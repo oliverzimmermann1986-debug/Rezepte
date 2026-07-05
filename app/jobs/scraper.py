@@ -79,21 +79,26 @@ def _save_video_files(target_dir: Path, video_path: Path,
     sie als description_original.txt zusätzlich geschrieben. So bleibt das
     Original erhalten für späteres Audit oder Re-Übersetzung.
     """
+    from ..core.safety import atomic_write_text, atomic_write_json, atomic_copy_file, write_manifest
     target_dir.mkdir(parents=True, exist_ok=True)
     file_base = target_dir.name
     if video_path and video_path.exists():
-        shutil.copy2(video_path, target_dir / f"{file_base}{video_path.suffix}")
+        atomic_copy_file(video_path, target_dir / f"{file_base}{video_path.suffix}")
         # yt-dlp legt das Cover als video.jpg neben das Video (--write-thumbnail).
         # Mitkopieren als thumb.jpg → Indexer setzt thumb_filename, kein "Kein Bild".
         for t in sorted(video_path.parent.glob("*.jpg")) + sorted(video_path.parent.glob("*.webp")) + sorted(video_path.parent.glob("*.png")):
-            shutil.copy2(t, target_dir / f"thumb{t.suffix}")
+            atomic_copy_file(t, target_dir / f"thumb{t.suffix}")
             break
     if description:
-        (target_dir / "description.txt").write_text(description, encoding="utf-8")
+        atomic_write_text(target_dir / "description.txt", description)
     if description_original:
-        (target_dir / "description_original.txt").write_text(description_original, encoding="utf-8")
-    with open(target_dir / "info.json", "w", encoding="utf-8") as f:
-        json.dump(info, f, indent=2, ensure_ascii=False)
+        atomic_write_text(target_dir / "description_original.txt", description_original)
+    atomic_write_json(target_dir / "info.json", info)
+    # Manifest (SHA-256 pro Datei) für Repair-/Integritäts-Scan
+    try:
+        write_manifest(target_dir, source={"kind": "recipe", "name": file_base})
+    except Exception:
+        pass
 
 
 class ScraperJob:
@@ -413,13 +418,17 @@ class ScraperJob:
                                 ext: str, info: Dict, source_text: Optional[str] = None) -> None:
         """Schreibt die Attachment-Datei + info.json + optional die extrahierte
         Text-Description in den target_dir."""
+        from ..core.safety import atomic_write_bytes, atomic_write_text, atomic_write_json, write_manifest
         target_dir.mkdir(parents=True, exist_ok=True)
         file_base = target_dir.name
-        (target_dir / f"{file_base}{ext}").write_bytes(attachment_data)
+        atomic_write_bytes(target_dir / f"{file_base}{ext}", attachment_data)
         if source_text:
-            (target_dir / "description.txt").write_text(source_text, encoding="utf-8")
-        with open(target_dir / "info.json", "w", encoding="utf-8") as f:
-            json.dump(info, f, indent=2, ensure_ascii=False)
+            atomic_write_text(target_dir / "description.txt", source_text)
+        atomic_write_json(target_dir / "info.json", info)
+        try:
+            write_manifest(target_dir, source={"kind": "attachment", "name": file_base})
+        except Exception:
+            pass
 
     def process_attachment(self, att: Dict, synth_url: str) -> Dict:
         """Verarbeitet ein Mail-Attachment (PDF/JPG/PNG):

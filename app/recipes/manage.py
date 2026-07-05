@@ -247,15 +247,29 @@ def safe_delete_recipe(
     # Cart aufräumen
     cart_updates = _purge_recipe_from_cart(db, recipe_id)
 
-    # FS löschen (bei delete_files=True, beide Modi)
+    # FS: nicht mehr hart löschen — in Quarantäne verschieben (Härtung gegen
+    # Datenverlust). deleted_history bewahrt Herkunft für spätere Suche/Restore.
     folder_deleted = False
     if delete_files and folder:
         folder_path = Path(folder)
         _assert_inside_root(folder_path)
         if folder_path.exists():
-            shutil.rmtree(folder_path)
+            from ..core.safety import quarantine_move
+            trash_root = Path(get_config().get("safety", "trash_dir",
+                              default="/opt/scrapper/data/trash"))
+            qpath = quarantine_move(folder_path, trash_root,
+                                    reason="hard_delete" if hard else "soft_delete",
+                                    source={"recipe_id": recipe_id, "name": name})
             folder_deleted = True
-            logger.info(f"Recipe #{recipe_id}: folder {folder_path} gelöscht")
+            try:
+                db.deleted_history_add(
+                    {"url": recipe.get("url"), "content_type": recipe.get("type"),
+                     "name": name, "target_dir": folder},
+                    quarantine_path=str(qpath or ""),
+                    reason="hard_delete" if hard else "soft_delete")
+            except Exception as e:
+                logger.warning(f"deleted_history_add fehlgeschlagen (non-fatal): {e}")
+            logger.info(f"Recipe #{recipe_id}: folder → Quarantäne {qpath}")
         else:
             logger.info(f"Recipe #{recipe_id}: folder {folder_path} existierte nicht mehr")
 
