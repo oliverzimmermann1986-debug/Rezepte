@@ -252,7 +252,8 @@ class Database:
         c0 = sqlite3.connect(str(self.path), timeout=10, check_same_thread=False)
         try:
             c0.execute("PRAGMA journal_mode=WAL")
-            c0.execute("PRAGMA synchronous=NORMAL")
+            c0.execute("PRAGMA synchronous=FULL")
+            c0.execute("PRAGMA wal_autocheckpoint=100")
             c0.execute("PRAGMA busy_timeout=10000")
             c0.executescript(_DDL)
             self._migrate(c0)
@@ -318,6 +319,17 @@ class Database:
             # Retries kommen aus dieser Tabelle, der Typ muss überleben.
             c.execute("ALTER TABLE download_failures ADD COLUMN content_type TEXT NOT NULL DEFAULT 'recipe'")
 
+        # Soft-Delete-Audit: gelöschte/quarantänierte Einträge (Härtung gegen
+        # Datenverlust — Ordner landet in Quarantäne, hier bleibt die Herkunft).
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS deleted_history ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  url TEXT, deleted_at REAL NOT NULL, content_type TEXT,"
+            "  name TEXT, target_dir TEXT, quarantine_path TEXT,"
+            "  reason TEXT, metadata TEXT)"
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_deleted_history_at ON deleted_history(deleted_at DESC)")
+
         # FTS5-Backfill: wenn recipes_fts existiert aber leer ist (Migration auf
         # bestehende DB ohne FTS), alle Rezepte indizieren. Triggers übernehmen
         # ab da Pflege. Idempotent: fts_count > 0 → skip.
@@ -365,12 +377,15 @@ class Database:
         # busy_timeout=10s per-Connection: SQLite-internes Polling wenn ein anderer
         # Writer die DB locked — wichtig bei 3× parallelen Worker-Threads. Ohne das
         # bekommt der Caller sofort 'database is locked' (SQLITE_BUSY).
-        # synchronous=NORMAL ist sicher mit WAL (kein Datenverlust bei OS-Crash).
+        # synchronous=FULL: maximale Crash-/Stromausfall-Sicherheit (etwas langsamere
+        # Writes, bei diesem Write-Volumen vernachlässigbar). wal_autocheckpoint=100:
+        # WAL wird häufiger in die Haupt-DB übernommen → kleineres Verlustfenster.
         c = sqlite3.connect(str(self.path), timeout=10, check_same_thread=False)
         c.row_factory = sqlite3.Row
         try:
             c.execute("PRAGMA busy_timeout=10000")
-            c.execute("PRAGMA synchronous=NORMAL")
+            c.execute("PRAGMA synchronous=FULL")
+            c.execute("PRAGMA wal_autocheckpoint=100")
             c.execute("PRAGMA foreign_keys=ON")
             yield c
             c.commit()
@@ -724,6 +739,39 @@ class Database:
                 (cutoff,),
             )
             return cur.rowcount or 0
+
+    def deleted_history_add(self, entry: Dict[str, Any], *, quarantine_path: str = "",
+                            reason: str = "manual_delete", metadata: Optional[Dict[str, Any]] = None) -> int:
+        """Audit-Log für Soft-Deletes. Der eigentliche Ordner wird in Quarantäne
+        verschoben, dieser Eintrag bewahrt URL/Name/Zielpfad für spätere Suche."""
+        with self.conn() as c:
+            cur = c.execute(
+                "INSERT INTO deleted_history "
+                "(url, deleted_at, content_type, name, target_dir, quarantine_path, reason, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry.get("url"), time.time(), entry.get("content_type"),
+                    entry.get("name"), entry.get("target_dir"), quarantine_path, reason,
+                    json.dumps(metadata or {}, ensure_ascii=False),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def deleted_history_list(self, limit: int = 200) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM deleted_history ORDER BY deleted_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                try:
+                    d["metadata"] = json.loads(d.get("metadata") or "{}")
+                except Exception:
+                    d["metadata"] = {}
+                out.append(d)
+            return out
 
     def backup_to(self, dest_path, *, compress: bool = False, verify: bool = True) -> dict:
         """Online-Backup der SQLite-DB via PRAGMA-basierte .backup-API.
