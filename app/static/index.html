@@ -2460,6 +2460,13 @@
                       <span x-show="!recipeDetail.extracting">⟳ <span x-text="recipeDetail.data?.ingredients?.length ? 'Neu' : 'Extrahieren'"></span></span>
                       <span x-show="recipeDetail.extracting">…</span>
                     </button>
+                    <button class="btn btn-secondary btn-sm" @click="computeNutrition()"
+                            :disabled="recipeDetail.computingNutrition || (recipeDetail.data?.ingredients?.length || 0) < 3"
+                            title="Kalorien + Makros aus den Zutaten schätzen (KI)">
+                      <span x-show="!recipeDetail.computingNutrition"
+                            x-text="recipeDetail.data?.calories_per_serving ? '⚡ Neu' : '⚡ Kalorien'"></span>
+                      <span x-show="recipeDetail.computingNutrition">…</span>
+                    </button>
                   </div>
                 </template>
                 <!-- Edit-Mode-Buttons -->
