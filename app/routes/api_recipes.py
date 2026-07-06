@@ -669,6 +669,9 @@ def compute_nutrition_for(recipe_id: int) -> Dict[str, Any]:
         recipe_id, nutr["calories"], nutr["protein_g"],
         nutr["carbs_g"], nutr["fat_g"],
     )
+    for idx, kcal in (nutr.get("per_ingredient") or {}).items():
+        if 0 <= idx < len(ings):
+            db.recipe_ingredient_set_calories(ings[idx]["id"], kcal)
     return {"ok": True, **nutr}
 
 
@@ -696,6 +699,9 @@ def compute_nutrition_bulk(limit: int = Query(50, ge=1, le=200)) -> Dict[str, An
                     int(r["id"]), nutr["calories"], nutr["protein_g"],
                     nutr["carbs_g"], nutr["fat_g"],
                 )
+                for idx, kcal in (nutr.get("per_ingredient") or {}).items():
+                    if 0 <= idx < len(ings):
+                        db.recipe_ingredient_set_calories(ings[idx]["id"], kcal)
                 computed += 1
             else:
                 failed.append({"id": r["id"], "name": r["name"], "reason": "KI-leer"})

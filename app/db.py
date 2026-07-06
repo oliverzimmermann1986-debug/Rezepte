@@ -313,6 +313,12 @@ class Database:
             # Beim Re-Extract werden NUR Tags mit auto=1 ersetzt, User-Tags bleiben.
             c.execute("ALTER TABLE recipe_tags ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
 
+        ri_cols = {r[1] for r in c.execute("PRAGMA table_info(recipe_ingredients)").fetchall()}
+        if "calories" not in ri_cols:
+            # Geschätzte Gesamt-kcal für die genannte Menge dieser Zutat (KI,
+            # ~). NULL = noch nicht berechnet. Wird beim Nährwert-Lauf befüllt.
+            c.execute("ALTER TABLE recipe_ingredients ADD COLUMN calories REAL")
+
         df_cols = {r[1] for r in c.execute("PRAGMA table_info(download_failures)").fetchall()}
         if "content_type" not in df_cols:
             # recipe|wedding. Nötig seit Mails nach Verarbeitung gelöscht werden:
@@ -1215,6 +1221,11 @@ class Database:
             return [dict(r) for r in rows]
 
     # ─── Steps + Servings ─────────────────────────────────────────────────
+
+    def recipe_ingredient_set_calories(self, ingredient_id: int, calories) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE recipe_ingredients SET calories=? WHERE id=?",
+                      (calories, ingredient_id))
 
     def recipe_steps_get(self, recipe_id: int) -> List[Dict[str, Any]]:
         with self.conn() as c:

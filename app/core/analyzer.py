@@ -405,17 +405,17 @@ class OpenAIAnalyzer:
         srv = int(servings) if servings and int(servings) >= 1 else 4
 
         ing_lines = []
-        for ing in ingredients[:60]:
+        for i, ing in enumerate(ingredients[:60]):
+            if not ing.get("name"):
+                continue
             parts = []
             amt = ing.get("amount")
             if amt is not None:
                 parts.append(f"{amt:g}" if isinstance(amt, float) else str(amt))
             if ing.get("unit"):
                 parts.append(ing["unit"])
-            if ing.get("name"):
-                parts.append(ing["name"])
-            if parts:
-                ing_lines.append("- " + " ".join(parts))
+            parts.append(ing["name"])
+            ing_lines.append(f"[{i}] " + " ".join(parts))
         if not ing_lines:
             return None
 
@@ -423,17 +423,20 @@ class OpenAIAnalyzer:
             "Du bist Ernährungs-Experte. Schätze die Nährwerte PRO PORTION für "
             "ein Rezept auf Basis der Zutaten + Portionen-Anzahl.\n\n"
             "Antworte AUSSCHLIESSLICH mit JSON nach diesem Schema:\n"
-            '{"calories": int, "protein_g": float, "carbs_g": float, "fat_g": float}\n\n'
+            '{"calories": int, "protein_g": float, "carbs_g": float, "fat_g": float, '
+            '"ingredients": [{"i": int, "kcal": int}]}\n\n'
             "Regeln:\n"
             "- calories: ganze Zahl, kcal PRO Portion (nicht gesamt!)\n"
             "- protein_g / carbs_g / fat_g: Gramm PRO Portion, 1 Nachkommastelle\n"
+            "- ingredients: pro Zutat die GESAMT-kcal für die genannte Menge "
+            "(NICHT pro Portion), 'i' = die Nummer in [] vor der Zutat\n"
             "- Mengen vor 'pro Portion' durch Portionen-Anzahl teilen\n"
-            "- Gewürze/Salz: ignorierbar (vernachlässigbare Kalorien)\n"
+            "- Gewürze/Salz: ignorierbar (calories vernachlässigbar, kcal=0)\n"
             "- Bei Bereichen: Mittel nehmen\n"
             "- Realistische Bandbreiten (Hauptgericht 300-900 kcal, Dessert 200-600 kcal)\n"
             "- Nur Schätzung, nicht laborgenau — Genauigkeit ±15% reicht\n"
             "- Bei zu wenig Info (nur 1-2 Zutaten ohne Mengen): "
-            '{"calories":0,"protein_g":0,"carbs_g":0,"fat_g":0}'
+            '{"calories":0,"protein_g":0,"carbs_g":0,"fat_g":0,"ingredients":[]}'
         )
         user_msg = f"Portionen: {srv}\n\nZutaten:\n" + "\n".join(ing_lines)
         content = self._call(system, user_msg)
@@ -444,11 +447,20 @@ class OpenAIAnalyzer:
             cal = int(data.get("calories", 0) or 0)
             if cal <= 0:
                 return None
+            per_ing = {}
+            for x in (data.get("ingredients") or []):
+                try:
+                    idx = int(x["i"]); kc = int(round(float(x.get("kcal", 0) or 0)))
+                    if kc > 0:
+                        per_ing[idx] = kc
+                except (KeyError, ValueError, TypeError):
+                    continue
             return {
                 "calories": cal,
                 "protein_g": round(float(data.get("protein_g", 0) or 0), 1),
                 "carbs_g": round(float(data.get("carbs_g", 0) or 0), 1),
                 "fat_g": round(float(data.get("fat_g", 0) or 0), 1),
+                "per_ingredient": per_ing,
             }
         except Exception as e:
             logger.warning(f"compute_nutrition JSON: {e} | {content[:200]}")

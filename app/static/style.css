@@ -1579,13 +1579,20 @@ input[type="checkbox"] { width: auto !important; }
      1fr für den Name-Container — aber min-width:0 damit Grid weiß
      dass Shrink erlaubt ist (sonst dominiert die intrinsic-Größe
      des längsten Wortes und der Name-Container wird zu breit). */
-  grid-template-columns: minmax(60px, auto) minmax(0, 1fr);
+  grid-template-columns: minmax(60px, auto) minmax(0, 1fr) auto;
   gap: 10px;
   padding: 6px 10px;
   background: var(--bg);
   border-radius: 4px;
   font-size: 13px;
   align-items: start;
+}
+.ingredient-kcal {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  white-space: nowrap;
+  padding-top: 1px;
+  text-align: right;
 }
 .ingredient-item > div { min-width: 0; }
 .ingredient-amount {

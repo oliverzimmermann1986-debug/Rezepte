@@ -2490,6 +2490,8 @@
                       <span class="ingredient-raw" x-text="ing.raw"
                             x-show="ing.raw && ing.raw !== ing.name"></span>
                     </div>
+                    <span class="ingredient-kcal muted" x-show="ing.calories"
+                          x-text="'~' + Math.round(ing.calories) + ' kcal'"></span>
                   </div>
                 </template>
                 <div x-show="(recipeDetail.data?.ingredients?.length || 0) === 0" class="muted">
