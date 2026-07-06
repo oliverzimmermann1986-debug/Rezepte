@@ -2551,7 +2551,7 @@
 
             <!-- Nährwerte (pro Portion, KI-Schätzung) -->
             <div class="recipe-detail-section nutrition-section"
-                 x-show="recipeDetail.tab === 'zutaten' && (recipeDetail.data?.calories_per_serving || recipeDetail.data?.ingredients?.length >= 3)">
+                 x-show="recipeDetail.tab === 'zutaten' && (recipeDetail.data?.ingredients?.length || 0) > 0">
               <h4>
                 Nährwerte
                 <span class="muted" style="font-size: 12px;"
