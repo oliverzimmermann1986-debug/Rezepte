@@ -2,18 +2,18 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <title>Rezepte</title>
+  <title>Rezeptliebe</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, viewport-fit=cover">
-  <meta name="theme-color" content="#0a0d12"><!-- wird in app.js dynamisch ans aktuelle Theme angepasst -->
+  <meta name="theme-color" content="#f5c84f">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Rezepte">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Rezeptliebe">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="application-name" content="Rezepte">
+  <meta name="application-name" content="Rezeptliebe">
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/png" href="/static/icon-192.png">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/style.css?v={VERSION}">
+  <link rel="stylesheet" href="/static/rezeptliebe.css?v={VERSION}">
   <script defer src="/static/alpine.min.js"></script>
   <script>
     // Service Worker registrieren — non-blocking
@@ -40,106 +40,96 @@
 </div>
 <div class="app" x-data="scrapperApp()" x-init="init()" @keydown.escape.window="if (currentLog) currentLog = ''">
 
-  <!-- ============ SIDEBAR ============ -->
-  <aside class="sidebar">
-    <div class="logo">Rezepte</div>
+  <!-- ============ MOBILE APP BAR ============ -->
+  <header class="mobile-appbar" aria-label="App-Kopfzeile">
+    <div class="mobile-brand-mark"><svg class="brand-chef-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M15 37h18v5H15z"/><path d="M14 34V23.5c-4.1-.5-7-3.6-7-7.4 0-4.2 3.5-7.6 7.8-7.6 1.2 0 2.4.3 3.4.8C19.7 6.1 22.9 4 26.5 4c4.8 0 8.8 3.7 9.2 8.4h.8c4.1 0 7.5 3.3 7.5 7.4 0 3.9-3.1 7.1-7 7.4V34H14z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M19 21v10M29 21v10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></div>
+    <div class="mobile-title-wrap">
+      <span class="mobile-product">Rezeptliebe</span>
+      <span class="mobile-page-title" x-text="pageLabel()"></span>
+    </div>
+    <div class="mobile-runtime" :title="status.scraper ? 'Import läuft' : 'Bereit'">
+      <span class="status-dot" :class="status.scraper ? 'busy' : 'online'"></span>
+    </div>
+  </header>
 
-    <!-- Primäre Tabs (sichtbar auf Mobile + Desktop) -->
-    <div class="nav-item nav-primary" :class="page==='recipes' && 'active'" @click="navTo('recipes')" title="Rezepte">
-      <span class="nav-icon">🍳</span><span class="nav-label">Rezepte</span>
-      <span class="badge" x-show="recipes.extractionPending > 0" x-text="recipes.extractionPending" title="Zutaten werden gerade extrahiert"></span>
+  <!-- ============ SIDEBAR / MOBILE BOTTOM NAV ============ -->
+  <aside class="sidebar" aria-label="Hauptnavigation">
+    <div class="brand-block">
+      <div class="brand-mark"><svg class="brand-chef-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M15 37h18v5H15z"/><path d="M14 34V23.5c-4.1-.5-7-3.6-7-7.4 0-4.2 3.5-7.6 7.8-7.6 1.2 0 2.4.3 3.4.8C19.7 6.1 22.9 4 26.5 4c4.8 0 8.8 3.7 9.2 8.4h.8c4.1 0 7.5 3.3 7.5 7.4 0 3.9-3.1 7.1-7 7.4V34H14z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M19 21v10M29 21v10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></div>
+      <div>
+        <div class="logo">Rezeptliebe</div>
+        <div class="brand-subtitle">Deine Rezeptbibliothek</div>
+      </div>
     </div>
-    <div class="nav-item nav-primary" :class="page==='cart' && 'active'" @click="navTo('cart')" title="Einkaufskorb">
-      <span class="nav-icon">🛒</span><span class="nav-label">Cart</span>
+
+    <button type="button" class="nav-item nav-primary" :class="page==='recipes' && 'active'" @click="navTo('recipes')" title="Alle Rezepte">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="M8 4v16M4 9h16"/></svg></span><span class="nav-label">Rezepte</span>
+      <span class="badge" x-show="recipes.extractionPending > 0" x-text="recipes.extractionPending" title="Zutaten werden extrahiert"></span>
+    </button>
+    <button type="button" class="nav-item nav-primary" :class="page==='favorites' && 'active'" @click="navTo('favorites')" title="Favorisierte Rezepte">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg></span><span class="nav-label">Favoriten</span>
+    </button>
+    <button type="button" class="nav-item nav-primary" :class="page==='cart' && 'active'" @click="navTo('cart')" title="Einkaufsliste">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h2l2.4 11.2a2 2 0 0 0 2 1.6h7.8a2 2 0 0 0 2-1.6L21 7H6"/><circle cx="10" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg></span><span class="nav-label">Einkaufsliste</span>
       <span class="badge" x-show="cart.items.length > 0" x-text="cart.items.length"></span>
-    </div>
-    <div class="nav-item nav-primary" :class="page==='pending' && 'active'" @click="navTo('pending')" title="Pending">
-      <span class="nav-icon">⏳</span><span class="nav-label">Pending</span>
-      <span class="badge" x-show="status.pending_count > 0" x-text="status.pending_count"></span>
-    </div>
-    <div class="nav-item nav-primary" :class="page==='audit' && 'active'" @click="navTo('audit')" title="Audit">
-      <span class="nav-icon">🔍</span><span class="nav-label">Audit</span>
+    </button>
+    <button type="button" class="nav-item nav-primary" :class="page==='audit' && 'active'" @click="navTo('audit')" title="Rezepte prüfen">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11l2 2 4-4"/></svg></span><span class="nav-label">Prüfen</span>
       <span class="badge badge-warn" x-show="audit.summary && (audit.summary.exact_groups + audit.summary.similar_clusters + audit.summary.bad_count + audit.summary.sync_error_count + audit.summary.ai_category_count + audit.summary.ai_name_count + (audit.summary.ai_folder_count||0)) > 0"
             x-text="(audit.summary?.exact_groups || 0) + (audit.summary?.similar_clusters || 0) + (audit.summary?.bad_count || 0) + (audit.summary?.sync_error_count || 0) + (audit.summary?.ai_category_count || 0) + (audit.summary?.ai_name_count || 0) + (audit.summary?.ai_folder_count || 0)"></span>
-    </div>
+    </button>
 
-    <!-- Sekundäre Tabs (auf Mobile im Mehr-Drawer, auf Desktop in Sidebar) -->
-    <div class="nav-item nav-secondary" :class="page==='jobs' && 'active'" @click="navTo('jobs')" title="Jobs & Logs">
-      <span class="nav-icon">⚡</span><span class="nav-label">Jobs &amp; Logs</span>
-    </div>
-    <div class="nav-item nav-secondary" :class="page==='config' && 'active'" @click="navTo('config')" title="Einstellungen">
-      <span class="nav-icon">⚙️</span><span class="nav-label">Einstellungen</span>
-    </div>
-    <div class="nav-item nav-secondary" :class="page==='master' && 'active'" @click="navTo('master')" title="Stammdaten">
-      <span class="nav-icon">📚</span><span class="nav-label">Stammdaten</span>
-    </div>
-    <div class="nav-item nav-secondary" :class="page==='trash' && 'active'" @click="navTo('trash')" title="Papierkorb">
-      <span class="nav-icon">🗑</span>
-      <span class="nav-label">Papierkorb<span x-show="trash.totalCount > 0" class="nav-badge" x-text="trash.totalCount"></span></span>
-    </div>
+    <button type="button" class="nav-item nav-secondary" :class="page==='pending' && 'active'" @click="navTo('pending')" title="Import prüfen">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="nav-label">Import prüfen</span>
+      <span class="badge" x-show="status.pending_count > 0" x-text="status.pending_count"></span>
+    </button>
+    <button type="button" class="nav-item nav-secondary" :class="page==='jobs' && 'active'" @click="navTo('jobs')" title="Jobs & Logs">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span><span class="nav-label">Jobs &amp; Logs</span>
+    </button>
+    <button type="button" class="nav-item nav-secondary" :class="page==='master' && 'active'" @click="navTo('master')" title="Stammdaten">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5z"/><path d="M4 6.5v13M8 8h8M8 12h8"/></svg></span><span class="nav-label">Stammdaten</span>
+    </button>
+    <button type="button" class="nav-item nav-secondary" :class="page==='config' && 'active'" @click="navTo('config')" title="Einstellungen">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></svg></span><span class="nav-label">Einstellungen</span>
+    </button>
+    <button type="button" class="nav-item nav-secondary" :class="page==='trash' && 'active'" @click="navTo('trash')" title="Papierkorb">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></span><span class="nav-label">Papierkorb</span>
+      <span class="badge" x-show="trash.totalCount > 0" x-text="trash.totalCount"></span>
+    </button>
 
-    <!-- Mehr-Button (nur Mobile sichtbar) -->
-    <div class="nav-item nav-more" :class="moreDrawerOpen && 'active'" @click="moreDrawerOpen = !moreDrawerOpen" title="Mehr">
-      <span class="nav-icon">⋯</span><span class="nav-label">Mehr</span>
-    </div>
+    <button type="button" class="nav-item nav-more" :class="moreDrawerOpen && 'active'" @click="moreDrawerOpen = !moreDrawerOpen" title="Mehr">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></span><span class="nav-label">Mehr</span>
+    </button>
 
     <div class="foot">
-      <div x-show="status.scraper">
-        <span class="pill running">scraper</span> läuft
-      </div>
-      <div style="margin-top: 12px">
-        v1.0 · <a href="/logout">Logout</a> ·
-        <a href="#" @click.prevent="cycleTheme()"
-           :title="'Aktuelles Theme: ' + currentTheme().label + '. Klick = nächstes Theme.'">
-          <span x-text="currentTheme().icon + ' ' + currentTheme().label"></span>
-        </a>
-      </div>
+      <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
+      <div x-show="!status.scraper">Importdienst bereit</div>
+      <div class="sidebar-meta"><span>v1.1</span><a href="/logout">Abmelden</a></div>
     </div>
   </aside>
 
   <!-- Mehr-Drawer (nur Mobile, Bottom-Sheet) -->
-  <div class="more-drawer-backdrop" x-show="moreDrawerOpen"
-       @click="moreDrawerOpen = false" x-transition.opacity></div>
-  <div class="more-drawer" :class="moreDrawerOpen && 'open'">
+  <div class="more-drawer-backdrop" x-show="moreDrawerOpen" @click="moreDrawerOpen = false" x-transition.opacity></div>
+  <div class="more-drawer" :class="moreDrawerOpen && 'open'" aria-label="Weitere Bereiche">
     <div class="more-drawer-grip"></div>
-    <div class="more-drawer-item" :class="page==='jobs' && 'active'"
-         @click="navTo('jobs'); moreDrawerOpen = false">
-      <span class="more-icon">⚡</span><span>Jobs &amp; Logs</span>
+    <div class="more-drawer-item" :class="page==='pending' && 'active'" @click="navTo('pending'); moreDrawerOpen = false">
+      <span class="more-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>Import prüfen <strong x-show="status.pending_count > 0" x-text="'(' + status.pending_count + ')'" style="margin-left:4px"></strong></span>
     </div>
-    <div class="more-drawer-item" :class="page==='config' && 'active'"
-         @click="navTo('config'); moreDrawerOpen = false">
-      <span class="more-icon">⚙️</span><span>Einstellungen</span>
+    <div class="more-drawer-item" :class="page==='jobs' && 'active'" @click="navTo('jobs'); moreDrawerOpen = false">
+      <span class="more-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span><span>Jobs &amp; Logs</span>
     </div>
-    <div class="more-drawer-item" :class="page==='master' && 'active'"
-         @click="navTo('master'); moreDrawerOpen = false">
-      <span class="more-icon">📚</span><span>Stammdaten</span>
+    <div class="more-drawer-item" :class="page==='master' && 'active'" @click="navTo('master'); moreDrawerOpen = false">
+      <span class="more-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5z"/><path d="M4 6.5v13M8 8h8M8 12h8"/></svg></span><span>Stammdaten</span>
     </div>
-    <div class="more-drawer-item" :class="page==='trash' && 'active'"
-         @click="navTo('trash'); moreDrawerOpen = false">
-      <span class="more-icon">🗑</span><span>Papierkorb<span x-show="trash.totalCount > 0" style="margin-left:6px; color:var(--accent);">(<span x-text="trash.totalCount"></span>)</span></span>
+    <div class="more-drawer-item" :class="page==='config' && 'active'" @click="navTo('config'); moreDrawerOpen = false">
+      <span class="more-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></svg></span><span>Einstellungen</span>
     </div>
-    <!-- Theme-Picker im Drawer: alle Themes als Chips zum direkten Auswählen.
-         Aktuelles Theme ist visuell markiert. -->
-    <div style="padding: 10px 14px; border-top: 1px solid var(--border); margin-top: 6px;">
-      <div style="font-size: 11px; color: var(--fg-mute); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">Theme</div>
-      <div style="display: flex; flex-wrap: wrap; gap: 4px;">
-        <template x-for="t in themes" :key="t.id">
-          <button class="btn btn-sm"
-                  :class="t.id === theme ? 'btn-primary' : ''"
-                  @click="setTheme(t.id); moreDrawerOpen = false"
-                  style="flex: 0 0 auto; padding: 4px 10px;">
-            <span x-text="t.icon + ' ' + t.label"></span>
-          </button>
-        </template>
-      </div>
+    <div class="more-drawer-item" :class="page==='trash' && 'active'" @click="navTo('trash'); moreDrawerOpen = false">
+      <span class="more-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></span><span>Papierkorb <strong x-show="trash.totalCount > 0" x-text="'(' + trash.totalCount + ')'" style="margin-left:4px"></strong></span>
     </div>
-    <!-- Status + Logout (Desktop-Fußzeile ist mobil ausgeblendet — hier die Heimat) -->
-    <div style="padding: 10px 14px; border-top: 1px solid var(--border); margin-top: 6px; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
-      <span class="muted" style="font-size: 13px;">
-        <span x-show="status.scraper"><span class="pill running">scraper</span> läuft</span>
-        <span x-show="!status.scraper">Scraper bereit</span>
-      </span>
-      <a href="/logout" class="btn btn-secondary btn-sm" style="min-height: 38px; display: inline-flex; align-items: center;">Logout</a>
+    <div style="padding: 12px 14px 2px; border-top: 1px solid var(--border); margin-top: 7px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
+      <span class="muted" style="font-size:12px;" x-text="status.scraper ? 'Import läuft' : 'Importdienst bereit'"></span>
+      <a href="/logout" class="btn btn-secondary btn-sm">Abmelden</a>
     </div>
   </div>
 
@@ -151,8 +141,8 @@
     <section x-show="page==='pending'">
       <div class="page-head">
         <div>
-          <h1>Pending</h1>
-          <div class="subtitle">Unklare Analysen manuell zuordnen oder per KI neu analysieren</div>
+          <h1>Import prüfen</h1>
+          <div class="subtitle">Unklare Importe zuordnen, neu analysieren oder verwerfen</div>
         </div>
         <div class="flex">
           <select class="btn" x-model="pendingSort" @change="loadPending()" style="font-family: inherit;">
@@ -564,7 +554,6 @@
                   </div>
                 </div>
 
-                <!-- Backup-Schedule-Card entfernt — rclone im separaten Container. -->
               </div>
 
               <div class="hint" style="margin-bottom: 14px;">
@@ -779,7 +768,6 @@
 
           <!-- Telegram-Block entfernt: Benachrichtigungen sind raus. -->
 
-          <!-- Backup-Section entfernt — rclone-Sync läuft im separaten Container. -->
 
           <!-- yt-dlp -->
           <div class="config-section">
@@ -962,14 +950,41 @@
     </section>
 
     <!-- ========== REZEPTE ========== -->
-    <section x-show="page==='recipes'" class="recipes-page">
+    <section x-show="page==='recipes' || page==='favorites'" class="recipes-page">
+      <div class="recipes-hero">
+        <h1 x-text="page === 'favorites' ? 'Favoriten' : 'Rezepte'"></h1>
+        <div class="recipes-hero-subtitle" x-text="page === 'favorites' ? 'Deine gespeicherten Lieblingsrezepte.' : 'Entdecke und finde deine Lieblingsrezepte.'"></div>
+        <div class="recipes-searchbar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11l2 2 4-4"/></svg>
+          <input type="search" x-model.debounce.300ms="recipes.filters.search" @input="recipes.filters.offset=0; loadRecipes()" placeholder="Suche nach Rezepten, Zutaten, Kategorien …" aria-label="Rezepte durchsuchen">
+          <button type="button" class="btn btn-primary" @click="recipes.filters.offset=0; loadRecipes()" aria-label="Suche ausführen">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11l2 2 4-4"/></svg><span class="search-label">Suche</span>
+          </button>
+        </div>
+        <div class="recipes-quick-filters">
+          <select x-model="recipes.filters.category" @change="recipes.filters.offset=0; loadRecipes()" aria-label="Kategorie filtern">
+            <option value="">Kategorie: Alle</option>
+            <template x-for="c in recipes.facets.categories" :key="c"><option :value="c" x-text="c"></option></template>
+          </select>
+          <select x-model="recipes.filters.type" @change="recipes.filters.offset=0; loadRecipes()" aria-label="Typ filtern">
+            <option value="">Typ: Alle</option>
+            <template x-for="t in recipes.facets.types" :key="t"><option :value="t" x-text="t"></option></template>
+          </select>
+          <button type="button" class="btn btn-secondary" @click="recipes.filterDrawerOpen = true" :aria-expanded="recipes.filterDrawerOpen.toString()" aria-controls="recipe-filter-panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></svg> Weitere Filter
+            <span class="badge" x-show="activeFilterCount() > 0" x-text="activeFilterCount()"></span>
+          </button>
+          <button type="button" class="btn btn-ghost" @click="resetFilters()" x-show="activeFilterCount() > 0">Zurücksetzen</button>
+          <span class="recipes-filter-summary" x-text="recipes.total + ' Rezepte'"></span>
+        </div>
+      </div>
       <div class="recipes-layout">
         <!-- Filter-Drawer-Backdrop (nur Mobile, beim Tippen schließen) -->
         <div class="recipes-filters-backdrop" x-show="recipes.filterDrawerOpen"
              @click="recipes.filterDrawerOpen = false" x-transition.opacity></div>
 
         <!-- Filter-Sidebar / Drawer -->
-        <aside class="recipes-filters" :class="recipes.filterDrawerOpen && 'open'">
+        <aside id="recipe-filter-panel" class="recipes-filters" :class="recipes.filterDrawerOpen && 'open'" :aria-hidden="(!recipes.filterDrawerOpen).toString()" :inert="!recipes.filterDrawerOpen">
           <div class="recipes-filters-head">
             <strong>Filter <span class="muted" x-show="activeFilterCount()" x-text="'('+activeFilterCount()+' aktiv)'"></span></strong>
             <div style="display:flex; gap:6px;">
@@ -978,11 +993,6 @@
               <button class="btn btn-primary btn-sm" @click="recipes.filterDrawerOpen = false">Fertig</button>
             </div>
           </div>
-          <div class="filter-block">
-            <label>Suche</label>
-            <input type="text" x-model.debounce.300ms="recipes.filters.search" @input="loadRecipes()" placeholder="Name, Beschreibung…" />
-          </div>
-
           <div class="filter-block">
             <label>Typ</label>
             <select x-model="recipes.filters.type" @change="loadRecipes()">
@@ -1097,19 +1107,19 @@
           </div>
 
           <button class="btn btn-secondary" @click="resetFilters()" style="width: 100%; margin-top: 12px;">Filter zurücksetzen</button>
-          <button class="btn btn-secondary" @click="syncRecipes()" style="width: 100%; margin-top: 6px;" title="Filesystem neu scannen">↻ FS-Sync</button>
+          <button class="btn btn-secondary" @click="syncRecipes()" style="width: 100%; margin-top: 6px;" title="Filesystem neu scannen">↻ Bibliothek neu einlesen</button>
         </aside>
 
         <!-- Grid -->
         <div class="recipes-main">
           <div class="recipes-header">
-            <h2 style="margin: 0">Rezepte
+            <div class="recipes-title-row">
+              <h2 x-text="page === 'favorites' ? 'Gespeicherte Rezepte' : 'Empfohlene Rezepte'"></h2>
               <span class="muted" x-text="recipes.total + ' insgesamt'"></span>
-            </h2>
+            </div>
             <div class="recipes-header-actions">
-              <button class="btn btn-secondary recipes-filter-btn"
-                      @click="recipes.filterDrawerOpen = true">
-                ☰ Filter
+              <button class="btn btn-secondary recipes-filter-btn" @click="recipes.filterDrawerOpen = true">
+                Weitere Filter
                 <span class="badge" x-show="activeFilterCount() > 0" x-text="activeFilterCount()"></span>
               </button>
               <div class="recipes-info" x-show="recipes.extractionRunning">
@@ -1144,6 +1154,7 @@
                 </div>
                 <div class="recipe-meta">
                   <div class="recipe-name" x-text="r.name"></div>
+                  <p class="recipe-excerpt" x-show="r.description" x-text="r.description"></p>
                   <div class="recipe-tags">
                     <span class="pill" x-text="r.type" x-show="r.type"></span>
                     <span class="pill muted" x-text="r.category" x-show="r.category"></span>
@@ -1189,7 +1200,7 @@
       <div class="card">
         <div class="page-head" style="margin-bottom: 16px; border-bottom: none; padding-bottom: 0;">
           <div>
-            <h1 style="margin:0; font-size: 22px;">🛒 Einkaufskorb <span class="muted" style="font-weight: normal; font-size: 14px;" x-text="'('+cart.items.length+' Posten)'"></span></h1>
+            <h1 style="margin:0; font-size: 22px;">Einkaufsliste <span class="muted" style="font-weight: normal; font-size: 14px;" x-text="'('+cart.items.length+' Posten)'"></span></h1>
           </div>
           <div class="flex" style="gap: 8px;">
             <button class="btn btn-primary" @click="pushToEinkauf()"

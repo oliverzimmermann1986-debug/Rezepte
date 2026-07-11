@@ -50,6 +50,7 @@ def test_list_search_in_description(client, test_db):
     r = client.get("/api/recipes?search=Knoblauch")
     body = r.json()
     assert body["total"] == 1
+    assert body["items"][0]["description"] == "mit viel Knoblauch und Olivenöl"
 
 
 def test_list_pagination(client, test_db):

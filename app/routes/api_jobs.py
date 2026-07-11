@@ -1,7 +1,4 @@
-"""API für Scraper-Jobs: starten, Status abrufen, Logs.
-
-Hinweis: Backup/Sync-Funktionalität (rclone) ist komplett entfernt und in
-einen separaten Container ausgelagert. Hier nur noch Scraper-Jobs."""
+"""API für Import- und Analysejobs: starten, Status abrufen und Logs lesen."""
 from __future__ import annotations
 
 import logging
@@ -215,7 +212,7 @@ def scraper_progress():
 
 @router.get("/status/current")
 def status_current():
-    """Was läuft gerade? Reduziert auf scraper + reanalyze nach rclone-Removal."""
+    """Was läuft gerade? Reduziert auf scraper + reanalyze ."""
     db = get_db()
     return {
         "scraper": db.job_running("scraper"),

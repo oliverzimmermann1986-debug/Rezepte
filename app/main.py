@@ -208,8 +208,8 @@ async def _lifespan(app):
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).
 _enable_docs = os.getenv("SCRAPPER_ENABLE_DOCS", "0") == "1"
 app = FastAPI(
-    title="Scrapper Manager",
-    version="1.0.0",
+    title="Rezeptliebe",
+    version="1.1.0",
     docs_url="/api/docs" if _enable_docs else None,
     redoc_url=None,
     openapi_url="/api/openapi.json" if _enable_docs else None,
@@ -294,13 +294,15 @@ def _set_session_cookie(resp, token: str, request: Request) -> None:
 LOGIN_HTML = """\
 <!DOCTYPE html>
 <html lang="de"><head>
-<meta charset="UTF-8"><title>Login · Rezepte</title>
+<meta charset="UTF-8"><title>Login · Rezeptliebe</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/rezeptliebe.css">
 </head><body class="login-body">
 <form method="post" action="/login" class="login-card">
-  <h1>Rezepte</h1>
-  <p class="muted">Bitte anmelden</p>
+  <div class="login-brand">
+    <div class="brand-mark"><svg class="brand-chef-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M15 37h18v5H15z"/><path d="M14 34V23.5c-4.1-.5-7-3.6-7-7.4 0-4.2 3.5-7.6 7.8-7.6 1.2 0 2.4.3 3.4.8C19.7 6.1 22.9 4 26.5 4c4.8 0 8.8 3.7 9.2 8.4h.8c4.1 0 7.5 3.3 7.5 7.4 0 3.9-3.1 7.1-7 7.4V34H14z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M19 21v10M29 21v10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></div>
+    <div><h1>Rezeptliebe</h1><p class="muted">Deine persönliche Rezeptbibliothek</p></div>
+  </div>
   {error}
   <input type="hidden" name="next" value="{next}">
   <label>Benutzer<input name="username" autocomplete="username" required></label>
@@ -312,8 +314,15 @@ LOGIN_HTML = """\
 
 
 def _safe_next(value: str) -> str:
-    """Open-Redirect-Schutz: nur lokale Pfade erlauben."""
-    if not value or not value.startswith("/") or value.startswith("//"):
+    """Open-Redirect- und Header-Injection-Schutz: nur lokale Pfade erlauben."""
+    value = str(value or "")[:2048]
+    if any(ord(ch) < 32 for ch in value):
+        return "/"
+    # Backslashes verbieten: Browser normalisieren '\' zu '/' - aus '/\evil.com'
+    # würde sonst '//evil.com' (scheme-relativer Redirect auf fremde Domain).
+    if "\\" in value:
+        return "/"
+    if not value.startswith("/") or value.startswith("//"):
         return "/"
     return value
 
@@ -372,15 +381,15 @@ def logout():
 
 # -------- Home (geschützt) --------
 def _static_version() -> str:
-    """Cache-Buster für /static/app.js und /static/style.css.
+    """Cache-Buster für /static/app.js und /static/rezeptliebe.css.
 
-    Max-mtime von app.js UND style.css als Token. Vorher nur app.js —
+    Max-mtime von app.js UND rezeptliebe.css als Token. Vorher nur app.js —
     reine CSS-Deploys änderten die URL nicht und Browser/SW lieferten
     altes CSS aus dem Cache."""
     try:
         m = max(
             int((STATIC_DIR / "app.js").stat().st_mtime),
-            int((STATIC_DIR / "style.css").stat().st_mtime),
+            int((STATIC_DIR / "rezeptliebe.css").stat().st_mtime),
         )
         return str(m)
     except Exception:

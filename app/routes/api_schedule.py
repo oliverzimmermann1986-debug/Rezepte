@@ -1,7 +1,4 @@
-"""API für systemd-Timer-Verwaltung (nur noch Scraper-Timer).
-
-Backup-Timer (rclone-sync.timer) wurde entfernt — Sync läuft im separaten
-Container."""
+"""API für die sichere Verwaltung des Scraper-Zeitplans."""
 from __future__ import annotations
 
 import logging

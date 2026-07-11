@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS pending (
 
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL,              -- 'scraper' | 'backup'
+  kind TEXT NOT NULL,              -- 'scraper' | 'reanalyze'
   started_at REAL NOT NULL,
   ended_at REAL,
   status TEXT,                     -- running | ok | error

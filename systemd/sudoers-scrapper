@@ -3,8 +3,5 @@
 
 scrapper ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
 scrapper ALL=(root) NOPASSWD: /usr/bin/systemctl restart scrapper-job.timer
-scrapper ALL=(root) NOPASSWD: /usr/bin/systemctl restart rclone-sync.timer
 scrapper ALL=(root) NOPASSWD: /usr/bin/systemctl start scrapper-job.timer
-scrapper ALL=(root) NOPASSWD: /usr/bin/systemctl start rclone-sync.timer
 scrapper ALL=(root) NOPASSWD: /usr/bin/systemctl stop scrapper-job.timer
-scrapper ALL=(root) NOPASSWD: /usr/bin/systemctl stop rclone-sync.timer

@@ -1,17 +1,17 @@
-// Service Worker für Scrapper-PWA
+// Service Worker für die Rezeptliebe-PWA
 // Strategy:
 // - cache-first für /static/* (CSS, JS, Alpine)
 // - cache-first stale-while-revalidate für /api/recipes/{id}/thumb
 //   (Bilder ändern sich selten — Liste lädt instant aus dem Cache)
 // - network-first für alles andere
 // - Offline: Fallback auf cached '/'
-const CACHE_NAME = 'scrapper-v33';
-const THUMB_CACHE = 'scrapper-thumbs-v1';
-const DETAIL_CACHE = 'scrapper-detail-v1';   // /api/recipes/{id} responses
-const VIDEO_CACHE = 'scrapper-videos-v1';    // /api/recipes/{id}/video
+const CACHE_NAME = 'rezeptliebe-v1.1';
+const THUMB_CACHE = 'rezeptliebe-thumbs-v1';
+const DETAIL_CACHE = 'rezeptliebe-detail-v1';   // /api/recipes/{id} responses
+const VIDEO_CACHE = 'rezeptliebe-videos-v1';    // /api/recipes/{id}/video
 const STATIC_CACHE_URLS = [
   '/',
-  '/static/style.css',
+  '/static/rezeptliebe.css',
   '/static/app.js',
   '/static/alpine.min.js',
   '/manifest.json',

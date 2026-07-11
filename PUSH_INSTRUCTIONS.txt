@@ -1,26 +1,20 @@
-==============================================
-Repo befüllen — schnellster Weg
-==============================================
+REZEPTLIEBE – ÜBERNAHME IN DAS RICHTIGE REPOSITORY
 
-# 1. Zip entpacken in einen neuen Ordner:
-unzip Scrappercontainer.zip
-cd scrappercontainer
+1. ZIP entpacken und vorhandenes Repository ersetzen/zusammenführen.
+2. Änderungen prüfen:
+   git status
+   git diff --stat
+3. Commit erstellen:
+   git add .
+   git commit -m "Rezeptliebe: Butter-Yellow Mobile-First UI"
+   git push
 
-# 2. Git initialisieren und pushen:
-git init
-git branch -M main
-git remote add origin https://github.com/appear7240/Scrappercontainer.git
-git add .
-git commit -m "Initial: Scrapper + Backup container with Web-UI"
-git push -u origin main
+Update im bestehenden Container:
+   cd /opt/scrapper
+   git pull
+   bash proxmox/install.sh
+   systemctl restart scrapper-web
 
-# 3. Auf dem Proxmox Host:
-curl -O https://raw.githubusercontent.com/appear7240/Scrappercontainer/main/proxmox/create-container.sh
-curl -O https://raw.githubusercontent.com/appear7240/Scrappercontainer/main/proxmox/install.sh
-chmod +x *.sh
-./create-container.sh
-pct push 200 install.sh /root/install.sh
-pct exec 200 -- bash /root/install.sh
-
-# 4. Browser:
-http://<container-ip>:8000   →  admin / changeme
+Browser danach einmal ohne Cache neu laden.
+Das Initialpasswort wird bei Neuinstallationen vom Installer zufällig erzeugt
+und in data/.initial-password abgelegt.

@@ -124,7 +124,6 @@ def test_openai(req: OpenAITestRequest = None) -> Dict[str, Any]:
 
 
 # /telegram-Test wurde entfernt: Telegram-Benachrichtigungen sind raus.
-# /rclone-Test wurde entfernt: rclone-Sync läuft im separaten Container.
 
 
 @router.post("/paths")

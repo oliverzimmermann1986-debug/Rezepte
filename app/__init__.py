@@ -1,2 +1,2 @@
-"""Scrapper App Package."""
-__version__ = "1.0.0"
+"""Rezeptliebe App Package."""
+__version__ = "1.1.0"

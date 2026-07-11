@@ -7,27 +7,44 @@ function scrapperApp() {
     // Zentrale Navigations-Helper — page-switch plus die zugehörigen
     // Loader. Vorher waren die Loader direkt im @click jeder nav-item,
     // was beim Refactor (z.B. neue Bottom-Sheet) duplication erzeugte.
-    navTo(targetPage) {
+    navTo(targetPage, { updateUrl = true } = {}) {
+      const allowed = new Set(['recipes','favorites','cart','pending','audit','jobs','config','master','trash']);
+      if (!allowed.has(targetPage)) targetPage = 'recipes';
       this.page = targetPage;
-      // Drawer immer schließen wenn man eine andere Page wählt
       this.moreDrawerOpen = false;
-      // Defensiv: alle offenen Modals schließen damit kein Modal aus
-      // einem anderen Tab auf der neuen Page hängenbleibt (z.B. der
-      // Verzeichnis-Browser den man in Stammdaten geöffnet hat — der
-      // sollte bei Wechsel auf 'Rezepte' nicht weiter sichtbar sein).
       if (this.browser?.show) this.browser.show = false;
       if (this.recipeDetail?.show) this.recipeDetail.show = false;
+
+      if (targetPage === 'favorites') {
+        this.recipes.filters.favorite_only = true;
+      } else if (targetPage === 'recipes') {
+        this.recipes.filters.favorite_only = false;
+      }
+
       switch (targetPage) {
         case 'pending':   this.loadPending(); this.loadFailedDownloads(); break;
         case 'jobs':      this.loadJobs(); break;
         case 'config':    this.loadConfig(); this.loadUsers(); break;
-        case 'recipes':   this.loadRecipes(); this.loadFacets(); break;
+        case 'recipes':
+        case 'favorites': this.recipes.filters.offset = 0; this.loadRecipes(); this.loadFacets(); break;
         case 'cart':      this.loadCart(); if (!this.config?.einkauf) this.loadConfig(); break;
         case 'trash':     this.loadTrash(); break;
         case 'audit':     this.loadAudit(); break;
         case 'master':    this.loadMaster(); break;
-        // dashboard: keine spezielle Loader, x-show triggert die Widgets
       }
+
+      if (updateUrl && window.history?.replaceState) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('tab', targetPage);
+        window.history.replaceState({}, '', url);
+      }
+    },
+    pageLabel() {
+      return ({
+        recipes: 'Alle Rezepte', favorites: 'Favoriten', cart: 'Einkaufsliste',
+        pending: 'Import prüfen', audit: 'Rezepte prüfen', jobs: 'Jobs & Logs',
+        config: 'Einstellungen', master: 'Stammdaten', trash: 'Papierkorb',
+      })[this.page] || 'Rezepte';
     },
     config: {},
     hddStatus: null,
@@ -49,7 +66,6 @@ function scrapperApp() {
     jobs: [],
     status: { scraper: null, pending_count: 0 },
     lastScraper: null,
-    lastBackup: null,
     stats: null,
     statsLoading: false,
     currentLog: '',
@@ -79,8 +95,22 @@ function scrapperApp() {
       items: [], totalCount: 0, loading: false, emptying: false,
     },
     audit: {
-      data: null,
-      summary: null,
+      data: {
+        total_recipes: 0,
+        exact_duplicates: [], url_duplicates: [], folder_duplicates: [], similar_clusters: [],
+        bad_names: [], sync_errors: [], ai_category_findings: [], ai_name_findings: [],
+        ai_folder_findings: [], ai_suggestions: [], empty_recipes: [], failed_downloads: [],
+        data_gaps: { no_image: [], no_steps: [], no_url: [], few_ingredients: [], no_description: [], unverified: [], fs_missing: [], no_nutrition: [] },
+      },
+      summary: {
+        exact_count: 0, exact_groups: 0, url_count: 0, folder_count: 0,
+        similar_count: 0, similar_clusters: 0, bad_count: 0, sync_error_count: 0,
+        ai_category_count: 0, ai_name_count: 0, ai_folder_count: 0,
+        empty_recipe_count: 0, failed_download_count: 0, with_ai_suggestions: 0,
+        no_image_count: 0, no_steps_count: 0, no_url_count: 0,
+        few_ingredients_count: 0, no_description_count: 0, unverified_count: 0,
+        fs_missing_count: 0, no_nutrition_count: 0,
+      },
       loading: false,
       withAi: false,
       // KI-Sanity-Background-Job: Progress beim Polling
@@ -148,85 +178,28 @@ function scrapperApp() {
     // Bewusst auf scrapperApp-Top-Level damit Alpine reactivity trackt.
     timers: {},
     _audioCtx: null,
-    theme: 'dark',  // 'dark' | 'light' | 'butter' | 'ocean' | 'forest' | 'lavender'
-    // Themes in Reihenfolge für cycleTheme(). Label + Emoji für UI.
-    themes: [
-      { id: 'dark',     label: 'Dunkel',   icon: '🌙', bg: '#0a0d12' },
-      { id: 'light',    label: 'Hell',     icon: '☀️', bg: '#faf7f2' },
-      { id: 'butter',   label: 'Butter',   icon: '🧈', bg: '#fdf6d8' },
-      { id: 'ocean',    label: 'Ocean',    icon: '🌊', bg: '#eef5fa' },
-      { id: 'forest',   label: 'Forest',   icon: '🌿', bg: '#f3efe5' },
-      { id: 'lavender', label: 'Lavender', icon: '💜', bg: '#f3eef7' },
-    ],
-
     init() {
-      // Theme aus localStorage laden bevor irgendwas anderes rendert
-      try {
-        const stored = localStorage.getItem('theme');
-        if (this.themes.some(t => t.id === stored)) this.theme = stored;
-      } catch (_) {}
-      document.documentElement.setAttribute('data-theme', this.theme);
-      this._updateThemeColorMeta();
+      const tab = new URLSearchParams(window.location.search).get('tab');
+      const validTab = ['recipes','favorites','cart','pending','audit','jobs','config','master','trash'].includes(tab) ? tab : 'recipes';
+      this.page = validTab;
 
       this.loadRecentJobs();
       this.loadStats();
-      this.loadHddStatus();   // Externe-HDD-Card auf dem Dashboard
-      // Initial-Page-Daten laden. page-state ist beim Boot 'recipes' (default),
-      // bei direktem Aufruf via URL-Hash könnte was anderes sein → navTo
-      // hat die Page-spezifischen Loader, hier rufen wir das für die aktuelle
-      // Page einmal selbst auf damit Inhalt nicht erst nach Tab-Wechsel kommt.
-      this.navTo(this.page);
-      // Job-/Stats-Karten brauchen weiterhin gelegentliches Reload (kein
-      // Live-Update, da nur Snapshot-Daten)
+      this.loadHddStatus();
+      this.navTo(this.page, { updateUrl: false });
       this._jobsTimer = setInterval(() => this.loadRecentJobs(), 15000);
       this._statsTimer = setInterval(() => this.loadStats(), 60000);
       this._hddTimer = setInterval(() => this.loadHddStatus(), 30000);
-      // Live-Status via Server-Sent-Events. Eine offene Connection statt
-      // 2+ req/s Polling. Browser-EventSource reconnected automatisch bei
-      // Drop. Wenn der Endpoint nicht da ist (alte Backend-Version): Fall-
-      // back auf setInterval-Polling.
       this._startEventStream();
-      // Akku/Traffic auf Mobile: im Hintergrund alle Timer + SSE stoppen,
-      // beim Zurückkehren sofort frisch laden + Timer/SSE neu starten.
       document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-          this._pauseBackgroundWork();
-        } else {
-          this._resumeBackgroundWork();
-        }
+        if (document.hidden) this._pauseBackgroundWork();
+        else this._resumeBackgroundWork();
       });
-      // Pull-to-Refresh nach DOM-Init (nextTick) damit ptr-indicator da ist
+      window.addEventListener('popstate', () => {
+        const next = new URLSearchParams(window.location.search).get('tab') || 'recipes';
+        this.navTo(next, { updateUrl: false });
+      });
       this.$nextTick(() => this.initPullToRefresh());
-    },
-    // Theme direkt setzen (id aus this.themes).
-    setTheme(id) {
-      if (!this.themes.some(t => t.id === id)) return;
-      this.theme = id;
-      document.documentElement.setAttribute('data-theme', id);
-      try { localStorage.setItem('theme', id); } catch (_) {}
-      this._updateThemeColorMeta();
-    },
-    // Klick-Cycle: next theme in der Liste.
-    cycleTheme() {
-      const idx = this.themes.findIndex(t => t.id === this.theme);
-      const next = this.themes[(idx + 1) % this.themes.length];
-      this.setTheme(next.id);
-    },
-    // Backwards-compat (existing Buttons rufen toggleTheme).
-    toggleTheme() { this.cycleTheme(); },
-    // Aktuelles Theme-Objekt für UI-Anzeige.
-    currentTheme() {
-      return this.themes.find(t => t.id === this.theme) || this.themes[0];
-    },
-    _updateThemeColorMeta() {
-      const t = this.currentTheme();
-      let meta = document.querySelector('meta[name="theme-color"]');
-      if (!meta) {
-        meta = document.createElement('meta');
-        meta.setAttribute('name', 'theme-color');
-        document.head.appendChild(meta);
-      }
-      meta.setAttribute('content', t.bg);
     },
 
     _startEventStream() {
@@ -491,9 +464,6 @@ function scrapperApp() {
       if (j.kind === 'reanalyze') {
         return `${s.auto_saved||0} eingeordnet, ${s.still_pending||0} pending, ${s.errors||0} err (${s.processed||0}/${s.total||0})`;
       }
-      if (j.kind === 'quicksync') {
-        return `${s.verb || s.direction || '?'}: ${s.remote || '?'} ⇄ ${s.local || '?'}${s.dry_run ? ' (dry)' : ''}`;
-      }
       return '';
     },
 
@@ -512,12 +482,11 @@ function scrapperApp() {
     async loadStats() {
       this.statsLoading = true;
       try {
-        const [jobs, conf, perPair] = await Promise.all([
+        const [jobs, conf] = await Promise.all([
           this.api('GET', '/api/stats/jobs-per-day?days=14'),
           this.api('GET', '/api/stats/confidence-histogram?buckets=10'),
-          this.api('GET', '/api/stats/per-pair?days=30'),
         ]);
-        this.stats = { jobs, conf, perPair };
+        this.stats = { jobs, conf };
       } catch(e) {} finally {
         this.statsLoading = false;
       }
@@ -591,8 +560,6 @@ function scrapperApp() {
       if (!s || !s.days || s.days.length === 0) return '<div class="muted" style="padding:20px 0; text-align:center;">keine Daten</div>';
       const w = 600, h = 140, pad = 24;
       const days = s.days;
-      // Nur Scrapper-Job-Typen anzeigen — backup/quicksync sind Reste vom
-      // alten rclone-Code, läuft jetzt im separaten Container.
       const ALLOWED = ['scraper', 'reanalyze'];
       const kinds = Object.keys(s.series).filter(k => ALLOWED.includes(k));
       const palette = { scraper: '#f97316', reanalyze: '#a855f7' };
@@ -1783,7 +1750,7 @@ function scrapperApp() {
     resetFilters() {
       this.recipes.filters = {
         search: '', type: '', category: '', tag_ids: [], ingredients: [],
-        ingredients_status: '', verified: '', favorite_only: false, min_rating: 0,
+        ingredients_status: '', verified: '', favorite_only: this.page === 'favorites', min_rating: 0,
         limit: 60, offset: 0,
       };
       this.loadRecipes();

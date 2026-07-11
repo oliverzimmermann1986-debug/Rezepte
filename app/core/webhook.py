@@ -10,7 +10,7 @@ Ziel-URLs ein und wählt für jede die Events. Funktioniert mit:
 
 Format:
   {
-    "event": "scraper_done" | "backup_done" | "job_failed" | "pending_high",
+    "event": "scraper_done" | "job_failed" | "pending_high",
     "timestamp": "2026-05-22T15:30:00+00:00",
     "host": "scrapper",
     "summary": { ... event-spezifisch ... }
@@ -51,7 +51,6 @@ atexit.register(_shutdown_pool)
 def _format_discord(payload: dict) -> dict:
     color_by_event = {
         "scraper_done": 0x22c55e,
-        "backup_done": 0x06b6d4,
         "job_failed": 0xef4444,
         "pending_high": 0xeab308,
     }
@@ -103,7 +102,7 @@ def notify(event: str, summary: dict, *, sync: bool = False) -> List[dict]:
     """Sendet ein Event an alle konfigurierten Webhooks, die das Event abonniert haben.
 
     Args:
-        event:    'scraper_done' | 'backup_done' | 'job_failed' | 'pending_high'
+        event:    'scraper_done' | 'job_failed' | 'pending_high'
         summary:  Beliebiges JSON-serialisierbares Dict
         sync:     Wenn True wird synchron gesendet (für Tests). Default async.
 
@@ -124,7 +123,7 @@ def notify(event: str, summary: dict, *, sync: bool = False) -> List[dict]:
     for hook in hooks_cfg:
         if not hook.get("enabled", True):
             continue
-        events = hook.get("events") or ["scraper_done", "backup_done", "job_failed"]
+        events = hook.get("events") or ["scraper_done", "job_failed"]
         if event not in events:
             continue
         sent_to.append(hook)

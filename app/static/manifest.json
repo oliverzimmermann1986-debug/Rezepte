@@ -1,15 +1,19 @@
 {
-  "name": "Rezepte",
-  "short_name": "Rezepte",
-  "description": "Rezepte + Hochzeit · TikTok/Instagram Scraper mit Einkaufsliste",
+  "name": "Rezeptliebe",
+  "short_name": "Rezeptliebe",
+  "description": "Mobile Rezeptbibliothek mit Suche, Favoriten und Einkaufsliste",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "theme_color": "#0f1419",
-  "background_color": "#0a0d12",
+  "theme_color": "#f5c84f",
+  "background_color": "#fffaf0",
   "lang": "de",
-  "categories": ["food", "lifestyle", "productivity"],
+  "categories": [
+    "food",
+    "lifestyle",
+    "productivity"
+  ],
   "icons": [
     {
       "src": "/static/icon-192.png",
@@ -31,8 +35,35 @@
     }
   ],
   "shortcuts": [
-    { "name": "Rezepte", "url": "/?tab=recipes", "icons": [{"src":"/static/icon-192.png","sizes":"192x192"}] },
-    { "name": "Einkaufskorb", "url": "/?tab=cart", "icons": [{"src":"/static/icon-192.png","sizes":"192x192"}] },
-    { "name": "Audit", "url": "/?tab=audit", "icons": [{"src":"/static/icon-192.png","sizes":"192x192"}] }
+    {
+      "name": "Rezepte",
+      "url": "/?tab=recipes",
+      "icons": [
+        {
+          "src": "/static/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Favoriten",
+      "url": "/?tab=favorites",
+      "icons": [
+        {
+          "src": "/static/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Einkaufsliste",
+      "url": "/?tab=cart",
+      "icons": [
+        {
+          "src": "/static/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
   ]
 }

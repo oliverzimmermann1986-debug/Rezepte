@@ -106,7 +106,7 @@ def metrics() -> Response:
     # --- Running Jobs ---
     lines.append("# HELP scrapper_jobs_running Currently running jobs by kind")
     lines.append("# TYPE scrapper_jobs_running gauge")
-    for kind in ("scraper", "backup", "quicksync", "reanalyze"):
+    for kind in ("scraper", "reanalyze"):
         lines.append(f'scrapper_jobs_running{{kind="{kind}"}} {running_by_kind.get(kind, 0)}')
 
     # --- Jobs last 24h ---

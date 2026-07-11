@@ -1,12 +1,21 @@
-# Scrappercontainer
+# Rezeptliebe
 
 Proxmox-LXC-Container für den Scraper-Job:
 
-**TikTok/Instagram Scraper** — zieht Links aus zwei separaten E-Mail-Postfächern (Rezepte + Hochzeit), lädt die Videos mit `yt-dlp`, lässt sie von einer **lokalen Ollama-Instanz** klassifizieren und sortiert sie in passende Ordner.
+**Rezeptbibliothek mit TikTok/Instagram-Import** — zieht Links aus zwei separaten E-Mail-Postfächern (Rezepte + Hochzeit), lädt die Videos mit `yt-dlp`, lässt sie von einer **lokalen Ollama-Instanz** klassifizieren und sortiert sie in passende Ordner.
 
 Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Starten, Pending-Auflösung, Logs, Historie). Externe Erreichbarkeit ist explizit für **Cloudflare-Tunnel + Cloudflare Access** (MFA-Layer) ausgelegt.
 
-> **Hinweis:** rclone-Sync wurde in einen separaten Container ausgelagert. Dieser Container hier macht nur noch Scraping.
+
+## Oberfläche
+
+- Rezeptsuche ist die Startseite
+- festes Butter-Yellow-Design ohne alte Theme-Umschaltung
+- Favoriten und Einkaufsliste direkt in der Hauptnavigation
+- Mobile-First mit vollständig freigehaltener Bottom-Navigation und iPhone-Safe-Area
+- erweiterte Filter als Side-Sheet am Desktop und Bottom-Sheet auf Smartphones
+- keine externen Schriftarten oder Design-CDNs
+
 
 ---
 
@@ -62,12 +71,9 @@ Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Butto
 - yt-dlp Failed-Tracking: nach 3 fehlgeschlagenen Versuchen wird die URL als „aufgegeben" gespeichert und nicht mehr probiert
 - IMAP-Retry mit Backoff (3 Versuche, 1s/4s)
 - Ollama-Health-Check beim Job-Start (bricht ab statt 50 sinnlose Pending-Items zu erzeugen)
-- Thread-safe Cancel für **Scraper** und **Backup**
+- Thread-safe Cancel für laufende Import- und Analysejobs
 - Async Telegram raus, alle Notifications nur noch in Web-UI
 
-**Backup**
-- Pairs können `cloud:path ↔ cloud:path`, `cloud:path ↔ local:/path`, oder beide remote sein — wird automatisch detected
-- ThreadPool mit `max_parallel` Cap (Default 3) verhindert API-Drosselung bei vielen Pairs
 
 ---
 
@@ -183,7 +189,7 @@ Damit hast du MFA vor der App, **ohne** die App selbst anzupassen.
 Im Web-UI → „Einstellungen":
 - **E-Mail-Konten** (IMAP-App-Passwords für Gmail)
 - **Ollama-URL** und Modell-Namen (Default: `qwen2.5:7b-instruct`, optional `fallback_model`)
-- **Schedule** (systemd-OnCalendar-Expression für beide Jobs)
+- **Schedule** (systemd-OnCalendar-Expression für den Importdienst)
 
 ---
 
@@ -243,7 +249,7 @@ Sichere die idealerweise **außerhalb** des Containers. Optionen:
 ```bash
 # Variante B: cron-Job der das täglich nach 04:30 macht
 cat > /etc/cron.d/scrapper-offsite-backup <<'EOF'
-30 4 * * * scrapper rclone copy /opt/scrapper/data/backups/ pcloud:/scrapper-backups/ --max-age 25h
+30 4 * * * scrapper rsync -a /opt/scrapper/data/backups/ /mnt/offsite/rezeptliebe-backups/
 EOF
 
 # Variante C: Proxmox-Backup vom kompletten Container (vzdump)
@@ -267,9 +273,7 @@ bash proxmox/install.sh
 
 # Schritt 2: Backup zurückspielen
 sudo systemctl stop scrapper-web
-# - DB-Backup nach Container kopieren (z.B. via rclone aus der Off-Site-Kopie)
-sudo -u scrapper rclone copy pcloud:/scrapper-backups/daily/scrapper-2026-05-22.db.gz \
-    /opt/scrapper/data/backups/daily/
+# - DB-Backup aus deiner Off-Site-Sicherung nach data/backups/daily kopieren
 # - Restore
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-restore \
     /opt/scrapper/data/backups/daily/scrapper-2026-05-22.db.gz
@@ -280,21 +284,14 @@ sudo cp /tmp/backup-config.yaml /opt/scrapper/data/config.yaml
 sudo chown scrapper:scrapper /opt/scrapper/data/config.yaml
 sudo chmod 600 /opt/scrapper/data/config.yaml
 
-# Schritt 4: rclone-Config (für die Cloud-Sync-Pairs)
-# /home/scrapper/.rclone.conf rüberkopieren oder neu mit 'rclone config' aufbauen
 
-# Schritt 5: Service starten + healthz prüfen
-sudo systemctl start scrapper-web
-curl -s http://127.0.0.1:8000/healthz/deep | jq
-
-# Schritt 6: Im Web-UI einloggen, Test-Buttons drücken (Mail, Ollama, rclone-Pairs)
+# Schritt 4: Im Web-UI einloggen und Mail-/KI-Verbindungen testen
 ```
 
 ### 3. Was nicht im Backup ist
 
-- **rclone-Config** (`/home/scrapper/.rclone.conf`) - separat sichern
 - **yt-dlp Cookies-Datei** (falls konfiguriert)
-- **Bereits einsortierte Videos** in den Recipe/Wedding-Folders (sind ja in pCloud bzw. lokalen Pfaden, idealerweise eh per rclone gesynced)
+- **Bereits einsortierte Videos** in den Recipe/Wedding-Folders (liegen in den konfigurierten Rezept-/Hochzeitsverzeichnissen und müssen separat gesichert werden)
 - **systemd-Customizations** (falls du die Unit-Files manuell angepasst hast - normalerweise nicht nötig da `cp systemd/* /etc/systemd/system/` reicht)
 
 ### 4. Failed-Email-Recovery
@@ -319,7 +316,7 @@ Die App stellt mehrere Endpoints für externes Monitoring bereit:
 # Healthcheck (HTTP 200 wenn ok, 503 wenn DB nicht erreichbar)
 curl -s http://127.0.0.1:8000/healthz
 
-# Tiefer Check (DB + Ollama + Disk + rclone-Config) - immer 200, Details im Body
+# Tiefer Check (DB + KI + Disk) - immer 200, Details im Body
 curl -s http://127.0.0.1:8000/healthz/deep | jq
 
 # Prometheus-Metriken (für Grafana / Alertmanager)
@@ -393,21 +390,13 @@ ai:
 ytdlp:
   binary: /opt/scrapper/venv/bin/yt-dlp
 
-backup:
-  max_parallel: 3       # parallel rclone-Prozesse
-  rclone_args: "--bwlimit 8M --transfers 4"
-  pairs:
-    - name: rezepte-pcloud-gdrive
-      remote: pcloud:/Rezepte
-      local: gdrive:/Backup/Rezepte
-      direction: bisync   # oder copy/sync
     - name: hochzeit-pcloud
       remote: pcloud:/Hochzeit
       local: /mnt/local/hochzeit
       direction: copy
 ```
 
-`paths.recipe_dir` und `paths.wedding_dir` müssen **lokal beschreibbar** sein (Scraper macht `shutil.copy2`). Wenn du direkt nach Cloud willst, mount sie vorher per `rclone mount`.
+`paths.recipe_dir` und `paths.wedding_dir` müssen **lokal beschreibbar** sein (Scraper macht `shutil.copy2`). Cloud-/NAS-Ziele müssen vorab als lokales Dateisystem eingebunden sein.
 
 ---
 
@@ -416,7 +405,7 @@ backup:
 - **Keine Telegram-Benachrichtigungen** — Status nur im Web-UI
 - **Keine OpenAI Vision** — Klassifizierung nur per Ollama-Cascade. Wenn beide Modelle unter Confidence-Threshold liegen, landet das Item in Pending zur manuellen Auflösung
 - **Keine Frame-Extraktion** — Pending-Items werden als `<video>` im Web-UI angezeigt, `<img>`-Thumbs sind raus
-- **Keine NAS-Annahme** — paths sind generisch konfigurierbar, Backup-Pairs können Cloud↔Cloud sein
+- **Keine NAS-Annahme** — Pfade sind generisch konfigurierbar und können auf lokale Mounts zeigen
 
 ---
 
