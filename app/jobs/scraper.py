@@ -9,12 +9,14 @@ keine Standbild-Extraktion mehr nötig.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import shutil
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -22,8 +24,9 @@ from typing import Dict, List, Optional
 from ..config_store import get_config
 from ..db import get_db
 from ..core.analyzer import OllamaAnalyzer, RecipeAnalysis, WeddingAnalysis, build_analyzer
-from ..core.downloader import VideoDownloader
+from ..core.downloader import VideoDownloader, cancel_active_downloads
 from ..core.email_processor import MailAccount, EmailRouter
+from ..path_utils import build_under, ensure_within, safe_component, unique_directory
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +41,10 @@ MAX_DOWNLOAD_ATTEMPTS = 3
 
 def cancel_job() -> dict:
     """Setzt das Cancel-Flag. Der laufende Scraper bricht beim nächsten
-    URL-Check ab. Nicht-blockierend - kein subprocess wird hier gekillt
-    (yt-dlp läuft, fertige URLs werden komplett verarbeitet)."""
+    URL-Check ab und beendet zusätzlich aktive yt-dlp-Prozessgruppen."""
     _CANCEL_EVENT.set()
-    return {"ok": True}
+    stopped = cancel_active_downloads()
+    return {"ok": True, "stopped_downloads": stopped}
 
 
 def is_cancelled() -> bool:
@@ -53,10 +56,7 @@ def reset_cancel() -> None:
 
 
 def _sanitize(name: str) -> str:
-    name = (name or "").strip()
-    name = re.sub(r'[<>:"/\\|?*\n\r\t]', "", name)
-    name = re.sub(r"\s+", "_", name)
-    return name or "Unbekannt"
+    return safe_component(name, fallback="Unbekannt", max_length=96)
 
 
 def _has_usable_description(text: Optional[str], min_len: int) -> bool:
@@ -68,14 +68,22 @@ def _has_usable_description(text: Optional[str], min_len: int) -> bool:
 
 def _save_video_files(target_dir: Path, video_path: Path,
                        description: Optional[str], info: Dict) -> None:
-    target_dir.mkdir(parents=True, exist_ok=True)
-    file_base = target_dir.name
-    if video_path and video_path.exists():
-        shutil.copy2(video_path, target_dir / f"{file_base}{video_path.suffix}")
-    if description:
-        (target_dir / "description.txt").write_text(description, encoding="utf-8")
-    with open(target_dir / "info.json", "w", encoding="utf-8") as f:
-        json.dump(info, f, indent=2, ensure_ascii=False)
+    """Schreibt einen vollständigen Datensatz zunächst in ein Staging-Verzeichnis."""
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = target_dir.parent / f".{target_dir.name}.tmp-{uuid.uuid4().hex[:10]}"
+    staging.mkdir(mode=0o700)
+    try:
+        file_base = target_dir.name
+        if video_path and video_path.exists():
+            shutil.copy2(video_path, staging / f"{file_base}{video_path.suffix.lower()}")
+        if description:
+            (staging / "description.txt").write_text(description, encoding="utf-8")
+        with open(staging / "info.json", "w", encoding="utf-8") as handle:
+            json.dump(info, handle, indent=2, ensure_ascii=False)
+        staging.replace(target_dir)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 class ScraperJob:
@@ -133,17 +141,31 @@ class ScraperJob:
             ytdlp_cfg.get("binary", "/opt/scrapper/venv/bin/yt-dlp"),
             self.temp_dir,
             cookies_file=ytdlp_cfg.get("cookies_file") or None,
+            timeout=int(ytdlp_cfg.get("timeout_sec", 300) or 300),
+            max_filesize_mb=int(ytdlp_cfg.get("max_filesize_mb", 500) or 500),
+            retries=int(ytdlp_cfg.get("retries", 3) or 3),
         )
 
         # E-Mail Konten
         mail_cfg = cfg.get("mail", default={}) or {}
+        max_attachment_bytes = int(mail_cfg.get("max_attachment_mb", 20) or 20) * 1024 * 1024
+        max_attachments_per_mail = int(mail_cfg.get("max_attachments_per_mail", 10) or 10)
+        max_mail_bytes = int(mail_cfg.get("max_mail_mb", 50) or 50) * 1024 * 1024
         accounts = []
         if mail_cfg.get("recipe"):
-            accounts.append(MailAccount("recipe", mail_cfg["recipe"], "recipe"))
+            accounts.append(MailAccount(
+                "recipe", mail_cfg["recipe"], "recipe",
+                max_attachment_bytes=max_attachment_bytes,
+                max_attachments_per_mail=max_attachments_per_mail,
+                max_mail_bytes=max_mail_bytes,
+            ))
         if mail_cfg.get("wedding"):
             accounts.append(MailAccount(
                 "wedding", mail_cfg["wedding"], "wedding",
                 default_category=mail_cfg["wedding"].get("default_category", "Sonstiges"),
+                max_attachment_bytes=max_attachment_bytes,
+                max_attachments_per_mail=max_attachments_per_mail,
+                max_mail_bytes=max_mail_bytes,
             ))
         self.router = EmailRouter(accounts)
 
@@ -202,9 +224,8 @@ class ScraperJob:
         type_n = _sanitize(r.type)
         cat_n = _sanitize(r.category or "Allgemein")
         name_n = _sanitize(r.name)
-        target = self.recipe_dir / type_n / cat_n / name_n
-        if target.exists():
-            target = target.parent / f"{name_n}_{datetime.now():%Y%m%d_%H%M%S}"
+        target = build_under(self.recipe_dir, (type_n, cat_n, name_n))
+        target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
         info = {
             "url": url, "name": r.name, "type": r.type, "category": r.category,
             "confidence": r.confidence, "is_manual": r.is_manual,
@@ -219,9 +240,8 @@ class ScraperJob:
         cat = _sanitize(w.category or default_cat)
         name_n = _sanitize(w.name) if w.name.lower() != "unbekannt" \
             else f"Hochzeit_{datetime.now():%Y%m%d_%H%M%S}"
-        target = self.wedding_dir / cat / name_n
-        if target.exists():
-            target = target.parent / f"{name_n}_{datetime.now():%Y%m%d_%H%M%S}"
+        target = build_under(self.wedding_dir, (cat, name_n))
+        target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
         info = {
             "url": url, "name": w.name, "wedding_category": w.category or default_cat,
             "confidence": w.confidence, "is_manual": w.is_manual,
@@ -266,8 +286,11 @@ class ScraperJob:
                     result.update({"status": "pending", "name": r.name})
                 else:
                     target = self._save_recipe(r, url, video, description)
-                    self.db.history_add(url, content_type="recipe", name=r.name,
-                                         target_dir=str(target))
+                    self.db.history_add(
+                        url, content_type="recipe", name=r.name, target_dir=str(target),
+                        recipe_type=r.type, category=r.category or "Allgemein",
+                        description=description or "", source="social",
+                    )
                     result.update({"status": "auto", "name": r.name, "target": str(target)})
             else:  # wedding
                 default_cat = item.get("default_category") or "Sonstiges"
@@ -399,13 +422,20 @@ class ScraperJob:
                                 ext: str, info: Dict, source_text: Optional[str] = None) -> None:
         """Schreibt die Attachment-Datei + info.json + optional die extrahierte
         Text-Description in den target_dir."""
-        target_dir.mkdir(parents=True, exist_ok=True)
-        file_base = target_dir.name
-        (target_dir / f"{file_base}{ext}").write_bytes(attachment_data)
-        if source_text:
-            (target_dir / "description.txt").write_text(source_text, encoding="utf-8")
-        with open(target_dir / "info.json", "w", encoding="utf-8") as f:
-            json.dump(info, f, indent=2, ensure_ascii=False)
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        staging = target_dir.parent / f".{target_dir.name}.tmp-{uuid.uuid4().hex[:10]}"
+        staging.mkdir(mode=0o700)
+        try:
+            file_base = target_dir.name
+            (staging / f"{file_base}{ext}").write_bytes(attachment_data)
+            if source_text:
+                (staging / "description.txt").write_text(source_text, encoding="utf-8")
+            with open(staging / "info.json", "w", encoding="utf-8") as handle:
+                json.dump(info, handle, indent=2, ensure_ascii=False)
+            staging.replace(target_dir)
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
 
     def process_attachment(self, att: Dict, synth_url: str) -> Dict:
         """Verarbeitet ein Mail-Attachment (PDF/JPG/PNG):
@@ -443,14 +473,17 @@ class ScraperJob:
                     analysis = self._analyze_recipe(description)
 
                 if analysis.needs_manual_input(self.confidence_threshold):
+                    pending_file = self._stash_bytes_for_pending(data, att["filename"], ext)
                     self.db.pending_add(
                         url=synth_url, content_type="recipe",
                         description=description[:5000],
-                        video_path=None,   # kein Video bei Attachments
+                        video_path=str(pending_file),
                         ai_suggestion={
                             "name": analysis.name, "type": analysis.type,
                             "category": analysis.category, "confidence": analysis.confidence,
                             "source": "mail-attachment", "filename": att["filename"],
+                            "extension": ext, "media_kind": self._media_kind(ext),
+                            "size_bytes": len(data), "mail_subject": subject,
                         },
                     )
                     result.update({"status": "pending", "name": analysis.name})
@@ -458,9 +491,8 @@ class ScraperJob:
                     type_n = _sanitize(analysis.type)
                     cat_n = _sanitize(analysis.category or "Allgemein")
                     name_n = _sanitize(analysis.name)
-                    target = self.recipe_dir / type_n / cat_n / name_n
-                    if target.exists():
-                        target = target.parent / f"{name_n}_{datetime.now():%Y%m%d_%H%M%S}"
+                    target = build_under(self.recipe_dir, (type_n, cat_n, name_n))
+                    target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
                     info = {
                         "url": synth_url, "name": analysis.name, "type": analysis.type,
                         "category": analysis.category, "confidence": analysis.confidence,
@@ -470,8 +502,12 @@ class ScraperJob:
                         "timestamp": datetime.now().isoformat(),
                     }
                     self._save_attachment_file(target, data, ext, info, description)
-                    self.db.history_add(synth_url, content_type="recipe",
-                                        name=analysis.name, target_dir=str(target))
+                    self.db.history_add(
+                        synth_url, content_type="recipe", name=analysis.name,
+                        target_dir=str(target), recipe_type=analysis.type,
+                        category=analysis.category or "Allgemein",
+                        description=description or "", source="mail-attachment",
+                    )
                     result.update({"status": "auto", "name": analysis.name, "target": str(target)})
 
             else:  # wedding
@@ -486,14 +522,17 @@ class ScraperJob:
                     analysis = self._analyze_wedding(description)
 
                 if analysis.needs_manual_input(self.confidence_threshold) or self.wedding_always_pending:
+                    pending_file = self._stash_bytes_for_pending(data, att["filename"], ext)
                     self.db.pending_add(
                         url=synth_url, content_type="wedding",
                         description=description[:5000],
-                        video_path=None,
+                        video_path=str(pending_file),
                         ai_suggestion={
                             "name": analysis.name, "category": analysis.category or default_cat,
                             "confidence": analysis.confidence,
                             "source": "mail-attachment", "filename": att["filename"],
+                            "extension": ext, "media_kind": self._media_kind(ext),
+                            "size_bytes": len(data), "mail_subject": subject,
                         },
                     )
                     result.update({"status": "pending", "name": analysis.name})
@@ -501,9 +540,8 @@ class ScraperJob:
                     cat = _sanitize(analysis.category or default_cat)
                     name_n = _sanitize(analysis.name) if analysis.name.lower() != "unbekannt" \
                         else f"Mail_{datetime.now():%Y%m%d_%H%M%S}"
-                    target = self.wedding_dir / cat / name_n
-                    if target.exists():
-                        target = target.parent / f"{name_n}_{datetime.now():%Y%m%d_%H%M%S}"
+                    target = build_under(self.wedding_dir, (cat, name_n))
+                    target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
                     info = {
                         "url": synth_url, "name": analysis.name,
                         "wedding_category": analysis.category or default_cat,
@@ -522,14 +560,46 @@ class ScraperJob:
             result["error"] = str(e)
 
         return result
-        """Kopiert das Video nach temp_dir/pending/ damit es das Cleanup überlebt."""
-        if not video or not video.exists():
+
+    @staticmethod
+    def _media_kind(ext: str) -> str:
+        ext = (ext or "").lower()
+        if ext == ".pdf":
+            return "pdf"
+        if ext in {".jpg", ".jpeg", ".png", ".webp"}:
+            return "image"
+        if ext in {".mp4", ".webm", ".mkv", ".mov"}:
+            return "video"
+        return "file"
+
+    def _pending_root(self) -> Path:
+        root = self.temp_dir / "pending"
+        ensure_within(root, self.temp_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _stash_for_pending(self, source: Path) -> Optional[Path]:
+        """Kopiert eine heruntergeladene Datei atomar in den Pending-Stash."""
+        if not source or not source.exists() or not source.is_file():
             return None
+        suffix = source.suffix.lower()[:12]
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        pending_root = self.temp_dir / "pending"
-        pending_root.mkdir(parents=True, exist_ok=True)
-        dst = pending_root / f"{ts}_video{video.suffix}"
-        shutil.copy2(video, dst)
+        dst = self._pending_root() / f"{ts}_{safe_component(source.stem, max_length=48)}{suffix}"
+        tmp = dst.with_suffix(dst.suffix + ".tmp")
+        shutil.copy2(source, tmp)
+        tmp.replace(dst)
+        return dst
+
+    def _stash_bytes_for_pending(self, data: bytes, filename: str, ext: str) -> Path:
+        if not data:
+            raise ValueError("Leerer Mail-Anhang kann nicht in Pending abgelegt werden")
+        safe_ext = ext.lower() if ext.lower() in {".pdf", ".jpg", ".jpeg", ".png", ".webp"} else ".bin"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        stem = safe_component(Path(filename or "attachment").stem, max_length=48)
+        dst = self._pending_root() / f"{ts}_{stem}{safe_ext}"
+        tmp = dst.with_suffix(dst.suffix + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(dst)
         return dst
 
     def _cleanup_temp(self, video: Path) -> None:
@@ -626,7 +696,8 @@ class ScraperJob:
                 break
             # Synthetic-URL für Dedupe: msg_id::filename. Wenn schon
             # in History oder Pending, skip.
-            synth_url = f"mail-attachment://{att['msg_id']}::{att['filename']}"
+            identity = f"{att.get('source_account','')}\0{att.get('msg_id','')}\0{att.get('filename','')}"
+            synth_url = "mail-attachment://" + hashlib.sha256(identity.encode("utf-8", errors="replace")).hexdigest()
             if self.db.history_has(synth_url) or synth_url in pending_urls:
                 summary["attach_skipped"] += 1
                 continue
@@ -668,25 +739,9 @@ class ScraperJob:
     # ---------------- History neu analysieren ----------------
 
     def _fetch_description_via_ytdlp(self, url: str) -> Optional[str]:
-        """Lädt nur die Description einer URL (skip-download). Nutzt das
-        existing yt-dlp Binary + Cookie-Datei, kein File-Download."""
-        import subprocess
-        binary = self.downloader.ytdlp_path
-        cmd = [binary, "--skip-download", "--no-warnings", "--no-playlist",
-               "--print", "%(description)s\n%(title)s"]
-        if self.downloader.cookies_file:
-            cmd += ["--cookies", self.downloader.cookies_file]
-        cmd.append(url)
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            if r.returncode != 0:
-                logger.warning(f"yt-dlp metadata fail {url}: {r.stderr.strip()[:200]}")
-                return None
-            text = r.stdout.strip()
-            return text if text else None
-        except Exception as e:
-            logger.error(f"yt-dlp metadata exception {url}: {e}")
-            return None
+        """Fetch metadata through the same validated, cancellable downloader."""
+        return self.downloader.fetch_description(url, timeout=60)
+
 
     def reanalyze_history_one(self, url: str, *, dry_run: bool = False,
                                 auto_move: bool = False) -> Dict:
@@ -781,7 +836,13 @@ class ScraperJob:
 
         # Kein Auto-Move: nur DB-Name updaten
         if not dry_run:
-            self.db.history_update(url, name=new_name)
+            if content_type == "recipe":
+                self.db.history_update(
+                    url, name=r.name, recipe_type=r.type,
+                    category=r.category or "Allgemein", description=description,
+                )
+            else:
+                self.db.history_update(url, name=new_name, description=description)
 
         return {"ok": True, "url": url, "action": "updated",
                 "old": {"name": old_name, "content_type": content_type,
@@ -898,24 +959,34 @@ class ScraperJob:
             return {"ok": False, "error": "Eintrag nicht in Historie"}
 
         old_dir = Path(entry["target_dir"]) if entry.get("target_dir") else None
+        content_type = entry.get("content_type") or "recipe"
+        allowed_root = self.recipe_dir if content_type == "recipe" else self.wedding_dir
         if not old_dir or not old_dir.exists():
             return {"ok": False, "error": f"Alter Pfad existiert nicht: {old_dir}"}
+        try:
+            old_dir = ensure_within(old_dir, allowed_root)
+        except ValueError:
+            return {"ok": False, "error": "Gespeicherter Zielpfad liegt außerhalb des erlaubten Bereichs"}
 
-        content_type = entry.get("content_type") or "recipe"
         sanitized_name = _sanitize(new_name)
 
         if content_type == "recipe":
             if not new_type:
                 return {"ok": False, "error": "Typ fehlt"}
-            new_dir = self.recipe_dir / _sanitize(new_type) / _sanitize(new_category or "Sonstiges") / sanitized_name
+            new_dir = build_under(
+                self.recipe_dir,
+                (_sanitize(new_type), _sanitize(new_category or "Sonstiges"), sanitized_name),
+            )
         else:
-            new_dir = self.wedding_dir / _sanitize(new_category or "Sonstiges") / sanitized_name
+            new_dir = build_under(
+                self.wedding_dir,
+                (_sanitize(new_category or "Sonstiges"), sanitized_name),
+            )
 
         if new_dir.resolve() == old_dir.resolve():
             return {"ok": True, "action": "noop", "target": str(new_dir)}
 
-        if new_dir.exists():
-            new_dir = new_dir.parent / f"{sanitized_name}_{datetime.now():%Y%m%d_%H%M%S}"
+        new_dir = unique_directory(new_dir, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
 
         new_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(old_dir), str(new_dir))
@@ -950,7 +1021,11 @@ class ScraperJob:
                         except Exception as e:
                             logger.warning(f"rename {f}: {e}")
 
-        self.db.history_update(url, name=new_name, target_dir=str(new_dir))
+        self.db.history_update(
+            url, name=new_name, target_dir=str(new_dir),
+            recipe_type=new_type if content_type == "recipe" else None,
+            category=(new_category or "Allgemein") if content_type == "recipe" else new_category,
+        )
         self._cleanup_empty_parents(old_dir)
         return {"ok": True, "action": "moved", "target": str(new_dir)}
 
@@ -960,9 +1035,13 @@ class ScraperJob:
             return {"ok": False, "error": "Eintrag nicht in Historie"}
         target_dir = entry.get("target_dir")
         if target_dir:
-            d = Path(target_dir)
+            root = self.recipe_dir if entry.get("content_type") == "recipe" else self.wedding_dir
+            try:
+                d = ensure_within(Path(target_dir), root)
+            except ValueError:
+                return {"ok": False, "error": "Zielpfad liegt außerhalb des erlaubten Bereichs"}
             if d.exists():
-                shutil.rmtree(d, ignore_errors=True)
+                shutil.rmtree(d)
                 self._cleanup_empty_parents(d)
         self.db.history_delete(url)
         return {"ok": True, "action": "deleted"}
@@ -973,8 +1052,15 @@ class ScraperJob:
             try:
                 if not parent.exists():
                     break
-                rels = [self.recipe_dir, self.wedding_dir]
-                inside = any(str(parent).startswith(str(r)) and str(parent) != str(r) for r in rels)
+                inside = False
+                for root in (self.recipe_dir, self.wedding_dir):
+                    try:
+                        parent.resolve(strict=False).relative_to(root.resolve(strict=False))
+                        if parent.resolve(strict=False) != root.resolve(strict=False):
+                            inside = True
+                            break
+                    except ValueError:
+                        continue
                 if not inside:
                     break
                 if not any(parent.iterdir()):
@@ -988,49 +1074,123 @@ class ScraperJob:
                 break
 
     # ---------------- Pending im Web auflösen ----------------
+    @staticmethod
+    def _is_attachment_entry(entry: Dict) -> bool:
+        suggestion = entry.get("ai_suggestion") or {}
+        return suggestion.get("source") == "mail-attachment" or str(entry.get("url") or "").startswith("mail-attachment://")
+
+    def _analyze_pending_attachment(self, entry: Dict, file_path: Path):
+        suggestion = entry.get("ai_suggestion") or {}
+        description = entry.get("description") or ""
+        subject = suggestion.get("mail_subject") or ""
+        ext = file_path.suffix.lower()
+        content_type = entry.get("content_type") or "recipe"
+        analysis = None
+        if ext in {".jpg", ".jpeg", ".png", ".webp"}:
+            mime = {
+                ".png": "image/png",
+                ".webp": "image/webp",
+            }.get(ext, "image/jpeg")
+            analysis = self._analyze_image_via_openai(
+                file_path.read_bytes(), mime, content_type, subject,
+                categories=self.wedding_categories if content_type == "wedding" else None,
+            )
+        if analysis:
+            return analysis
+        if content_type == "recipe":
+            return self._analyze_recipe(description)
+        return self._analyze_wedding(description)
+
+    def _save_pending_attachment(self, entry: Dict, file_path: Path, analysis) -> Path:
+        url = entry["url"]
+        description = entry.get("description") or ""
+        suggestion = entry.get("ai_suggestion") or {}
+        original_filename = suggestion.get("filename") or file_path.name
+        ext = file_path.suffix.lower() or str(suggestion.get("extension") or ".bin")
+        data = file_path.read_bytes()
+        if entry.get("content_type") == "recipe":
+            type_n = _sanitize(analysis.type)
+            cat_n = _sanitize(analysis.category or "Allgemein")
+            name_n = _sanitize(analysis.name)
+            target = build_under(self.recipe_dir, (type_n, cat_n, name_n))
+            target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
+            info = {
+                "url": url, "name": analysis.name, "type": analysis.type,
+                "category": analysis.category, "confidence": analysis.confidence,
+                "is_manual": bool(getattr(analysis, "is_manual", False)),
+                "content_type": "recipe", "source": "mail-attachment",
+                "filename": original_filename, "description": description[:5000],
+                "timestamp": datetime.now().isoformat(),
+            }
+        else:
+            default_cat = "Sonstiges"
+            cat_n = _sanitize(analysis.category or default_cat)
+            name_n = _sanitize(analysis.name) if analysis.name.lower() != "unbekannt" \
+                else f"Mail_{datetime.now():%Y%m%d_%H%M%S}"
+            target = build_under(self.wedding_dir, (cat_n, name_n))
+            target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
+            info = {
+                "url": url, "name": analysis.name,
+                "wedding_category": analysis.category or default_cat,
+                "confidence": analysis.confidence,
+                "is_manual": bool(getattr(analysis, "is_manual", False)),
+                "content_type": "wedding", "source": "mail-attachment",
+                "filename": original_filename, "description": description[:5000],
+                "timestamp": datetime.now().isoformat(),
+            }
+        self._save_attachment_file(target, data, ext, info, description)
+        return target
+
     def reanalyze_pending(self, url: str) -> Dict:
         entry = self.db.pending_get(url)
         if not entry:
             return {"ok": False, "error": "Pending-Eintrag nicht gefunden"}
 
-        description = entry.get("description")
-        video_path = Path(entry["video_path"]) if entry.get("video_path") else None
-        if not video_path or not video_path.exists():
-            return {"ok": False, "error": "Video-Datei fehlt (vermutlich aufgeräumt)"}
+        file_path = Path(entry["video_path"]) if entry.get("video_path") else None
+        if not file_path or not file_path.exists() or not file_path.is_file():
+            return {"ok": False, "error": "Pending-Datei fehlt (vermutlich aufgeräumt)"}
 
+        is_attachment = self._is_attachment_entry(entry)
         content_type = entry.get("content_type") or "recipe"
+        if is_attachment:
+            analysis = self._analyze_pending_attachment(entry, file_path)
+        elif content_type == "recipe":
+            analysis = self._analyze_recipe(entry.get("description"))
+        else:
+            analysis = self._analyze_wedding(entry.get("description"))
 
+        metadata = dict(entry.get("ai_suggestion") or {})
         if content_type == "recipe":
-            r = self._analyze_recipe(description)
-            suggestion = {
-                "name": r.name, "type": r.type,
-                "category": r.category, "confidence": r.confidence,
-            }
-            if not r.needs_manual_input(self.confidence_threshold):
-                target = self._save_recipe(r, url, video_path, description)
-                self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
-                self.db.pending_resolve(url, status="resolved")
-                self._remove_pending_files(entry)
-                return {"ok": True, "action": "auto_saved", "target": str(target),
-                        "analysis": suggestion}
-            self.db.pending_update_suggestion(url, suggestion)
-            return {"ok": True, "action": "still_pending", "analysis": suggestion}
-        else:  # wedding
-            w = self._analyze_wedding(description)
-            default_cat = "Sonstiges"
-            suggestion = {
-                "name": w.name, "category": w.category or default_cat,
-                "confidence": w.confidence,
-            }
-            if not w.needs_manual_input(self.confidence_threshold):
-                target = self._save_wedding(w, url, video_path, description, default_cat)
-                self.db.history_add(url, content_type="wedding", name=w.name, target_dir=str(target))
-                self.db.pending_resolve(url, status="resolved")
-                self._remove_pending_files(entry)
-                return {"ok": True, "action": "auto_saved", "target": str(target),
-                        "analysis": suggestion}
-            self.db.pending_update_suggestion(url, suggestion)
-            return {"ok": True, "action": "still_pending", "analysis": suggestion}
+            metadata.update({
+                "name": analysis.name, "type": analysis.type,
+                "category": analysis.category, "confidence": analysis.confidence,
+            })
+        else:
+            metadata.update({
+                "name": analysis.name, "category": analysis.category or "Sonstiges",
+                "confidence": analysis.confidence,
+            })
+
+        if not analysis.needs_manual_input(self.confidence_threshold):
+            if is_attachment:
+                target = self._save_pending_attachment(entry, file_path, analysis)
+            elif content_type == "recipe":
+                target = self._save_recipe(analysis, url, file_path, entry.get("description"))
+            else:
+                target = self._save_wedding(analysis, url, file_path, entry.get("description"), "Sonstiges")
+            self.db.history_add(
+                url, content_type=content_type, name=analysis.name, target_dir=str(target),
+                recipe_type=analysis.type if content_type == "recipe" else "",
+                category=(analysis.category or "Allgemein") if content_type == "recipe" else (analysis.category or "Sonstiges"),
+                description=entry.get("description") or "",
+                source="mail-attachment" if is_attachment else "social",
+            )
+            self.db.pending_resolve(url, status="resolved")
+            self._remove_pending_files(entry)
+            return {"ok": True, "action": "auto_saved", "target": str(target), "analysis": metadata}
+
+        self.db.pending_update_suggestion(url, metadata)
+        return {"ok": True, "action": "still_pending", "analysis": metadata}
 
     def resolve_pending(self, url: str, decision: Dict) -> Dict:
         entry = self.db.pending_get(url)
@@ -1043,43 +1203,51 @@ class ScraperJob:
             self._remove_pending_files(entry)
             return {"ok": True, "action": "skipped"}
 
-        video_path = Path(entry["video_path"]) if entry.get("video_path") else None
+        file_path = Path(entry["video_path"]) if entry.get("video_path") else None
+        if not file_path or not file_path.exists() or not file_path.is_file():
+            return {"ok": False, "error": "Pending-Datei fehlt (vermutlich aufgeräumt)"}
+
         description = entry.get("description")
-
-        if not video_path or not video_path.exists():
-            self.db.pending_resolve(url, status="resolved")
-            return {"ok": False, "error": "Video-Datei fehlt (vermutlich aufgeräumt)"}
-
+        is_attachment = self._is_attachment_entry(entry)
         if entry["content_type"] == "recipe":
-            r = RecipeAnalysis(
+            analysis = RecipeAnalysis(
                 name=decision.get("name", "Unbekannt"),
                 type=decision.get("type", "Unbekannt"),
                 category=decision.get("category"),
                 confidence=1.0,
                 is_manual=True,
             )
-            target = self._save_recipe(r, url, video_path, description)
-            self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
+            target = self._save_pending_attachment(entry, file_path, analysis) if is_attachment \
+                else self._save_recipe(analysis, url, file_path, description)
+            self.db.history_add(
+                url, content_type="recipe", name=analysis.name, target_dir=str(target),
+                recipe_type=analysis.type, category=analysis.category or "Allgemein",
+                description=description or "",
+                source="mail-attachment" if is_attachment else "social",
+            )
         else:
-            w = WeddingAnalysis(
+            analysis = WeddingAnalysis(
                 name=decision.get("name", "Unbekannt"),
                 category=decision.get("category"),
                 confidence=1.0,
                 is_manual=True,
             )
-            target = self._save_wedding(w, url, video_path, description, default_cat="Sonstiges")
-            self.db.history_add(url, content_type="wedding", name=w.name, target_dir=str(target))
+            target = self._save_pending_attachment(entry, file_path, analysis) if is_attachment \
+                else self._save_wedding(analysis, url, file_path, description, default_cat="Sonstiges")
+            self.db.history_add(url, content_type="wedding", name=analysis.name, target_dir=str(target))
         self.db.pending_resolve(url, status="resolved")
         self._remove_pending_files(entry)
         return {"ok": True, "action": "saved", "target": str(target)}
 
     def _remove_pending_files(self, entry: Dict) -> None:
-        p = entry.get("video_path")
-        if p:
-            try:
-                Path(p).unlink(missing_ok=True)
-            except Exception:
-                pass
+        path_value = entry.get("video_path")
+        if not path_value:
+            return
+        try:
+            candidate = ensure_within(Path(path_value), self._pending_root())
+            candidate.unlink(missing_ok=True)
+        except (OSError, ValueError) as exc:
+            logger.warning("Pending-Datei nicht gelöscht (%s): %s", path_value, exc)
 
 
 def run_job() -> Dict:

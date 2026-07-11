@@ -43,9 +43,10 @@ def main() -> int:
         try:
             reset_cancel()
             summary = run_job()
-            db.job_finish(job_id, "ok", summary)
-            logger.info(f"OK: {json.dumps(summary, ensure_ascii=False)}")
-            return 0
+            status = "error" if summary.get("cancelled") else ("partial" if int(summary.get("errors", 0) or 0) else "ok")
+            db.job_finish(job_id, status, summary)
+            logger.info(f"{status.upper()}: {json.dumps(summary, ensure_ascii=False)}")
+            return 0 if status in {"ok", "partial"} else 1
         except Exception as e:
             logger.exception("Scraper-Job fehlgeschlagen")
             db.job_finish(job_id, "error", {"error": str(e)})

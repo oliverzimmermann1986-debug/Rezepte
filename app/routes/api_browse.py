@@ -1,8 +1,7 @@
-"""API für Verzeichnis-Browser (lokal + rclone)."""
+"""API für den sicheren lokalen Verzeichnis-Browser."""
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -15,7 +14,7 @@ router = APIRouter(prefix="/api/browse", tags=["browse"], dependencies=[Depends(
 
 
 # Whitelist: nur diese Roots + alles darunter ist erlaubt.
-# /mnt ist der NAS-/Backup-Mountpoint; restliche stammen aus der Config.
+# /mnt ist ein optionaler Mountpoint; restliche Roots stammen aus der Config.
 _BASE_ALLOWED = ("/mnt", "/opt/scrapper/data", "/opt/scrapper/logs", "/opt/scrapper/temp")
 
 
@@ -121,81 +120,6 @@ def browse_local(path: str = "", show_files: bool = False) -> Dict[str, Any]:
         "suggested_roots": [str(r) for r in allowed],
         "writable": os.access(p, os.W_OK),
     }
-
-
-@router.get("/rclone")
-def browse_rclone(path: str = "") -> Dict[str, Any]:
-    """Listet einen rclone-Pfad. Wenn path leer: alle Remotes."""
-    try:
-        if not path:
-            # Liste alle Remotes
-            r = subprocess.run(
-                ["rclone", "listremotes"], capture_output=True, text=True, timeout=10,
-            )
-            if r.returncode != 0:
-                raise HTTPException(500, f"rclone listremotes: {r.stderr.strip()}")
-            remotes = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
-            return {
-                "path": "",
-                "parent": None,
-                "is_root": True,
-                "entries": [
-                    {"name": rmt.rstrip(":"), "path": rmt, "is_dir": True, "is_remote": True}
-                    for rmt in remotes
-                ],
-            }
-
-        # Pfad validieren
-        if path.startswith("-"):
-            raise HTTPException(400, "rclone-Pfad darf nicht mit '-' beginnen")
-        if any(c in path for c in ("\n", "\r", "\x00")):
-            raise HTTPException(400, "rclone-Pfad enthält ungültige Zeichen")
-        if ":" not in path:
-            raise HTTPException(400, "rclone-Pfad muss 'remote:pfad' Format haben")
-
-        # lsjson für strukturierte Daten ("--" trennt Optionen vom Argument)
-        r = subprocess.run(
-            ["rclone", "lsjson", "--dirs-only", "--", path],
-            capture_output=True, text=True, timeout=60,
-        )
-        if r.returncode != 0:
-            raise HTTPException(500, f"rclone lsjson: {r.stderr.strip()[:200]}")
-
-        import json
-        items = json.loads(r.stdout or "[]")
-        entries = []
-        for it in sorted(items, key=lambda x: x.get("Name", "").lower()):
-            entries.append({
-                "name": it.get("Name"),
-                "path": path.rstrip("/") + "/" + it.get("Name"),
-                "is_dir": True,
-                "is_remote": True,
-                "size": it.get("Size"),
-            })
-
-        # Parent berechnen
-        parent = None
-        if path.endswith(":") or path.endswith(":/"):
-            parent = ""   # zurück zu Remote-Liste
-        else:
-            # Eine Ebene hoch
-            base, rest = path.split(":", 1)
-            rest = rest.rstrip("/")
-            if "/" in rest:
-                parent = base + ":" + rest.rsplit("/", 1)[0]
-            else:
-                parent = base + ":"
-
-        return {
-            "path": path,
-            "parent": parent,
-            "is_root": False,
-            "entries": entries,
-        }
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, "rclone Timeout")
-    except FileNotFoundError:
-        raise HTTPException(500, "rclone nicht installiert")
 
 
 @router.post("/local/mkdir")

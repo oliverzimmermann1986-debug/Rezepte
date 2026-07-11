@@ -4,17 +4,42 @@ __pycache__/
 *.egg-info/
 venv/
 .venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
-# Runtime
+# Build / distribution
+build/
+dist/
+*.zip
+
+# Runtime and secrets
 data/*.db
+data/*.db-*
 data/*.db-journal
+data/*.db-shm
+data/*.db-wal
 data/config.yaml
+data/config.yaml.bak
+data/.initial-password
+data/backups/
+data/locks/
+data/*.request
+data/*.result
 logs/
 temp/
 *.log
+scrapper-*-root-password.txt
 
-# IDE
+cookies.txt
+*.cookies.txt
+
+# IDE / OS
 .vscode/
 .idea/
 *.swp
 .DS_Store
+Thumbs.db

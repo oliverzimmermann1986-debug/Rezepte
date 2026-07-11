@@ -17,11 +17,14 @@ web:
   password: changeme
   bind_host: 127.0.0.1
   bind_port: 8000
+  # IPs/CIDRs des Reverse-Proxys, dessen Forwarded-Header vertraut werden dürfen.
+  # Niemals "*" eintragen. Loopback wird automatisch ergänzt.
+  trusted_proxies: []
   secret_key: change-this-to-random-string-32chars-min
 
 # Verzeichnisse - hier landen die einsortierten Videos.
 # Defaults zeigen auf Container-interne Pfade. Anpassen wenn du z.B.
-# einen Bind-Mount oder rclone-mount nutzt.
+# einen Bind-Mount oder einen Bind-Mount nutzt.
 paths:
   recipe_dir: /opt/scrapper/files/rezepte
   wedding_dir: /opt/scrapper/files/hochzeit
@@ -33,6 +36,10 @@ paths:
 
 # E-Mail Konten (2 separate Inboxes - kein Betreff-Check mehr nötig!)
 mail:
+  # Schutz vor RAM-/Speicherüberlastung durch sehr große oder viele Anhänge.
+  max_mail_mb: 50
+  max_attachment_mb: 20
+  max_attachments_per_mail: 10
   # Konto für Rezepte
   recipe:
     enabled: true
@@ -91,11 +98,13 @@ ytdlp:
   # Datei muss vom scrapper-User lesbar sein (chmod 600 reicht wenn owner).
   # Leer lassen wenn nur öffentliche TikToks/Instagram-Reels gescrapet werden.
   cookies_file: ""
+  timeout_sec: 300
+  max_filesize_mb: 500
+  retries: 3
 
 # Scheduling (systemd Timer)
 schedule:
   scraper_interval: "*:0/30"   # alle 30 Minuten
-  backup_interval: "*-*-* 03:00:00"   # täglich 3 Uhr
 
 # Wedding-Kategorien (für KI-Vorschläge + Web-UI Dropdown)
 wedding_categories:
@@ -118,105 +127,17 @@ recipe_types:
   - Getränk
   - Beilage
 
-# ============================================================
-# Backup / rclone-sync
-# ============================================================
-backup:
-  enabled: true
-  rclone_remote: pcloud
-  # Globaler Default-Schedule für Pairs ohne eigene 'schedule'-Definition.
-  # Standard-Cron-Format (5 Felder: Min Hour Day Month Weekday).
-  # Beispiele:
-  #   "0 3 * * *"      - täglich 03:00 (Bestandsverhalten)
-  #   "0 */6 * * *"    - alle 6h zur vollen Stunde
-  #   "*/15 * * * *"   - alle 15 Minuten
-  #   "0 9 * * 1-5"    - werktags 09:00
-  # "off" / "manual" / "" = kein Auto-Sync, nur Button im UI
-  default_schedule: "0 3 * * *"
-  # parallele Sync-Paare. Jeder Pair kann eine eigene 'schedule' haben;
-  # ohne schedule wird default_schedule genutzt.
-  pairs:
-    - name: Serien
-      remote: pcloud:/medien/Serien
-      local: /mnt/media-nas/Serien
-      schedule: "0 2 * * *"          # täglich 02:00
-    - name: Filme
-      remote: pcloud:/medien/Filme
-      local: /mnt/media-nas/Filme
-      schedule: "0 3 * * 0"          # nur sonntags 03:00 (große Files, selten)
-    - name: Fotos
-      remote: pcloud:/medien/Fotos
-      local: /mnt/media-nas/Fotos
-      schedule: "0 */4 * * *"        # alle 4h
-    - name: Iphone_backup
-      remote: pcloud:/medien/Iphone_backup
-      local: /mnt/media-nas/Iphone_backup
-      schedule: manual               # nur manueller Trigger via UI-Button
-
-  rclone_args:
-    # --- Performance ---
-    - --fast-list                 # vorhandene Pages-API für Listings nutzen
-    - --checkers=16               # parallel filechecks
-    - --transfers=8               # parallel uploads
-    - --use-mmap                  # memory-mapped I/O statt heap (großen Files)
-    - --buffer-size=32M           # pro File-Stream Buffer (Default 16M)
-    # --- Stabilität ---
-    - --retries=5                 # transient errors abfedern
-    - --low-level-retries=10      # für jedes einzelne API-Request
-    - --retries-sleep=5s          # zwischen Versuchen warten
-    - --timeout=300s              # für große Files (statt 5min default)
-    - --resilient                 # bisync: weniger schnell aufgeben bei Ungereimtheiten
-    - --max-lock=30m              # bisync Lock-Timeout (Default 10m war zu knapp)
-    # --- Verhalten ---
-    - --track-renames             # rename detection (spart re-upload)
-    - --modify-window=2s          # 2s Toleranz für mtimes (Cloud uneinheitlich)
-    # --- Logging ---
-    - --log-level=INFO
-
-  # Bandbreiten-Limit. Leer = unbegrenzt. Beispiele:
-  #   "10M"                  - konstant 10 MByte/s
-  #   "08:00,1M 22:00,off"   - tagsüber 1 MB/s, nachts unbegrenzt
-  #   "Mon-08:00,1M Mon-22:00,off Fri-22:00,off"  - mehrere Zeitslots
-  bwlimit: ""
-
-  # Pfad zu einer rclone-Filter-Datei. Wird automatisch via --filter-from
-  # ergänzt wenn die Datei existiert. Default-Pfad wird beim ersten Start
-  # angelegt mit sinnvollen Exclusions (.DS_Store, Thumbs.db, *.tmp, ...).
-  # Editierbar via Web-UI -> Einstellungen -> rclone Filter.
-  filter_file: /opt/scrapper/data/rclone-filters.txt
-
-  # ---- Datensicherheit ----
-  #
-  # Gelöschte/überschriebene Files in einen Trash-Ordner statt löschen.
-  # Pfad relativ zum Pair-Root, mit {date} Platzhalter. Empty = kein Trash.
-  # Beispiel: ".bisync-trash/{date}" → pcloud:/Filme/.bisync-trash/2026-05-22T16:00/
-  backup_dir: ""
-
-  # Bisync Conflict-Resolution:
-  #   "auto"   - Default: rclone schreibt zwei .conflict-Files für manuelle Lösung
-  #   "newer"  - automatisch das jüngere File behalten
-  #   "older"  - automatisch das ältere File behalten
-  #   "larger" - größeres File behalten
-  #   "path1"  - Cloud (Remote) gewinnt immer
-  #   "path2"  - Local gewinnt immer
-  conflict_resolve: "auto"
-
-  # Immutable-Mode: rclone schreibt NIE über existierende Files. Schutz
-  # gegen kompromittierte Cloud-Backends oder Ransomware-Mounts. Bei true
-  # gibt es bei Konflikten Fehler statt Überschreibungen.
-  immutable: false
-
 # Webhook-Notifications (optional, ersetzt frühere Telegram-Anbindung)
 # Jeder Eintrag bekommt JSON-POST bei den ausgewählten Events.
 # Funktioniert mit Discord-Webhooks, ntfy.sh, Slack, Teams, n8n, Home Assistant ...
 #
-# events: scraper_done | backup_done | job_failed | pending_high
+# events: scraper_done | job_failed | pending_high
 #
 # webhooks:
 #   - name: "Discord-Alerts"
 #     url:  "https://discord.com/api/webhooks/XXX/YYY"
 #     enabled: true
-#     events: [scraper_done, backup_done, job_failed]
+#     events: [scraper_done, job_failed]
 #   - name: "ntfy"
 #     url:  "https://ntfy.sh/scrapper-alerts"
 #     enabled: true
@@ -227,10 +148,10 @@ webhooks: []
 # Workflow: Button im UI → Shelly an → 12s warten → mount.
 # Beim Ausschalten: umount → 2s flush → Shelly aus.
 #
-# Sudoers-Setup nötig (einmalig):
-#   cp systemd/sudoers-scrapper-hdd /etc/sudoers.d/scrapper-hdd
-#   chmod 0440 /etc/sudoers.d/scrapper-hdd
-# Plus fstab-Eintrag mit 'noauto,nofail' für den mount_point.
+# Kein sudo für den Webdienst. Der Installer legt die root-eigene Allow-Datei
+# /etc/scrapper-hdd-mountpoint an. Bei abweichendem Pfad Installer einmal mit
+# SCRAPPER_HDD_MOUNT_POINT=/mnt/dein_pfad ausführen. Zusätzlich ist ein
+# fstab-Eintrag mit 'noauto,nofail' für den mount_point nötig.
 external_hdd:
   enabled: false                            # auf true für Live-Modus
   shelly_url: http://192.168.1.50           # IP deiner Shelly Plug S
@@ -239,3 +160,12 @@ external_hdd:
   spinup_delay_sec: 12                      # Wartezeit HDD-Spinup nach Shelly-on
   unmount_delay_sec: 2                      # FS-Flush nach umount
   http_timeout_sec: 8                       # Shelly-API-Timeout
+
+# ============================================================
+# Monitoring
+# /metrics akzeptiert eine Web-Session oder diesen Bearer-Token.
+# Der Installer ersetzt den Platzhalter bei Neuinstallationen zufällig.
+# ============================================================
+monitoring:
+  metrics_token: change-this-metrics-token
+

@@ -8,12 +8,39 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass
 from typing import Optional
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_text(value, *, default: str = "", max_length: int = 160) -> str:
+    """Normalisiert unzuverlässige Modell-Ausgaben zu kurzem, sicherem Text."""
+    if value is None:
+        return default
+    if isinstance(value, (dict, list, tuple, set)):
+        return default
+    text = " ".join(str(value).replace("\x00", " ").split()).strip()
+    return text[:max_length] or default
+
+
+def _clean_optional_text(value, *, max_length: int = 120) -> Optional[str]:
+    text = _clean_text(value, max_length=max_length)
+    return text or None
+
+
+def _clean_confidence(value) -> float:
+    """Akzeptiert nur endliche Werte und begrenzt sie auf 0..1."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(number):
+        return 0.0
+    return max(0.0, min(1.0, number))
 
 
 @dataclass
@@ -26,11 +53,19 @@ class RecipeAnalysis:
 
     @classmethod
     def from_dict(cls, data: dict) -> "RecipeAnalysis":
+        if not isinstance(data, dict):
+            data = {}
         return cls(
-            name=data.get("rezeptname") or data.get("name") or "Unbekannt",
-            type=data.get("typ") or data.get("type") or "Unbekannt",
-            category=data.get("kategorie") or data.get("category"),
-            confidence=float(data.get("confidence", 0)),
+            name=_clean_text(
+                data.get("rezeptname") or data.get("name"),
+                default="Unbekannt",
+            ),
+            type=_clean_text(
+                data.get("typ") or data.get("type"),
+                default="Unbekannt",
+            ),
+            category=_clean_optional_text(data.get("kategorie") or data.get("category")),
+            confidence=_clean_confidence(data.get("confidence", 0)),
         )
 
     def needs_manual_input(self, threshold: float) -> bool:
@@ -47,6 +82,16 @@ class WeddingAnalysis:
     category: Optional[str]
     confidence: float
     is_manual: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WeddingAnalysis":
+        if not isinstance(data, dict):
+            data = {}
+        return cls(
+            name=_clean_text(data.get("name"), default="Unbekannt"),
+            category=_clean_optional_text(data.get("kategorie") or data.get("category")),
+            confidence=_clean_confidence(data.get("confidence", 0)),
+        )
 
     def needs_manual_input(self, threshold: float) -> bool:
         return self.confidence < threshold or self.name.lower() == "unbekannt"
@@ -122,12 +167,7 @@ class OllamaAnalyzer:
         if not content:
             return WeddingAnalysis("Unbekannt", None, 0.0)
         try:
-            data = json.loads(content)
-            return WeddingAnalysis(
-                name=data.get("name") or "Unbekannt",
-                category=data.get("kategorie") or data.get("category"),
-                confidence=float(data.get("confidence", 0)),
-            )
+            return WeddingAnalysis.from_dict(json.loads(content))
         except Exception as e:
             logger.warning(f"Ollama Wedding JSON-Parse: {e} | {content[:120]}")
             return WeddingAnalysis("Unbekannt", None, 0.0)
@@ -144,9 +184,9 @@ class OllamaAnalyzer:
         try:
             d = json.loads(content)
             return {
-                "name": d.get("name") or name,
-                "type": d.get("type") or typ,
-                "category": d.get("category") or category,
+                "name": _clean_text(d.get("name"), default=name),
+                "type": _clean_text(d.get("type"), default=typ),
+                "category": _clean_text(d.get("category"), default=category),
             }
         except Exception:
             return {"name": name, "type": typ, "category": category}
@@ -283,12 +323,7 @@ class OpenAIAnalyzer:
         if not content:
             return WeddingAnalysis("Unbekannt", None, 0.0)
         try:
-            data = json.loads(content)
-            return WeddingAnalysis(
-                name=data.get("name") or "Unbekannt",
-                category=data.get("kategorie") or data.get("category"),
-                confidence=float(data.get("confidence", 0)),
-            )
+            return WeddingAnalysis.from_dict(json.loads(content))
         except Exception as e:
             logger.warning(f"OpenAI Wedding JSON-Parse: {e} | {content[:120]}")
             return WeddingAnalysis("Unbekannt", None, 0.0)
@@ -305,9 +340,9 @@ class OpenAIAnalyzer:
         try:
             d = json.loads(content)
             return {
-                "name": d.get("name") or name,
-                "type": d.get("type") or typ,
-                "category": d.get("category") or category,
+                "name": _clean_text(d.get("name"), default=name),
+                "type": _clean_text(d.get("type"), default=typ),
+                "category": _clean_text(d.get("category"), default=category),
             }
         except Exception:
             return {"name": name, "type": typ, "category": category}

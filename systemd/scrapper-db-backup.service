@@ -1,5 +1,5 @@
 [Unit]
-Description=Scrapper SQLite Online-Backup + VACUUM + Log-Cleanup
+Description=Scrapper SQLite Online-Backup and Cleanup
 After=scrapper-web.service
 
 [Service]
@@ -8,12 +8,20 @@ User=scrapper
 Group=scrapper
 WorkingDirectory=/opt/scrapper
 Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
+Environment="PYTHONDONTWRITEBYTECODE=1"
 Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
-# 1. Backup nach data/backups/{daily,weekly,monthly}/scrapper-*.db.gz
+Environment="SCRAPPER_DB_PATH=/opt/scrapper/data/scrapper.db"
 ExecStart=/opt/scrapper/venv/bin/python -m app.cli db-backup
-# 2. Log-Cleanup nach paths.log_retention_days
 ExecStart=/opt/scrapper/venv/bin/python -m app.cli log-cleanup
-# 3. VACUUM nur sonntags (um Mehraufwand zu beschränken; das gleiche Timer
-#    feuert täglich, aber VACUUM einmal pro Woche reicht)
 ExecStart=/bin/bash -c '[ "$(date +%%u)" = "7" ] && /opt/scrapper/venv/bin/python -m app.cli db-vacuum || true'
-TimeoutStartSec=600
+TimeoutStartSec=900
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/scrapper/data /opt/scrapper/logs /opt/scrapper/temp /opt/scrapper/files -/mnt -/media -/srv
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true

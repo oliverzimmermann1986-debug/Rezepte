@@ -5,10 +5,11 @@ from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 
-from ..auth import hash_password, is_hashed, require_auth
-from ..config_store import get_config
+from ..auth import (cleanup_initial_password_file, hash_password, is_hashed,
+                    require_auth)
+from ..config_store import deep_merge, get_config, validate_config
+from ..db import get_db
 from ..jobs.scraper import invalidate_scraper_job
 
 router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_auth)])
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(
 def read_config() -> Dict[str, Any]:
     """Liefert die Config zurück. Passwörter werden maskiert."""
     cfg = get_config().all()
+    cfg.pop("backup", None)
     return _mask(cfg)
 
 
@@ -26,19 +28,39 @@ def update_config(payload: Dict[str, Any]):
     """Schreibt die komplette Config neu. Maskierte Felder werden zurückgemerged."""
     store = get_config()
     current = store.all()
-    merged = _unmask(payload, current)
-    # Web-Passwort, falls Klartext, immer bcrypt-hashen
+    unmasked = _unmask(payload, current)
+    merged = deep_merge(current, unmasked)
+    # Rclone/Dateisynchronisierung wurde vollständig entfernt. Alte Installationen
+    # verlieren den Legacy-Block beim nächsten Speichern kontrolliert.
+    merged.pop("backup", None)
+    # Ein leeres Web-Passwort bedeutet laut UI "unverändert".
     pw = _get(merged, ("web", "password"))
+    password_changed = False
+    if not pw:
+        _set(merged, ("web", "password"), _get(current, ("web", "password")))
+        pw = _get(merged, ("web", "password"))
     if isinstance(pw, str) and pw and not is_hashed(pw):
-        if len(pw) < 8:
-            raise HTTPException(400, "Passwort muss mindestens 8 Zeichen haben")
+        if len(pw) < 12:
+            raise HTTPException(400, "Passwort muss mindestens 12 Zeichen haben")
         _set(merged, ("web", "password"), hash_password(pw))
-    store.replace(merged)
-    store.save()
-    # ScraperJob hat 30+ Config-Werte gecached - invalidieren damit der
-    # nächste Resolve/Reanalyze die neuen Settings nutzt.
+        password_changed = True
+
+    errors = validate_config(merged)
+    if errors:
+        raise HTTPException(400, detail={"message": "Konfiguration ungültig", "errors": errors})
+
+    restart_keys = (("web", "bind_host"), ("web", "bind_port"), ("web", "trusted_proxies"))
+    restart_required = any(_get(current, key) != _get(merged, key) for key in restart_keys)
+    try:
+        store.replace(merged)
+        store.save()
+    except Exception:
+        store.replace(current)
+        raise
+    if password_changed:
+        cleanup_initial_password_file()
     invalidate_scraper_job()
-    return {"ok": True}
+    return {"ok": True, "restart_required": restart_required}
 
 
 @router.post("/reload")
@@ -55,6 +77,7 @@ MASK_PATHS = [
     ("mail", "recipe", "password"),
     ("mail", "wedding", "password"),
     ("ai", "openai", "api_key"),
+    ("monitoring", "metrics_token"),
 ]
 
 
@@ -111,52 +134,8 @@ def _unmask(incoming: dict, current: dict) -> dict:
     return out
 
 
-# ---------------- rclone Filter-Datei ----------------
-# Get/Put für eine separate Filter-Datei (rclone --filter-from). Liegt
-# außerhalb von config.yaml weil rclone das Format selbst parst und
-# nicht über YAML gehen sollte.
+# ---------------- Log- und Datenbank-Sicherungsverwaltung ----------------
 
-class FilterPayload(BaseModel):
-    content: str
-
-
-def _filter_path() -> Path:
-    """Pfad aus config holen mit fallback. Konstrain auf data/ damit
-    User nicht /etc/passwd überschreibt."""
-    cfg = get_config()
-    p = cfg.get("backup", "filter_file", default="/opt/scrapper/data/rclone-filters.txt") \
-        or "/opt/scrapper/data/rclone-filters.txt"
-    # Constraint: Pfad muss innerhalb /opt/scrapper/data liegen
-    resolved = Path(p).resolve()
-    base = Path("/opt/scrapper/data").resolve()
-    if not str(resolved).startswith(str(base)):
-        raise HTTPException(400, f"filter_file muss unter /opt/scrapper/data liegen, ist: {resolved}")
-    return resolved
-
-
-@router.get("/filter-file")
-def get_filter_file() -> dict:
-    path = _filter_path()
-    if not path.exists():
-        return {"path": str(path), "exists": False, "content": ""}
-    try:
-        return {"path": str(path), "exists": True, "content": path.read_text(encoding="utf-8")}
-    except Exception as e:
-        raise HTTPException(500, f"Lesefehler: {e}")
-
-
-@router.put("/filter-file")
-def save_filter_file(body: FilterPayload) -> dict:
-    path = _filter_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        path.write_text(body.content, encoding="utf-8")
-        return {"ok": True, "path": str(path), "bytes": len(body.content.encode("utf-8"))}
-    except Exception as e:
-        raise HTTPException(500, f"Schreibfehler: {e}")
-
-
-# ---------------- Log + Backup Management ----------------
 
 @router.get("/logs/stats")
 def logs_stats() -> dict:
@@ -196,7 +175,7 @@ def logs_cleanup(days: int = None) -> dict:
     if days is not None:
         cmd.append(str(days))
     try:
-        r = _sp.run(cmd, capture_output=True, text=True, timeout=120, cwd="/opt/scrapper")
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=120, cwd=str(Path(__file__).resolve().parents[2]))
         return {"ok": r.returncode == 0, "stdout": r.stdout[-1500:],
                 "stderr": r.stderr[-1500:] if r.stderr else ""}
     except Exception as e:
@@ -206,9 +185,7 @@ def logs_cleanup(days: int = None) -> dict:
 @router.get("/backups/list")
 def backups_list() -> dict:
     """Listet alle vorhandenen DB-Backups gegliedert nach Tier."""
-    cfg = get_config()
-    data_dir = Path(cfg.get("paths", "data_dir", default="/opt/scrapper/data"))
-    backups_root = data_dir / "backups"
+    backups_root = get_db().path.parent / "backups"
     tiers: dict = {}
     if backups_root.exists():
         for tier in ("daily", "weekly", "monthly"):
@@ -233,7 +210,7 @@ def backups_run_now() -> dict:
     try:
         r = _sp.run(
             [_sys.executable, "-m", "app.cli", "db-backup"],
-            capture_output=True, text=True, timeout=300, cwd="/opt/scrapper",
+            capture_output=True, text=True, timeout=300, cwd=str(Path(__file__).resolve().parents[2]),
         )
         return {"ok": r.returncode == 0, "stdout": r.stdout[-2000:],
                 "stderr": r.stderr[-2000:] if r.stderr else ""}

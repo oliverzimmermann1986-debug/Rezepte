@@ -166,85 +166,14 @@ def test_openai(req: OpenAITestRequest = None) -> Dict[str, Any]:
 # /telegram-Test wurde entfernt: Telegram-Benachrichtigungen sind raus.
 
 
-class RcloneTestRequest(BaseModel):
-    pair_index: Optional[int] = None  # wenn None: nur listremotes
-
-
-@router.post("/rclone")
-def test_rclone(req: RcloneTestRequest) -> Dict[str, Any]:
-    """rclone-Konfiguration und Remote-Zugriff testen."""
-    try:
-        # 1. listremotes
-        r = subprocess.run(
-            ["rclone", "listremotes"], capture_output=True, text=True, timeout=15,
-        )
-        if r.returncode != 0:
-            return {"ok": False, "error": f"rclone listremotes: {r.stderr.strip()}"}
-        remotes = [ln.strip().rstrip(":") for ln in r.stdout.splitlines() if ln.strip()]
-        if not remotes:
-            return {"ok": False, "error": "Keine rclone-Remotes konfiguriert. `rclone config` ausführen."}
-
-        backup = get_config().get("backup", default={}) or {}
-        configured_remote = backup.get("rclone_remote", "")
-        result = {
-            "ok": True,
-            "remotes": remotes,
-            "configured_remote": configured_remote,
-            "remote_exists": configured_remote in remotes,
-        }
-
-        if not result["remote_exists"]:
-            result["ok"] = False
-            result["error"] = (
-                f"Konfigurierter Remote '{configured_remote}' nicht in rclone gefunden. "
-                f"Verfügbar: {', '.join(remotes)}"
-            )
-            return result
-
-        # 2. Optional: konkretes Paar testen (lsd auf den remote-Pfad)
-        if req.pair_index is not None:
-            pairs = backup.get("pairs") or []
-            if req.pair_index >= len(pairs):
-                result["error"] = "pair_index außerhalb der Liste"
-                result["ok"] = False
-                return result
-            pair = pairs[req.pair_index]
-            remote_path = pair.get("remote", "")
-            local_path = pair.get("local", "")
-
-            # remote-Test
-            r2 = subprocess.run(
-                ["rclone", "size", remote_path], capture_output=True, text=True, timeout=60,
-            )
-            result["remote_path"] = remote_path
-            result["remote_size_output"] = r2.stdout.strip()[:300] if r2.returncode == 0 else r2.stderr.strip()[:300]
-
-            # lokaler Pfad
-            result["local_path"] = local_path
-            result["local_exists"] = Path(local_path).exists()
-            if not result["local_exists"]:
-                result["ok"] = False
-                result["error"] = f"Lokaler Pfad existiert nicht: {local_path}"
-
-        result["message"] = (
-            f"rclone OK – {len(remotes)} Remote(s): {', '.join(remotes)}"
-        )
-        return result
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "rclone Timeout"}
-    except FileNotFoundError:
-        return {"ok": False, "error": "rclone Binary nicht gefunden"}
-    except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-
-
 @router.post("/paths")
 def test_paths() -> Dict[str, Any]:
     """Prüft ob alle konfigurierten Pfade existieren und beschreibbar sind."""
     cfg = get_config().get("paths", default={}) or {}
     results = {}
     all_ok = True
-    for key, p in cfg.items():
+    for key in ("recipe_dir", "wedding_dir", "temp_dir", "logs_dir"):
+        p = cfg.get(key)
         path = Path(p) if p else None
         if not path:
             results[key] = {"path": p, "ok": False, "error": "leer"}

@@ -4,24 +4,26 @@ Startet mit:  uvicorn app.main:app --host 127.0.0.1 --port 8000
 """
 from __future__ import annotations
 
+import html
 import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Request, status
+from fastapi import Depends, FastAPI, Form, Request, status
 from fastapi.exceptions import HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, check_credentials,
-                    create_session, migrate_security, verify_session)
+                    create_session, migrate_security, require_auth, verify_session)
 from .config_store import get_config
 from .db import get_db
 from .routes import (api_browse, api_config, api_events, api_hdd, api_history,
-                     api_jobs, api_metrics, api_pending, api_schedule, api_stats,
-                     api_test)
-from .security import SecurityHeadersMiddleware, client_ip, login_limiter
+                     api_jobs, api_metrics, api_pending, api_recipes, api_schedule,
+                     api_stats, api_test)
+from .security import (SameOriginMiddleware, SecurityHeadersMiddleware, client_ip,
+                       login_limiter)
 
 # -------- Logging --------
 log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
@@ -40,20 +42,53 @@ logger = logging.getLogger(__name__)
 # Hasht Klartext-Pwd, generiert Secret, blockt admin/changeme.
 migrate_security()
 
-# DB initialisieren + Stale-Running-Jobs vom letzten Crash/Restart aufräumen
+# DB initialisieren + verwaiste Running-Jobs aufräumen. Separate systemd-
+# Separate Scraper-Prozesse können einen Web-Restart überleben; ihr File-Lock
+# schützen jeweils den neuesten passenden DB-Job vor einer Falschmarkierung.
 _db = get_db()
-_stale = _db.reset_stale_running()
+_protected_job_ids = set()
+try:
+    from .jobs.locks import is_locked
+
+    _running = _db.running_jobs()
+    if is_locked("scraper"):
+        _active = next((j for j in _running if j.get("kind") == "scraper"), None)
+        if _active:
+            _protected_job_ids.add(int(_active["id"]))
+except (OSError, ValueError):
+    logger.exception("Aktive Job-Locks konnten beim Startup nicht geprüft werden")
+
+_stale = _db.reset_stale_running(_protected_job_ids)
 if _stale:
-    logger.warning(f"{_stale} Job(s) waren als 'running' markiert - auf 'error' gesetzt (Crash/Restart-Recovery)")
+    logger.warning(
+        "%s verwaiste Job(s) wurden auf 'error' gesetzt (Crash/Restart-Recovery)",
+        _stale,
+    )
 
 # DB-Hygiene: alte Jobs raus, uralte Pending-Items automatisch skippen.
 # Idempotent + günstig - läuft bei jedem Restart einmal.
 _jobs_purged = _db.cleanup_old_jobs(days=90)
 if _jobs_purged:
     logger.info(f"DB-Cleanup: {_jobs_purged} Job-Einträge älter 90 Tage gelöscht")
+# Vor dem Auto-Skip zugehörige Stash-Dateien sicher entfernen.
+_old_pending = _db.pending_older_than(days=30, status="pending")
+for _item in _old_pending:
+    _p = _item.get("video_path")
+    if not _p:
+        continue
+    try:
+        _resolved = Path(_p).resolve()
+        _temp_root = Path(get_config().get("paths", "temp_dir", default="/opt/scrapper/temp")).resolve()
+        _resolved.relative_to(_temp_root)
+        _resolved.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        logger.warning("Alte Pending-Datei außerhalb temp_dir oder nicht löschbar: %s", _p)
 _pending_skipped = _db.auto_skip_old_pending(days=30)
 if _pending_skipped:
     logger.info(f"DB-Cleanup: {_pending_skipped} Pending-Items älter 30 Tage auf 'auto_skipped'")
+_pending_purged = _db.cleanup_old_pending(days=180)
+if _pending_purged:
+    logger.info(f"DB-Cleanup: {_pending_purged} erledigte Pending-Einträge älter 180 Tage gelöscht")
 
 def _sd_notify(state: str) -> None:
     """Sendet eine Statusnachricht an systemd, wenn unter Type=notify gestartet.
@@ -92,14 +127,15 @@ async def _lifespan(app):
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).
 _enable_docs = os.getenv("SCRAPPER_ENABLE_DOCS", "0") == "1"
 app = FastAPI(
-    title="Scrapper Manager",
-    version="1.0.0",
+    title="Rezeptliebe",
+    version="1.2.0",
     docs_url="/api/docs" if _enable_docs else None,
     redoc_url=None,
     openapi_url="/api/openapi.json" if _enable_docs else None,
     lifespan=_lifespan,
 )
 
+app.add_middleware(SameOriginMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
 # Statisch (Frontend)
@@ -110,6 +146,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(api_config.router)
 app.include_router(api_jobs.router)
 app.include_router(api_pending.router)
+app.include_router(api_recipes.router)
 app.include_router(api_history.router)
 app.include_router(api_test.router)
 app.include_router(api_browse.router)
@@ -122,8 +159,7 @@ app.include_router(api_events.router)
 
 # -------- Cookie-Helper --------
 def _set_session_cookie(resp, token: str, request: Request) -> None:
-    proto = request.headers.get("x-forwarded-proto", "").lower()
-    is_https = proto == "https" or request.url.scheme == "https"
+    is_https = request.url.scheme == "https"
     resp.set_cookie(
         SESSION_COOKIE,
         token,
@@ -139,16 +175,19 @@ def _set_session_cookie(resp, token: str, request: Request) -> None:
 LOGIN_HTML = """\
 <!DOCTYPE html>
 <html lang="de"><head>
-<meta charset="UTF-8"><title>Login · Scrapper</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="/static/style.css">
+<meta charset="UTF-8"><title>Login · Rezeptliebe</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f7cf63">
+<meta name="color-scheme" content="light">
+<link rel="stylesheet" href="/static/rezeptliebe.css?v=2026-07-11-2">
 </head><body class="login-body">
-<form method="post" action="/login" class="login-card">
-  <h1>Scrapper</h1>
-  <p class="muted">Bitte anmelden</p>
+<form method="post" action="/login" class="login-card" aria-labelledby="login-title">
+  <div class="login-brand"><div class="login-brand-mark"><svg class="brand-chef-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M14.5 22.5a9 9 0 0 1 3.8-17.2A10.5 10.5 0 0 1 37 11.9a8 8 0 0 1-2.4 15.4V39a3 3 0 0 1-3 3H16.4a3 3 0 0 1-3-3V27.3a8 8 0 0 1 1.1-4.8Zm3.7 3.1V37h11.6V25.6l2-.7a3.4 3.4 0 0 0-1.1-6.6h-1.8l-.2-1.8a5.9 5.9 0 0 0-11.4-1.2l-.7 2-2.1-.3a4.4 4.4 0 0 0-1.2 8.7l2 .3v6h2.9v-6.4Zm0 13.5h11.6v-2.8H18.2v2.8Z"/></svg></div><div class="login-brand-copy"><strong>Rezeptliebe</strong><span>Meine Rezeptbibliothek</span></div></div>
+  <h1 id="login-title">Willkommen zurück</h1>
+  <p class="muted">Anmelden, um Rezepte zu suchen und neue Inhalte zu importieren.</p>
   {error}
   <input type="hidden" name="next" value="{next}">
-  <label>Benutzer<input name="username" autocomplete="username" required></label>
+  <label>Benutzername<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
   <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
   <button type="submit">Anmelden</button>
 </form>
@@ -157,15 +196,26 @@ LOGIN_HTML = """\
 
 
 def _safe_next(value: str) -> str:
-    """Open-Redirect-Schutz: nur lokale Pfade erlauben."""
-    if not value or not value.startswith("/") or value.startswith("//"):
+    """Open-Redirect- und Header-Injection-Schutz: nur lokale Pfade."""
+    value = str(value or "")[:2048]
+    if any(ord(ch) < 32 for ch in value):
+        return "/"
+    # Backslashes verbieten: Browser normalisieren '\' zu '/' - aus '/\evil.com'
+    # würde sonst '//evil.com' (scheme-relative Redirect auf fremde Domain).
+    if "\\" in value:
+        return "/"
+    if not value.startswith("/") or value.startswith("//"):
         return "/"
     return value
 
 
+def _login_html(*, error: str = "", next_path: str = "/") -> str:
+    return LOGIN_HTML.format(error=error, next=html.escape(_safe_next(next_path), quote=True))
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(next: str = "/"):
-    return LOGIN_HTML.format(error="", next=_safe_next(next))
+    return _login_html(next_path=next)
 
 
 @app.post("/login")
@@ -180,10 +230,10 @@ def login(
     if blocked:
         logger.warning(f"Login-Block für IP {ip}, noch {remaining}s")
         return HTMLResponse(
-            LOGIN_HTML.format(
+            _login_html(
                 error=f'<p class="error">⛔ Zu viele Fehlversuche. '
                       f'Erneut probieren in {remaining // 60 + 1} min.</p>',
-                next=_safe_next(next),
+                next_path=next,
             ),
             status_code=429,
         )
@@ -192,9 +242,9 @@ def login(
         login_limiter.record_fail(ip)
         logger.warning(f"Fehl-Login von {ip} (user={username!r})")
         return HTMLResponse(
-            LOGIN_HTML.format(
+            _login_html(
                 error='<p class="error">❌ Login fehlgeschlagen</p>',
-                next=_safe_next(next),
+                next_path=next,
             ),
             status_code=401,
         )
@@ -239,12 +289,12 @@ def healthz():
         return {"ok": True}
     except Exception as e:
         logger.error(f"healthz failed: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+        return JSONResponse({"ok": False}, status_code=503)
 
 
-@app.get("/healthz/deep")
+@app.get("/healthz/deep", dependencies=[Depends(require_auth)])
 def healthz_deep():
-    """Tiefer Check: DB + Ollama + IMAP + Disk-Space + rclone-Config.
+    """Tiefer Check: DB + Ollama + IMAP + freier Speicher.
     Status-Code immer 200, Details im Body. Wir wollen nicht dass eine
     kaputte IMAP-Config den ganzen Container als 'unhealthy' markiert."""
     import shutil
@@ -299,20 +349,6 @@ def healthz_deep():
         except Exception as e:
             checks[f"disk_{key}"] = {"ok": False, "path": p, "error": str(e)}
 
-    # rclone-Config lesbar
-    try:
-        import subprocess
-        r = subprocess.run(["rclone", "listremotes"],
-                            capture_output=True, text=True, timeout=5)
-        if r.returncode == 0:
-            remotes = [x.strip(":") for x in r.stdout.split() if x.strip()]
-            checks["rclone"] = {"ok": True, "remotes": remotes}
-        else:
-            checks["rclone"] = {"ok": False, "error": r.stderr.strip()[:200]}
-    except FileNotFoundError:
-        checks["rclone"] = {"ok": False, "error": "rclone binary not found"}
-    except Exception as e:
-        checks["rclone"] = {"ok": False, "error": str(e)}
 
     overall = all(v.get("ok", False) for v in checks.values())
     return {"ok": overall, "checks": checks}

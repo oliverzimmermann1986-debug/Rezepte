@@ -1,9 +1,13 @@
-"""API für systemd-Timer-Verwaltung (Scraper + Backup Schedule)."""
+"""API für den systemd-Timer des Inhaltsimports."""
 from __future__ import annotations
 
+import json
 import logging
 import re
+import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -19,12 +23,12 @@ router = APIRouter(prefix="/api/schedule", tags=["schedule"], dependencies=[Depe
 
 TIMER_FILES = {
     "scraper": "/etc/systemd/system/scrapper-job.timer",
-    "backup":  "/etc/systemd/system/rclone-sync.timer",
 }
 
 # Erlaubt: systemd-OnCalendar-Zeichen (Buchstaben/Ziffern/: * / , . - Leerzeichen).
 # Newlines/Quotes/Semikolons/Backslash explizit nicht.
 _ONCALENDAR_RE = re.compile(r"^[A-Za-z0-9:*/,.\- ]{1,200}$")
+_schedule_request_lock = threading.Lock()
 
 
 def _validate_oncalendar(value: str) -> str:
@@ -45,7 +49,7 @@ def _validate_oncalendar(value: str) -> str:
     # Semantik-Check via systemd-analyze
     try:
         r = subprocess.run(
-            ["systemd-analyze", "calendar", v],
+            ["/usr/bin/systemd-analyze", "calendar", v],
             capture_output=True, text=True, timeout=10,
         )
         if r.returncode != 0:
@@ -72,41 +76,64 @@ def _read_oncalendar(timer_path: str) -> Optional[str]:
     return None
 
 
-def _write_oncalendar(timer_path: str, new_value: str) -> None:
-    p = Path(timer_path)
-    if not p.exists():
-        raise HTTPException(500, f"Timer-File {timer_path} fehlt")
-    lines = p.read_text().splitlines()
-    out_lines = []
-    replaced = False
-    for line in lines:
-        if re.match(r'\s*OnCalendar\s*=', line):
-            out_lines.append(f"OnCalendar={new_value}")
-            replaced = True
-        else:
-            out_lines.append(line)
-    if not replaced:
-        # OnCalendar Zeile fehlt - vor [Install] einfügen
-        new_lines = []
-        for line in out_lines:
-            if line.startswith("[Install]"):
-                new_lines.append(f"OnCalendar={new_value}")
-            new_lines.append(line)
-        out_lines = new_lines
-    # Atomic write via temp
-    p.write_text("\n".join(out_lines) + "\n")
+def _queue_schedule_request(new_value: str) -> Dict:
+    """Queue a request for the root-owned systemd path unit atomically."""
+    data_dir = Path(get_config().path).parent.resolve()
+    request_path = data_dir / "scraper-schedule.request"
+    result_path = data_dir / "scraper-schedule.result"
+    tmp_path = data_dir / f".scraper-schedule.request.{os.getpid()}.tmp"
 
+    with _schedule_request_lock:
+        try:
+            result_path.unlink(missing_ok=True)
+            tmp_path.write_text(new_value + "\n", encoding="utf-8")
+            tmp_path.chmod(0o600)
+            tmp_path.replace(request_path)
+        except OSError as exc:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise HTTPException(
+                500,
+                f"Zeitplan-Anforderung konnte nicht gespeichert werden: {exc}",
+            ) from exc
 
-def _systemctl_via_sudo(*args) -> Dict:
-    """Ruft systemctl mit sudo auf. Erfordert sudoers-Eintrag für scrapper."""
-    cmd = ["sudo", "-n", "systemctl"] + list(args)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    return {
-        "ok": r.returncode == 0,
-        "stdout": r.stdout.strip(),
-        "stderr": r.stderr.strip(),
-        "cmd": " ".join(cmd),
-    }
+        # Die root-eigene Path-Unit publiziert ein eindeutiges Resultat. So wird
+        # ein systemctl-Fehler nicht als erfolgreicher Queue-Vorgang gemeldet.
+        timer_path = TIMER_FILES["scraper"]
+        for _ in range(700):
+            if result_path.is_file():
+                try:
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError):
+                    result = None
+                if isinstance(result, dict) and result.get("value") == new_value:
+                    result_path.unlink(missing_ok=True)
+                    if not result.get("ok"):
+                        message = str(result.get("message") or "unbekannter Fehler")[:300]
+                        raise HTTPException(
+                            500,
+                            f"Zeitplan konnte nicht angewendet werden: {message}",
+                        )
+                    if _read_oncalendar(timer_path) != new_value:
+                        raise HTTPException(
+                            500,
+                            "Zeitplan-Helfer meldet Erfolg, Timer-Datei stimmt jedoch nicht überein",
+                        )
+                    return {"ok": True, "applied": True}
+            time.sleep(0.05)
+
+        if request_path.exists():
+            request_path.unlink(missing_ok=True)
+            raise HTTPException(
+                504,
+                "Zeitplan-Anforderung wurde von systemd nicht innerhalb von 35 Sekunden abgeholt",
+            )
+        raise HTTPException(
+            500,
+            "Zeitplan-Anforderung wurde verarbeitet, aber es liegt kein Ergebnis vor; systemd-Journal prüfen",
+        )
 
 
 @router.get("")
@@ -121,7 +148,7 @@ def get_schedule() -> Dict:
         next_run = None
         try:
             r = subprocess.run(
-                ["systemctl", "list-timers", "--no-pager", "--no-legend", unit_name],
+                ["/usr/bin/systemctl", "list-timers", "--no-pager", "--no-legend", unit_name],
                 capture_output=True, text=True, timeout=10,
             )
             if r.returncode == 0 and r.stdout.strip():
@@ -146,13 +173,9 @@ def get_schedule() -> Dict:
                     }
                     if j.get("summary"):
                         s = j["summary"]
-                        if kind == "scraper":
-                            last_summary["auto"] = s.get("auto", 0)
-                            last_summary["pending"] = s.get("pending", 0)
-                            last_summary["errors"] = s.get("errors", 0)
-                        elif kind == "backup":
-                            last_summary["ok_count"] = s.get("ok_count", 0)
-                            last_summary["total_pairs"] = s.get("total_pairs", 0)
+                        last_summary["auto"] = s.get("auto", 0)
+                        last_summary["pending"] = s.get("pending", 0)
+                        last_summary["errors"] = s.get("errors", 0)
                     break
         except Exception:
             pass
@@ -164,62 +187,40 @@ def get_schedule() -> Dict:
             "last_run": last_run,
             "last_summary": last_summary,
         }
+
     return result
 
 
 class ScheduleUpdate(BaseModel):
     scraper: Optional[str] = None
-    backup: Optional[str] = None
 
 
 @router.put("")
 def update_schedule(body: ScheduleUpdate) -> Dict:
     """Aktualisiert OnCalendar und lädt systemd-Timer neu."""
     changes = []
+    helper_result = None
     if body.scraper:
         clean = _validate_oncalendar(body.scraper)
-        _write_oncalendar(TIMER_FILES["scraper"], clean)
+        helper_result = _queue_schedule_request(clean)
         changes.append(("scraper", clean))
-    if body.backup:
-        clean = _validate_oncalendar(body.backup)
-        _write_oncalendar(TIMER_FILES["backup"], clean)
-        changes.append(("backup", clean))
-
     if not changes:
         return {"ok": True, "message": "Nichts zu ändern"}
-
-    # systemd reload + restart der Timer
-    results = []
-    daemon = _systemctl_via_sudo("daemon-reload")
-    results.append({"step": "daemon-reload", **daemon})
-    if not daemon["ok"]:
-        return {
-            "ok": False,
-            "error": "sudo systemctl daemon-reload schlug fehl - sudoers-Eintrag fehlt?",
-            "details": results,
-        }
-
-    for kind, _ in changes:
-        unit = Path(TIMER_FILES[kind]).name
-        r = _systemctl_via_sudo("restart", unit)
-        results.append({"step": f"restart {unit}", **r})
 
     # Schedule auch in config speichern (für Persistenz/Anzeige)
     cfg = get_config()
     if body.scraper:
         cfg.set("schedule", "scraper_interval", body.scraper)
-    if body.backup:
-        cfg.set("schedule", "backup_interval", body.backup)
     cfg.save()
 
-    return {"ok": True, "changes": dict(changes), "details": results}
+    return {"ok": True, "changes": dict(changes), "details": helper_result}
 
 
 @router.post("/preview")
 def preview_oncalendar(body: ScheduleUpdate) -> Dict:
     """Berechnet Vorschau-Termine ohne zu speichern. Nutzt systemd-analyze calendar."""
     results = {}
-    for kind, value in [("scraper", body.scraper), ("backup", body.backup)]:
+    for kind, value in [("scraper", body.scraper)]:
         if not value:
             continue
         # Vor-Validierung (Regex), damit kein gefährlicher Input an systemd-analyze geht.
@@ -228,7 +229,7 @@ def preview_oncalendar(body: ScheduleUpdate) -> Dict:
             results[kind] = {"ok": False, "error": "Ungültige Zeichen im Ausdruck"}
             continue
         r = subprocess.run(
-            ["systemd-analyze", "calendar", "--iterations=5", v],
+            ["/usr/bin/systemd-analyze", "calendar", "--iterations=5", v],
             capture_output=True, text=True, timeout=10,
         )
         if r.returncode != 0:

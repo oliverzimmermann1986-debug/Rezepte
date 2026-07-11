@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for validated Scrapper schedule requests
+
+[Path]
+PathExists=/opt/scrapper/data/scraper-schedule.request
+Unit=scrapper-schedule-apply.service
+
+[Install]
+WantedBy=multi-user.target

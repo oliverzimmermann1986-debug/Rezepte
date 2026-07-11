@@ -5,31 +5,21 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-NotifyAccess=all
+NotifyAccess=main
 User=scrapper
 Group=scrapper
 WorkingDirectory=/opt/scrapper
 Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
+Environment="PYTHONDONTWRITEBYTECODE=1"
 Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
-# rclone schreibt seinen Cache (inkl. bisync-State) standardmäßig nach
-# ~/.cache/rclone. Mit ProtectHome=read-only ist /home nicht beschreibbar
-# - bisync würde sofort scheitern. Daher umlenken nach data/.
-Environment="RCLONE_CACHE_DIR=/opt/scrapper/data/.rclone-cache"
-# Cache-Dir vor dem Start anlegen (idempotent, läuft als root)
-ExecStartPre=/bin/mkdir -p /opt/scrapper/data/.rclone-cache
-ExecStartPre=/bin/chown scrapper:scrapper /opt/scrapper/data/.rclone-cache
-# Bind-Adresse:
-#   - 127.0.0.1  wenn der Reverse-Proxy / Cloudflare-Tunnel IM SELBEN Container läuft
-#   - 0.0.0.0    wenn er in einem ANDEREN Container/Host läuft und über LAN zugreift
-#
-# Default: 0.0.0.0, weil das die häufigere Topologie ist (Proxmox: cloudflared
-# meist in eigenem LXC). Externer Schutz erfolgt über Cloudflare Access + ggf.
-# eine LAN-Firewall die Port 8000 nur für die cloudflared-Container-IP öffnet.
-# --proxy-headers + --forwarded-allow-ips lässt FastAPI dem CF-Tunnel die echte
-# Client-IP via X-Forwarded-For/CF-Connecting-IP zuordnen.
-ExecStart=/opt/scrapper/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*
+Environment="SCRAPPER_DB_PATH=/opt/scrapper/data/scrapper.db"
+ExecStartPre=+/usr/bin/install -d -o scrapper -g scrapper -m 0700 /opt/scrapper/data/locks /opt/scrapper/temp /opt/scrapper/logs
+ExecStart=/opt/scrapper/venv/bin/python -m app.server
 Restart=on-failure
 RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=30
+UMask=0077
 StandardOutput=journal
 StandardError=journal
 
@@ -37,20 +27,18 @@ StandardError=journal
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-# ProtectHome=read-only: rclone liest seine Config (und ggf. Cache) aus
-# /home/scrapper/. Mit ProtectHome=true wäre /home komplett unsichtbar
-# (Permission denied), mit 'read-only' kann rclone lesen, aber nicht
-# unter /home schreiben - sein Cache landet via TMPDIR in /tmp (privat
-# pro Service durch PrivateTmp).
 ProtectHome=read-only
-ReadWritePaths=/opt/scrapper /mnt
+ReadWritePaths=/opt/scrapper/data /opt/scrapper/logs /opt/scrapper/temp /opt/scrapper/files -/mnt -/media -/srv
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictSUIDSGID=true
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

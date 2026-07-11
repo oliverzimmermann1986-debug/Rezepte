@@ -8,10 +8,9 @@ Format ist die Standard-SSE-Notation:
     data: <json>
     \\n\\n
 
-Drei Event-Typen:
-  - status:           {scraper, backup, reanalyze, pending_count}
-  - backup_progress:  vom backup_progress-Endpoint
-  - scraper_progress: vom scraper_progress-Endpoint
+Event-Typen:
+  - status:           {scraper, reanalyze, pending_count}
+  - scraper_progress: Fortschritt des Imports
 
 Heartbeat alle 25 s als Comment ('`: keepalive`'), damit Cloudflare-Tunnel
 & Reverse-Proxys die Connection nicht wegen Idle-Timeout kappen.
@@ -54,7 +53,7 @@ async def _stream(request: Request) -> AsyncIterator[bytes]:
 
     # Initial-Snapshot sofort senden damit das UI nicht 2 s warten muss
     try:
-        yield _format("status", _status_snapshot(db)).encode()
+        yield _format("status", await asyncio.to_thread(_status_snapshot, db)).encode()
     except Exception:
         pass
 
@@ -65,23 +64,19 @@ async def _stream(request: Request) -> AsyncIterator[bytes]:
             return
 
         try:
-            snapshot = _status_snapshot(db)
+            # DB-Zugriffe sind synchron (sqlite3) - via to_thread ausführen,
+            # sonst blockiert jeder offene SSE-Client alle 2 s den Event-Loop
+            # und damit sämtliche anderen Requests.
+            snapshot = await asyncio.to_thread(_status_snapshot, db)
             yield _format("status", snapshot).encode()
 
             # Progress-Events nur wenn was läuft
             if snapshot.get("scraper") or snapshot.get("reanalyze"):
                 try:
-                    p = api_jobs.scraper_progress()
+                    p = await asyncio.to_thread(api_jobs.scraper_progress)
                     yield _format("scraper_progress", p).encode()
                 except Exception as e:
                     logger.debug(f"scraper_progress fail: {e}")
-            if snapshot.get("backup"):
-                try:
-                    p = api_jobs.backup_progress()
-                    yield _format("backup_progress", p).encode()
-                except Exception as e:
-                    logger.debug(f"backup_progress fail: {e}")
-
             # Heartbeat (Comment-Line) gegen idle-Timeout der Reverse-Proxies
             now = loop.time()
             if now - last_heartbeat >= HEARTBEAT_INTERVAL:
@@ -98,7 +93,6 @@ async def _stream(request: Request) -> AsyncIterator[bytes]:
 def _status_snapshot(db) -> dict:
     return {
         "scraper": bool(db.job_running("scraper")),
-        "backup": bool(db.job_running("backup") or db.job_running("quicksync")),
         "reanalyze": bool(db.job_running("reanalyze")),
         "pending_count": db.pending_count(),
     }
