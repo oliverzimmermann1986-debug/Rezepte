@@ -1,7 +1,6 @@
 [Unit]
-Description=Scrapper Job (E-Mail + TikTok/Instagram Download)
+Description=Scrapper Job (E-Mail + TikTok Download)
 After=network-online.target scrapper-web.service
-Wants=network-online.target
 
 [Service]
 Type=oneshot
@@ -9,21 +8,6 @@ User=scrapper
 Group=scrapper
 WorkingDirectory=/opt/scrapper
 Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
-Environment="PYTHONDONTWRITEBYTECODE=1"
 Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
-Environment="SCRAPPER_DB_PATH=/opt/scrapper/data/scrapper.db"
 ExecStart=/opt/scrapper/venv/bin/python -m app.jobs.scraper_cli
 TimeoutStartSec=3600
-UMask=0077
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/opt/scrapper/data /opt/scrapper/logs /opt/scrapper/temp /opt/scrapper/files -/mnt -/media -/srv
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-
-[Install]
-WantedBy=multi-user.target

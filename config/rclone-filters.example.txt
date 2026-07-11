@@ -1,0 +1,49 @@
+# rclone filter file - Default-Exclusions
+# Syntax: '- ' = ausschließen, '+ ' = einschließen.
+# Reihenfolge wichtig: erste matchende Regel gewinnt.
+# Doku: https://rclone.org/filtering/
+
+# --- macOS Cruft ---
+- .DS_Store
+- ._*
+- .Spotlight-V100/**
+- .Trashes/**
+- .fseventsd/**
+
+# --- Windows Cruft ---
+- Thumbs.db
+- Desktop.ini
+- desktop.ini
+- $RECYCLE.BIN/**
+- System Volume Information/**
+
+# --- Linux/Editor Temp ---
+- *~
+- *.tmp
+- *.swp
+- *.swo
+- .~lock.*
+
+# --- Browser Downloads in-progress ---
+- *.crdownload
+- *.part
+- *.partial
+
+# --- NAS Metadata ---
+- "@eaDir/**"        # Synology
+- ".@__thumb/**"     # QNAP
+- "@SynoEAStream"
+- "@Recycle/**"      # AsusStor
+- "#recycle/**"
+
+# --- VCS / Build-Artefakte (selten relevant, aber sicherheitshalber) ---
+- .git/**
+- .svn/**
+- node_modules/**
+- __pycache__/**
+- .pytest_cache/**
+
+# Eigene Regeln darunter ergänzen. Beispiele:
+# - secret-folder/**
+# - *.log
+# + wichtig.txt

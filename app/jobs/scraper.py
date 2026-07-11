@@ -1,32 +1,33 @@
 """
 Scraper-Job (TikTok/Instagram -> Rezepte/Hochzeit Ordner).
 
-Vereinfachte KI-Cascade (kein Vision-Fallback mehr):
-  Ollama-fast -> Ollama-fallback -> Pending (manuell im Web-UI)
+KI-Cascade ist seit dem Ollama-Removal flat:
+  OpenAI-Call -> Pending (manuell im Web-UI) wenn confidence zu niedrig
 
 Pending-Items werden im Web-UI über ein <video>-Element angezeigt -
 keine Standbild-Extraktion mehr nötig.
+
+Pre-Analyse-Schritt: nicht-deutsche Captions werden automatisch nach
+Deutsch übersetzt (siehe _maybe_translate_description). Das Original
+bleibt als description_original.txt im Rezept-Ordner erhalten.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
 import shutil
 import threading
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from ..config_store import get_config
 from ..db import get_db
-from ..core.analyzer import OllamaAnalyzer, RecipeAnalysis, WeddingAnalysis, build_analyzer
-from ..core.downloader import VideoDownloader, cancel_active_downloads
+from ..core.analyzer import RecipeAnalysis, WeddingAnalysis, build_analyzer
+from ..core.downloader import VideoDownloader
 from ..core.email_processor import MailAccount, EmailRouter
-from ..path_utils import build_under, ensure_within, safe_component, unique_directory
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +42,10 @@ MAX_DOWNLOAD_ATTEMPTS = 3
 
 def cancel_job() -> dict:
     """Setzt das Cancel-Flag. Der laufende Scraper bricht beim nächsten
-    URL-Check ab und beendet zusätzlich aktive yt-dlp-Prozessgruppen."""
+    URL-Check ab. Nicht-blockierend - kein subprocess wird hier gekillt
+    (yt-dlp läuft, fertige URLs werden komplett verarbeitet)."""
     _CANCEL_EVENT.set()
-    stopped = cancel_active_downloads()
-    return {"ok": True, "stopped_downloads": stopped}
+    return {"ok": True}
 
 
 def is_cancelled() -> bool:
@@ -56,7 +57,10 @@ def reset_cancel() -> None:
 
 
 def _sanitize(name: str) -> str:
-    return safe_component(name, fallback="Unbekannt", max_length=96)
+    name = (name or "").strip()
+    name = re.sub(r'[<>:"/\\|?*\n\r\t]', "", name)
+    name = re.sub(r"\s+", "_", name)
+    return name or "Unbekannt"
 
 
 def _has_usable_description(text: Optional[str], min_len: int) -> bool:
@@ -67,23 +71,34 @@ def _has_usable_description(text: Optional[str], min_len: int) -> bool:
 
 
 def _save_video_files(target_dir: Path, video_path: Path,
-                       description: Optional[str], info: Dict) -> None:
-    """Schreibt einen vollständigen Datensatz zunächst in ein Staging-Verzeichnis."""
-    target_dir.parent.mkdir(parents=True, exist_ok=True)
-    staging = target_dir.parent / f".{target_dir.name}.tmp-{uuid.uuid4().hex[:10]}"
-    staging.mkdir(mode=0o700)
+                       description: Optional[str], info: Dict,
+                       description_original: Optional[str] = None) -> None:
+    """Schreibt Video + description.txt + info.json in den Ziel-Ordner.
+
+    Wenn description_original gesetzt ist (= Caption wurde übersetzt), wird
+    sie als description_original.txt zusätzlich geschrieben. So bleibt das
+    Original erhalten für späteres Audit oder Re-Übersetzung.
+    """
+    from ..core.safety import atomic_write_text, atomic_write_json, atomic_copy_file, write_manifest
+    target_dir.mkdir(parents=True, exist_ok=True)
+    file_base = target_dir.name
+    if video_path and video_path.exists():
+        atomic_copy_file(video_path, target_dir / f"{file_base}{video_path.suffix}")
+        # yt-dlp legt das Cover als video.jpg neben das Video (--write-thumbnail).
+        # Mitkopieren als thumb.jpg → Indexer setzt thumb_filename, kein "Kein Bild".
+        for t in sorted(video_path.parent.glob("*.jpg")) + sorted(video_path.parent.glob("*.webp")) + sorted(video_path.parent.glob("*.png")):
+            atomic_copy_file(t, target_dir / f"thumb{t.suffix}")
+            break
+    if description:
+        atomic_write_text(target_dir / "description.txt", description)
+    if description_original:
+        atomic_write_text(target_dir / "description_original.txt", description_original)
+    atomic_write_json(target_dir / "info.json", info)
+    # Manifest (SHA-256 pro Datei) für Repair-/Integritäts-Scan
     try:
-        file_base = target_dir.name
-        if video_path and video_path.exists():
-            shutil.copy2(video_path, staging / f"{file_base}{video_path.suffix.lower()}")
-        if description:
-            (staging / "description.txt").write_text(description, encoding="utf-8")
-        with open(staging / "info.json", "w", encoding="utf-8") as handle:
-            json.dump(info, handle, indent=2, ensure_ascii=False)
-        staging.replace(target_dir)
+        write_manifest(target_dir, source={"kind": "recipe", "name": file_base})
     except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
+        pass
 
 
 class ScraperJob:
@@ -98,42 +113,26 @@ class ScraperJob:
         self.temp_dir = Path(cfg.get("paths", "temp_dir", default="/opt/scrapper/temp"))
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
-        # AI-Provider: 'ollama' (default) oder 'openai'.
-        # build_analyzer() liefert je nach Config eine OllamaAnalyzer- oder
-        # OpenAIAnalyzer-Instanz mit identischem Interface (analyze_recipe,
-        # analyze_wedding, spellcheck, health).
+        # AI-Provider: nur noch OpenAI. build_analyzer() liefert einen
+        # OpenAIAnalyzer (oder raised wenn api_key fehlt/gemaskt ist).
         ai_cfg = cfg.get("ai", default={}) or {}
-        provider = (ai_cfg.get("provider") or "ollama").lower().strip()
-        self.ai_provider = provider
+        self.ai_provider = "openai"
 
-        # Primary-Analyzer
         try:
-            self.ollama = build_analyzer(ai_cfg)   # name 'ollama' historisch, ist jetzt Provider-agnostisch
-            self.ollama_enabled = True
+            self.analyzer = build_analyzer(ai_cfg)
+            self.analyzer_enabled = True
         except Exception as e:
-            logger.error(f"AI-Analyzer Init fehlgeschlagen ({provider}): {e}")
-            self.ollama = None
-            self.ollama_enabled = False
-
-        # Fallback-Analyzer: nur bei Ollama sinnvoll (zweites lokales Modell).
-        # Für OpenAI macht ein 'Fallback-Model' keinen Sinn - GPT-4o-mini ist
-        # schon das günstige Modell. Wer Cascade will: ollama-fast → openai.
-        # Das ist aber komplex und selten gefragt - skip für jetzt.
-        self.ollama_fallback = None
-        if provider == "ollama":
-            ollama_cfg = ai_cfg.get("ollama") or {}
-            fb_model = (ollama_cfg.get("fallback_model") or "").strip()
-            if fb_model and self.ollama_enabled:
-                from ..core.analyzer import OllamaAnalyzer
-                self.ollama_fallback = OllamaAnalyzer(
-                    (ollama_cfg.get("url") or "http://localhost:11434").strip(),
-                    fb_model,
-                    int(ollama_cfg.get("timeout") or 60),
-                )
+            logger.error(f"AI-Analyzer Init fehlgeschlagen: {e}")
+            self.analyzer = None
+            self.analyzer_enabled = False
 
         self.confidence_threshold = float(cfg.get("ai", "confidence_threshold", default=0.75) or 0.75)
-        self.fallback_threshold = float(cfg.get("ai", "fallback_threshold", default=0.5) or 0.5)
+        # fallback_threshold bleibt für Bestandskonfigs lesbar aber wird nicht
+        # mehr genutzt (kein zweites Modell mehr seit Ollama-Removal).
         self.min_desc_len = int(cfg.get("ai", "description_min_length", default=20) or 20)
+        # Auto-Translate: bei Default true; lässt sich per Config deaktivieren
+        # falls jemand das Original behalten will.
+        self.auto_translate = bool(cfg.get("ai", "auto_translate", default=True))
 
         # Downloader (mit optionalem Cookie-Jar für private Inhalte)
         ytdlp_cfg = cfg.get("ytdlp", default={}) or {}
@@ -141,31 +140,17 @@ class ScraperJob:
             ytdlp_cfg.get("binary", "/opt/scrapper/venv/bin/yt-dlp"),
             self.temp_dir,
             cookies_file=ytdlp_cfg.get("cookies_file") or None,
-            timeout=int(ytdlp_cfg.get("timeout_sec", 300) or 300),
-            max_filesize_mb=int(ytdlp_cfg.get("max_filesize_mb", 500) or 500),
-            retries=int(ytdlp_cfg.get("retries", 3) or 3),
         )
 
         # E-Mail Konten
         mail_cfg = cfg.get("mail", default={}) or {}
-        max_attachment_bytes = int(mail_cfg.get("max_attachment_mb", 20) or 20) * 1024 * 1024
-        max_attachments_per_mail = int(mail_cfg.get("max_attachments_per_mail", 10) or 10)
-        max_mail_bytes = int(mail_cfg.get("max_mail_mb", 50) or 50) * 1024 * 1024
         accounts = []
         if mail_cfg.get("recipe"):
-            accounts.append(MailAccount(
-                "recipe", mail_cfg["recipe"], "recipe",
-                max_attachment_bytes=max_attachment_bytes,
-                max_attachments_per_mail=max_attachments_per_mail,
-                max_mail_bytes=max_mail_bytes,
-            ))
+            accounts.append(MailAccount("recipe", mail_cfg["recipe"], "recipe"))
         if mail_cfg.get("wedding"):
             accounts.append(MailAccount(
                 "wedding", mail_cfg["wedding"], "wedding",
                 default_category=mail_cfg["wedding"].get("default_category", "Sonstiges"),
-                max_attachment_bytes=max_attachment_bytes,
-                max_attachments_per_mail=max_attachments_per_mail,
-                max_mail_bytes=max_mail_bytes,
             ))
         self.router = EmailRouter(accounts)
 
@@ -178,77 +163,91 @@ class ScraperJob:
             default=["Deko", "Foto", "Basteln", "Einladung", "Standesamt", "Sonstiges"],
         )
 
-    # ---------------- Analyse (Ollama-only) ----------------
+    # ---------------- Analyse (OpenAI-only) ----------------
     def _analyze_recipe(self, description: Optional[str]) -> RecipeAnalysis:
-        """Cascade: fast Modell -> fallback Modell -> bestes Ergebnis (oder Unbekannt)."""
-        best: Optional[RecipeAnalysis] = None
-        if self.ollama and _has_usable_description(description, self.min_desc_len):
-            r = self.ollama.analyze_recipe(description)
-            logger.info(f"Ollama fast: name={r.name} typ={r.type} conf={r.confidence:.2f}")
+        """Single OpenAI-Call. Bei niedriger confidence → Pending im Web-UI."""
+        if self.analyzer and _has_usable_description(description, self.min_desc_len):
+            r = self.analyzer.analyze_recipe(description)
+            logger.info(f"AI recipe: name={r.name} typ={r.type} conf={r.confidence:.2f}")
             if not r.needs_manual_input(self.confidence_threshold):
                 return r
-            best = r
-            if self.ollama_fallback:
-                r2 = self.ollama_fallback.analyze_recipe(description)
-                logger.info(f"Ollama fallback: name={r2.name} typ={r2.type} conf={r2.confidence:.2f}")
-                if not r2.needs_manual_input(self.fallback_threshold):
-                    return r2
-                if r2.confidence > best.confidence:
-                    best = r2
-        if best:
-            return best
+            return r  # auch das schwache Ergebnis durchgeben; needs_manual_input
+                      # wird vom Aufrufer ausgewertet um Pending-Zweig zu wählen
         return RecipeAnalysis("Unbekannt", "Unbekannt", None, 0.0)
 
     def _analyze_wedding(self, description: Optional[str]) -> WeddingAnalysis:
-        best: Optional[WeddingAnalysis] = None
-        if self.ollama and _has_usable_description(description, self.min_desc_len):
-            w = self.ollama.analyze_wedding(description, self.wedding_categories)
-            logger.info(f"Ollama fast (wedding): name={w.name} cat={w.category} conf={w.confidence:.2f}")
-            if not self.wedding_always_pending and not w.needs_manual_input(self.confidence_threshold):
-                return w
-            best = w
-            if self.ollama_fallback:
-                w2 = self.ollama_fallback.analyze_wedding(description, self.wedding_categories)
-                logger.info(f"Ollama fallback (wedding): name={w2.name} cat={w2.category} conf={w2.confidence:.2f}")
-                if not self.wedding_always_pending and not w2.needs_manual_input(self.fallback_threshold):
-                    return w2
-                if w2.confidence > best.confidence:
-                    best = w2
-        if best:
-            return best
+        if self.analyzer and _has_usable_description(description, self.min_desc_len):
+            w = self.analyzer.analyze_wedding(description, self.wedding_categories)
+            logger.info(f"AI wedding: name={w.name} cat={w.category} conf={w.confidence:.2f}")
+            return w
         return WeddingAnalysis("Unbekannt", None, 0.0)
+
+    def _maybe_translate_description(self, description: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        """Versucht die Caption nach Deutsch zu übersetzen.
+
+        Returns: (final_description, original_or_None)
+          - final_description: was wir weiter verarbeiten (deutsch wenn übersetzt,
+            sonst Original)
+          - original_or_None: Original-Text WENN übersetzt wurde, sonst None
+            (Aufrufer entscheidet ob description_original.txt geschrieben wird)
+        """
+        if not self.auto_translate or not self.analyzer:
+            return description, None
+        if not description or len(description.strip()) < self.min_desc_len:
+            return description, None
+        try:
+            translated = self.analyzer.translate_to_german(description)
+        except Exception as e:
+            logger.warning(f"Translate-Call fehlgeschlagen, behalte Original: {e}")
+            return description, None
+        if translated:
+            logger.info(f"Caption übersetzt: {len(description)}→{len(translated)} chars")
+            return translated, description
+        return description, None
 
     # ---------------- Save ----------------
     def _save_recipe(self, r: RecipeAnalysis, url: str, video: Path,
                      description: Optional[str]) -> Path:
+        # Pre-Save Translate: nicht-deutsche Captions auf Deutsch
+        # umsetzen, Original als Side-File aufheben.
+        description, description_original = self._maybe_translate_description(description)
         type_n = _sanitize(r.type)
         cat_n = _sanitize(r.category or "Allgemein")
         name_n = _sanitize(r.name)
-        target = build_under(self.recipe_dir, (type_n, cat_n, name_n))
-        target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
+        target = self.recipe_dir / type_n / cat_n / name_n
+        if target.exists():
+            target = target.parent / f"{name_n}_{datetime.now():%Y%m%d_%H%M%S}"
         info = {
             "url": url, "name": r.name, "type": r.type, "category": r.category,
             "confidence": r.confidence, "is_manual": r.is_manual,
             "content_type": "recipe", "description": description,
             "timestamp": datetime.now().isoformat(),
         }
-        _save_video_files(target, video, description, info)
+        if description_original:
+            info["description_original"] = description_original
+            info["translated"] = True
+        _save_video_files(target, video, description, info, description_original)
         return target
 
     def _save_wedding(self, w: WeddingAnalysis, url: str, video: Path,
                       description: Optional[str], default_cat: str = "Sonstiges") -> Path:
+        description, description_original = self._maybe_translate_description(description)
         cat = _sanitize(w.category or default_cat)
         name_n = _sanitize(w.name) if w.name.lower() != "unbekannt" \
             else f"Hochzeit_{datetime.now():%Y%m%d_%H%M%S}"
-        target = build_under(self.wedding_dir, (cat, name_n))
-        target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
+        target = self.wedding_dir / cat / name_n
+        if target.exists():
+            target = target.parent / f"{name_n}_{datetime.now():%Y%m%d_%H%M%S}"
         info = {
             "url": url, "name": w.name, "wedding_category": w.category or default_cat,
             "confidence": w.confidence, "is_manual": w.is_manual,
             "content_type": "wedding", "description": description,
             "timestamp": datetime.now().isoformat(),
         }
-        _save_video_files(target, video, description, info)
+        if description_original:
+            info["description_original"] = description_original
+            info["translated"] = True
+        _save_video_files(target, video, description, info, description_original)
         return target
 
     # ---------------- URL-Verarbeitung ----------------
@@ -259,9 +258,11 @@ class ScraperJob:
 
         video = self.downloader.download(url)
         if not video:
-            # Download-Fehler: Versuch zählen. Nach MAX_DOWNLOAD_ATTEMPTS
-            # wird die URL im run()-Loop als 'aufgegeben' history_add'd.
-            self.db.download_failure_record(url, "yt-dlp Download fehlgeschlagen")
+            # Download-Fehler: Versuch zählen. Bis MAX_DOWNLOAD_ATTEMPTS wird
+            # die URL in Folgeläufen als Retry-Kandidat erneut versucht,
+            # danach erscheint sie im Audit unter 'Endgültig fehlgeschlagen'.
+            self.db.download_failure_record(url, "yt-dlp Download fehlgeschlagen",
+                                            content_type=content_type)
             result["error"] = "download failed"
             return result
 
@@ -286,11 +287,8 @@ class ScraperJob:
                     result.update({"status": "pending", "name": r.name})
                 else:
                     target = self._save_recipe(r, url, video, description)
-                    self.db.history_add(
-                        url, content_type="recipe", name=r.name, target_dir=str(target),
-                        recipe_type=r.type, category=r.category or "Allgemein",
-                        description=description or "", source="social",
-                    )
+                    self.db.history_add(url, content_type="recipe", name=r.name,
+                                         target_dir=str(target))
                     result.update({"status": "auto", "name": r.name, "target": str(target)})
             else:  # wedding
                 default_cat = item.get("default_category") or "Sonstiges"
@@ -350,12 +348,10 @@ class ScraperJob:
     def _analyze_image_via_openai(self, image_bytes: bytes, mime: str,
                                     content_type: str, subject: str,
                                     categories: list = None):
-        """Bei OpenAI-Provider: Vision-API für JPG/PNG. Schickt das Bild
-        als base64 mit. Returnt RecipeAnalysis oder WeddingAnalysis.
-
-        Nur wenn ai.provider == 'openai' (sonst kann Ollama keine Bilder).
+        """OpenAI Vision-API für JPG/PNG-Attachments aus Mails. Schickt das
+        Bild als base64 mit. Returnt RecipeAnalysis oder WeddingAnalysis.
         """
-        if self.ai_provider != "openai" or not self.ollama:
+        if not self.analyzer:
             return None
 
         import base64
@@ -388,10 +384,10 @@ class ScraperJob:
 
         try:
             import requests
-            r = self.ollama.session.post(
-                f"{self.ollama.base_url}/chat/completions",
+            r = self.analyzer.session.post(
+                f"{self.analyzer.base_url}/chat/completions",
                 json={
-                    "model": self.ollama.model,
+                    "model": self.analyzer.model,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": user_content},
@@ -400,7 +396,7 @@ class ScraperJob:
                     "temperature": 0.2,
                     "max_tokens": 300,
                 },
-                timeout=self.ollama.timeout,
+                timeout=self.analyzer.timeout,
             )
             r.raise_for_status()
             content = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "")
@@ -422,20 +418,17 @@ class ScraperJob:
                                 ext: str, info: Dict, source_text: Optional[str] = None) -> None:
         """Schreibt die Attachment-Datei + info.json + optional die extrahierte
         Text-Description in den target_dir."""
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
-        staging = target_dir.parent / f".{target_dir.name}.tmp-{uuid.uuid4().hex[:10]}"
-        staging.mkdir(mode=0o700)
+        from ..core.safety import atomic_write_bytes, atomic_write_text, atomic_write_json, write_manifest
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_base = target_dir.name
+        atomic_write_bytes(target_dir / f"{file_base}{ext}", attachment_data)
+        if source_text:
+            atomic_write_text(target_dir / "description.txt", source_text)
+        atomic_write_json(target_dir / "info.json", info)
         try:
-            file_base = target_dir.name
-            (staging / f"{file_base}{ext}").write_bytes(attachment_data)
-            if source_text:
-                (staging / "description.txt").write_text(source_text, encoding="utf-8")
-            with open(staging / "info.json", "w", encoding="utf-8") as handle:
-                json.dump(info, handle, indent=2, ensure_ascii=False)
-            staging.replace(target_dir)
+            write_manifest(target_dir, source={"kind": "attachment", "name": file_base})
         except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
+            pass
 
     def process_attachment(self, att: Dict, synth_url: str) -> Dict:
         """Verarbeitet ein Mail-Attachment (PDF/JPG/PNG):
@@ -473,17 +466,14 @@ class ScraperJob:
                     analysis = self._analyze_recipe(description)
 
                 if analysis.needs_manual_input(self.confidence_threshold):
-                    pending_file = self._stash_bytes_for_pending(data, att["filename"], ext)
                     self.db.pending_add(
                         url=synth_url, content_type="recipe",
                         description=description[:5000],
-                        video_path=str(pending_file),
+                        video_path=None,   # kein Video bei Attachments
                         ai_suggestion={
                             "name": analysis.name, "type": analysis.type,
                             "category": analysis.category, "confidence": analysis.confidence,
                             "source": "mail-attachment", "filename": att["filename"],
-                            "extension": ext, "media_kind": self._media_kind(ext),
-                            "size_bytes": len(data), "mail_subject": subject,
                         },
                     )
                     result.update({"status": "pending", "name": analysis.name})
@@ -491,8 +481,9 @@ class ScraperJob:
                     type_n = _sanitize(analysis.type)
                     cat_n = _sanitize(analysis.category or "Allgemein")
                     name_n = _sanitize(analysis.name)
-                    target = build_under(self.recipe_dir, (type_n, cat_n, name_n))
-                    target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
+                    target = self.recipe_dir / type_n / cat_n / name_n
+                    if target.exists():
+                        target = target.parent / f"{name_n}_{datetime.now():%Y%m%d_%H%M%S}"
                     info = {
                         "url": synth_url, "name": analysis.name, "type": analysis.type,
                         "category": analysis.category, "confidence": analysis.confidence,
@@ -502,12 +493,8 @@ class ScraperJob:
                         "timestamp": datetime.now().isoformat(),
                     }
                     self._save_attachment_file(target, data, ext, info, description)
-                    self.db.history_add(
-                        synth_url, content_type="recipe", name=analysis.name,
-                        target_dir=str(target), recipe_type=analysis.type,
-                        category=analysis.category or "Allgemein",
-                        description=description or "", source="mail-attachment",
-                    )
+                    self.db.history_add(synth_url, content_type="recipe",
+                                        name=analysis.name, target_dir=str(target))
                     result.update({"status": "auto", "name": analysis.name, "target": str(target)})
 
             else:  # wedding
@@ -522,17 +509,14 @@ class ScraperJob:
                     analysis = self._analyze_wedding(description)
 
                 if analysis.needs_manual_input(self.confidence_threshold) or self.wedding_always_pending:
-                    pending_file = self._stash_bytes_for_pending(data, att["filename"], ext)
                     self.db.pending_add(
                         url=synth_url, content_type="wedding",
                         description=description[:5000],
-                        video_path=str(pending_file),
+                        video_path=None,
                         ai_suggestion={
                             "name": analysis.name, "category": analysis.category or default_cat,
                             "confidence": analysis.confidence,
                             "source": "mail-attachment", "filename": att["filename"],
-                            "extension": ext, "media_kind": self._media_kind(ext),
-                            "size_bytes": len(data), "mail_subject": subject,
                         },
                     )
                     result.update({"status": "pending", "name": analysis.name})
@@ -540,8 +524,9 @@ class ScraperJob:
                     cat = _sanitize(analysis.category or default_cat)
                     name_n = _sanitize(analysis.name) if analysis.name.lower() != "unbekannt" \
                         else f"Mail_{datetime.now():%Y%m%d_%H%M%S}"
-                    target = build_under(self.wedding_dir, (cat, name_n))
-                    target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
+                    target = self.wedding_dir / cat / name_n
+                    if target.exists():
+                        target = target.parent / f"{name_n}_{datetime.now():%Y%m%d_%H%M%S}"
                     info = {
                         "url": synth_url, "name": analysis.name,
                         "wedding_category": analysis.category or default_cat,
@@ -560,47 +545,31 @@ class ScraperJob:
             result["error"] = str(e)
 
         return result
-
-    @staticmethod
-    def _media_kind(ext: str) -> str:
-        ext = (ext or "").lower()
-        if ext == ".pdf":
-            return "pdf"
-        if ext in {".jpg", ".jpeg", ".png", ".webp"}:
-            return "image"
-        if ext in {".mp4", ".webm", ".mkv", ".mov"}:
-            return "video"
-        return "file"
-
-    def _pending_root(self) -> Path:
-        root = self.temp_dir / "pending"
-        ensure_within(root, self.temp_dir)
-        root.mkdir(parents=True, exist_ok=True)
-        return root
-
-    def _stash_for_pending(self, source: Path) -> Optional[Path]:
-        """Kopiert eine heruntergeladene Datei atomar in den Pending-Stash."""
-        if not source or not source.exists() or not source.is_file():
+        """Kopiert das Video nach temp_dir/pending/ damit es das Cleanup überlebt."""
+        if not video or not video.exists():
             return None
-        suffix = source.suffix.lower()[:12]
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        dst = self._pending_root() / f"{ts}_{safe_component(source.stem, max_length=48)}{suffix}"
-        tmp = dst.with_suffix(dst.suffix + ".tmp")
-        shutil.copy2(source, tmp)
-        tmp.replace(dst)
+        pending_root = self.temp_dir / "pending"
+        pending_root.mkdir(parents=True, exist_ok=True)
+        dst = pending_root / f"{ts}_video{video.suffix}"
+        shutil.copy2(video, dst)
         return dst
 
-    def _stash_bytes_for_pending(self, data: bytes, filename: str, ext: str) -> Path:
-        if not data:
-            raise ValueError("Leerer Mail-Anhang kann nicht in Pending abgelegt werden")
-        safe_ext = ext.lower() if ext.lower() in {".pdf", ".jpg", ".jpeg", ".png", ".webp"} else ".bin"
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        stem = safe_component(Path(filename or "attachment").stem, max_length=48)
-        dst = self._pending_root() / f"{ts}_{stem}{safe_ext}"
-        tmp = dst.with_suffix(dst.suffix + ".tmp")
-        tmp.write_bytes(data)
-        tmp.replace(dst)
-        return dst
+    def _stash_for_pending(self, video: Path) -> Optional[str]:
+        """Kopiert das Temp-Video an einen persistenten Pending-Ort, da der
+        Temp-Download-Ordner danach via _cleanup_temp gelöscht wird. Rückgabe
+        = Pfad für pending.video_path (Auslieferung via /api/pending/video,
+        Aufräumen via _remove_pending_files). None bei Fehler — Pending-Eintrag
+        bleibt dann ohne Video, aber der Lauf crasht nicht."""
+        try:
+            pending_dir = self.temp_dir / "pending"
+            pending_dir.mkdir(parents=True, exist_ok=True)
+            dest = pending_dir / f"{video.parent.name}{video.suffix or '.mp4'}"
+            shutil.copy2(video, dest)
+            return str(dest)
+        except Exception as e:
+            logger.warning(f"Stash für Pending fehlgeschlagen ({video}): {e}")
+            return None
 
     def _cleanup_temp(self, video: Path) -> None:
         try:
@@ -625,14 +594,10 @@ class ScraperJob:
         # wir verhindern und stattdessen den Job sofort als 'error' beenden,
         # damit keine 50 Pending-Items entstehen und keine Videos sinnlos
         # gedownloaded werden.
-        if self.ollama_enabled and self.ollama and not self.ollama.health():
-            if self.ai_provider == "openai":
-                msg = (f"OpenAI nicht erreichbar oder Modell '{self.ollama.model}' nicht verfügbar - "
-                       f"Details im Server-Log (api_key gültig? Internet vom Container? Billing aktiv?). "
-                       f"Job abgebrochen damit nicht alle URLs in Pending landen")
-            else:
-                msg = (f"Ollama nicht erreichbar oder Modell '{self.ollama.model}' fehlt - "
-                       f"Job abgebrochen damit nicht alle URLs in Pending landen")
+        if self.analyzer_enabled and self.analyzer and not self.analyzer.health():
+            msg = (f"OpenAI nicht erreichbar oder Modell '{self.analyzer.model}' nicht verfügbar - "
+                   f"Details im Server-Log (api_key gültig? Internet vom Container? Billing aktiv?). "
+                   f"Job abgebrochen damit nicht alle URLs in Pending landen")
             logger.error(msg)
             summary["error"] = msg
             summary["duration_sec"] = round(time.time() - start, 1)
@@ -650,8 +615,43 @@ class ScraperJob:
             it for it in url_items
             if not self.db.history_has(it["url"]) and it["url"] not in pending_urls
         ]
+
+        # Retry-Kandidaten aus download_failures (attempts < MAX). Quelle der
+        # Wahrheit für Wiederholungen seit verarbeitete Mails gelöscht werden —
+        # die URL steht in keiner Mail mehr.
+        known = {it["url"] for it in new_items}
+        for cand in self.db.download_failures_retry_candidates(MAX_DOWNLOAD_ATTEMPTS):
+            if cand["url"] in known or self.db.history_has(cand["url"]) \
+                    or cand["url"] in pending_urls:
+                continue
+            new_items.append({"url": cand["url"],
+                              "type": cand.get("content_type") or "recipe",
+                              "source_account": None, "mail_uid": None})
         summary["new"] = len(new_items)
         logger.info(f"Neue URLs: {len(new_items)}, Attachments: {len(attach_items)}")
+
+        # Mail-Accounting: eine Mail darf erst gelöscht werden, wenn ALLE ihre
+        # Items (URLs + Attachments) in diesem Lauf verarbeitet oder als
+        # bereits bekannt geskippt wurden. Bei Cancel wird nichts gelöscht.
+        mail_total: Dict[tuple, int] = {}
+        mail_done: Dict[tuple, int] = {}
+        def _mail_key(it: Dict) -> Optional[tuple]:
+            if it.get("source_account") and it.get("mail_uid"):
+                return (it["source_account"], it["mail_uid"])
+            return None
+        for it in url_items + attach_items:
+            k = _mail_key(it)
+            if k:
+                mail_total[k] = mail_total.get(k, 0) + 1
+        def _mark_done(it: Dict) -> None:
+            k = _mail_key(it)
+            if k:
+                mail_done[k] = mail_done.get(k, 0) + 1
+        # Bereits bekannte URLs (history/pending-Dedup oben) sind erledigt:
+        new_urls = {it["url"] for it in new_items}
+        for it in url_items:
+            if it["url"] not in new_urls:
+                _mark_done(it)
 
         for item in new_items:
             # Cancel zwischen URLs prüfen - laufende process_url-Calls
@@ -663,13 +663,16 @@ class ScraperJob:
 
             url = item["url"]
 
-            # yt-dlp Failed-Tracking: nach MAX_DOWNLOAD_ATTEMPTS aufgeben
-            # und URL wie 'resolved' behandeln (kommt nicht wieder durch).
+            # yt-dlp Failed-Tracking: nach MAX_DOWNLOAD_ATTEMPTS überspringen.
+            # WICHTIG: NICHT in die History schreiben — sonst gilt die URL für
+            # immer als erledigt und ein Retry ist nur per SQL möglich (unsichtbar).
+            # Sie bleibt in download_failures und erscheint im Audit unter
+            # "Endgültig fehlgeschlagen" mit Retry-/Verwerfen-Aktion.
             attempts = self.db.download_failure_attempts(url)
             if attempts >= MAX_DOWNLOAD_ATTEMPTS:
-                logger.info(f"Skip {url}: {attempts} Download-Fehlversuche, aufgegeben")
-                self.db.history_add(url, content_type=item["type"], name="(download failed)")
+                logger.info(f"Skip {url}: {attempts} Download-Fehlversuche, aufgegeben (Audit → Retry/Verwerfen)")
                 summary["skipped_failed"] += 1
+                _mark_done(item)   # final-failed = accounted, Mail kann weg
                 continue
 
             try:
@@ -685,6 +688,10 @@ class ScraperJob:
             except Exception as e:
                 logger.exception(f"URL fehlgeschlagen {url}: {e}")
                 summary["errors"] += 1
+            finally:
+                # Jedes Outcome (auto/pending/error) ist accounted — Fehlversuche
+                # leben in download_failures weiter, nicht in der Mail.
+                _mark_done(item)
 
         # Attachments verarbeiten (PDF + JPG)
         summary["attach_auto"] = 0
@@ -696,10 +703,10 @@ class ScraperJob:
                 break
             # Synthetic-URL für Dedupe: msg_id::filename. Wenn schon
             # in History oder Pending, skip.
-            identity = f"{att.get('source_account','')}\0{att.get('msg_id','')}\0{att.get('filename','')}"
-            synth_url = "mail-attachment://" + hashlib.sha256(identity.encode("utf-8", errors="replace")).hexdigest()
+            synth_url = f"mail-attachment://{att['msg_id']}::{att['filename']}"
             if self.db.history_has(synth_url) or synth_url in pending_urls:
                 summary["attach_skipped"] += 1
+                _mark_done(att)
                 continue
             try:
                 r = self.process_attachment(att, synth_url)
@@ -714,6 +721,22 @@ class ScraperJob:
             except Exception as e:
                 logger.exception(f"Attachment fehlgeschlagen {att.get('filename')}: {e}")
                 summary["errors"] += 1
+            finally:
+                _mark_done(att)
+
+        # Verarbeitete Mails löschen — nur wenn der Lauf nicht abgebrochen wurde
+        # und ALLE Items der Mail accounted sind. Config-gated pro Konto
+        # (email.<konto>.delete_processed: true).
+        if not summary["cancelled"]:
+            try:
+                uids_by_account: Dict[str, set] = {}
+                for (acc_name, uid), total in mail_total.items():
+                    if mail_done.get((acc_name, uid), 0) >= total:
+                        uids_by_account.setdefault(acc_name, set()).add(uid)
+                deleted = self.router.delete_processed_mails(uids_by_account)
+                summary["mails_deleted"] = deleted
+            except Exception as e:
+                logger.warning(f"Mail-Cleanup fehlgeschlagen (non-fatal): {e}")
 
         summary["duration_sec"] = round(time.time() - start, 1)
         summary["total_pending"] = self.db.pending_count()
@@ -739,9 +762,25 @@ class ScraperJob:
     # ---------------- History neu analysieren ----------------
 
     def _fetch_description_via_ytdlp(self, url: str) -> Optional[str]:
-        """Fetch metadata through the same validated, cancellable downloader."""
-        return self.downloader.fetch_description(url, timeout=60)
-
+        """Lädt nur die Description einer URL (skip-download). Nutzt das
+        existing yt-dlp Binary + Cookie-Datei, kein File-Download."""
+        import subprocess
+        binary = self.downloader.ytdlp_path
+        cmd = [binary, "--skip-download", "--no-warnings", "--no-playlist",
+               "--print", "%(description)s\n%(title)s"]
+        if self.downloader.cookies_file:
+            cmd += ["--cookies", self.downloader.cookies_file]
+        cmd.append(url)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if r.returncode != 0:
+                logger.warning(f"yt-dlp metadata fail {url}: {r.stderr.strip()[:200]}")
+                return None
+            text = r.stdout.strip()
+            return text if text else None
+        except Exception as e:
+            logger.error(f"yt-dlp metadata exception {url}: {e}")
+            return None
 
     def reanalyze_history_one(self, url: str, *, dry_run: bool = False,
                                 auto_move: bool = False) -> Dict:
@@ -763,7 +802,7 @@ class ScraperJob:
         if not entry:
             return {"ok": False, "error": "Nicht in History"}
 
-        if not self.ollama_enabled:
+        if not self.analyzer_enabled:
             return {"ok": False, "error": "AI-Analyzer nicht initialisiert"}
 
         content_type = entry.get("content_type") or "recipe"
@@ -836,13 +875,7 @@ class ScraperJob:
 
         # Kein Auto-Move: nur DB-Name updaten
         if not dry_run:
-            if content_type == "recipe":
-                self.db.history_update(
-                    url, name=r.name, recipe_type=r.type,
-                    category=r.category or "Allgemein", description=description,
-                )
-            else:
-                self.db.history_update(url, name=new_name, description=description)
+            self.db.history_update(url, name=new_name)
 
         return {"ok": True, "url": url, "action": "updated",
                 "old": {"name": old_name, "content_type": content_type,
@@ -959,34 +992,24 @@ class ScraperJob:
             return {"ok": False, "error": "Eintrag nicht in Historie"}
 
         old_dir = Path(entry["target_dir"]) if entry.get("target_dir") else None
-        content_type = entry.get("content_type") or "recipe"
-        allowed_root = self.recipe_dir if content_type == "recipe" else self.wedding_dir
         if not old_dir or not old_dir.exists():
             return {"ok": False, "error": f"Alter Pfad existiert nicht: {old_dir}"}
-        try:
-            old_dir = ensure_within(old_dir, allowed_root)
-        except ValueError:
-            return {"ok": False, "error": "Gespeicherter Zielpfad liegt außerhalb des erlaubten Bereichs"}
 
+        content_type = entry.get("content_type") or "recipe"
         sanitized_name = _sanitize(new_name)
 
         if content_type == "recipe":
             if not new_type:
                 return {"ok": False, "error": "Typ fehlt"}
-            new_dir = build_under(
-                self.recipe_dir,
-                (_sanitize(new_type), _sanitize(new_category or "Sonstiges"), sanitized_name),
-            )
+            new_dir = self.recipe_dir / _sanitize(new_type) / _sanitize(new_category or "Sonstiges") / sanitized_name
         else:
-            new_dir = build_under(
-                self.wedding_dir,
-                (_sanitize(new_category or "Sonstiges"), sanitized_name),
-            )
+            new_dir = self.wedding_dir / _sanitize(new_category or "Sonstiges") / sanitized_name
 
         if new_dir.resolve() == old_dir.resolve():
             return {"ok": True, "action": "noop", "target": str(new_dir)}
 
-        new_dir = unique_directory(new_dir, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
+        if new_dir.exists():
+            new_dir = new_dir.parent / f"{sanitized_name}_{datetime.now():%Y%m%d_%H%M%S}"
 
         new_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(old_dir), str(new_dir))
@@ -1021,11 +1044,7 @@ class ScraperJob:
                         except Exception as e:
                             logger.warning(f"rename {f}: {e}")
 
-        self.db.history_update(
-            url, name=new_name, target_dir=str(new_dir),
-            recipe_type=new_type if content_type == "recipe" else None,
-            category=(new_category or "Allgemein") if content_type == "recipe" else new_category,
-        )
+        self.db.history_update(url, name=new_name, target_dir=str(new_dir))
         self._cleanup_empty_parents(old_dir)
         return {"ok": True, "action": "moved", "target": str(new_dir)}
 
@@ -1035,13 +1054,9 @@ class ScraperJob:
             return {"ok": False, "error": "Eintrag nicht in Historie"}
         target_dir = entry.get("target_dir")
         if target_dir:
-            root = self.recipe_dir if entry.get("content_type") == "recipe" else self.wedding_dir
-            try:
-                d = ensure_within(Path(target_dir), root)
-            except ValueError:
-                return {"ok": False, "error": "Zielpfad liegt außerhalb des erlaubten Bereichs"}
+            d = Path(target_dir)
             if d.exists():
-                shutil.rmtree(d)
+                shutil.rmtree(d, ignore_errors=True)
                 self._cleanup_empty_parents(d)
         self.db.history_delete(url)
         return {"ok": True, "action": "deleted"}
@@ -1052,15 +1067,8 @@ class ScraperJob:
             try:
                 if not parent.exists():
                     break
-                inside = False
-                for root in (self.recipe_dir, self.wedding_dir):
-                    try:
-                        parent.resolve(strict=False).relative_to(root.resolve(strict=False))
-                        if parent.resolve(strict=False) != root.resolve(strict=False):
-                            inside = True
-                            break
-                    except ValueError:
-                        continue
+                rels = [self.recipe_dir, self.wedding_dir]
+                inside = any(str(parent).startswith(str(r)) and str(parent) != str(r) for r in rels)
                 if not inside:
                     break
                 if not any(parent.iterdir()):
@@ -1074,123 +1082,49 @@ class ScraperJob:
                 break
 
     # ---------------- Pending im Web auflösen ----------------
-    @staticmethod
-    def _is_attachment_entry(entry: Dict) -> bool:
-        suggestion = entry.get("ai_suggestion") or {}
-        return suggestion.get("source") == "mail-attachment" or str(entry.get("url") or "").startswith("mail-attachment://")
-
-    def _analyze_pending_attachment(self, entry: Dict, file_path: Path):
-        suggestion = entry.get("ai_suggestion") or {}
-        description = entry.get("description") or ""
-        subject = suggestion.get("mail_subject") or ""
-        ext = file_path.suffix.lower()
-        content_type = entry.get("content_type") or "recipe"
-        analysis = None
-        if ext in {".jpg", ".jpeg", ".png", ".webp"}:
-            mime = {
-                ".png": "image/png",
-                ".webp": "image/webp",
-            }.get(ext, "image/jpeg")
-            analysis = self._analyze_image_via_openai(
-                file_path.read_bytes(), mime, content_type, subject,
-                categories=self.wedding_categories if content_type == "wedding" else None,
-            )
-        if analysis:
-            return analysis
-        if content_type == "recipe":
-            return self._analyze_recipe(description)
-        return self._analyze_wedding(description)
-
-    def _save_pending_attachment(self, entry: Dict, file_path: Path, analysis) -> Path:
-        url = entry["url"]
-        description = entry.get("description") or ""
-        suggestion = entry.get("ai_suggestion") or {}
-        original_filename = suggestion.get("filename") or file_path.name
-        ext = file_path.suffix.lower() or str(suggestion.get("extension") or ".bin")
-        data = file_path.read_bytes()
-        if entry.get("content_type") == "recipe":
-            type_n = _sanitize(analysis.type)
-            cat_n = _sanitize(analysis.category or "Allgemein")
-            name_n = _sanitize(analysis.name)
-            target = build_under(self.recipe_dir, (type_n, cat_n, name_n))
-            target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
-            info = {
-                "url": url, "name": analysis.name, "type": analysis.type,
-                "category": analysis.category, "confidence": analysis.confidence,
-                "is_manual": bool(getattr(analysis, "is_manual", False)),
-                "content_type": "recipe", "source": "mail-attachment",
-                "filename": original_filename, "description": description[:5000],
-                "timestamp": datetime.now().isoformat(),
-            }
-        else:
-            default_cat = "Sonstiges"
-            cat_n = _sanitize(analysis.category or default_cat)
-            name_n = _sanitize(analysis.name) if analysis.name.lower() != "unbekannt" \
-                else f"Mail_{datetime.now():%Y%m%d_%H%M%S}"
-            target = build_under(self.wedding_dir, (cat_n, name_n))
-            target = unique_directory(target, timestamp=f"{datetime.now():%Y%m%d_%H%M%S}")
-            info = {
-                "url": url, "name": analysis.name,
-                "wedding_category": analysis.category or default_cat,
-                "confidence": analysis.confidence,
-                "is_manual": bool(getattr(analysis, "is_manual", False)),
-                "content_type": "wedding", "source": "mail-attachment",
-                "filename": original_filename, "description": description[:5000],
-                "timestamp": datetime.now().isoformat(),
-            }
-        self._save_attachment_file(target, data, ext, info, description)
-        return target
-
     def reanalyze_pending(self, url: str) -> Dict:
         entry = self.db.pending_get(url)
         if not entry:
             return {"ok": False, "error": "Pending-Eintrag nicht gefunden"}
 
-        file_path = Path(entry["video_path"]) if entry.get("video_path") else None
-        if not file_path or not file_path.exists() or not file_path.is_file():
-            return {"ok": False, "error": "Pending-Datei fehlt (vermutlich aufgeräumt)"}
+        description = entry.get("description")
+        video_path = Path(entry["video_path"]) if entry.get("video_path") else None
+        if not video_path or not video_path.exists():
+            return {"ok": False, "error": "Video-Datei fehlt (vermutlich aufgeräumt)"}
 
-        is_attachment = self._is_attachment_entry(entry)
         content_type = entry.get("content_type") or "recipe"
-        if is_attachment:
-            analysis = self._analyze_pending_attachment(entry, file_path)
-        elif content_type == "recipe":
-            analysis = self._analyze_recipe(entry.get("description"))
-        else:
-            analysis = self._analyze_wedding(entry.get("description"))
 
-        metadata = dict(entry.get("ai_suggestion") or {})
         if content_type == "recipe":
-            metadata.update({
-                "name": analysis.name, "type": analysis.type,
-                "category": analysis.category, "confidence": analysis.confidence,
-            })
-        else:
-            metadata.update({
-                "name": analysis.name, "category": analysis.category or "Sonstiges",
-                "confidence": analysis.confidence,
-            })
-
-        if not analysis.needs_manual_input(self.confidence_threshold):
-            if is_attachment:
-                target = self._save_pending_attachment(entry, file_path, analysis)
-            elif content_type == "recipe":
-                target = self._save_recipe(analysis, url, file_path, entry.get("description"))
-            else:
-                target = self._save_wedding(analysis, url, file_path, entry.get("description"), "Sonstiges")
-            self.db.history_add(
-                url, content_type=content_type, name=analysis.name, target_dir=str(target),
-                recipe_type=analysis.type if content_type == "recipe" else "",
-                category=(analysis.category or "Allgemein") if content_type == "recipe" else (analysis.category or "Sonstiges"),
-                description=entry.get("description") or "",
-                source="mail-attachment" if is_attachment else "social",
-            )
-            self.db.pending_resolve(url, status="resolved")
-            self._remove_pending_files(entry)
-            return {"ok": True, "action": "auto_saved", "target": str(target), "analysis": metadata}
-
-        self.db.pending_update_suggestion(url, metadata)
-        return {"ok": True, "action": "still_pending", "analysis": metadata}
+            r = self._analyze_recipe(description)
+            suggestion = {
+                "name": r.name, "type": r.type,
+                "category": r.category, "confidence": r.confidence,
+            }
+            if not r.needs_manual_input(self.confidence_threshold):
+                target = self._save_recipe(r, url, video_path, description)
+                self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
+                self.db.pending_resolve(url, status="resolved")
+                self._remove_pending_files(entry)
+                return {"ok": True, "action": "auto_saved", "target": str(target),
+                        "analysis": suggestion}
+            self.db.pending_update_suggestion(url, suggestion)
+            return {"ok": True, "action": "still_pending", "analysis": suggestion}
+        else:  # wedding
+            w = self._analyze_wedding(description)
+            default_cat = "Sonstiges"
+            suggestion = {
+                "name": w.name, "category": w.category or default_cat,
+                "confidence": w.confidence,
+            }
+            if not w.needs_manual_input(self.confidence_threshold):
+                target = self._save_wedding(w, url, video_path, description, default_cat)
+                self.db.history_add(url, content_type="wedding", name=w.name, target_dir=str(target))
+                self.db.pending_resolve(url, status="resolved")
+                self._remove_pending_files(entry)
+                return {"ok": True, "action": "auto_saved", "target": str(target),
+                        "analysis": suggestion}
+            self.db.pending_update_suggestion(url, suggestion)
+            return {"ok": True, "action": "still_pending", "analysis": suggestion}
 
     def resolve_pending(self, url: str, decision: Dict) -> Dict:
         entry = self.db.pending_get(url)
@@ -1203,51 +1137,43 @@ class ScraperJob:
             self._remove_pending_files(entry)
             return {"ok": True, "action": "skipped"}
 
-        file_path = Path(entry["video_path"]) if entry.get("video_path") else None
-        if not file_path or not file_path.exists() or not file_path.is_file():
-            return {"ok": False, "error": "Pending-Datei fehlt (vermutlich aufgeräumt)"}
-
+        video_path = Path(entry["video_path"]) if entry.get("video_path") else None
         description = entry.get("description")
-        is_attachment = self._is_attachment_entry(entry)
+
+        if not video_path or not video_path.exists():
+            self.db.pending_resolve(url, status="resolved")
+            return {"ok": False, "error": "Video-Datei fehlt (vermutlich aufgeräumt)"}
+
         if entry["content_type"] == "recipe":
-            analysis = RecipeAnalysis(
+            r = RecipeAnalysis(
                 name=decision.get("name", "Unbekannt"),
                 type=decision.get("type", "Unbekannt"),
                 category=decision.get("category"),
                 confidence=1.0,
                 is_manual=True,
             )
-            target = self._save_pending_attachment(entry, file_path, analysis) if is_attachment \
-                else self._save_recipe(analysis, url, file_path, description)
-            self.db.history_add(
-                url, content_type="recipe", name=analysis.name, target_dir=str(target),
-                recipe_type=analysis.type, category=analysis.category or "Allgemein",
-                description=description or "",
-                source="mail-attachment" if is_attachment else "social",
-            )
+            target = self._save_recipe(r, url, video_path, description)
+            self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
         else:
-            analysis = WeddingAnalysis(
+            w = WeddingAnalysis(
                 name=decision.get("name", "Unbekannt"),
                 category=decision.get("category"),
                 confidence=1.0,
                 is_manual=True,
             )
-            target = self._save_pending_attachment(entry, file_path, analysis) if is_attachment \
-                else self._save_wedding(analysis, url, file_path, description, default_cat="Sonstiges")
-            self.db.history_add(url, content_type="wedding", name=analysis.name, target_dir=str(target))
+            target = self._save_wedding(w, url, video_path, description, default_cat="Sonstiges")
+            self.db.history_add(url, content_type="wedding", name=w.name, target_dir=str(target))
         self.db.pending_resolve(url, status="resolved")
         self._remove_pending_files(entry)
         return {"ok": True, "action": "saved", "target": str(target)}
 
     def _remove_pending_files(self, entry: Dict) -> None:
-        path_value = entry.get("video_path")
-        if not path_value:
-            return
-        try:
-            candidate = ensure_within(Path(path_value), self._pending_root())
-            candidate.unlink(missing_ok=True)
-        except (OSError, ValueError) as exc:
-            logger.warning("Pending-Datei nicht gelöscht (%s): %s", path_value, exc)
+        p = entry.get("video_path")
+        if p:
+            try:
+                Path(p).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def run_job() -> Dict:

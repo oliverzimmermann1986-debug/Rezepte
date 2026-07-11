@@ -1,4 +1,7 @@
-"""API für Import-Jobs, Status und Logs."""
+"""API für Scraper-Jobs: starten, Status abrufen, Logs.
+
+Hinweis: Backup/Sync-Funktionalität (rclone) ist komplett entfernt und in
+einen separaten Container ausgelagert. Hier nur noch Scraper-Jobs."""
 from __future__ import annotations
 
 import logging
@@ -6,193 +9,216 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from ..auth import require_auth
 from ..config_store import get_config
 from ..db import get_db
 from ..jobs import scraper as scraper_job
 from ..jobs.locks import file_lock_or_none
-from ..path_utils import ensure_within
 
 logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(require_auth)])
 
-_scraper_lock = threading.Lock()
+# Globaler Lock damit Scraper nicht 2x parallel läuft (Web-Trigger + CLI)
+_locks: Dict[str, threading.Lock] = {
+    "scraper": threading.Lock(),
+}
 
 
 def _rotate_old_logs(log_dir: Path, days: int = 30) -> None:
+    """Löscht Job-Log-Files älter als ``days`` Tage. Best-effort, ignoriert Fehler."""
     if not log_dir.exists():
         return
-    cutoff = time.time() - max(1, min(int(days), 3650)) * 86400
+    cutoff = time.time() - days * 86400
+    patterns = ["scraper-*.log", "reanalyze-*.log"]
     deleted = 0
-    for pattern in ("scraper-*.log", "reanalyze-*.log"):
-        for file in log_dir.rglob(pattern):
+    for pat in patterns:
+        for f in log_dir.rglob(pat):
             try:
-                if file.is_file() and file.stat().st_mtime < cutoff:
-                    file.unlink()
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
                     deleted += 1
-            except OSError:
-                continue
+            except Exception:
+                pass
     if deleted:
-        logger.info("Log-Rotation: %s alte Dateien gelöscht", deleted)
+        logger.info(f"Log-Rotation: {deleted} alte Files gelöscht (>{days} Tage)")
 
 
 def _setup_job_logger(job_id: int, kind: str) -> tuple[Path, logging.Handler]:
-    cfg = get_config()
-    log_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs"))
+    """Liefert einen FileHandler der den Job-Lauf aufzeichnet.
+    Macht zusätzlich bei jedem Aufruf eine billige Log-Rotation."""
+    log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
-    _rotate_old_logs(log_dir, int(cfg.get("paths", "log_retention_days", default=30) or 30))
+    _rotate_old_logs(log_dir)
     log_file = log_dir / f"{kind}-{datetime.now():%Y%m%d-%H%M%S}-job{job_id}.log"
-    handler = logging.FileHandler(log_file, encoding="utf-8")
-    handler.setLevel(logging.INFO)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    logging.getLogger().addHandler(handler)
-    return log_file, handler
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(fh)
+    return log_file, fh
 
 
-def _run_scraper_thread(job_id: int) -> None:
+def _run_scraper_thread(job_id: int):
+    """Background-Thread. EIN try/finally für ALLES inkl. Logger-Setup
+    damit der Lock bei FileHandler-Fehler nicht hängen bleibt.
+    Plus file_lock_or_none als prozessübergreifender Schutz gegen
+    parallelen CLI-Lauf (systemd-Timer)."""
     db = get_db()
-    handler = None
+    fh = None
     try:
-        with file_lock_or_none("scraper") as process_lock:
-            if process_lock is None:
-                db.job_finish(job_id, "skipped", {"error": "Ein anderer Import läuft bereits"})
+        with file_lock_or_none("scraper") as flock:
+            if flock is None:
+                logger.warning(f"Scraper-Job {job_id}: anderer Prozess (CLI?) hält den Lock - skip")
+                db.job_finish(job_id, "skipped", {
+                    "error": "anderer Scraper-Prozess (CLI?) läuft bereits"
+                })
                 return
-            log_file, handler = _setup_job_logger(job_id, "scraper")
-            db.job_set_log_file(job_id, str(log_file))
-            logger.info("=== Import-Job %s startet ===", job_id)
-            scraper_job.reset_cancel()
-            summary = scraper_job.run_job()
-            status = "ok"
-            if summary.get("cancelled"):
-                status = "error"
-                summary.setdefault("error", "Abgebrochen")
-            elif int(summary.get("errors", 0) or 0) > 0:
-                status = "partial"
-            db.job_finish(job_id, status, summary)
-            logger.info("=== Import-Job %s %s: %s ===", job_id, status, summary)
-    except Exception as exc:
-        logger.exception("Import-Job %s fehlgeschlagen", job_id)
-        try:
-            db.job_finish(job_id, "error", {"error": str(exc)})
-        except Exception:
-            logger.exception("Jobstatus konnte nicht gespeichert werden")
-    finally:
-        if handler is not None:
             try:
-                logging.getLogger().removeHandler(handler)
-                handler.close()
+                log_file, fh = _setup_job_logger(job_id, "scraper")
+                db.job_set_log_file(job_id, str(log_file))
+                logger.info(f"=== Scraper-Job {job_id} startet (Web-Trigger) ===")
+                scraper_job.reset_cancel()
+                summary = scraper_job.run_job()
+                status = "ok"
+                if summary.get("cancelled"):
+                    status = "error"
+                    summary.setdefault("error", "Abgebrochen")
+                db.job_finish(job_id, status, summary)
+                logger.info(f"=== Scraper-Job {job_id} {status}: {summary} ===")
+            except Exception as e:
+                logger.exception(f"Scraper-Job {job_id} fehlgeschlagen")
+                db.job_finish(job_id, "error", {"error": str(e)})
+    except Exception as e:
+        try:
+            db.job_finish(job_id, "error", {"error": f"setup failed: {e}"})
+        except Exception:
+            pass
+        logger.exception(f"Scraper-Job {job_id}: Setup gescheitert")
+    finally:
+        if fh is not None:
+            try:
+                logging.getLogger().removeHandler(fh)
+                fh.close()
             except Exception:
                 pass
-        _scraper_lock.release()
+        _locks["scraper"].release()
 
 
 @router.post("/scraper/run")
 def run_scraper():
-    if not _scraper_lock.acquire(blocking=False):
-        raise HTTPException(409, "Import läuft bereits")
+    if not _locks["scraper"].acquire(blocking=False):
+        raise HTTPException(409, "Scraper läuft bereits")
     job_id = get_db().job_start("scraper")
-    threading.Thread(target=_run_scraper_thread, args=(job_id,), daemon=True).start()
+    t = threading.Thread(target=_run_scraper_thread, args=(job_id,), daemon=True)
+    t.start()
     return {"ok": True, "job_id": job_id}
 
 
 @router.post("/scraper/cancel")
 def cancel_scraper():
+    """Setzt das Cancel-Flag im Scraper. Bricht zwischen URLs ab — eine
+    bereits laufende URL (Download + Analyse) wird komplett verarbeitet,
+    aber keine weitere mehr gestartet."""
     if not get_db().job_running("scraper"):
-        return {"ok": False, "error": "Kein laufender Import"}
+        return {"ok": False, "error": "Kein laufender Scraper-Job"}
     return scraper_job.cancel_job()
 
 
 @router.get("/list")
-def list_jobs(kind: Optional[str] = None, limit: int = Query(50, ge=1, le=1000)):
+def list_jobs(kind: Optional[str] = None, limit: int = 50):
     return get_db().job_list(kind=kind, limit=limit)
 
 
 @router.post("/cleanup-failed")
 def cleanup_failed_jobs():
-    return {"ok": True, "deleted": get_db().jobs_delete_failed()}
+    """Löscht alle Job-Einträge mit Status='error'. Nur Log-Cleanup —
+    es wird nichts in History oder Pending verändert."""
+    deleted = get_db().jobs_delete_failed()
+    return {"ok": True, "deleted": deleted}
+
+
+@router.get("/{job_id}")
+def job_detail(job_id: int):
+    j = get_db().job_get(job_id)
+    if not j:
+        raise HTTPException(404, "Nicht gefunden")
+    return j
+
+
+@router.get("/{job_id}/log")
+def job_log(job_id: int, tail: int = 500):
+    j = get_db().job_get(job_id)
+    if not j:
+        raise HTTPException(404, "Job nicht gefunden")
+    log_file = j.get("log_file")
+    if not log_file or not Path(log_file).exists():
+        return {"log": ""}
+    try:
+        with open(log_file, "r", errors="ignore") as f:
+            lines = f.readlines()[-tail:]
+        return {"log": "".join(lines)}
+    except Exception as e:
+        return {"log": f"<Fehler: {e}>"}
 
 
 @router.get("/scraper/progress")
 def scraper_progress():
+    """Live-Progress des laufenden Scraper-Jobs (aus dem Job-Log)."""
+    import re
     db = get_db()
     running = db.job_running("scraper")
     if not running:
-        latest = db.job_list(kind="scraper", limit=1)
-        return {"running": False, "last": latest[0] if latest else None}
+        last = db.job_list(kind="scraper", limit=1)
+        return {"running": False, "last": last[0] if last else None}
 
-    started_at = float(running["started_at"])
+    log_file = running.get("log_file")
     info = {
         "running": True,
         "job_id": running["id"],
-        "started_at": started_at,
-        "elapsed_sec": round(time.time() - started_at),
+        "started_at": float(running["started_at"]),
+        "elapsed_sec": round(time.time() - float(running["started_at"])),
         "current": None,
         "total_urls": None,
+        "processed": 0,
+        "auto": 0,
+        "pending": 0,
+        "errors": 0,
     }
-    log_file = running.get("log_file")
-    if not log_file:
-        return info
-    try:
-        logs_root = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
-        path = ensure_within(Path(log_file), logs_root)
-        if path.is_file():
-            with path.open("rb") as handle:
-                handle.seek(0, 2)
-                size = handle.tell()
-                handle.seek(max(0, size - 16384))
-                tail = handle.read().decode("utf-8", errors="ignore")
-            import re
+
+    if log_file and Path(log_file).exists():
+        try:
+            with open(log_file, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 16384))
+                tail = f.read().decode("utf-8", errors="ignore")
+
             for line in tail.splitlines():
-                match = re.search(r"Neue URLs:\s*(\d+)", line)
-                if match:
-                    info["total_urls"] = int(match.group(1))
+                if "Neue URLs:" in line:
+                    m = re.search(r'Neue URLs:\s*(\d+)', line)
+                    if m:
+                        info["total_urls"] = int(m.group(1))
             for line in reversed(tail.splitlines()):
                 if "Verarbeite" in line or "→ Pending" in line or "→ AUTO" in line:
                     info["current"] = line.strip()[-200:]
                     break
-    except (OSError, ValueError) as exc:
-        logger.warning("Import-Fortschritt nicht lesbar: %s", exc)
+        except Exception as e:
+            logger.warning(f"scraper progress: {e}")
+
     return info
 
 
 @router.get("/status/current")
 def status_current():
+    """Was läuft gerade? Reduziert auf scraper + reanalyze nach rclone-Removal."""
     db = get_db()
     return {
         "scraper": db.job_running("scraper"),
         "reanalyze": db.job_running("reanalyze"),
         "pending_count": db.pending_count(),
     }
-
-
-@router.get("/{job_id}")
-def job_detail(job_id: int):
-    job = get_db().job_get(job_id)
-    if not job:
-        raise HTTPException(404, "Job nicht gefunden")
-    return job
-
-
-@router.get("/{job_id}/log")
-def job_log(job_id: int, tail: int = Query(500, ge=1, le=5000)):
-    job = get_db().job_get(job_id)
-    if not job:
-        raise HTTPException(404, "Job nicht gefunden")
-    log_file = job.get("log_file")
-    if not log_file:
-        return {"log": ""}
-    try:
-        logs_root = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
-        path = ensure_within(Path(log_file), logs_root)
-        if not path.is_file():
-            return {"log": ""}
-        with path.open("r", encoding="utf-8", errors="ignore") as handle:
-            return {"log": "".join(handle.readlines()[-tail:])}
-    except ValueError:
-        raise HTTPException(403, "Log-Pfad außerhalb des erlaubten Verzeichnisses")
-    except OSError as exc:
-        return {"log": f"<Fehler: {exc}>"}

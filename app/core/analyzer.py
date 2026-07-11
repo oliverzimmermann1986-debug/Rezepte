@@ -1,46 +1,20 @@
-"""KI-Analyse: Ollama-only (Fast-Modell + optional Fallback-Modell).
+"""
 
-OpenAI Vision wurde entfernt - die Cascade besteht nur noch aus zwei
-Ollama-Calls. Wenn auch der Fallback unsicher ist, landet das Item in
-Pending und der User entscheidet manuell im Web-UI.
+Vorher gab es einen Ollama-Pfad mit Cascade-Logik (Fast + Fallback-Modell)
+plus Vision-Fallback. Aktuell nur noch OpenAI: stabil, kostengünstig
+($0.15/$0.60 per 1M Tokens) und sprachunabhängig — kann englische/
+italienische Captions direkt in deutsche Daten umsetzen.
 """
 from __future__ import annotations
 
 import json
 import logging
-import math
 from dataclasses import dataclass
 from typing import Optional
 
 import requests
 
 logger = logging.getLogger(__name__)
-
-
-def _clean_text(value, *, default: str = "", max_length: int = 160) -> str:
-    """Normalisiert unzuverlässige Modell-Ausgaben zu kurzem, sicherem Text."""
-    if value is None:
-        return default
-    if isinstance(value, (dict, list, tuple, set)):
-        return default
-    text = " ".join(str(value).replace("\x00", " ").split()).strip()
-    return text[:max_length] or default
-
-
-def _clean_optional_text(value, *, max_length: int = 120) -> Optional[str]:
-    text = _clean_text(value, max_length=max_length)
-    return text or None
-
-
-def _clean_confidence(value) -> float:
-    """Akzeptiert nur endliche Werte und begrenzt sie auf 0..1."""
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if not math.isfinite(number):
-        return 0.0
-    return max(0.0, min(1.0, number))
 
 
 @dataclass
@@ -53,19 +27,11 @@ class RecipeAnalysis:
 
     @classmethod
     def from_dict(cls, data: dict) -> "RecipeAnalysis":
-        if not isinstance(data, dict):
-            data = {}
         return cls(
-            name=_clean_text(
-                data.get("rezeptname") or data.get("name"),
-                default="Unbekannt",
-            ),
-            type=_clean_text(
-                data.get("typ") or data.get("type"),
-                default="Unbekannt",
-            ),
-            category=_clean_optional_text(data.get("kategorie") or data.get("category")),
-            confidence=_clean_confidence(data.get("confidence", 0)),
+            name=data.get("rezeptname") or data.get("name") or "Unbekannt",
+            type=data.get("typ") or data.get("type") or "Unbekannt",
+            category=data.get("kategorie") or data.get("category"),
+            confidence=float(data.get("confidence", 0)),
         )
 
     def needs_manual_input(self, threshold: float) -> bool:
@@ -83,120 +49,15 @@ class WeddingAnalysis:
     confidence: float
     is_manual: bool = False
 
-    @classmethod
-    def from_dict(cls, data: dict) -> "WeddingAnalysis":
-        if not isinstance(data, dict):
-            data = {}
-        return cls(
-            name=_clean_text(data.get("name"), default="Unbekannt"),
-            category=_clean_optional_text(data.get("kategorie") or data.get("category")),
-            confidence=_clean_confidence(data.get("confidence", 0)),
-        )
-
     def needs_manual_input(self, threshold: float) -> bool:
         return self.confidence < threshold or self.name.lower() == "unbekannt"
-
-
-class OllamaAnalyzer:
-    def __init__(self, url: str, model: str, timeout: int = 60):
-        self.url = url.rstrip("/")
-        self.model = model
-        self.timeout = timeout
-        # Connection-Reuse: spart pro Call ~20-50ms TCP-Handshake.
-        # Bei 50 URLs × 2 Modelle = 100 Calls/Run macht das spürbar.
-        self.session = requests.Session()
-
-    def _call(self, system: str, user: str) -> Optional[str]:
-        try:
-            r = self.session.post(
-                f"{self.url}/api/generate",
-                json={
-                    "model": self.model,
-                    "system": system,
-                    "prompt": user,
-                    "stream": False,
-                    "format": "json",
-                    "options": {"temperature": 0.2, "num_predict": 250},
-                },
-                timeout=self.timeout,
-            )
-            r.raise_for_status()
-            return r.json().get("response", "").strip()
-        except Exception as e:
-            logger.error(f"Ollama Call: {e}")
-            return None
-
-    def health(self) -> bool:
-        try:
-            r = self.session.get(f"{self.url}/api/tags", timeout=5)
-            r.raise_for_status()
-            models = [m.get("name", "") for m in r.json().get("models", [])]
-            return any(self.model in m for m in models)
-        except Exception:
-            return False
-
-    def analyze_recipe(self, description: str) -> RecipeAnalysis:
-        system = (
-            "Du analysierst TikTok/Instagram-Beschreibungen von Rezept-Videos. "
-            "Extrahiere Rezeptname, Typ (Hauptgericht, Vorspeise, Nachspeise, Snack, "
-            "Frühstück, Getränk, Beilage) und Unterkategorie (z.B. Pasta, Fleisch, Fisch, "
-            "Vegetarisch, Vegan, Kuchen, Suppe). Antworte AUSSCHLIESSLICH mit gültigem JSON: "
-            '{"rezeptname":"...","typ":"...","kategorie":"...","confidence":0.85}. '
-            "Bei Unsicherheit nutze 'Unbekannt'."
-        )
-        content = self._call(system, f"Beschreibung:\n\n{description[:2000]}")
-        if not content:
-            return RecipeAnalysis("Unbekannt", "Unbekannt", None, 0.0)
-        try:
-            return RecipeAnalysis.from_dict(json.loads(content))
-        except Exception as e:
-            logger.warning(f"Ollama JSON-Parse: {e} | {content[:120]}")
-            return RecipeAnalysis("Unbekannt", "Unbekannt", None, 0.0)
-
-    def analyze_wedding(self, description: str, categories: list[str]) -> WeddingAnalysis:
-        cats = ", ".join(categories)
-        system = (
-            "Du analysierst TikTok/Instagram-Beschreibungen von Hochzeits-Content "
-            f"(Deko, Foto, Basteln, Einladung, etc.). Mögliche Kategorien: {cats}. "
-            "Erstelle einen kurzen deutschen Namen (max 5 Wörter) UND wähle die passendste "
-            "Kategorie aus der Liste. Antworte AUSSCHLIESSLICH mit gültigem JSON: "
-            '{"name":"Kurzer Name","kategorie":"Deko","confidence":0.85}. '
-            "Bei Unsicherheit 'Unbekannt' / 'Sonstiges'."
-        )
-        content = self._call(system, f"Beschreibung:\n\n{description[:2000]}")
-        if not content:
-            return WeddingAnalysis("Unbekannt", None, 0.0)
-        try:
-            return WeddingAnalysis.from_dict(json.loads(content))
-        except Exception as e:
-            logger.warning(f"Ollama Wedding JSON-Parse: {e} | {content[:120]}")
-            return WeddingAnalysis("Unbekannt", None, 0.0)
-
-    def spellcheck(self, name: str, typ: str, category: str) -> dict:
-        system = (
-            "Du bist ein deutscher Rechtschreib-Korrektor. Korrigiere nur Tippfehler, "
-            "ändere NICHT die Bedeutung. Antworte mit JSON: "
-            '{"name":"...","type":"...","category":"..."}'
-        )
-        content = self._call(system, f"Korrigiere: Name={name}, Typ={typ}, Kategorie={category}")
-        if not content:
-            return {"name": name, "type": typ, "category": category}
-        try:
-            d = json.loads(content)
-            return {
-                "name": _clean_text(d.get("name"), default=name),
-                "type": _clean_text(d.get("type"), default=typ),
-                "category": _clean_text(d.get("category"), default=category),
-            }
-        except Exception:
-            return {"name": name, "type": typ, "category": category}
 
 
 class OpenAIAnalyzer:
     """OpenAI-API als Alternative zu Ollama.
 
-    Gleicher Public-API wie OllamaAnalyzer - kann 1:1 als drop-in
-    ersetzt werden. Nutzt Chat-Completions mit response_format=json_object.
+    Stabil + multilingual + günstig.
+    Nutzt Chat-Completions mit response_format=json_object.
 
     Kosten-Überschlag mit gpt-4o-mini (Stand 2025):
       input  $0.150 / 1M tokens
@@ -204,7 +65,7 @@ class OpenAIAnalyzer:
     Ein Recipe-Klassifizierung braucht ~600 input + 80 output tokens.
     Bei 1000 Items/Tag ≈ $0.14 / Monat - praktisch nichts.
 
-    Vorteile gegenüber Ollama:
+    Eigenschaften:
       + Bessere Klassifikation (gpt-4o-mini schlägt Qwen 7B)
       + Keine GPU/RAM-Anforderungen im Container
       + Schneller (~500ms statt ~2-3s pro Call)
@@ -231,6 +92,11 @@ class OpenAIAnalyzer:
         })
 
     def _call(self, system: str, user: str) -> Optional[str]:
+        # max_tokens=6000: bei gpt-4o-mini gibt's 16k Output-Limit, 6k ist
+        # also überdimensioniert. Output-Kosten bei mini sind ~$0.0006/1k,
+        # also auch bei 6k nur ~$0.004 worst-case pro Call — nicht relevant.
+        # Vorher: 300 → 2000, beides zu wenig für lange Rezepte mit vielen
+        # Schritten. Logging unten verrät wie groß die Antworten wirklich sind.
         try:
             r = self.session.post(
                 f"{self.base_url}/chat/completions",
@@ -242,7 +108,7 @@ class OpenAIAnalyzer:
                     ],
                     "response_format": {"type": "json_object"},
                     "temperature": 0.2,
-                    "max_tokens": 300,
+                    "max_tokens": 6000,
                 },
                 timeout=self.timeout,
             )
@@ -250,8 +116,32 @@ class OpenAIAnalyzer:
             data = r.json()
             choices = data.get("choices") or []
             if not choices:
+                logger.warning("_call: keine choices in API-Response")
                 return None
-            return (choices[0].get("message") or {}).get("content", "").strip()
+            finish = choices[0].get("finish_reason")
+            content = (choices[0].get("message") or {}).get("content", "").strip()
+
+            # Diagnose-Log: hilft beim Debugging warum Rezepte leer bleiben.
+            # input/output-Token zeigen ob die KI gar nicht erst antwortet
+            # oder die Antwort zu lang wurde.
+            usage = data.get("usage") or {}
+            logger.info(
+                f"_call: in={usage.get('prompt_tokens', '?')}t, "
+                f"out={usage.get('completion_tokens', '?')}t, "
+                f"finish={finish}, content_len={len(content)}"
+            )
+
+            if finish == "length":
+                # Auch bei 6k erreicht? Dann ist was kaputt (Endlos-Loop in KI etc).
+                logger.warning(
+                    f"_call: max_tokens=6000 erreicht (finish_reason=length) — "
+                    f"JSON unvollständig. content[-200:]={content[-200:]!r}"
+                )
+                return None
+            if not content:
+                logger.warning(f"_call: leerer content trotz finish={finish}")
+                return None
+            return content
         except requests.exceptions.HTTPError as e:
             # 401/403/429 sind häufig und sollten verständlich loggen
             try:
@@ -262,6 +152,318 @@ class OpenAIAnalyzer:
             return None
         except Exception as e:
             logger.error(f"OpenAI Call: {e}")
+            return None
+
+    def extract_description_from_media(self, file_path) -> Optional[str]:
+        """Extrahiert Rezept-Beschreibung aus PDF oder Bild, wenn keine .txt-
+        Datei im Folder ist. Wird vom Indexer als zweiter Fallback aufgerufen.
+
+        - PDF: pdfplumber text-extraction (lokal, gratis). Wenn Text-leer
+          (gescanntes PDF) → None (Vision-Fallback wäre möglich, braucht aber
+          poppler-utils oder pdf2image).
+        - Bild (jpg/png/webp): OpenAI Vision-Call mit gpt-4o-mini. ~1500 Tokens
+          input + 500 output = ~$0.001-0.003 pro Bild.
+
+        Returns: gefundener Text (gestrippt, joined newlines) oder None.
+        """
+        from pathlib import Path as _P
+        p = _P(file_path)
+        if not p.exists():
+            return None
+        suffix = p.suffix.lower()
+
+        if suffix == ".pdf":
+            try:
+                import pdfplumber
+                with pdfplumber.open(str(p)) as pdf:
+                    parts = []
+                    for page in pdf.pages:
+                        t = page.extract_text()
+                        if t:
+                            parts.append(t)
+                    txt = "\n\n".join(parts).strip()
+                if len(txt) >= 20:
+                    logger.info(f"PDF-Text extrahiert: {p.name} ({len(txt)} chars)")
+                    return txt
+                # PDF hat keinen Text-Layer (Scan) → render zu PNG + Vision-Call
+                logger.info(f"PDF {p.name}: kein Text-Layer, Vision-Fallback")
+                return self._extract_pdf_via_vision(p)
+            except Exception as e:
+                logger.warning(f"pdfplumber-Fehler bei {p}: {e}")
+                return None
+
+        if suffix in (".jpg", ".jpeg", ".png", ".webp"):
+            try:
+                import base64
+                with open(p, "rb") as fh:
+                    b64 = base64.b64encode(fh.read()).decode()
+                mime = "jpeg" if suffix in (".jpg", ".jpeg") else suffix.lstrip(".")
+                prompt = (
+                    "Du siehst ein Bild eines Rezepts (Foto oder Screenshot). "
+                    "Extrahiere ALLEN lesbaren Text und gib eine zusammenhängende "
+                    "deutsche Rezept-Beschreibung zurück, mit Zutaten (Mengen falls "
+                    "erkennbar) und Zubereitungs-Schritten. Wenn nichts Rezept-Artiges "
+                    "lesbar ist, antworte exakt mit: KEINE_REZEPT_DATEN"
+                )
+                txt = self._call_vision(b64, mime, prompt)
+                if not txt or "KEINE_REZEPT_DATEN" in txt or len(txt) < 20:
+                    logger.info(f"Vision {p.name}: kein verwertbarer Text")
+                    return None
+                logger.info(f"Vision-Extract: {p.name} ({len(txt)} chars)")
+                return txt
+            except Exception as e:
+                logger.warning(f"Vision-Extract-Fehler bei {p}: {e}")
+                return None
+
+        return None
+
+    def _call_vision(self, b64_data: str, mime: str, prompt: str) -> Optional[str]:
+        """Multimodal-Call: prompt + 1 Bild als base64. Kein response_format
+        (Vision liefert Freitext, kein JSON). Höherer max_tokens damit lange
+        Caption-Bilder vollständig transkribiert werden."""
+        try:
+            r = self.session.post(
+                f"{self.base_url}/chat/completions",
+                json={
+                    "model": self.model,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url",
+                             "image_url": {"url": f"data:image/{mime};base64,{b64_data}"}},
+                        ],
+                    }],
+                    "temperature": 0.2,
+                    "max_tokens": 1500,
+                },
+                timeout=60,  # Vision ist langsamer als text-only
+            )
+            r.raise_for_status()
+            data = r.json()
+            choices = data.get("choices") or []
+            if not choices:
+                return None
+            return (choices[0].get("message") or {}).get("content", "").strip()
+        except requests.exceptions.HTTPError as e:
+            try:
+                body = e.response.json().get("error", {}).get("message", "")
+            except Exception:
+                body = e.response.text[:200] if e.response is not None else ""
+            logger.error(f"OpenAI Vision HTTP {e.response.status_code if e.response else '?'}: {body}")
+            return None
+        except Exception as e:
+            logger.error(f"OpenAI Vision Call: {e}")
+            return None
+
+    def _extract_pdf_via_vision(self, pdf_path) -> Optional[str]:
+        """Render gescanntes PDF (kein Text-Layer) zu PNG und schick die Seiten
+        einzeln an Vision. Pure-Python via PyMuPDF — kein poppler-utils nötig.
+
+        Limit: max. 3 Seiten. Rezepte sind selten länger; Multi-Page-Kochbücher
+        in einem Folder sind eh ein anderer Use-Case (sollten gesplittet sein).
+        Bei 150 DPI ist 1 Seite ~700KB PNG → ~30KB base64-tokens → ~$0.003 pro
+        Seite mit gpt-4o-mini Vision.
+        """
+        try:
+            import pymupdf
+        except ImportError:
+            logger.error(
+                "pymupdf nicht installiert — PDF-Vision-Fallback nicht möglich. "
+                "Im Container ausführen: pip install pymupdf"
+            )
+            return None
+        import base64
+        try:
+            doc = pymupdf.open(str(pdf_path))
+        except Exception as e:
+            logger.warning(f"PyMuPDF kann {pdf_path} nicht öffnen: {e}")
+            return None
+
+        max_pages = min(len(doc), 3)
+        parts = []
+        try:
+            for i in range(max_pages):
+                page = doc[i]
+                pix = page.get_pixmap(dpi=150)
+                png_bytes = pix.tobytes(output="png")
+                b64 = base64.b64encode(png_bytes).decode()
+                prompt = (
+                    f"Du siehst Seite {i+1} eines gescannten Rezept-PDFs. "
+                    "Lies allen lesbaren Text raus und gib eine zusammenhängende "
+                    "deutsche Rezept-Beschreibung mit Zutaten (mit Mengen falls "
+                    "lesbar) und Zubereitungs-Schritten zurück. "
+                    "Wenn die Seite nichts Rezept-Artiges zeigt, antworte exakt: "
+                    "KEINE_REZEPT_DATEN"
+                )
+                txt = self._call_vision(b64, "png", prompt)
+                if txt and "KEINE_REZEPT_DATEN" not in txt:
+                    parts.append(txt.strip())
+        finally:
+            doc.close()
+
+        if not parts:
+            return None
+        full = "\n\n".join(parts)
+        if len(full) < 20:
+            return None
+        logger.info(
+            f"PDF-Vision-Extract: {pdf_path.name} "
+            f"({len(full)} chars, {len(parts)}/{max_pages} Seiten)"
+        )
+        return full
+
+    def audit_recipe_consistency(self, name: str, description: str,
+                                  type_name: Optional[str],
+                                  category: Optional[str],
+                                  folder_name: Optional[str] = None) -> dict:
+        """KI-Sanity-Check für ein Rezept: passt Name+Kategorie+Folder zur
+        Description?
+
+        Rückgabe (Schema garantiert):
+          {
+            "category_ok": bool, "category_suggestion": str|None, "category_reason": str|None,
+            "name_ok":     bool, "name_suggestion":     str|None, "name_reason":     str|None,
+            "folder_ok":   bool, "folder_suggestion":   str|None, "folder_reason":   str|None,
+          }
+
+        Ein Single-Call macht ALLE drei Checks — spart ~66% API-Cost.
+        folder_name wird nur geprüft wenn der Caller einen mitgibt; bei
+        None gibt's keinen folder_mismatch (Result _ok=true).
+        """
+        system = (
+            "Du bist ein Rezept-Klassifikator. Schaue dir Name, Folder-Kategorie, "
+            "Folder-Name und Beschreibung eines Rezepts an und entscheide:\n"
+            "1. Passt die Kategorie (z.B. 'Hauptgericht/Pasta') zum Inhalt der "
+            "Beschreibung? Wenn nicht, schlage eine bessere Kategorie als "
+            "'Typ/Kategorie' vor.\n"
+            "2. Ist der Name aussagekräftig (kein Datei-Stub wie '00001.mp4', "
+            "kein generisches 'recipe_2024')? Wenn nicht, schlage einen "
+            "kurzen deutschen Rezept-Namen vor (max 60 Zeichen).\n"
+            "3. Ist der FOLDER-Name passend zur Beschreibung? Folder-Namen haben "
+            "meist Underscores statt Spaces (z.B. 'Brokkoli_mit_Knoblauch'). "
+            "Wenn der Folder-Name den Inhalt grob beschreibt, ist's OK (auch "
+            "wenn nicht 1:1 zum 'name'). Falls Stub wie '00001' oder völlig "
+            "falsch: schlage folder-tauglichen Namen vor (kurz, _ statt Spaces, "
+            "ASCII bevorzugt aber Umlaute erlaubt).\n\n"
+            "Antworte ausschliesslich mit JSON nach diesem Schema:\n"
+            '{"category_ok":true|false,"category_suggestion":"Typ/Kategorie"|null,'
+            '"category_reason":"kurz, max 80 chars"|null,'
+            '"name_ok":true|false,"name_suggestion":"Neuer Name"|null,'
+            '"name_reason":"kurz, max 80 chars"|null,'
+            '"folder_ok":true|false,"folder_suggestion":"Neuer_Folder_Name"|null,'
+            '"folder_reason":"kurz, max 80 chars"|null}\n\n'
+            "Strenge Regeln:\n"
+            "- Bei tatsächlicher Übereinstimmung: _ok=true und Vorschlag/Reason=null.\n"
+            "- Bei _ok=false: Vorschlag UND Reason müssen gesetzt sein.\n"
+            "- Kategorie-Vorschlag im Format 'Typ/Kategorie'.\n"
+            "- Folder-Vorschlag: nur Buchstaben/Ziffern/_- erlaubt, keine /\\:*?\"<>|.\n"
+            "- Sei konservativ: nur deutlich abweichende Fälle markieren."
+        )
+        user_msg = (
+            f"Name: {name or '(leer)'}\n"
+            f"Aktuelle Kategorie: {type_name or '?'}/{category or '?'}\n"
+            f"Folder-Name: {folder_name or '(unbekannt — folder_ok=true zurückgeben)'}\n"
+            f"Beschreibung:\n{(description or '')[:3000]}"
+        )
+        content = self._call(system, user_msg)
+        default = {
+            "category_ok": True, "category_suggestion": None, "category_reason": None,
+            "name_ok": True, "name_suggestion": None, "name_reason": None,
+            "folder_ok": True, "folder_suggestion": None, "folder_reason": None,
+        }
+        if not content:
+            return default
+        try:
+            data = json.loads(content)
+            return {
+                "category_ok": bool(data.get("category_ok", True)),
+                "category_suggestion": (data.get("category_suggestion") or None),
+                "category_reason": (data.get("category_reason") or None),
+                "name_ok": bool(data.get("name_ok", True)),
+                "name_suggestion": (data.get("name_suggestion") or None),
+                "name_reason": (data.get("name_reason") or None),
+                "folder_ok": bool(data.get("folder_ok", True)),
+                "folder_suggestion": (data.get("folder_suggestion") or None),
+                "folder_reason": (data.get("folder_reason") or None),
+            }
+        except Exception as e:
+            logger.warning(f"audit_recipe_consistency JSON-Parse: {e} | {content[:200]}")
+            return default
+
+    def compute_nutrition(self, ingredients: list, servings: Optional[int]) -> Optional[dict]:
+        """Schätzt Kalorien + Makros (Protein/Kohlenhydrate/Fett) PRO PORTION
+        auf Basis der Zutaten-Liste. Returnt None bei zu wenig Input oder
+        wenn die KI 0/leere Werte liefert.
+
+        Single-Call ~$0.0005/Rezept. Schätzungen sind nicht laborgenau —
+        Werte werden im UI mit '~' prefixed als Indikation."""
+        if not ingredients:
+            return None
+        # Sinnvoller Default falls servings unbekannt — Werte sind dann
+        # 'pro Portion' bei 4 Portionen-Annahme, im UI hingewiesen
+        srv = int(servings) if servings and int(servings) >= 1 else 4
+
+        ing_lines = []
+        for i, ing in enumerate(ingredients[:60]):
+            if not ing.get("name"):
+                continue
+            parts = []
+            amt = ing.get("amount")
+            if amt is not None:
+                parts.append(f"{amt:g}" if isinstance(amt, float) else str(amt))
+            if ing.get("unit"):
+                parts.append(ing["unit"])
+            parts.append(ing["name"])
+            ing_lines.append(f"[{i}] " + " ".join(parts))
+        if not ing_lines:
+            return None
+
+        system = (
+            "Du bist Ernährungs-Experte. Schätze die Nährwerte PRO PORTION für "
+            "ein Rezept auf Basis der Zutaten + Portionen-Anzahl.\n\n"
+            "Antworte AUSSCHLIESSLICH mit JSON nach diesem Schema:\n"
+            '{"calories": int, "protein_g": float, "carbs_g": float, "fat_g": float, '
+            '"ingredients": [{"i": int, "kcal": int}]}\n\n'
+            "Regeln:\n"
+            "- calories: ganze Zahl, kcal PRO Portion (nicht gesamt!)\n"
+            "- protein_g / carbs_g / fat_g: Gramm PRO Portion, 1 Nachkommastelle\n"
+            "- ingredients: pro Zutat die GESAMT-kcal für die genannte Menge "
+            "(NICHT pro Portion), 'i' = die Nummer in [] vor der Zutat\n"
+            "- Mengen vor 'pro Portion' durch Portionen-Anzahl teilen\n"
+            "- Gewürze/Salz: ignorierbar (calories vernachlässigbar, kcal=0)\n"
+            "- Bei Bereichen: Mittel nehmen\n"
+            "- Realistische Bandbreiten (Hauptgericht 300-900 kcal, Dessert 200-600 kcal)\n"
+            "- Nur Schätzung, nicht laborgenau — Genauigkeit ±15% reicht\n"
+            "- Bei zu wenig Info (nur 1-2 Zutaten ohne Mengen): "
+            '{"calories":0,"protein_g":0,"carbs_g":0,"fat_g":0,"ingredients":[]}'
+        )
+        user_msg = f"Portionen: {srv}\n\nZutaten:\n" + "\n".join(ing_lines)
+        content = self._call(system, user_msg)
+        if not content:
+            return None
+        try:
+            data = json.loads(content)
+            cal = int(data.get("calories", 0) or 0)
+            if cal <= 0:
+                return None
+            per_ing = {}
+            for x in (data.get("ingredients") or []):
+                try:
+                    idx = int(x["i"]); kc = int(round(float(x.get("kcal", 0) or 0)))
+                    if kc > 0:
+                        per_ing[idx] = kc
+                except (KeyError, ValueError, TypeError):
+                    continue
+            return {
+                "calories": cal,
+                "protein_g": round(float(data.get("protein_g", 0) or 0), 1),
+                "carbs_g": round(float(data.get("carbs_g", 0) or 0), 1),
+                "fat_g": round(float(data.get("fat_g", 0) or 0), 1),
+                "per_ingredient": per_ing,
+            }
+        except Exception as e:
+            logger.warning(f"compute_nutrition JSON: {e} | {content[:200]}")
             return None
 
     def health(self) -> bool:
@@ -323,7 +525,12 @@ class OpenAIAnalyzer:
         if not content:
             return WeddingAnalysis("Unbekannt", None, 0.0)
         try:
-            return WeddingAnalysis.from_dict(json.loads(content))
+            data = json.loads(content)
+            return WeddingAnalysis(
+                name=data.get("name") or "Unbekannt",
+                category=data.get("kategorie") or data.get("category"),
+                confidence=float(data.get("confidence", 0)),
+            )
         except Exception as e:
             logger.warning(f"OpenAI Wedding JSON-Parse: {e} | {content[:120]}")
             return WeddingAnalysis("Unbekannt", None, 0.0)
@@ -340,62 +547,324 @@ class OpenAIAnalyzer:
         try:
             d = json.loads(content)
             return {
-                "name": _clean_text(d.get("name"), default=name),
-                "type": _clean_text(d.get("type"), default=typ),
-                "category": _clean_text(d.get("category"), default=category),
+                "name": d.get("name") or name,
+                "type": d.get("type") or typ,
+                "category": d.get("category") or category,
             }
         except Exception:
             return {"name": name, "type": typ, "category": category}
 
+    def analyze_ingredients(self, description: str) -> list[dict]:
+        """Wie OllamaAnalyzer.analyze_ingredients — identisches Interface,
+        identisches JSON-Schema. Siehe dort für Details."""
+        system = (
+            "Du extrahierst Zutaten mit Mengen aus deutschsprachigen Rezept-Beschreibungen "
+            "von TikTok/Instagram-Videos. Antworte AUSSCHLIESSLICH mit gültigem JSON.\n"
+            "Format:\n"
+            '{"ingredients":[\n'
+            '  {"name":"Tomaten","amount":2,"unit":"Stück","raw":"2 große Tomaten"},\n'
+            '  {"name":"Olivenöl","amount":3,"unit":"EL","raw":"3 EL Olivenöl"},\n'
+            '  {"name":"Salz","amount":null,"unit":null,"raw":"Salz nach Geschmack"}\n'
+            "]}\n\n"
+            "Regeln:\n"
+            "- amount: Zahl oder null. Bei Bereichen Mittel oder Untergrenze.\n"
+            "- unit: nur aus: g, kg, ml, l, TL, EL, Stück, Prise, Bund, Zehe, "
+            "Scheibe, Blatt, Pck, Dose, Tasse, Flasche, Glas. Sonst null.\n"
+            "- name: nur die Zutat (ohne 'frisch', 'groß', etc.).\n"
+            "- raw: genauer Text-Snippet aus der Beschreibung.\n"
+            '- Bei keinen erkennbaren Zutaten: {"ingredients":[]}.'
+        )
+        content = self._call(system, f"Beschreibung:\n\n{description[:4000]}")
+        if not content:
+            return []
+        try:
+            data = json.loads(content)
+            items = data.get("ingredients") or []
+            if not isinstance(items, list):
+                return []
+            out = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                name = (it.get("name") or "").strip()
+                if not name:
+                    continue
+                amount = it.get("amount")
+                if amount is not None:
+                    try:
+                        amount = float(amount)
+                    except (TypeError, ValueError):
+                        amount = None
+                out.append({
+                    "name": name,
+                    "amount": amount,
+                    "unit": (it.get("unit") or None),
+                    "raw": (it.get("raw") or "").strip() or None,
+                })
+            return out
+        except Exception as e:
+            logger.warning(f"OpenAI Ingredients JSON-Parse: {e} | {content[:200]}")
+            return []
+
+    def analyze_recipe_content(self, description: str,
+                                existing_tags: Optional[List[str]] = None,
+                                existing_canonical: Optional[List[str]] = None) -> dict:
+        """Kombinierter Call: extrahiert Zutaten + Zubereitungs-Schritte +
+        Portionen-Anzahl + stilistische Tags in EINEM API-Roundtrip.
+
+        Optional kann der Caller die DB-Stammdaten mitgeben:
+          existing_tags: bestehende Tag-Namen — KI soll diese bevorzugen
+            statt neue, ähnliche Varianten zu erfinden ('pasta' vs 'Pasta').
+          existing_canonical: bestehende canonical_name-Werte der Zutaten
+            — KI soll Zutaten-Namen so wählen dass das Canonical-Mapping
+            in app.recipes.canonicalize.canonical_name() denselben Wert
+            ergibt. Verhindert Dubletten wie 'Tomate' / 'Tomaten' / 'tomato'.
+
+        Spart gegenüber separaten Calls ~40% Tokens und ~50% Latenz.
+
+        Diät/Allergie-Tags (vegan, vegetarisch, laktosefrei, glutenfrei)
+        kommen NICHT von der KI — die werden deterministisch aus den
+        canonical_names in app.recipes.auto_tags berechnet (sicherer).
+        """
+        # Hint-Sections nur dann anhängen wenn der Caller Werte mitgibt.
+        # Cap auf 80 Items damit der Prompt nicht aufbläht — bei mehr
+        # nimmt die KI eh den Hint nur als grobe Orientierung.
+        hint = ""
+        if existing_tags:
+            tags_sample = sorted(set(t.strip() for t in existing_tags if t))[:80]
+            if tags_sample:
+                hint += (
+                    "\n\nBESTEHENDE TAGS in der DB (bevorzuge diese exakte Schreibweise "
+                    "statt ähnliche Varianten zu erfinden — z.B. 'pasta' statt 'Pasta', "
+                    "'meal-prep' statt 'meal_prep'):\n  "
+                    + ", ".join(tags_sample)
+                )
+        if existing_canonical:
+            can_sample = sorted(set(c.strip() for c in existing_canonical if c))[:120]
+            if can_sample:
+                hint += (
+                    "\n\nBESTEHENDE ZUTATEN-NAMEN in der DB (wähle den Namen so dass "
+                    "er deutsch + Singular + ohne Adjektive matcht — z.B. 'Tomate' "
+                    "(nicht 'Tomaten', nicht 'frische Tomaten'); typische Form orientiert "
+                    "sich an dieser Liste):\n  "
+                    + ", ".join(can_sample)
+                )
+
+        system = (
+            "Du analysierst deutschsprachige Rezept-Texte aus verschiedenen Quellen "
+            "(TikTok-/Instagram-Captions, Koch-Blogs, PDF-Exports von Rezept-Websites, "
+            "Markdown-Notizen, Bullet-Listen) und extrahierst Zutaten, Zubereitungs-"
+            "Schritte, Portionen-Anzahl und stilistische Tags. "
+            "Antworte AUSSCHLIESSLICH mit gültigem JSON nach diesem Schema:\n"
+            '{"ingredients":[\n'
+            '  {"name":"Tomaten","amount":2,"unit":"Stück","raw":"2 große Tomaten"},\n'
+            '  ...\n'
+            "],\n"
+            '"steps":[\n'
+            '  {"instruction":"Wasser zum Kochen bringen.","timer_seconds":null},\n'
+            '  {"instruction":"Spaghetti 8 Minuten kochen.","timer_seconds":480}\n'
+            "],\n"
+            '"servings":4,\n'
+            '"tags":["italienisch","pasta","schnell","one-pot"]\n'
+            "}\n\n"
+            "═══ KERNREGEL ═══\n"
+            "Mengen-Angaben sind das stärkste Signal für Rezept-Inhalt. WENN der Text "
+            "explizite Zutaten mit Mengen enthält (z.B. '50 g Walnüsse', '1 Kopf Brokkoli', "
+            "'2 Knoblauchzehen', '175 g Butter') — egal in welchem Format (Fließtext, "
+            "Markdown-Bullets '- 50 g Butter', Aufzählung mit '•', englische Labels "
+            "INGREDIENTS/SERVINGS, PDF-Print-Header drumherum) — MÜSSEN diese Zutaten "
+            "extrahiert werden. Der umgebende Text (Werbung, Hashtags, PDF-Header, "
+            "Datums-Stempel, Print-Buttons) wird IGNORIERT, die Mengen ZÄHLEN.\n\n"
+            "REGELN ZUTATEN:\n"
+            "- amount: Zahl oder null. Bei Bereichen ('2-3 Eier', '1-2 Bund') Mittel oder Untergrenze.\n"
+            "- unit: nur aus: g, kg, ml, l, TL, EL, Stück, Prise, Bund, Zehe, Scheibe, "
+            "Blatt, Pck, Dose, Tasse, Flasche, Glas. Sonst null.\n"
+            "- name: nur die Zutat selbst, deutsche Form, Singular bevorzugt (ohne 'frisch', 'groß').\n"
+            "- raw: genauer Text-Snippet aus der Beschreibung wie es da steht.\n"
+            "- Englische Zutaten-Namen ins Deutsche übersetzen (oats → Haferflocken).\n\n"
+            "REGELN SCHRITTE:\n"
+            "- instruction: vollständiger deutscher Satz, max 200 Zeichen.\n"
+            "- timer_seconds: NUR bei konkretem Zeitwert. '8 Min köcheln' → 480. "
+            "'kurz anbraten', 'goldbraun', 'über Nacht' → null.\n"
+            "- Reihenfolge muss der Zubereitung entsprechen.\n"
+            "- Wenn keine expliziten Schritte vorhanden (nur Zutaten-Liste): leeres Array, "
+            "  aber Zutaten trotzdem extrahieren!\n\n"
+            "REGELN PORTIONEN:\n"
+            "- servings: Anzahl Portionen (1-12) wenn explizit ('für 2 Personen', 'SERVINGS 1', "
+            "'Rezept für 6 Stück'). Sonst null. Nicht raten.\n\n"
+            "REGELN TAGS (3-7 Tags, nur aus dieser festen Liste — keine Erfindungen!):\n"
+            "  Küche:    italienisch, asiatisch, mediterran, deutsch, mexikanisch, indisch, "
+            "amerikanisch, französisch, orientalisch, thailändisch, japanisch, chinesisch\n"
+            "  Kategorie: pasta, pizza, salat, suppe, eintopf, auflauf, bowl, wrap, "
+            "burger, sandwich, dessert, kuchen, gebäck, getränk, dip, snack, frühstück\n"
+            "  Stil:     schnell, einfach, aufwendig, meal-prep, kinderfreundlich, "
+            "low-carb, high-protein, one-pot, kalorienarm, comfort-food, streetfood, "
+            "gesund, sommerlich, winterlich, party, fingerfood, grillen, ofen, kalt\n"
+            "  KEINE Diät-Tags wie 'vegan' oder 'laktosefrei' — die berechnen wir selbst aus "
+            "den Zutaten, weil das sicherer ist.\n\n"
+            "NUR bei wirklich rezept-freiem Text (Begrüßung, reine Werbung, nur Hashtags, "
+            "nur Meta-Daten ohne Zutaten): "
+            '{"ingredients":[],"steps":[],"servings":null,"tags":[]}. '
+            "Bei vorhandenen Zutaten-Mengen NIEMALS leer zurückgeben."
+            + hint
+        )
+        content = self._call(system, f"Beschreibung:\n\n{description[:6000]}")
+        if not content:
+            # _call hat None returnt (length-Truncation, network error,
+            # leerer choice). Aufrufer muss das als Fehler behandeln und
+            # NICHT als 'leer aber erfolgreich'. Zurück None statt empty
+            # dict — der Worker markiert dann als 'error' statt 'ok'.
+            return None
+        try:
+            data = json.loads(content)
+            # Ingredients
+            ings_out = []
+            for it in (data.get("ingredients") or []):
+                if not isinstance(it, dict):
+                    continue
+                name = (it.get("name") or "").strip()
+                if not name:
+                    continue
+                amount = it.get("amount")
+                if amount is not None:
+                    try:
+                        amount = float(amount)
+                    except (TypeError, ValueError):
+                        amount = None
+                ings_out.append({
+                    "name": name,
+                    "amount": amount,
+                    "unit": (it.get("unit") or None),
+                    "raw": (it.get("raw") or "").strip() or None,
+                })
+            # Steps
+            steps_out = []
+            for s in (data.get("steps") or []):
+                if not isinstance(s, dict):
+                    continue
+                instr = (s.get("instruction") or "").strip()
+                if not instr:
+                    continue
+                timer = s.get("timer_seconds")
+                if timer is not None:
+                    try:
+                        timer = int(timer)
+                        if timer <= 0 or timer > 86400:
+                            timer = None
+                    except (TypeError, ValueError):
+                        timer = None
+                steps_out.append({"instruction": instr, "timer_seconds": timer})
+            # Servings
+            servings = data.get("servings")
+            if servings is not None:
+                try:
+                    servings = int(servings)
+                    if servings < 1 or servings > 50:
+                        servings = None
+                except (TypeError, ValueError):
+                    servings = None
+            # Tags — bei der KI dem festen Vokabular vertrauen, aber defensiv
+            # lowercase + dedup + cap auf 8 (sonst halluzinierte Listen mit 20+)
+            raw_tags = data.get("tags") or []
+            tags_out = []
+            seen = set()
+            if isinstance(raw_tags, list):
+                for t in raw_tags:
+                    if not isinstance(t, str):
+                        continue
+                    norm = t.strip().lower()
+                    if not norm or len(norm) > 30 or norm in seen:
+                        continue
+                    seen.add(norm)
+                    tags_out.append(norm)
+                    if len(tags_out) >= 8:
+                        break
+            return {
+                "ingredients": ings_out,
+                "steps": steps_out,
+                "servings": servings,
+                "tags": tags_out,
+            }
+        except Exception as e:
+            logger.warning(f"OpenAI Recipe-Content JSON-Parse: {e} | {content[:200]}")
+            return {"ingredients": [], "steps": [], "servings": None, "tags": []}
+
+    def translate_to_german(self, text: str) -> Optional[str]:
+        """Erkennt Sprache und übersetzt nach Deutsch falls nötig.
+
+        Returns:
+            - None, wenn der Text bereits deutsch ist (kein Translate nötig)
+            - None, wenn der Text zu kurz/leer ist oder die KI fehlschlägt
+              (Aufrufer behält dann das Original — sicherer als Crash)
+            - Den übersetzten deutschen Text, wenn Original nicht-deutsch war.
+
+        Strategie: ein einziger Call mit response_format=json_object und
+        Schema {is_german: bool, translation: string|null}. So spart man
+        sich die Sprach-Erkennung als separaten Call.
+        """
+        if not text or len(text.strip()) < 20:
+            return None
+        system = (
+            "Du erkennst die Sprache eines Texts und übersetzt ihn nach Deutsch "
+            "falls nötig. Erhalte Emojis, Hashtags und Marker wie '@user' wie sie sind. "
+            "Antworte AUSSCHLIESSLICH mit gültigem JSON in einem dieser zwei Formate:\n"
+            '  {"is_german": true}                  // wenn Text bereits deutsch\n'
+            '  {"is_german": false, "translation": "..."}  // mit deutscher Übersetzung\n'
+            "Wenn der Text gemischt-sprachig ist (z.B. deutscher Untertitel + englischer "
+            "Hashtag-Schwanz), gilt er als 'is_german: true' wenn der inhaltliche Kern "
+            "deutsch ist."
+        )
+        content = self._call(system, f"Text:\n\n{text[:4000]}")
+        if not content:
+            return None
+        try:
+            data = json.loads(content)
+            if data.get("is_german"):
+                return None
+            translation = (data.get("translation") or "").strip()
+            return translation or None
+        except Exception as e:
+            logger.warning(f"OpenAI Translate JSON-Parse: {e} | {content[:200]}")
+            return None
+
 
 def build_analyzer(ai_cfg: dict):
-    """Factory die je nach Config einen Analyzer baut.
+    """Factory die einen OpenAI-Analyzer baut.
 
-    Provider-Modi:
-      - 'ollama'  (Default für Bestandskonfigurationen, lokales LLM)
-      - 'openai'  (Cloud, gpt-4o-mini etc.)
+    Seit Ollama-Removal gibt es keinen Provider-Switch mehr - der ai.provider-
+    Key in der Config wird ignoriert (toleriert für alte configs).
 
     Beispiel-Config:
       ai:
-        provider: openai
         confidence_threshold: 0.85
-        fallback_threshold: 0.5
+        description_min_length: 20
         openai:
           api_key: sk-...
           model: gpt-4o-mini
           base_url: ""   # optional, für Azure/OpenRouter/etc.
-        ollama:
-          url: http://host.docker.internal:11434
-          model: qwen2.5:7b-instruct
+          timeout: 30
     """
-    provider = (ai_cfg.get("provider") or "ollama").lower().strip()
-
-    if provider == "openai":
-        oa = ai_cfg.get("openai") or {}
-        api_key = (oa.get("api_key") or "").strip()
-        # Defensiver Check: wenn das Mask-Konstante "********" o.ä. aus der
-        # Config kommt (Konfigurations-Bug), nicht versuchen damit einen
-        # Analyzer zu bauen - das gibt sonst beim ersten Call HTTP 401 von
-        # OpenAI und der Scraper bricht ab.
-        if api_key == "********" or set(api_key) <= {"*", "•"}:
-            raise ValueError(
-                "OpenAI api_key in Config sieht wie die UI-Maske aus "
-                "('********' oder ähnlich) - bitte echten Key eintragen "
-                "und speichern. Beim nächsten Page-Reload zeigt die UI "
-                "den Key wieder maskiert an, das ist nur die Anzeige - "
-                "die Config hat aber den echten Wert."
-            )
-        return OpenAIAnalyzer(
-            api_key=api_key,
-            model=(oa.get("model") or "gpt-4o-mini").strip(),
-            base_url=(oa.get("base_url") or "").strip() or None,
-            timeout=int(oa.get("timeout") or 30),
+    oa = ai_cfg.get("openai") or {}
+    api_key = (oa.get("api_key") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "OpenAI api_key fehlt in der Config. Siehe Einstellungen → AI."
         )
-
-    # Default: Ollama
-    ol = ai_cfg.get("ollama") or {}
-    return OllamaAnalyzer(
-        url=(ol.get("url") or "http://localhost:11434").strip(),
-        model=(ol.get("model") or "qwen2.5:7b-instruct").strip(),
-        timeout=int(ol.get("timeout") or 60),
+    # Defensiver Check: wenn das Mask-Konstante "********" o.ä. aus der
+    # Config kommt (Konfigurations-Bug), nicht versuchen damit einen
+    # Analyzer zu bauen - das gibt sonst beim ersten Call HTTP 401 von
+    # OpenAI und der Scraper bricht ab.
+    if api_key == "********" or set(api_key) <= {"*", "•"}:
+        raise ValueError(
+            "OpenAI api_key in Config sieht wie die UI-Maske aus "
+            "('********' oder ähnlich) - bitte echten Key eintragen "
+            "und speichern. Beim nächsten Page-Reload zeigt die UI "
+            "den Key wieder maskiert an, das ist nur die Anzeige - "
+            "die Config hat aber den echten Wert."
+        )
+    return OpenAIAnalyzer(
+        api_key=api_key,
+        model=(oa.get("model") or "gpt-4o-mini").strip(),
+        base_url=(oa.get("base_url") or "").strip() or None,
+        timeout=int(oa.get("timeout") or 30),
     )

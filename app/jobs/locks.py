@@ -21,15 +21,13 @@ from __future__ import annotations
 import fcntl
 import logging
 import os
-import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
-LOCK_DIR = Path(os.environ.get("SCRAPPER_LOCK_DIR", "/opt/scrapper/data/locks"))
-_LOCK_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+LOCK_DIR = Path("/opt/scrapper/data/locks")
 
 
 @contextmanager
@@ -43,32 +41,24 @@ def file_lock_or_none(name: str) -> Iterator[Optional[object]]:
     Der Lock-File-Pfad ist ``{LOCK_DIR}/{name}.lock``. Das File bleibt
     zwischen Runs liegen (nur die ``fcntl.flock``-Sperre ist transient).
     """
-    if not _LOCK_NAME_RE.fullmatch(str(name or "")):
-        raise ValueError("Ungültiger Lock-Name")
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = LOCK_DIR / f"{name}.lock"
     fh = None
     acquired = False
     try:
-        # a+ verhindert, dass ein konkurrierender Lock-Versuch die PID des
-        # aktuell laufenden Besitzers bereits vor flock() wegtrunkiert.
-        fh = open(lock_path, "a+", encoding="utf-8")
+        fh = open(lock_path, "w")
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             acquired = True
-            # PID reinschreiben - rein informativ für Debugging.
-            fh.seek(0)
-            fh.truncate()
+            # PID reinschreiben - rein informativ für Debugging
             fh.write(f"{os.getpid()}\n")
             fh.flush()
-            os.fsync(fh.fileno())
             yield fh
         except BlockingIOError:
-            # Lock ist von anderem Prozess gehalten.
+            # Lock ist von anderem Prozess gehalten
             try:
-                fh.seek(0)
-                other_pid = fh.read().strip() or "?"
-            except (OSError, ValueError):
+                other_pid = lock_path.read_text().strip()
+            except Exception:
                 other_pid = "?"
             logger.info(f"file_lock '{name}': gehalten von PID {other_pid}")
             yield None

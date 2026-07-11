@@ -10,21 +10,14 @@ Format-Doku: https://prometheus.io/docs/instrumenting/exposition_formats/
 from __future__ import annotations
 
 import time
-import hmac
 from typing import List
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Response
 
-from ..auth import SESSION_COOKIE, verify_session
-from ..config_store import get_config
 from ..db import get_db
 
 
 router = APIRouter(tags=["metrics"])
-
-
-def _prom_label(value) -> str:
-    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
 def _line(name: str, value, *, help_text: str = "", mtype: str = "gauge", labels: dict = None) -> List[str]:
@@ -34,40 +27,21 @@ def _line(name: str, value, *, help_text: str = "", mtype: str = "gauge", labels
         out.append(f"# HELP {name} {help_text}")
     out.append(f"# TYPE {name} {mtype}")
     if labels:
-        label_str = ",".join(f'{k}="{_prom_label(v)}"' for k, v in labels.items())
+        label_str = ",".join(f'{k}="{v}"' for k, v in labels.items())
         out.append(f"{name}{{{label_str}}} {value}")
     else:
         out.append(f"{name} {value}")
     return out
 
 
-def _require_metrics_access(request: Request) -> None:
-    """Erlaubt Browser-Session oder einen dedizierten Bearer-Token."""
-    session = request.cookies.get(SESSION_COOKIE, "")
-    if session and verify_session(session):
-        return
-    expected = str(get_config().get("monitoring", "metrics_token", default="") or "")
-    authorization = request.headers.get("authorization", "")
-    if expected and authorization.startswith("Bearer "):
-        supplied = authorization[7:].strip()
-        if supplied and hmac.compare_digest(supplied, expected):
-            return
-    raise HTTPException(
-        401,
-        "Metrics authentication required",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
-
 @router.get("/metrics", include_in_schema=False)
-def metrics(request: Request) -> Response:
+def metrics() -> Response:
     """Prometheus-Exposition.
 
-    Zugriff per eingeloggter Browser-Session oder dediziertem Bearer-Token aus
-    ``monitoring.metrics_token``. So bleiben Betriebsdaten auch bei versehentlich
-    öffentlichem Reverse-Proxy geschützt.
+    Bewusst KEINE Auth-Pflicht (das ist Prometheus-Konvention für /metrics).
+    Wenn du das öffentlich exposed haben willst, blocke es im Reverse-Proxy
+    oder lass den Endpoint hinter Cloudflare-Access für /metrics frei.
     """
-    _require_metrics_access(request)
     db = get_db()
     lines: List[str] = []
     now = time.time()
@@ -103,11 +77,8 @@ def metrics(request: Request) -> Response:
             (now - 86400,),
         ).fetchall()
 
-        # Katalog / Historie
+        # History (insgesamt)
         history_total = c.execute("SELECT COUNT(*) FROM history").fetchone()[0] or 0
-        recipe_total = c.execute(
-            "SELECT COUNT(*) FROM history WHERE content_type='recipe' AND COALESCE(target_dir,'')<>''"
-        ).fetchone()[0] or 0
 
         # Download-Failures
         failures_total = c.execute(
@@ -128,36 +99,31 @@ def metrics(request: Request) -> Response:
     lines += _line("scrapper_pending_oldest_seconds", round(oldest_pending, 1),
                    help_text="Age of the oldest pending item in seconds")
     lines += _line("scrapper_pending_skipped_total", skipped_total,
-                   help_text="Current retained skipped items", mtype="gauge")
+                   help_text="Items that were skipped (manual or auto)", mtype="counter")
     lines += _line("scrapper_pending_resolved_total", resolved_total,
-                   help_text="Current retained resolved items", mtype="gauge")
+                   help_text="Items that were resolved/assigned", mtype="counter")
 
     # --- Running Jobs ---
     lines.append("# HELP scrapper_jobs_running Currently running jobs by kind")
     lines.append("# TYPE scrapper_jobs_running gauge")
-    for kind in ("scraper", "reanalyze"):
+    for kind in ("scraper", "backup", "quicksync", "reanalyze"):
         lines.append(f'scrapper_jobs_running{{kind="{kind}"}} {running_by_kind.get(kind, 0)}')
 
     # --- Jobs last 24h ---
-    lines.append("# HELP scrapper_jobs_24h_total Jobs finished in the rolling last 24h by kind+status")
-    lines.append("# TYPE scrapper_jobs_24h_total gauge")
+    lines.append("# HELP scrapper_jobs_24h_total Jobs finished in last 24h by kind+status")
+    lines.append("# TYPE scrapper_jobs_24h_total counter")
     for (kind, status, count) in last_24h:
-        lines.append(
-            f'scrapper_jobs_24h_total{{kind="{_prom_label(kind)}",status="{_prom_label(status)}"}} {count}'
-        )
+        lines.append(f'scrapper_jobs_24h_total{{kind="{kind}",status="{status}"}} {count}')
 
     # --- History ---
     lines += _line("scrapper_history_total", history_total,
-                   help_text="Current retained items in history",
-                   mtype="gauge")
-    lines += _line("scrapper_recipes_total", recipe_total,
-                   help_text="Recipes currently available in the searchable catalog",
-                   mtype="gauge")
+                   help_text="Total items in history (auto + manual + skipped + failed)",
+                   mtype="counter")
 
     # --- Download failures ---
     lines += _line("scrapper_download_failures_total", failures_total,
-                   help_text="Current URLs that exhausted their download retries (>=3 attempts)",
-                   mtype="gauge")
+                   help_text="URLs that exhausted their download retries (>=3 attempts)",
+                   mtype="counter")
 
     # --- Last scraper run ---
     lines += _line("scrapper_last_run_age_seconds", round(last_scraper_age, 1),

@@ -1,167 +1,427 @@
-# Rezeptliebe
+# Scrappercontainer
 
-Mobile-First-Webanwendung zum Sammeln, Analysieren, Einsortieren und schnellen Wiederfinden eigener Rezepte. Die **Rezeptbibliothek ist die Startseite und der Hauptbereich**. Inhalte kommen aus zwei IMAP-Postfächern oder aus unterstützten TikTok-/Instagram-Links in E-Mails.
+Proxmox-LXC-Container für den Scraper-Job:
 
-## Hauptfunktionen
+**TikTok/Instagram Scraper** — zieht Links aus zwei separaten E-Mail-Postfächern (Rezepte + Hochzeit), lädt die Videos mit `yt-dlp`, lässt sie von einer **lokalen Ollama-Instanz** klassifizieren und sortiert sie in passende Ordner.
 
-- Schnelle Rezeptsuche über Name, Gerichtstyp, Kategorie und Beschreibung
-- Filter, Sortierung und mobile Rezeptkarten
-- Detailansicht mit Video, Bild oder PDF
-- Automatischer Import aus Rezept- und Hochzeits-Postfach
-- Klassifizierung über lokales Ollama oder OpenAI-kompatible API
-- Prüfbereich für unsichere Ergebnisse
-- Historie mit Bearbeiten, Verschieben und Löschen
-- Automatischer Import-Zeitplan über systemd
-- Verifizierte SQLite-Datenbanksicherungen
-- Responsive Oberfläche für Smartphone, Tablet und Desktop
+Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Starten, Pending-Auflösung, Logs, Historie). Externe Erreichbarkeit ist explizit für **Cloudflare-Tunnel + Cloudflare Access** (MFA-Layer) ausgelegt.
 
-Die frühere allgemeine Dateisynchronisierung ist nicht mehr Bestandteil der Anwendung.
+> **Hinweis:** rclone-Sync wurde in einen separaten Container ausgelagert. Dieser Container hier macht nur noch Scraping.
 
-## Aufbau
+---
 
-| Bereich | Aufgabe |
-|---|---|
-| Rezepte | Startseite, Volltextsuche, Filter und Medienansicht |
-| Import | Manueller Lauf, Zeitplan, Fortschritt und Jobprotokolle |
-| Prüfen | Unsichere KI-Ergebnisse korrigieren oder überspringen |
-| Historie | Bereits verarbeitete Einträge verwalten |
-| Einstellungen | Postfächer, Pfade, KI, Download und Zugangsdaten |
+## Architektur auf einen Blick
 
-## Installation in einem Debian-/Proxmox-LXC
-
-```bash
-git clone https://github.com/appear7240/Scrappercontainer.git /opt/scrapper
-cd /opt/scrapper
-sudo bash proxmox/install.sh
+```
+E-Mail-Inbox (Recipe)  ─┐
+E-Mail-Inbox (Wedding) ─┤
+                        ▼
+                  ┌─────────────┐         ┌──────────────────┐
+                  │  IMAP-Fetch │ ──URLs─►│  yt-dlp Download │
+                  └─────────────┘         └─────────┬────────┘
+                                                    ▼
+                                          ┌─────────────────────┐
+                                          │   Ollama-Cascade    │
+                                          │  fast → fallback    │
+                                          └────────┬────────────┘
+                                                   ▼
+                          ┌───────────────────────┴────────────────────┐
+                          │                                            │
+                          ▼ Auto: Confidence hoch                      ▼ Pending: User entscheidet im Web-UI
+                  ┌──────────────────┐                         ┌──────────────────┐
+                  │ FS: recipe_dir/  │                         │  SQLite pending  │
+                  │     wedding_dir/ │                         │  + video in temp │
+                  └──────────────────┘                         └──────────────────┘
 ```
 
-Der Installer:
+Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Button im Web-UI. File-Locks verhindern doppelte Läufe zwischen Web und CLI.
 
-- installiert Python, FFmpeg, SQLite und die festgelegten Python-Abhängigkeiten,
-- erstellt den Benutzer `scrapper`,
-- erzeugt sichere Zugangsdaten beim Erststart,
-- richtet Webdienst, Import-Timer und tägliche Datenbanksicherung ein,
-- bindet den Webdienst standardmäßig nur an `127.0.0.1:8000`,
-- entfernt beim Update nicht mehr verwendete Alt-Units und Alt-Konfiguration.
+---
 
-Das Initialpasswort liegt einmalig unter:
+## Features
 
-```bash
-cat /opt/scrapper/data/.initial-password
-```
+**Hardened Web-Auth**
+- Bcrypt-Passwort-Hashing (Klartext-PWs werden beim ersten Start automatisch gehasht)
+- Auto-generierter Session-Secret beim Erststart
+- Rate-Limiter auf `/login` (5 Fehlversuche / 10 min → 15 min Block pro IP)
+- Security-Header (CSP, HSTS, X-Frame-Options, …)
+- CLI: `python -m app.cli set-password` / `rotate-secret`
+- App **verweigert den Start** bei aktivem Default-Login `admin/changeme`
+- `/api/docs` standardmäßig **aus** (Opt-in via `SCRAPPER_ENABLE_DOCS=1`)
 
-## Konfiguration
+**Datenintegrität**
+- SQLite mit WAL-Mode + `synchronous=NORMAL` + 10s busy_timeout
+- Indizes auf häufige Queries
+- `pending_add` ist idempotent (Status/Timestamp bleiben bei Re-Insert erhalten)
+- Path-Whitelists auf alle FileResponse-Endpoints (defense in depth)
+- Stale-Job-Recovery beim Start (alte `running`-Jobs werden auf `error` gesetzt)
 
-Produktive Konfiguration:
+**Robustheit**
+- File-Lock (`fcntl.flock`) zwischen Web-Trigger und systemd-CLI
+- Log-Rotation aller Job-Logs (älter als 30 Tage werden bei jedem Job-Start aufgeräumt)
+- yt-dlp Failed-Tracking: nach 3 fehlgeschlagenen Versuchen wird die URL als „aufgegeben" gespeichert und nicht mehr probiert
+- IMAP-Retry mit Backoff (3 Versuche, 1s/4s)
+- Ollama-Health-Check beim Job-Start (bricht ab statt 50 sinnlose Pending-Items zu erzeugen)
+- Thread-safe Cancel für **Scraper** und **Backup**
+- Async Telegram raus, alle Notifications nur noch in Web-UI
 
-```text
-/opt/scrapper/data/config.yaml
-```
+**Backup**
+- Pairs können `cloud:path ↔ cloud:path`, `cloud:path ↔ local:/path`, oder beide remote sein — wird automatisch detected
+- ThreadPool mit `max_parallel` Cap (Default 3) verhindert API-Drosselung bei vielen Pairs
 
-Wichtige Abschnitte:
+---
 
-- `web`: Benutzer, Passwort, Bind-Adresse und vertrauenswürdige Proxys
-- `paths`: Rezept-, Hochzeits-, Temp- und Logverzeichnisse
-- `mail.recipe`: Rezeptpostfach
-- `mail.wedding`: Hochzeitspostfach
-- `ai`: Ollama oder OpenAI-kompatibler Provider
-- `ytdlp`: Download-Binary, Cookies und Grenzen
-- `schedule.scraper_interval`: systemd-OnCalendar-Ausdruck
+## Setup
 
-Nach der Installation sollten zuerst Passwort, E-Mail-Konten, Zielpfade und KI-Verbindung in der Oberfläche geprüft werden.
-
-## Rezeptablage und Suche
-
-Neue Rezeptdatensätze erhalten eine stabile interne ID. Die Suche verwendet Metadaten aus der Datenbank:
-
-- Name
-- Rezepttyp
-- Kategorie
-- Beschreibung
-- Verarbeitungszeitpunkt
-- Quelle
-
-Bestehende Installationen werden beim ersten Aufruf der Rezeptseite nachindexiert. Vorhandene `info.json`-Dateien und die Verzeichnisstruktur werden dazu defensiv eingelesen. Medien werden ausschließlich aus dem konfigurierten Rezeptstamm ausgeliefert.
-
-## Unterstützte Medien
-
-- Video: MP4, WebM, MKV, MOV
-- Bild: JPG, JPEG, PNG, WebP
-- Dokument: PDF
-
-Die Detailansicht streamt beziehungsweise öffnet die zuerst gefundene geeignete Mediendatei. Pfadausbrüche außerhalb des Rezeptverzeichnisses werden blockiert.
-
-## Import
-
-Manueller Start in der Oberfläche oder per API:
+### 1. Container anlegen
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/jobs/scraper/run
+# Auf dem Proxmox-Host:
+bash proxmox/create-container.sh
 ```
 
-Im normalen Betrieb ist die angemeldete Weboberfläche zu verwenden. Der Import verarbeitet nur unterstützte Social-Media-URLs und begrenzt Laufzeit, Dateigröße, Mailgröße sowie Zahl und Größe der Anhänge.
+Default: unprivileged LXC, Debian 12, 2 GB RAM, 16 GB Disk. Du wirst nach Container-ID, Storage und Netz gefragt.
 
-Zeitplan anzeigen:
+### 2. App installieren
 
 ```bash
-systemctl list-timers scrapper-job.timer
+pct enter <ctid>
+cd /opt && git clone https://github.com/appear7240/Scrappercontainer.git scrapper
+cd scrapper
+bash proxmox/install.sh
 ```
 
-Logs:
+Das Install-Script erzeugt automatisch:
+- einen `scrapper`-User
+- ein **zufälliges Initial-Passwort** (gespeichert in `data/.initial-password`)
+- ein **zufälliges `secret_key`** (48 Zeichen)
+- die systemd-Units (`scrapper-web`, `scrapper-job.timer`)
+
+```
+🌐 Web-Interface (LOKAL):    http://127.0.0.1:8000
+👤 Login:                    admin
+🔑 Initial-Passwort:         (siehe Ausgabe oder data/.initial-password)
+```
+
+Der uvicorn-Bind ist standardmäßig **`0.0.0.0:8000`**, weil die häufigste
+Proxmox-Topologie cloudflared in einem **separaten Container** hat
+(siehe Variante B unten). Wenn du cloudflared im selben Container laufen
+lässt, kannst du auf `--host 127.0.0.1` umstellen — siehe Kommentare in
+`systemd/scrapper-web.service`.
+
+### 3. Cloudflare-Tunnel + Access (empfohlen)
+
+#### Variante A — cloudflared im selben Container
 
 ```bash
+# Im scrapper-Container:
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+dpkg -i cloudflared.deb
+cloudflared tunnel login
+cloudflared tunnel create scrapper
+cloudflared tunnel route dns scrapper scrapper.deine-domain.tld
+```
+
+`~/.cloudflared/config.yml`:
+```yaml
+tunnel: <tunnel-uuid>
+credentials-file: /root/.cloudflared/<uuid>.json
+ingress:
+  - hostname: scrapper.deine-domain.tld
+    service: http://localhost:8000
+  - service: http_status:404
+```
+
+```bash
+cloudflared service install
+```
+
+Wenn du diese Variante nutzt, kannst du in `systemd/scrapper-web.service`
+auf `--host 127.0.0.1` umstellen — dann ist Port 8000 nur lokal sichtbar.
+
+#### Variante B — cloudflared in eigenem Container (häufiger bei Proxmox)
+
+Du hast bereits einen LXC mit cloudflared (z.B. „Tunnel-Hub" für mehrere
+Services). Im **Cloudflare Zero Trust Dashboard → Tunnels** trägst du dort
+die neue Route ein:
+
+```yaml
+# in der Tunnel-Config des cloudflared-Hosts:
+ingress:
+  # ... bestehende Einträge ...
+  - hostname: scrapper.deine-domain.tld
+    service: http://<scrapper-container-ip>:8000
+  - service: http_status:404
+```
+
+Der `bind_host` in unserer `scrapper-web.service` muss in diesem Fall
+`0.0.0.0` bleiben (Default), damit der cloudflared-Container über LAN
+zugreifen kann. **Wichtig**: setze eine LAN-Firewall (z.B. UFW im
+scrapper-Container) die Port 8000 nur für die cloudflared-Container-IP
+freigibt:
+
+```bash
+apt install -y ufw
+ufw allow from 192.168.1.<cloudflared-ip> to any port 8000 proto tcp
+ufw default deny incoming
+ufw default allow outgoing
+ufw enable
+```
+
+#### Cloudflare Access (für beide Varianten)
+
+Im **Cloudflare Zero Trust Dashboard → Access → Applications**:
+1. **Add an application → Self-hosted**
+2. Application Domain: `scrapper.deine-domain.tld`
+3. **Policy** anlegen: Action=Allow, Include=Email(s), optional Require=TOTP
+4. (Optional) Country-Restriction auf dein Land
+
+Damit hast du MFA vor der App, **ohne** die App selbst anzupassen.
+
+### 4. Konfiguration
+
+Im Web-UI → „Einstellungen":
+- **E-Mail-Konten** (IMAP-App-Passwords für Gmail)
+- **Ollama-URL** und Modell-Namen (Default: `qwen2.5:7b-instruct`, optional `fallback_model`)
+- **Schedule** (systemd-OnCalendar-Expression für beide Jobs)
+
+---
+
+## CLI
+
+```bash
+# Passwort zurücksetzen (Reset wenn ausgesperrt)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli set-password
+
+# Session-Secret rotieren (invalidiert alle aktiven Sessions)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli rotate-secret
+
+# SQLite-Online-Backup mit gzip + integrity-check + multi-tier retention
+# (läuft automatisch via systemd-Timer täglich um 04:00)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-backup [pfad]
+
+# Restore aus einem Backup. Service vorher stoppen!
+sudo systemctl stop scrapper-web
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-restore /opt/scrapper/data/backups/daily/scrapper-2026-05-22.db.gz
+sudo systemctl start scrapper-web
+
+# Alle Backups auflisten gegliedert nach Tier
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli list-backups
+
+# SQLite-Speicher reclaimen (läuft automatisch sonntags)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-vacuum
+
+# Logs aufräumen (älter als paths.log_retention_days)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli log-cleanup [days]
+```
+
+```bash
+# Service-Befehle
+systemctl status scrapper-web
+systemctl restart scrapper-web      # mit Type=notify wartet auf 'ready'-Signal
 journalctl -u scrapper-web -f
-journalctl -u scrapper-job.service -n 200 --no-pager
+
+# Manuell ausführen (respektiert File-Lock)
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.jobs.scraper_cli
+
+# Daily DB-Backup-Timer aktivieren (läuft 04:00, macht auch log-cleanup + sonntags vacuum)
+systemctl enable --now scrapper-db-backup.timer
+systemctl list-timers scrapper-db-backup
 ```
 
-## Datenbanksicherung
+## Disaster Recovery
 
-Die SQLite-Datenbank wird über einen eigenen Timer online und konsistent gesichert. Sicherungen liegen unter:
+Wenn Container/VM/Disk weg ist - so kommst du zurück. Voraussetzung ist
+ein Backup unter `/opt/scrapper/data/backups/` (existiert wenn der DB-
+Backup-Timer mindestens einmal lief).
 
-```text
-/opt/scrapper/data/backups/
-```
+### 1. Backups regelmäßig off-site sichern
 
-Manuell sichern:
+Die täglichen Backups landen in `data/backups/daily/scrapper-YYYY-MM-DD.db.gz`.
+Sichere die idealerweise **außerhalb** des Containers. Optionen:
 
 ```bash
-runuser -u scrapper -- /opt/scrapper/venv/bin/python -m app.cli db-backup
+# Variante B: cron-Job der das täglich nach 04:30 macht
+cat > /etc/cron.d/scrapper-offsite-backup <<'EOF'
+30 4 * * * scrapper rclone copy /opt/scrapper/data/backups/ pcloud:/scrapper-backups/ --max-age 25h
+EOF
+
+# Variante C: Proxmox-Backup vom kompletten Container (vzdump)
+# Auf dem Proxmox-Host: einmal pro Tag automatisch
 ```
 
-Vor Updates erzeugt der Installer zusätzlich ein Pre-Update-Abbild.
+Plus die `config.yaml` separat sichern (enthält Mail-Passwörter, Webhook-URLs).
 
-## Update
+### 2. Restore-Playbook
+
+Wenn der Container weg ist und du in einer neuen Umgebung neu aufbauen musst:
 
 ```bash
-cd /opt/scrapper
-sudo bash proxmox/install.sh
+# Schritt 1: Neuen LXC anlegen + Repo klonen + install.sh
+pct create <neuer-ctid> ... (siehe Setup-Block oben)
+pct enter <neuer-ctid>
+cd /opt
+git clone https://github.com/appear7240/Scrappercontainer.git scrapper
+cd scrapper
+bash proxmox/install.sh
+
+# Schritt 2: Backup zurückspielen
+sudo systemctl stop scrapper-web
+# - DB-Backup nach Container kopieren (z.B. via rclone aus der Off-Site-Kopie)
+sudo -u scrapper rclone copy pcloud:/scrapper-backups/daily/scrapper-2026-05-22.db.gz \
+    /opt/scrapper/data/backups/daily/
+# - Restore
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-restore \
+    /opt/scrapper/data/backups/daily/scrapper-2026-05-22.db.gz
+
+# Schritt 3: Config zurückspielen
+# Sichere config.yaml aus dem letzten Off-Site-Backup übertragen
+sudo cp /tmp/backup-config.yaml /opt/scrapper/data/config.yaml
+sudo chown scrapper:scrapper /opt/scrapper/data/config.yaml
+sudo chmod 600 /opt/scrapper/data/config.yaml
+
+# Schritt 4: rclone-Config (für die Cloud-Sync-Pairs)
+# /home/scrapper/.rclone.conf rüberkopieren oder neu mit 'rclone config' aufbauen
+
+# Schritt 5: Service starten + healthz prüfen
+sudo systemctl start scrapper-web
+curl -s http://127.0.0.1:8000/healthz/deep | jq
+
+# Schritt 6: Im Web-UI einloggen, Test-Buttons drücken (Mail, Ollama, rclone-Pairs)
 ```
 
-Der Installer stoppt betroffene Dienste, sichert die Datenbank, führt ausschließlich einen Fast-Forward auf den gewählten Branch aus, aktualisiert die virtuelle Umgebung und startet die Dienste wieder.
+### 3. Was nicht im Backup ist
 
-## Sicherheit
+- **rclone-Config** (`/home/scrapper/.rclone.conf`) - separat sichern
+- **yt-dlp Cookies-Datei** (falls konfiguriert)
+- **Bereits einsortierte Videos** in den Recipe/Wedding-Folders (sind ja in pCloud bzw. lokalen Pfaden, idealerweise eh per rclone gesynced)
+- **systemd-Customizations** (falls du die Unit-Files manuell angepasst hast - normalerweise nicht nötig da `cp systemd/* /etc/systemd/system/` reicht)
 
-- Passwort-Hashing und serverseitig signierte Sitzungen
-- Sitzungsinvalidierung bei Passwortänderung
-- Same-Origin-Schutz für schreibende API-Aufrufe
-- restriktive Security Header
-- vertrauenswürdige Proxy-Netze statt blindem Forwarded-Header-Vertrauen
-- lokale Standardbindung
-- gehärtete systemd-Units
-- strikte Pfadgrenzen für Medien, Logs und Datei-Browser
-- root-eigene, eng begrenzte Helfer für Zeitplan und optionale HDD-Aktion
-- atomare Konfigurationsspeicherung mit Backup
+### 4. Failed-Email-Recovery
 
-## Entwicklung und Tests
+Wenn yt-dlp eine URL nicht runterladen kann, wird der Versuch in der DB
+getrackt. Nach `MAX_DOWNLOAD_ATTEMPTS=3` Fehlversuchen wird die URL beim
+nächsten Mail-Sync übersprungen.
+
+Im UI unter **Pending → Wiederholbare Fehler** siehst du diese URLs mit
+Versuchszahl + letztem Fehler. Reset-Button setzt den Counter zurück -
+beim nächsten Mail-Sync wird die URL nochmal versucht (sofern noch in
+einer Email vorhanden). Häufige Ursachen für Failures:
+- Video privat/gelöscht → Cookies-Datei kann helfen (siehe yt-dlp-Config)
+- yt-dlp veraltet → `pip install -U yt-dlp` im scrapper-venv
+- Cloudflare-Block → User-Agent ändern oder Cookies setzen
+
+## Monitoring
+
+Die App stellt mehrere Endpoints für externes Monitoring bereit:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
-.venv/bin/pytest -q
-node --check app/static/app.js
-bash -n proxmox/install.sh
+# Healthcheck (HTTP 200 wenn ok, 503 wenn DB nicht erreichbar)
+curl -s http://127.0.0.1:8000/healthz
+
+# Tiefer Check (DB + Ollama + Disk + rclone-Config) - immer 200, Details im Body
+curl -s http://127.0.0.1:8000/healthz/deep | jq
+
+# Prometheus-Metriken (für Grafana / Alertmanager)
+curl -s http://127.0.0.1:8000/metrics
 ```
 
-## Grenzen der lokalen Prüfung
+Verfügbare Metriken: `scrapper_pending_count`, `scrapper_pending_oldest_seconds`,
+`scrapper_jobs_running{kind=...}`, `scrapper_jobs_24h_total{kind,status}`,
+`scrapper_history_total`, `scrapper_download_failures_total`,
+`scrapper_last_run_age_seconds`, `scrapper_last_run_duration_seconds`.
 
-Echte IMAP-Postfächer, Social-Media-Downloads, Ollama/OpenAI, Reverse-Proxy, systemd und optionale Shelly-/HDD-Steuerung müssen im Zielsystem mit den dortigen Zugangsdaten und Mounts geprüft werden.
+Prometheus-Scrape-Config:
+```yaml
+scrape_configs:
+  - job_name: scrapper
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['scrapper.lan:8000']
+```
+
+Wenn dein cloudflared im selben Container läuft (`bind_host: 127.0.0.1`),
+scrape Prometheus von einem anderen Container über Cloudflare Access oder
+über das LAN-IP des Container-Bridges.
+
+---
+
+## Konfigurationsstruktur
+
+`data/config.yaml` (wird beim Erststart aus `config/config.example.yaml` erzeugt):
+
+```yaml
+web:
+  username: admin
+  password: $2b$12$...   # bcrypt-Hash, von der App selbst geschrieben
+  secret_key: <48 random chars>
+  bind_host: 127.0.0.1
+  bind_port: 8000
+
+paths:
+  recipe_dir: /pfad/zu/rezepten
+  wedding_dir: /pfad/zu/hochzeit
+  temp_dir: /opt/scrapper/temp
+  logs_dir: /opt/scrapper/logs
+
+mail:
+  recipe:
+    enabled: true
+    imap_host: imap.gmail.com
+    imap_port: 993
+    username: …
+    password: …      # App-Password, NICHT das Google-Konto-Passwort
+    folder: INBOX
+    max_mails: 20
+  wedding:
+    enabled: true
+    # … wie recipe
+    default_category: Sonstiges
+    always_pending: false
+
+ai:
+  ollama:
+    enabled: true
+    url: http://localhost:11434
+    model: qwen2.5:7b-instruct
+    fallback_model: qwen2.5:14b-instruct  # optional, leer = kein Fallback
+    timeout: 60
+  confidence_threshold: 0.75
+  fallback_threshold: 0.5
+  description_min_length: 20
+
+ytdlp:
+  binary: /opt/scrapper/venv/bin/yt-dlp
+
+backup:
+  max_parallel: 3       # parallel rclone-Prozesse
+  rclone_args: "--bwlimit 8M --transfers 4"
+  pairs:
+    - name: rezepte-pcloud-gdrive
+      remote: pcloud:/Rezepte
+      local: gdrive:/Backup/Rezepte
+      direction: bisync   # oder copy/sync
+    - name: hochzeit-pcloud
+      remote: pcloud:/Hochzeit
+      local: /mnt/local/hochzeit
+      direction: copy
+```
+
+`paths.recipe_dir` und `paths.wedding_dir` müssen **lokal beschreibbar** sein (Scraper macht `shutil.copy2`). Wenn du direkt nach Cloud willst, mount sie vorher per `rclone mount`.
+
+---
+
+## Was nicht (mehr) drin ist
+
+- **Keine Telegram-Benachrichtigungen** — Status nur im Web-UI
+- **Keine OpenAI Vision** — Klassifizierung nur per Ollama-Cascade. Wenn beide Modelle unter Confidence-Threshold liegen, landet das Item in Pending zur manuellen Auflösung
+- **Keine Frame-Extraktion** — Pending-Items werden als `<video>` im Web-UI angezeigt, `<img>`-Thumbs sind raus
+- **Keine NAS-Annahme** — paths sind generisch konfigurierbar, Backup-Pairs können Cloud↔Cloud sein
+
+---
+
+## Lizenz / Verantwortung
+
+Self-hosted Setup. Vor produktivem Einsatz: das Hardening-Checklist im `data/config.yaml` durchgehen, Initial-Passwort ändern, Cloudflare-Access (oder ein Äquivalent) davorstellen, regelmäßig `git pull` für Updates.
+
+Bei Fragen / Issues / PRs → GitHub.

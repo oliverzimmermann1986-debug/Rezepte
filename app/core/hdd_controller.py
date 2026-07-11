@@ -2,9 +2,9 @@
 
 Workflow:
   power_on() -> Shelly relay/0?turn=on -> warte X Sekunden bis HDD spin-up
-              -> root-eigene systemd-Path-Aktion startet die fstab-Mount-Unit
+              -> /bin/mount <mount_point> (via sudo, sudoers-Rule nötig)
 
-  power_off() -> systemd stoppt die freigegebene fstab-Mount-Unit
+  power_off() -> /bin/umount <mount_point>
                -> warte 2s damit fs flushed
                -> Shelly relay/0?turn=off
 
@@ -18,26 +18,20 @@ Shelly Plug Gen2 (etwas anderes Schema, aber auch unterstützt):
 
 Beides wird unterstützt - der Code probiert zuerst Gen1, fällt auf Gen2 zurück.
 
-Voraussetzung für mount/umount: der Mount-Punkt steht in /etc/fstab und stimmt
-mit der root-eigenen Allow-Datei /etc/scrapper-hdd-mountpoint überein. Der
-Webdienst selbst erhält keine sudo- oder Mount-Rechte.
+Voraussetzung für mount/umount: scrapper-User braucht NOPASSWD-Sudo für genau
+die zwei Commands. Siehe systemd/sudoers-scrapper-hdd.
 """
 from __future__ import annotations
 
 import logging
-import json
 import os
-import threading
+import subprocess
 import time
-import uuid
-from pathlib import Path
 from typing import Dict, Optional
 
 import requests
 
 logger = logging.getLogger(__name__)
-_ROOT_ACTION_LOCK = threading.Lock()
-_ROOT_ALLOW_FILE = Path("/etc/scrapper-hdd-mountpoint")
 
 
 class HDDController:
@@ -116,85 +110,35 @@ class HDDController:
         except Exception:
             return False
 
-    def _root_mount_action(self, action: str) -> Dict:
-        """Fordert genau mount/unmount über die root-eigene Path-Unit an."""
-        if action not in {"mount", "unmount"}:
-            return {"ok": False, "error": "Ungültige HDD-Aktion"}
+    def _run_sudo(self, cmd: list, timeout: int = 30) -> Dict:
+        """Führt sudo-Kommando aus. Returnt {ok, stdout, stderr, returncode}."""
         try:
-            allowed = _ROOT_ALLOW_FILE.read_text(encoding="utf-8").strip()
-        except OSError as exc:
+            full = ["sudo", "-n"] + cmd   # -n = niemals nach Passwort fragen
+            r = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
             return {
-                "ok": False,
-                "error": f"Root-Allow-Datei {_ROOT_ALLOW_FILE} fehlt oder ist nicht lesbar: {exc}",
+                "ok": r.returncode == 0,
+                "returncode": r.returncode,
+                "stdout": r.stdout[-2000:],
+                "stderr": r.stderr[-2000:],
             }
-        try:
-            allowed_path = str(Path(allowed).resolve(strict=False))
-            configured_path = str(Path(self.mount_point).resolve(strict=False))
-        except OSError as exc:
-            return {"ok": False, "error": f"Mount-Punkt ungültig: {exc}"}
-        if configured_path != allowed_path:
-            return {
-                "ok": False,
-                "error": (
-                    f"Mount-Punkt ist nicht root-freigegeben: Config={configured_path}, "
-                    f"erlaubt={allowed_path}"
-                ),
-            }
-
-        from ..config_store import get_config
-        data_dir = Path(get_config().path).parent.resolve()
-        request_path = data_dir / "hdd-action.request"
-        result_path = data_dir / "hdd-action.result"
-        request_id = str(uuid.uuid4())
-        tmp_path = data_dir / f".hdd-action.request.{os.getpid()}.{request_id}.tmp"
-        payload = {"action": action, "request_id": request_id}
-
-        with _ROOT_ACTION_LOCK:
-            try:
-                result_path.unlink(missing_ok=True)
-                with open(tmp_path, "x", encoding="utf-8") as handle:
-                    json.dump(payload, handle)
-                    handle.write("\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                tmp_path.chmod(0o600)
-                tmp_path.replace(request_path)
-            except OSError as exc:
-                try:
-                    tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                return {"ok": False, "error": f"HDD-Aktion konnte nicht angefordert werden: {exc}"}
-
-            for _ in range(2000):
-                if result_path.is_file():
-                    try:
-                        result = json.loads(result_path.read_text(encoding="utf-8"))
-                    except (OSError, ValueError, TypeError):
-                        result = None
-                    if isinstance(result, dict) and result.get("request_id") == request_id:
-                        result_path.unlink(missing_ok=True)
-                        return result
-                time.sleep(0.05)
-
-            if request_path.exists():
-                request_path.unlink(missing_ok=True)
-                return {"ok": False, "error": "HDD-Root-Aktion wurde von systemd nicht abgeholt"}
-            return {"ok": False, "error": "HDD-Root-Aktion lieferte kein Ergebnis"}
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "returncode": -1, "stderr": "Timeout"}
+        except Exception as e:
+            return {"ok": False, "returncode": -1, "stderr": str(e)}
 
     def mount(self) -> Dict:
         if not self.mount_point:
             return {"ok": False, "error": "Kein mount_point konfiguriert"}
         if self.is_mounted():
             return {"ok": True, "already": True, "mount_point": self.mount_point}
-        return self._root_mount_action("mount")
+        return self._run_sudo(["/bin/mount", self.mount_point])
 
     def unmount(self) -> Dict:
         if not self.mount_point:
             return {"ok": False, "error": "Kein mount_point konfiguriert"}
         if not self.is_mounted():
             return {"ok": True, "already": True, "mount_point": self.mount_point}
-        return self._root_mount_action("unmount")
+        return self._run_sudo(["/bin/umount", self.mount_point])
 
     # ---------- High-Level ----------
 

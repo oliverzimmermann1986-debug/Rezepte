@@ -113,10 +113,7 @@ def _extract_body(msg: email.message.Message) -> str:
 
 class MailAccount:
     def __init__(self, name: str, cfg: dict, content_type: str,
-                 default_category: Optional[str] = None,
-                 max_attachment_bytes: int = 20 * 1024 * 1024,
-                 max_attachments_per_mail: int = 10,
-                 max_mail_bytes: int = 50 * 1024 * 1024):
+                 default_category: Optional[str] = None):
         self.name = name
         self.content_type = content_type  # 'recipe' | 'wedding'
         self.host = cfg.get("imap_host", "imap.gmail.com")
@@ -127,9 +124,10 @@ class MailAccount:
         self.max_mails = int(cfg.get("max_mails", 20))
         self.default_category = default_category or cfg.get("default_category")
         self.enabled = bool(cfg.get("enabled", True))
-        self.max_attachment_bytes = max(1, int(max_attachment_bytes))
-        self.max_attachments_per_mail = max(1, int(max_attachments_per_mail))
-        self.max_mail_bytes = max(1024 * 1024, int(max_mail_bytes))
+        # Verarbeitete Mails nach dem Lauf löschen (\Deleted + EXPUNGE).
+        # Bewusst config-gated — destruktiv. Retries brauchen die Mail nicht
+        # mehr (kommen aus download_failures).
+        self.delete_processed = bool(cfg.get("delete_processed", False))
 
     @contextmanager
     def _connect(self):
@@ -187,17 +185,7 @@ class MailAccount:
             logger.info(f"[{self.name}] Verarbeite {len(ids)} Mails")
             for mid in ids:
                 try:
-                    _, size_data = mail.fetch(mid, "(RFC822.SIZE)")
-                    size_blob = b" ".join(x for x in (size_data or []) if isinstance(x, bytes))
-                    size_match = re.search(rb"RFC822\.SIZE\s+(\d+)", size_blob)
-                    if size_match and int(size_match.group(1)) > self.max_mail_bytes:
-                        logger.warning(
-                            "[%s] Mail %s übersprungen: %.1f MB > %.1f MB Mail-Limit",
-                            self.name, mid, int(size_match.group(1)) / 1024 / 1024,
-                            self.max_mail_bytes / 1024 / 1024,
-                        )
-                        continue
-                    _, msg_data = mail.fetch(mid, "(BODY.PEEK[])")
+                    _, msg_data = mail.fetch(mid, "(RFC822)")
                     if not msg_data or not msg_data[0]:
                         continue
                     msg = email.message_from_bytes(msg_data[0][1])
@@ -205,6 +193,7 @@ class MailAccount:
                     body = _extract_body(msg)
                     full = f"{subject}\n{body}"
                     msg_id = (msg.get("Message-ID") or "").strip() or f"mid-{mid.decode() if isinstance(mid, bytes) else mid}"
+                    mail_uid = mid.decode() if isinstance(mid, bytes) else str(mid)
 
                     # 1. URLs aus Body
                     for url in URL_PATTERN.findall(full):
@@ -218,18 +207,12 @@ class MailAccount:
                             "subject": subject,
                             "default_category": self.default_category,
                             "source_account": self.name,
+                            "mail_uid": mail_uid,
                         })
 
                     # 2. Attachments (PDF/JPG/PNG)
                     if msg.is_multipart():
-                        accepted_for_mail = 0
                         for part in msg.walk():
-                            if accepted_for_mail >= self.max_attachments_per_mail:
-                                logger.warning(
-                                    "[%s] Mail %s: Attachment-Limit (%s) erreicht",
-                                    self.name, msg_id, self.max_attachments_per_mail,
-                                )
-                                break
                             ctype = part.get_content_type()
                             disp = (part.get("Content-Disposition") or "").lower()
                             if "attachment" not in disp and "inline" not in disp:
@@ -242,13 +225,6 @@ class MailAccount:
                                 continue
                             payload = part.get_payload(decode=True)
                             if not payload:
-                                continue
-                            if len(payload) > self.max_attachment_bytes:
-                                logger.warning(
-                                    "[%s] Attachment %s übersprungen: %.1f MB > %.1f MB Limit",
-                                    self.name, fname, len(payload) / 1024 / 1024,
-                                    self.max_attachment_bytes / 1024 / 1024,
-                                )
                                 continue
                             # Dedupe via msg_id+filename
                             dedupe_key = f"{msg_id}::{fname}"
@@ -267,8 +243,8 @@ class MailAccount:
                                 "body_excerpt": body[:500],  # Hinweis für die KI
                                 "default_category": self.default_category,
                                 "source_account": self.name,
+                                "mail_uid": mail_uid,
                             })
-                            accepted_for_mail += 1
 
                 except Exception as e:
                     logger.warning(f"[{self.name}] Mail {mid}: {e}")
@@ -279,6 +255,30 @@ class MailAccount:
     # Bestands-Methode für Backwards-Compat (von Tests / CLI aufgerufen)
     def _fetch_urls_once(self) -> List[Dict]:
         return self._fetch_all_once().get("urls", [])
+
+    def delete_mails(self, mail_uids: Iterable[str]) -> int:
+        """Markiert die Mails als \\Deleted und expunged. Returnt Anzahl.
+        Gmail: je nach IMAP-Einstellung wandert die Mail in den Papierkorb
+        oder nur aus der INBOX (Archiv) — in beiden Fällen liest der
+        nächste Lauf sie nicht mehr."""
+        uids = [u for u in mail_uids if u]
+        if not uids or not self.delete_processed:
+            return 0
+        deleted = 0
+        try:
+            with self._connect() as mail:
+                for uid in uids:
+                    try:
+                        mail.store(uid, "+FLAGS", "\\Deleted")
+                        deleted += 1
+                    except Exception as e:
+                        logger.warning(f"[{self.name}] Delete Mail {uid}: {e}")
+                mail.expunge()
+        except Exception as e:
+            logger.warning(f"[{self.name}] Mail-Delete fehlgeschlagen (non-fatal): {e}")
+        if deleted:
+            logger.info(f"[{self.name}] {deleted} verarbeitete Mails gelöscht")
+        return deleted
 
 
 class EmailRouter:
@@ -319,3 +319,12 @@ class EmailRouter:
                 seen_attach.add(key)
                 attachments.append(att)
         return {"urls": urls, "attachments": attachments}
+
+    def delete_processed_mails(self, uids_by_account: Dict[str, set]) -> int:
+        """Löscht verarbeitete Mails pro Konto (nur Konten mit delete_processed=true)."""
+        total = 0
+        for acc in self.accounts:
+            uids = uids_by_account.get(acc.name) or set()
+            if uids:
+                total += acc.delete_mails(sorted(uids))
+        return total

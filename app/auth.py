@@ -6,11 +6,10 @@ Migration: alte Klartext-Passwörter werden beim Erststart automatisch gehasht.
 """
 from __future__ import annotations
 
-import hashlib
 import hmac
 import logging
 import secrets
-from pathlib import Path
+from typing import Optional
 
 import bcrypt
 from fastapi import HTTPException, Request, status
@@ -23,7 +22,6 @@ logger = logging.getLogger(__name__)
 SESSION_COOKIE = "scrapper_session"
 SESSION_MAX_AGE = 60 * 60 * 24 * 14  # 14 Tage
 BCRYPT_PREFIXES = ("$2a$", "$2b$", "$2y$")
-PREHASH_PREFIX = "$scrapper-bcrypt-sha256$"
 DEFAULT_SECRETS = (
     "",
     "please-change-me",
@@ -32,68 +30,79 @@ DEFAULT_SECRETS = (
 
 
 # -------------------- Passwort-Hashing --------------------
-def _bcrypt_input(plain: str) -> tuple[bytes, bool]:
-    """Bereitet Passwörter für bcrypt vor.
-
-    bcrypt 5 lehnt Eingaben über 72 Byte ab. Für längere Passphrasen wird
-    deshalb ein domänenseparierter SHA-256-Digest verwendet und das Format im
-    gespeicherten Hash markiert. Bestehende normale bcrypt-Hashes bleiben
-    vollständig kompatibel.
-    """
-    raw = str(plain).encode("utf-8")
-    if len(raw) <= 72:
-        return raw, False
-    digest = hashlib.sha256(b"scrapper-password-v1\0" + raw).digest()
-    return digest, True
-
-
 def hash_password(plain: str) -> str:
-    prepared, prehashed = _bcrypt_input(plain)
-    encoded = bcrypt.hashpw(prepared, bcrypt.gensalt(rounds=12)).decode("ascii")
-    return PREHASH_PREFIX + encoded if prehashed else encoded
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("ascii")
 
 
 def is_hashed(value: str) -> bool:
-    return isinstance(value, str) and (
-        value.startswith(BCRYPT_PREFIXES) or value.startswith(PREHASH_PREFIX)
-    )
+    return isinstance(value, str) and value.startswith(BCRYPT_PREFIXES)
 
 
 def verify_password(plain: str, stored: str) -> bool:
-    """Akzeptiert bcrypt-Hashes, lange Passphrasen und Legacy-Klartext."""
+    """Akzeptiert bcrypt-Hashes ODER (für Migration) Klartext."""
     if not plain or not stored:
         return False
-    if stored.startswith(PREHASH_PREFIX):
+    if is_hashed(stored):
         try:
-            prepared = hashlib.sha256(
-                b"scrapper-password-v1\0" + plain.encode("utf-8")
-            ).digest()
-            encoded = stored[len(PREHASH_PREFIX):].encode("ascii")
-            return bcrypt.checkpw(prepared, encoded)
-        except (ValueError, TypeError, UnicodeError):
-            return False
-    if stored.startswith(BCRYPT_PREFIXES):
-        try:
-            # Alte bcrypt-Hashes wurden direkt aus dem Passwort erzeugt und
-            # sind daher nur bis zur bcrypt-Grenze verifizierbar.
-            raw = plain.encode("utf-8")
-            if len(raw) > 72:
-                return False
-            return bcrypt.checkpw(raw, stored.encode("ascii"))
-        except (ValueError, TypeError, UnicodeError):
+            return bcrypt.checkpw(plain.encode("utf-8"), stored.encode("ascii"))
+        except (ValueError, TypeError):
             return False
     # Legacy-Pfad: Klartext, timing-safe. Wird via migrate_security() gehasht.
     return hmac.compare_digest(plain.encode("utf-8"), str(stored).encode("utf-8"))
 
 
 def check_credentials(username: str, password: str) -> bool:
+    """Prüft Login. Ablauf:
+      1. DB-User suchen (Multi-User-Pfad). Bei Match und !disabled → ok.
+      2. Fallback auf config.web.{username,password} (Backwards-Compat für
+         frische Installs ohne DB-Migration und für vor-Migrations-State).
+    last_login_at wird beim erfolgreichen Match aktualisiert."""
+    from .db import get_db
+    db = get_db()
+    user_row = db.user_get_by_name(username)
+    if user_row:
+        if user_row.get("disabled"):
+            return False
+        if verify_password(password, user_row["password_hash"]):
+            try:
+                db.user_update_last_login(int(user_row["id"]))
+            except Exception:
+                pass  # Login darf nicht failen weil last_login_at-update bricht
+            return True
+        return False
+
+    # Config-Fallback: nur greift wenn DB komplett leer ist (typisch vor
+    # erster Migration). Nach migrate_users_to_db() ist immer mindestens
+    # ein admin in der DB — dann läuft alles über den DB-Pfad.
     cfg = get_config()
     cfg_u = str(cfg.get("web", "username", default="admin"))
     cfg_p = cfg.get("web", "password", default="") or ""
     user_ok = hmac.compare_digest(str(username).encode("utf-8"), cfg_u.encode("utf-8"))
     pass_ok = verify_password(password, cfg_p)
-    # Beide checken (kein Early-Return), damit kein Timing-Leak zw. User-/Pwd-Fehler
     return user_ok and pass_ok
+
+
+def migrate_users_to_db() -> None:
+    """Übernimmt den config-web-User als initialer admin in die users-Tabelle.
+    Idempotent: läuft nur wenn die users-Tabelle leer ist."""
+    from .db import get_db
+    db = get_db()
+    with db.conn() as c:
+        existing = int(c.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+    if existing > 0:
+        return
+    cfg = get_config()
+    username = str(cfg.get("web", "username", default="admin"))
+    pw_hash = cfg.get("web", "password", default="") or ""
+    if not username or not pw_hash or not is_hashed(pw_hash):
+        logger.warning(
+            "migrate_users_to_db: config.web.password ist nicht gehasht oder "
+            "leer — überspringe. Benutzer-Verwaltung wird erst nach manuellem "
+            "Anlegen funktionieren."
+        )
+        return
+    db.user_create(username, pw_hash, role="admin")
+    logger.info(f"Initialer admin '{username}' aus Config in users-DB migriert.")
 
 
 # -------------------- Startup-Migration --------------------
@@ -102,8 +111,7 @@ def migrate_security() -> None:
 
     1. Generiert/erneuert ``web.secret_key`` falls fehlend/default/zu kurz.
     2. Hasht Klartext-Passwort in der Config.
-    3. Generiert einen privaten Metrics-Token, falls nur der Platzhalter aktiv ist.
-    4. Verweigert Start bei aktiver Default-Kombi 'admin/changeme'.
+    3. Verweigert Start bei aktiver Default-Kombi 'admin/changeme'.
     """
     cfg = get_config()
     changed = False
@@ -122,47 +130,18 @@ def migrate_security() -> None:
         changed = True
         logger.warning("web.password war Klartext - wurde bcrypt-gehasht.")
 
-    # 3) Metrics-Token (bekannter Beispielwert darf nie produktiv bleiben)
-    metrics_token = str(cfg.get("monitoring", "metrics_token", default="") or "")
-    if metrics_token in {"", "change-this-metrics-token", "please-change-me"} or len(metrics_token) < 24:
-        cfg.set("monitoring", "metrics_token", secrets.token_urlsafe(36))
-        changed = True
-        logger.warning("monitoring.metrics_token war fehlend/default - neuer wurde generiert.")
-
-    # 4) Default-Login verbieten. Sicherheitsmigrationen werden vorher
-    # persistiert, damit die Config auch bei absichtlich blockiertem Start
-    # bereits gehasht, tokenisiert und chmod 0600 ist.
+    # 3) Default-Login verbieten
     user = str(cfg.get("web", "username", default="admin"))
     stored_pw = cfg.get("web", "password", default="") or ""
-    default_login_active = user == "admin" and verify_password("changeme", stored_pw)
-
-    if changed:
-        cfg.save()
-
-    if default_login_active:
+    if user == "admin" and verify_password("changeme", stored_pw):
         raise RuntimeError(
             "❌ Default-Login 'admin/changeme' ist aktiv. "
             "Setze ein eigenes Passwort, z.B. mit:  "
             "python -m app.cli set-password"
         )
 
-    cleanup_initial_password_file()
-
-
-def cleanup_initial_password_file() -> None:
-    """Entfernt das Installer-Passwort, sobald es nicht mehr aktuell ist."""
-    cfg = get_config()
-    marker = Path(cfg.path).parent / ".initial-password"
-    if not marker.is_file():
-        return
-    try:
-        initial = marker.read_text(encoding="utf-8").strip()
-        stored = str(cfg.get("web", "password", default="") or "")
-        if not initial or not verify_password(initial, stored):
-            marker.unlink(missing_ok=True)
-            logger.info("Veraltete .initial-password-Datei wurde entfernt.")
-    except OSError as exc:
-        logger.warning(".initial-password konnte nicht geprüft/entfernt werden: %s", exc)
+    if changed:
+        cfg.save()
 
 
 # -------------------- Session --------------------
@@ -173,42 +152,45 @@ def _serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret, salt="scrapper-auth")
 
 
-def _credential_fingerprint() -> str:
-    """Fingerprint der aktuellen Zugangsdaten.
-
-    Ändert sich Benutzername oder Passwort-Hash, werden bestehende Sessions
-    automatisch ungültig, ohne dass der globale Session-Secret rotiert werden muss.
-    """
-    cfg = get_config()
-    username = str(cfg.get("web", "username", default="admin") or "")
-    password = str(cfg.get("web", "password", default="") or "")
-    return hashlib.sha256(f"{username}\0{password}".encode("utf-8")).hexdigest()
-
-
 def create_session(username: str) -> str:
-    return _serializer().dumps({
-        "user": username,
-        "cred": _credential_fingerprint(),
-        "nonce": secrets.token_hex(8),
-    })
+    return _serializer().dumps({"user": username})
+
+
+def session_user(token: str) -> Optional[str]:
+    """Returnt username aus gültiger Session, sonst None.
+    Eine Schicht über verify_session() — der Caller braucht oft den User-Namen,
+    nicht nur den 'valid yes/no'-Status (z.B. für require_admin)."""
+    if not token:
+        return None
+    try:
+        data = _serializer().loads(token, max_age=SESSION_MAX_AGE)
+        u = data.get("user")
+        return str(u) if u else None
+    except (BadSignature, SignatureExpired):
+        return None
 
 
 def verify_session(token: str) -> bool:
+    return session_user(token) is not None
+
+
+def auth_disabled() -> bool:
+    """Login-Abfrage per Config abschaltbar (web.auth_disabled: true).
+
+    SICHERHEIT: Damit ist die App für JEDEN erreichbar, der sie netzwerkseitig
+    sieht — inkl. Löschen von Rezepten und Config-Zugriff. Nur vertretbar,
+    wenn davor eine eigene Zugriffskontrolle liegt (z.B. Cloudflare Access
+    auf dem öffentlichen Hostname) und das LAN vertrauenswürdig ist.
+    """
     try:
-        payload = _serializer().loads(token, max_age=SESSION_MAX_AGE)
-        if not isinstance(payload, dict):
-            return False
-        cfg_user = str(get_config().get("web", "username", default="admin") or "")
-        user_ok = hmac.compare_digest(str(payload.get("user") or ""), cfg_user)
-        cred_ok = hmac.compare_digest(
-            str(payload.get("cred") or ""), _credential_fingerprint()
-        )
-        return user_ok and cred_ok
-    except (BadSignature, SignatureExpired, TypeError, ValueError):
+        return bool((get_config().get("web") or {}).get("auth_disabled", False))
+    except Exception:
         return False
 
 
 async def require_auth(request: Request) -> None:
+    if auth_disabled():
+        return
     is_api = request.url.path.startswith("/api/")
     token = request.cookies.get(SESSION_COOKIE, "")
     if not token or not verify_session(token):
@@ -221,3 +203,31 @@ async def require_auth(request: Request) -> None:
             status_code=status.HTTP_303_SEE_OTHER,
             headers={"Location": f"/login?next={request.url.path}"},
         )
+
+
+async def require_admin(request: Request) -> dict:
+    """FastAPI-Dependency für admin-only Endpoints (z.B. /api/users).
+    Returnt das User-Dict (für Logging) oder raised 401/403."""
+    if auth_disabled():
+        return {"username": "local", "role": "admin", "disabled": False}
+    token = request.cookies.get(SESSION_COOKIE, "")
+    username = session_user(token)
+    if not username:
+        raise HTTPException(401, "Authentication required")
+
+    from .db import get_db
+    user = get_db().user_get_by_name(username)
+    if user and not user.get("disabled") and user.get("role") == "admin":
+        return user
+
+    # Legacy-Compat: wenn der eingeloggte User dem config-web-user entspricht
+    # UND die DB noch keinen User hat (= migrate_users_to_db lief nicht oder
+    # config-User wurde gelöscht), behandeln wir ihn als admin damit die
+    # Settings-Seite nicht aussperrt.
+    if not user:
+        cfg = get_config()
+        config_user = str(cfg.get("web", "username", default="admin"))
+        if username == config_user:
+            return {"username": username, "role": "admin", "legacy_config_user": True}
+
+    raise HTTPException(403, "Admin-Rolle benötigt")

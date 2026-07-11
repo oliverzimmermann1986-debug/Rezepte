@@ -19,15 +19,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .auth import cleanup_initial_password_file, hash_password
+from .auth import hash_password
 from .config_store import get_config
 from .db import get_db
 
 
 def _cmd_set_password() -> int:
     pw = getpass.getpass("Neues Passwort: ")
-    if len(pw) < 12:
-        print("Passwort muss mindestens 12 Zeichen haben.", file=sys.stderr)
+    if len(pw) < 8:
+        print("Passwort muss mindestens 8 Zeichen haben.", file=sys.stderr)
         return 2
     pw2 = getpass.getpass("Wiederholen:    ")
     if pw != pw2:
@@ -36,7 +36,6 @@ def _cmd_set_password() -> int:
     cfg = get_config()
     cfg.set("web", "password", hash_password(pw))
     cfg.save()
-    cleanup_initial_password_file()
     print("✓ Passwort gespeichert (bcrypt).")
     return 0
 
@@ -59,7 +58,8 @@ def _cmd_db_backup(args: list) -> int:
 
     Wenn ein Pfad gegeben ist, wird ohne Multi-Tier dorthin gespeichert.
     """
-    data_dir = get_db().path.parent
+    cfg = get_config()
+    data_dir = Path(cfg.get("paths", "data_dir", default="/opt/scrapper/data"))
 
     # Explizites Ziel: einmaliges Backup, kein Tier
     if args and args[0]:
@@ -140,31 +140,18 @@ def _cmd_db_restore(args: list) -> int:
         print(f"✗ Backup-Datei nicht gefunden: {src}", file=sys.stderr)
         return 1
 
-    db_path = get_db().path
-    # Replacing an SQLite file while the web process has WAL connections open is
-    # unsafe. Refuse the operation when the service is active.
-    import subprocess as _sp
-    try:
-        active = _sp.run(
-            ["/usr/bin/systemctl", "is-active", "--quiet", "scrapper-web.service"],
-            stdin=_sp.DEVNULL, timeout=5, check=False,
-        ).returncode == 0
-    except (FileNotFoundError, _sp.TimeoutExpired):
-        active = False
-    if active:
-        print("✗ scrapper-web.service läuft noch. Vor Restore zuerst stoppen.", file=sys.stderr)
-        return 2
+    cfg = get_config()
+    db_path = Path(cfg.get("paths", "db_path",
+                            default="/opt/scrapper/data/scrapper.db"))
     if not db_path.exists():
         # Erstaufnahme - kein Pre-Backup nötig
         print(f"ℹ Ziel-DB existiert nicht ({db_path}), wird neu angelegt")
     else:
-        # Konsistentes Safety-Backup vom aktuellen Stand.
-        safety = db_path.parent / f"pre-restore-{datetime.now():%Y%m%d-%H%M%S}.db.gz"
+        # Safety-Backup vom aktuellen Stand
+        safety = db_path.parent / f"pre-restore-{datetime.now():%Y%m%d-%H%M%S}.db"
         print(f"💾 Sichere aktuelle DB nach: {safety}")
-        safety_result = get_db().backup_to(safety, compress=True, verify=True)
-        if not safety_result.get("ok"):
-            print(f"✗ Safety-Backup fehlgeschlagen: {safety_result.get('error')}", file=sys.stderr)
-            return 1
+        import shutil as _sh
+        _sh.copy2(db_path, safety)
 
     # Entpacken wenn gzipped
     import gzip as _gz
@@ -195,17 +182,8 @@ def _cmd_db_restore(args: list) -> int:
         finally:
             check.close()
 
-        # Atomic move ins Ziel; stale WAL/SHM-Dateien aus dem alten DB-Inode
-        # dürfen nach einem Restore keinesfalls weiterverwendet werden.
-        os.chmod(tmp_target, 0o600)
+        # Atomic move ins Ziel
         tmp_target.replace(db_path)
-        for suffix in ("-wal", "-shm"):
-            Path(str(db_path) + suffix).unlink(missing_ok=True)
-        dir_fd = os.open(str(db_path.parent), os.O_DIRECTORY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
         print(f"✓ Restore abgeschlossen: {db_path}")
         print(f"  Start den Service: systemctl start scrapper-web")
         return 0
@@ -237,7 +215,8 @@ def _cmd_db_vacuum(args: list) -> int:
 
 def _cmd_list_backups(args: list) -> int:
     """Listet alle vorhandenen Backups gegliedert nach Tier."""
-    data_dir = get_db().path.parent
+    cfg = get_config()
+    data_dir = Path(cfg.get("paths", "data_dir", default="/opt/scrapper/data"))
     backups_root = data_dir / "backups"
     if not backups_root.exists():
         print(f"Keine Backups vorhanden ({backups_root})")

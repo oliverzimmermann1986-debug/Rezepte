@@ -79,13 +79,7 @@ def _reanalyze_history_all_thread(job_id: int, dry_run: bool, limit: int, auto_m
         summary = get_scraper_job().reanalyze_history_all(
             dry_run=dry_run, limit=limit, auto_move=auto_move,
         )
-        status = "ok"
-        if summary.get("cancelled"):
-            status = "error"
-            summary.setdefault("error", "Abgebrochen")
-        elif int(summary.get("errors", 0) or 0) > 0:
-            status = "partial"
-        db.job_finish(job_id, status, summary)
+        db.job_finish(job_id, "ok", summary)
     except Exception as e:
         db.job_finish(job_id, "error", {"error": str(e)})
     finally:
@@ -104,10 +98,7 @@ def reanalyze_all(payload: dict = None):
     """
     payload = payload or {}
     dry_run = bool(payload.get("dry_run", False))
-    try:
-        limit = max(1, min(int(payload.get("limit", 1000)), 5000))
-    except (TypeError, ValueError):
-        raise HTTPException(400, "limit muss eine Zahl zwischen 1 und 5000 sein")
+    limit = int(payload.get("limit", 1000))
     auto_move = bool(payload.get("auto_move", False))
 
     if not _history_reanalyze_lock.acquire(blocking=False):

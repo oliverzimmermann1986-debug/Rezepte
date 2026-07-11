@@ -17,14 +17,11 @@ web:
   password: changeme
   bind_host: 127.0.0.1
   bind_port: 8000
-  # IPs/CIDRs des Reverse-Proxys, dessen Forwarded-Header vertraut werden dürfen.
-  # Niemals "*" eintragen. Loopback wird automatisch ergänzt.
-  trusted_proxies: []
   secret_key: change-this-to-random-string-32chars-min
 
 # Verzeichnisse - hier landen die einsortierten Videos.
 # Defaults zeigen auf Container-interne Pfade. Anpassen wenn du z.B.
-# einen Bind-Mount oder einen Bind-Mount nutzt.
+# einen Bind-Mount oder einen externen Cloud-Mount nutzt.
 paths:
   recipe_dir: /opt/scrapper/files/rezepte
   wedding_dir: /opt/scrapper/files/hochzeit
@@ -36,10 +33,6 @@ paths:
 
 # E-Mail Konten (2 separate Inboxes - kein Betreff-Check mehr nötig!)
 mail:
-  # Schutz vor RAM-/Speicherüberlastung durch sehr große oder viele Anhänge.
-  max_mail_mb: 50
-  max_attachment_mb: 20
-  max_attachments_per_mail: 10
   # Konto für Rezepte
   recipe:
     enabled: true
@@ -64,31 +57,22 @@ mail:
     # Wenn true: ALLE Hochzeits-Items landen IMMER in Pending (kein Auto-Sortieren)
     always_pending: true
 
-# AI Analyse - läuft nur noch über Ollama (lokal). Vision-Fallback wurde
-# zusammen mit der Frame-Extraktion entfernt. Wenn Ollama unsicher ist,
-# landet das Item in der Pending-Liste zur manuellen Zuordnung.
+# AI Analyse - läuft über OpenAI (gpt-4o-mini per default). Bei niedriger
+# Confidence landet das Item in der Pending-Liste zur manuellen Zuordnung.
+# Captions in anderen Sprachen werden automatisch nach Deutsch übersetzt
+# (siehe auto_translate).
 ai:
-  # Provider: 'ollama' (lokal, default) oder 'openai' (Cloud)
-  provider: ollama
-  ollama:
-    enabled: true
-    url: http://192.168.178.250:11434
-    # Schnelles Modell - läuft zuerst (z.B. qwen2.5:7b-instruct, llama3.1:8b)
-    model: qwen2.5:7b-instruct
-    # Größeres Modell als Fallback wenn fast unsicher (leer = kein Fallback)
-    fallback_model: gemma4:26b
-    timeout: 180
-  # OpenAI als Alternative zu Ollama (Cloud-LLM, kostet ~$0.0001 pro Item).
-  # Nur aktiv wenn provider: openai oben gesetzt ist.
   openai:
     api_key: ""               # sk-... aus platform.openai.com/api-keys
     model: gpt-4o-mini        # Empfehlung: gpt-4o-mini (günstig + ausreichend)
     base_url: ""              # leer = api.openai.com; gesetzt für Azure / OpenRouter / etc.
     timeout: 30
-  # Confidence-Schwellen
-  confidence_threshold: 0.75       # primary-Modell: darunter → fallback (nur Ollama)
-  fallback_threshold: 0.5          # fallback-Modell: darunter → Pending
+  # Confidence-Schwelle: darunter → Pending (manuell)
+  confidence_threshold: 0.75
   description_min_length: 20
+  # Auto-Übersetzung nicht-deutscher Captions ins Deutsche. Das Original
+  # bleibt als description_original.txt im Rezept-Ordner erhalten.
+  auto_translate: true
 
 # yt-dlp
 ytdlp:
@@ -98,9 +82,6 @@ ytdlp:
   # Datei muss vom scrapper-User lesbar sein (chmod 600 reicht wenn owner).
   # Leer lassen wenn nur öffentliche TikToks/Instagram-Reels gescrapet werden.
   cookies_file: ""
-  timeout_sec: 300
-  max_filesize_mb: 500
-  retries: 3
 
 # Scheduling (systemd Timer)
 schedule:
@@ -127,31 +108,17 @@ recipe_types:
   - Getränk
   - Beilage
 
-# Webhook-Notifications (optional, ersetzt frühere Telegram-Anbindung)
-# Jeder Eintrag bekommt JSON-POST bei den ausgewählten Events.
-# Funktioniert mit Discord-Webhooks, ntfy.sh, Slack, Teams, n8n, Home Assistant ...
-#
-# events: scraper_done | job_failed | pending_high
-#
-# webhooks:
-#   - name: "Discord-Alerts"
-#     url:  "https://discord.com/api/webhooks/XXX/YYY"
-#     enabled: true
-#     events: [scraper_done, job_failed]
-#   - name: "ntfy"
-#     url:  "https://ntfy.sh/scrapper-alerts"
-#     enabled: true
-#     events: [job_failed]
+
 webhooks: []
 
 # Externe HDD mit Shelly Plug ein-/ausschalten + automatisch mounten.
 # Workflow: Button im UI → Shelly an → 12s warten → mount.
 # Beim Ausschalten: umount → 2s flush → Shelly aus.
 #
-# Kein sudo für den Webdienst. Der Installer legt die root-eigene Allow-Datei
-# /etc/scrapper-hdd-mountpoint an. Bei abweichendem Pfad Installer einmal mit
-# SCRAPPER_HDD_MOUNT_POINT=/mnt/dein_pfad ausführen. Zusätzlich ist ein
-# fstab-Eintrag mit 'noauto,nofail' für den mount_point nötig.
+# Sudoers-Setup nötig (einmalig):
+#   cp systemd/sudoers-scrapper-hdd /etc/sudoers.d/scrapper-hdd
+#   chmod 0440 /etc/sudoers.d/scrapper-hdd
+# Plus fstab-Eintrag mit 'noauto,nofail' für den mount_point.
 external_hdd:
   enabled: false                            # auf true für Live-Modus
   shelly_url: http://192.168.1.50           # IP deiner Shelly Plug S
@@ -161,11 +128,11 @@ external_hdd:
   unmount_delay_sec: 2                      # FS-Flush nach umount
   http_timeout_sec: 8                       # Shelly-API-Timeout
 
-# ============================================================
-# Monitoring
-# /metrics akzeptiert eine Web-Session oder diesen Bearer-Token.
-# Der Installer ersetzt den Platzhalter bei Neuinstallationen zufällig.
-# ============================================================
-monitoring:
-  metrics_token: change-this-metrics-token
-
+# Integration mit externer Einkauf-App (z.B. einkaufen.mausbaeren.me).
+# Cart-Items werden bei Klick auf "An Einkauf-App senden" als
+# POST /items mit { raw_text: "200 g Pasta" } gepostet. Optional ruft
+# der Push danach noch POST /consolidate auf damit die Empfänger-Seite
+# Mengen zusammenführt.
+einkauf:
+  api_url: ""                               # z.B. https://einkaufen.mausbaeren.me — leer = Feature deaktiviert
+  auto_consolidate: true                    # nach Push /consolidate aufrufen?

@@ -4,91 +4,95 @@ Startet mit:  uvicorn app.main:app --host 127.0.0.1 --port 8000
 """
 from __future__ import annotations
 
-import html
 import logging
 import os
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Form, Request, status
+from fastapi import FastAPI, Form, Request, status
 from fastapi.exceptions import HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, check_credentials,
-                    create_session, migrate_security, require_auth, verify_session)
+from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, auth_disabled, check_credentials,
+                    create_session, migrate_security, migrate_users_to_db,
+                    verify_session)
 from .config_store import get_config
 from .db import get_db
-from .routes import (api_browse, api_config, api_events, api_hdd, api_history,
-                     api_jobs, api_metrics, api_pending, api_recipes, api_schedule,
-                     api_stats, api_test)
-from .security import (SameOriginMiddleware, SecurityHeadersMiddleware, client_ip,
-                       login_limiter)
+from .routes import (api_audit, api_browse, api_config, api_events, api_hdd, api_history,
+                     api_jobs, api_master, api_metrics, api_pending, api_recipes, api_schedule,
+                     api_share, api_shopping, api_stats, api_test, api_users, sharing)
+from .security import SecurityHeadersMiddleware, client_ip, login_limiter
 
 # -------- Logging --------
 log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
 log_dir.mkdir(parents=True, exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(log_dir / "web.log"),
-        logging.StreamHandler(),
-    ],
+
+# Strukturiertes Logging: rotation via RotatingFileHandler (10MB pro Datei,
+# 5 Generationen behalten = max 60MB Logs auf Disk). JSON für File-Output
+# damit Tools wie jq/grep -P darauf operieren können. Console bleibt menschen-
+# lesbar.
+import json
+from logging.handlers import RotatingFileHandler
+
+class JSONFormatter(logging.Formatter):
+    """JSON-Format für File-Output. Inkludiert exception-Traces strukturiert."""
+    def format(self, record):
+        payload = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        # Extra-Felder (z.B. logger.info("...", extra={"recipe_id": 42})) mitnehmen
+        for key, val in record.__dict__.items():
+            if key not in {"name","msg","args","levelname","levelno","pathname",
+                           "filename","module","exc_info","exc_text","stack_info",
+                           "lineno","funcName","created","msecs","relativeCreated",
+                           "thread","threadName","processName","process","getMessage"}:
+                try:
+                    json.dumps(val)
+                    payload[key] = val
+                except (TypeError, ValueError):
+                    payload[key] = str(val)
+        return json.dumps(payload, ensure_ascii=False)
+
+_file_handler = RotatingFileHandler(
+    log_dir / "web.log", maxBytes=10 * 1024 * 1024, backupCount=5,
+    encoding="utf-8"
 )
+_file_handler.setFormatter(JSONFormatter())
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(logging.Formatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+))
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 logger = logging.getLogger(__name__)
 
 # -------- Security-Migration (Erststart) --------
 # Hasht Klartext-Pwd, generiert Secret, blockt admin/changeme.
 migrate_security()
 
-# DB initialisieren + verwaiste Running-Jobs aufräumen. Separate systemd-
-# Separate Scraper-Prozesse können einen Web-Restart überleben; ihr File-Lock
-# schützen jeweils den neuesten passenden DB-Job vor einer Falschmarkierung.
+# DB initialisieren + Stale-Running-Jobs vom letzten Crash/Restart aufräumen
 _db = get_db()
-_protected_job_ids = set()
-try:
-    from .jobs.locks import is_locked
-
-    _running = _db.running_jobs()
-    if is_locked("scraper"):
-        _active = next((j for j in _running if j.get("kind") == "scraper"), None)
-        if _active:
-            _protected_job_ids.add(int(_active["id"]))
-except (OSError, ValueError):
-    logger.exception("Aktive Job-Locks konnten beim Startup nicht geprüft werden")
-
-_stale = _db.reset_stale_running(_protected_job_ids)
+_stale = _db.reset_stale_running()
 if _stale:
-    logger.warning(
-        "%s verwaiste Job(s) wurden auf 'error' gesetzt (Crash/Restart-Recovery)",
-        _stale,
-    )
+    logger.warning(f"{_stale} Job(s) waren als 'running' markiert - auf 'error' gesetzt (Crash/Restart-Recovery)")
+
+# User-Migration: config.web.{username, password} → users-Tabelle (initialer admin).
+# Idempotent — läuft nur wenn users-Tabelle leer ist.
+migrate_users_to_db()
 
 # DB-Hygiene: alte Jobs raus, uralte Pending-Items automatisch skippen.
 # Idempotent + günstig - läuft bei jedem Restart einmal.
 _jobs_purged = _db.cleanup_old_jobs(days=90)
 if _jobs_purged:
     logger.info(f"DB-Cleanup: {_jobs_purged} Job-Einträge älter 90 Tage gelöscht")
-# Vor dem Auto-Skip zugehörige Stash-Dateien sicher entfernen.
-_old_pending = _db.pending_older_than(days=30, status="pending")
-for _item in _old_pending:
-    _p = _item.get("video_path")
-    if not _p:
-        continue
-    try:
-        _resolved = Path(_p).resolve()
-        _temp_root = Path(get_config().get("paths", "temp_dir", default="/opt/scrapper/temp")).resolve()
-        _resolved.relative_to(_temp_root)
-        _resolved.unlink(missing_ok=True)
-    except (OSError, ValueError):
-        logger.warning("Alte Pending-Datei außerhalb temp_dir oder nicht löschbar: %s", _p)
 _pending_skipped = _db.auto_skip_old_pending(days=30)
 if _pending_skipped:
     logger.info(f"DB-Cleanup: {_pending_skipped} Pending-Items älter 30 Tage auf 'auto_skipped'")
-_pending_purged = _db.cleanup_old_pending(days=180)
-if _pending_purged:
-    logger.info(f"DB-Cleanup: {_pending_purged} erledigte Pending-Einträge älter 180 Tage gelöscht")
 
 def _sd_notify(state: str) -> None:
     """Sendet eine Statusnachricht an systemd, wenn unter Type=notify gestartet.
@@ -110,6 +114,50 @@ def _sd_notify(state: str) -> None:
 from contextlib import asynccontextmanager
 
 
+_trash_cleanup_thread_started = False
+
+
+def _start_trash_cleanup_thread():
+    """Spawnt einen Daemon-Thread der einmal pro Tag den Papierkorb auf
+    Items > 30 Tage prüft und sie endgültig löscht. Idempotent — wird
+    bei Re-Start des FastAPI-Lifespans nicht doppelt gestartet."""
+    global _trash_cleanup_thread_started
+    if _trash_cleanup_thread_started:
+        return
+    _trash_cleanup_thread_started = True
+    import threading, time as _t
+    def _loop():
+        # Erste Iteration nach 60s, dann alle 24h. So sieht der Job auch
+        # Items die durch laufende Tests/Sessions reingekommen sind ohne
+        # gleich beim Boot auf DB-Locks zu kollidieren.
+        _t.sleep(60)
+        while True:
+            try:
+                _purge_old_trash_items()
+            except Exception as e:
+                logger.exception(f"trash cleanup loop fail: {e}")
+            _t.sleep(24 * 3600)
+    threading.Thread(target=_loop, name="trash-cleanup", daemon=True).start()
+    logger.info("Trash-cleanup-thread started (24h interval, >30d purge)")
+
+
+def _purge_old_trash_items(days: int = 30):
+    """Endgültig löschen aller Trash-Items deren deleted_at > days Tage her ist."""
+    from .recipes.manage import safe_delete_recipe
+    items = _db.recipe_list_trash_expired(days=days)
+    if not items:
+        return
+    logger.info(f"trash-cleanup: {len(items)} items >{days}d found")
+    for it in items:
+        try:
+            # delete_files=True nur wenn die Files noch da sind (files_deleted=0).
+            # Falls files_deleted=1, nur DB-Eintrag noch.
+            delete_files = not it.get("files_deleted")
+            safe_delete_recipe(_db, it["id"], delete_files=delete_files, hard=True)
+        except Exception as e:
+            logger.warning(f"trash-purge #{it['id']} '{it.get('name')}' fail: {e}")
+
+
 @asynccontextmanager
 async def _lifespan(app):
     # READY=1 sobald der App-Startup durch ist (DB-Pings, Routes registriert).
@@ -117,36 +165,95 @@ async def _lifespan(app):
     # damit ist ein 'restart' ohne 502-Lücke am Reverse-Proxy möglich.
     _sd_notify("READY=1")
     logger.info("App ready (sd_notify READY=1 sent)")
+    # Trash-Cleanup-Background-Thread starten: einmal pro Tag prüft er ob
+    # Rezepte im Papierkorb älter als 30 Tage sind und purged sie endgültig.
+    _start_trash_cleanup_thread()
     try:
         yield
     finally:
         _sd_notify("STOPPING=1")
+        # Sauberes Shutdown: Worker-Thread stoppen damit keine FTS-Transaktion
+        # mitten im Schreiben abreißt (SQLite-Korruption-Risiko bei SIGKILL).
+        # Wir warten max 25s — systemd-Default TimeoutStopSec ist 90s, lässt
+        # also Puffer. Bei längerem worker-loop wird nach 25s zu SIGKILL eskaliert,
+        # aber WAL-Mode macht das Crash-safe.
+        try:
+            from .recipes.indexer import stop_extraction, is_extraction_running
+            stop_extraction()
+            import asyncio as _aio, time as _t
+            deadline = _t.time() + 25
+            while is_extraction_running() and _t.time() < deadline:
+                await _aio.sleep(0.5)
+            if is_extraction_running():
+                logger.warning("Worker nach 25s noch aktiv — wird gekillt")
+            else:
+                logger.info("Worker sauber beendet")
+
+            # PRAGMA optimize beim Shutdown — SQLite-Doc empfiehlt das vor
+            # längeren Shutdowns. Plus WAL-Checkpoint(TRUNCATE) damit die
+            # -wal-Datei nicht beim nächsten Start gross ist. Beide günstig
+            # (~ms) und ohne Risiko bei WAL-Mode.
+            try:
+                with _db.conn() as c:
+                    c.execute("PRAGMA optimize")
+                    c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                logger.info("DB: optimize + wal_checkpoint(TRUNCATE) ok")
+            except Exception as e:
+                logger.warning(f"DB-Cleanup beim Shutdown failed: {e}")
+        except Exception as e:
+            logger.warning(f"Worker-Shutdown failed: {e}")
 
 
 # -------- FastAPI --------
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).
 _enable_docs = os.getenv("SCRAPPER_ENABLE_DOCS", "0") == "1"
 app = FastAPI(
-    title="Rezeptliebe",
-    version="1.2.0",
+    title="Scrapper Manager",
+    version="1.0.0",
     docs_url="/api/docs" if _enable_docs else None,
     redoc_url=None,
     openapi_url="/api/openapi.json" if _enable_docs else None,
     lifespan=_lifespan,
 )
 
-app.add_middleware(SameOriginMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+
+# gzip-Compression für API-Responses + HTML. Spart ~70% Transfer-Bytes auf
+# JSON-Listen, ~50% auf HTML. Schwelle 500 Bytes — kleinere Responses bleiben
+# unkomprimiert (Overhead lohnt sich nicht). Bilder (JPEG/PNG) werden nicht
+# komprimiert weil sie schon komprimiert sind.
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=5)
 
 # Statisch (Frontend)
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+
+# Service-Worker + Manifest direkt aus root servieren mit korrekten Headers.
+# SW braucht 'Service-Worker-Allowed: /' damit der scope auf root sein darf
+# wenn die Datei aus /static/ kommt; einfacher: direkt aus root liefern.
+@app.get("/sw.js", include_in_schema=False)
+def serve_sw():
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        STATIC_DIR / "sw.js",
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/manifest.json", include_in_schema=False)
+def serve_manifest():
+    from fastapi.responses import FileResponse
+    return FileResponse(STATIC_DIR / "manifest.json",
+                        media_type="application/manifest+json")
+
+
 # API-Routen
 app.include_router(api_config.router)
 app.include_router(api_jobs.router)
 app.include_router(api_pending.router)
-app.include_router(api_recipes.router)
 app.include_router(api_history.router)
 app.include_router(api_test.router)
 app.include_router(api_browse.router)
@@ -155,11 +262,23 @@ app.include_router(api_metrics.router)
 app.include_router(api_stats.router)
 app.include_router(api_hdd.router)
 app.include_router(api_events.router)
+app.include_router(api_recipes.router)
+app.include_router(api_shopping.router)
+app.include_router(api_audit.router)
+app.include_router(api_master.router)
+app.include_router(api_users.router)
+app.include_router(api_share.router)
+app.include_router(api_share.info_router)
+# Sharing: Print-View (auth), Share-Token-API (auth), Public-Share (NO auth)
+app.include_router(sharing.print_router)
+app.include_router(sharing.share_api_router)
+app.include_router(sharing.public_router)
 
 
 # -------- Cookie-Helper --------
 def _set_session_cookie(resp, token: str, request: Request) -> None:
-    is_https = request.url.scheme == "https"
+    proto = request.headers.get("x-forwarded-proto", "").lower()
+    is_https = proto == "https" or request.url.scheme == "https"
     resp.set_cookie(
         SESSION_COOKIE,
         token,
@@ -175,19 +294,16 @@ def _set_session_cookie(resp, token: str, request: Request) -> None:
 LOGIN_HTML = """\
 <!DOCTYPE html>
 <html lang="de"><head>
-<meta charset="UTF-8"><title>Login · Rezeptliebe</title>
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#f7cf63">
-<meta name="color-scheme" content="light">
-<link rel="stylesheet" href="/static/rezeptliebe.css?v=2026-07-11-2">
+<meta charset="UTF-8"><title>Login · Rezepte</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/style.css">
 </head><body class="login-body">
-<form method="post" action="/login" class="login-card" aria-labelledby="login-title">
-  <div class="login-brand"><div class="login-brand-mark"><svg class="brand-chef-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M14.5 22.5a9 9 0 0 1 3.8-17.2A10.5 10.5 0 0 1 37 11.9a8 8 0 0 1-2.4 15.4V39a3 3 0 0 1-3 3H16.4a3 3 0 0 1-3-3V27.3a8 8 0 0 1 1.1-4.8Zm3.7 3.1V37h11.6V25.6l2-.7a3.4 3.4 0 0 0-1.1-6.6h-1.8l-.2-1.8a5.9 5.9 0 0 0-11.4-1.2l-.7 2-2.1-.3a4.4 4.4 0 0 0-1.2 8.7l2 .3v6h2.9v-6.4Zm0 13.5h11.6v-2.8H18.2v2.8Z"/></svg></div><div class="login-brand-copy"><strong>Rezeptliebe</strong><span>Meine Rezeptbibliothek</span></div></div>
-  <h1 id="login-title">Willkommen zurück</h1>
-  <p class="muted">Anmelden, um Rezepte zu suchen und neue Inhalte zu importieren.</p>
+<form method="post" action="/login" class="login-card">
+  <h1>Rezepte</h1>
+  <p class="muted">Bitte anmelden</p>
   {error}
   <input type="hidden" name="next" value="{next}">
-  <label>Benutzername<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+  <label>Benutzer<input name="username" autocomplete="username" required></label>
   <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
   <button type="submit">Anmelden</button>
 </form>
@@ -196,26 +312,17 @@ LOGIN_HTML = """\
 
 
 def _safe_next(value: str) -> str:
-    """Open-Redirect- und Header-Injection-Schutz: nur lokale Pfade."""
-    value = str(value or "")[:2048]
-    if any(ord(ch) < 32 for ch in value):
-        return "/"
-    # Backslashes verbieten: Browser normalisieren '\' zu '/' - aus '/\evil.com'
-    # würde sonst '//evil.com' (scheme-relative Redirect auf fremde Domain).
-    if "\\" in value:
-        return "/"
-    if not value.startswith("/") or value.startswith("//"):
+    """Open-Redirect-Schutz: nur lokale Pfade erlauben."""
+    if not value or not value.startswith("/") or value.startswith("//"):
         return "/"
     return value
 
 
-def _login_html(*, error: str = "", next_path: str = "/") -> str:
-    return LOGIN_HTML.format(error=error, next=html.escape(_safe_next(next_path), quote=True))
-
-
 @app.get("/login", response_class=HTMLResponse)
 def login_page(next: str = "/"):
-    return _login_html(next_path=next)
+    if auth_disabled():
+        return RedirectResponse(url="/", status_code=303)
+    return LOGIN_HTML.format(error="", next=_safe_next(next))
 
 
 @app.post("/login")
@@ -230,10 +337,10 @@ def login(
     if blocked:
         logger.warning(f"Login-Block für IP {ip}, noch {remaining}s")
         return HTMLResponse(
-            _login_html(
+            LOGIN_HTML.format(
                 error=f'<p class="error">⛔ Zu viele Fehlversuche. '
                       f'Erneut probieren in {remaining // 60 + 1} min.</p>',
-                next_path=next,
+                next=_safe_next(next),
             ),
             status_code=429,
         )
@@ -242,9 +349,9 @@ def login(
         login_limiter.record_fail(ip)
         logger.warning(f"Fehl-Login von {ip} (user={username!r})")
         return HTMLResponse(
-            _login_html(
+            LOGIN_HTML.format(
                 error='<p class="error">❌ Login fehlgeschlagen</p>',
-                next_path=next,
+                next=_safe_next(next),
             ),
             status_code=401,
         )
@@ -264,12 +371,31 @@ def logout():
 
 
 # -------- Home (geschützt) --------
+def _static_version() -> str:
+    """Cache-Buster für /static/app.js und /static/style.css.
+
+    Max-mtime von app.js UND style.css als Token. Vorher nur app.js —
+    reine CSS-Deploys änderten die URL nicht und Browser/SW lieferten
+    altes CSS aus dem Cache."""
+    try:
+        m = max(
+            int((STATIC_DIR / "app.js").stat().st_mtime),
+            int((STATIC_DIR / "style.css").stat().st_mtime),
+        )
+        return str(m)
+    except Exception:
+        return "0"
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     token = request.cookies.get(SESSION_COOKIE, "")
-    if not token or not verify_session(token):
+    if not auth_disabled() and (not token or not verify_session(token)):
         return RedirectResponse(url="/login", status_code=303)
-    return FileResponse(STATIC_DIR / "index.html")
+    # index.html mit {VERSION}-Token rendern — kein Jinja, simple String-replace
+    # reicht für genau einen Platzhalter.
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(html.replace("{VERSION}", _static_version()))
 
 
 # -------- Exception-Handler --------
@@ -289,12 +415,12 @@ def healthz():
         return {"ok": True}
     except Exception as e:
         logger.error(f"healthz failed: {e}")
-        return JSONResponse({"ok": False}, status_code=503)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
 
 
-@app.get("/healthz/deep", dependencies=[Depends(require_auth)])
+@app.get("/healthz/deep")
 def healthz_deep():
-    """Tiefer Check: DB + Ollama + IMAP + freier Speicher.
+    """Tiefer Check: DB + OpenAI + IMAP + Disk-Space.
     Status-Code immer 200, Details im Body. Wir wollen nicht dass eine
     kaputte IMAP-Config den ganzen Container als 'unhealthy' markiert."""
     import shutil
@@ -311,21 +437,16 @@ def healthz_deep():
     except Exception as e:
         checks["db"] = {"ok": False, "error": str(e)}
 
-    # Ollama
+    # OpenAI
     try:
-        from .core.analyzer import OllamaAnalyzer
-        ollama_cfg = cfg.get("ai", "ollama", default={}) or {}
-        if ollama_cfg.get("enabled", True):
-            o = OllamaAnalyzer(
-                ollama_cfg.get("url", ""),
-                ollama_cfg.get("model", ""),
-                timeout=5,
-            )
-            checks["ollama"] = {"ok": o.health(), "model": ollama_cfg.get("model")}
-        else:
-            checks["ollama"] = {"ok": True, "disabled": True}
+        from .core.analyzer import build_analyzer
+        ai_cfg = cfg.get("ai", default={}) or {}
+        analyzer = build_analyzer(ai_cfg)
+        # Health-Check mit kurzem Timeout damit /healthz nicht hängt
+        analyzer.timeout = 5
+        checks["openai"] = {"ok": analyzer.health(), "model": analyzer.model}
     except Exception as e:
-        checks["ollama"] = {"ok": False, "error": str(e)}
+        checks["openai"] = {"ok": False, "error": str(e)}
 
     # Disk-Space (recipe_dir + temp_dir)
     for key in ("recipe_dir", "wedding_dir", "temp_dir"):
@@ -348,7 +469,6 @@ def healthz_deep():
             checks[f"disk_{key}"] = {"ok": False, "path": p, "error": "path does not exist"}
         except Exception as e:
             checks[f"disk_{key}"] = {"ok": False, "path": p, "error": str(e)}
-
 
     overall = all(v.get("ok", False) for v in checks.values())
     return {"ok": overall, "checks": checks}

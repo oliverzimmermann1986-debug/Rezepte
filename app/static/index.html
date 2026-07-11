@@ -2,319 +2,2743 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <title>Rezeptliebe · Rezepte</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f7cf63">
-  <meta name="color-scheme" content="light">
+  <title>Rezepte</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0d12"><!-- wird in app.js dynamisch ans aktuelle Theme angepasst -->
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="Rezeptliebe">
-  <link rel="manifest" href="/static/manifest.webmanifest">
-  <link rel="stylesheet" href="/static/rezeptliebe.css?v=2026-07-11-2">
-  <script defer src="/static/app.js?v=2026-07-11-2"></script>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Rezepte">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="application-name" content="Rezepte">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/png" href="/static/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/style.css?v={VERSION}">
   <script defer src="/static/alpine.min.js"></script>
+  <script>
+    // Service Worker registrieren — non-blocking
+    if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js', { scope: '/' })
+          .then(reg => console.log('SW registered:', reg.scope))
+          .catch(err => console.warn('SW failed:', err));
+      });
+    }
+  </script>
 </head>
 <body>
-<div class="app" x-data="recipeApp()" x-init="init()"
-     x-effect="document.body.classList.toggle('modal-open', !!(recipeDetail || currentLog || editingItem || browser.show))"
-     @keydown.escape.window="closeTopLayer()">
 
-  <a class="skip-link" href="#main-content">Zum Inhalt springen</a>
+<!-- PWA Install-Banner: Android Chrome zeigt nativen Install-Prompt,
+     iOS Safari hat keine Programmatic-Install — User muss manuell via
+     Teilen-Button. Plus: im Standalone-Mode (= bereits installiert)
+     gar nicht zeigen. -->
+<!-- Pull-to-Refresh-Indicator. Wird vom JS-Touch-Handler manipuliert
+     (transform/opacity). Default unsichtbar. Mobile-only. -->
+<div id="ptr-indicator" class="ptr-indicator" aria-hidden="true">
+  <span class="ptr-arrow">↓</span>
+  <span class="ptr-text">Loslassen zum Neuladen</span>
+</div>
+<div class="app" x-data="scrapperApp()" x-init="init()" @keydown.escape.window="if (currentLog) currentLog = ''">
 
-  <header class="mobile-appbar" aria-label="Seitenkopf">
-    <div class="mobile-brand-mark" aria-hidden="true"><svg class="brand-chef-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M14.5 22.5a9 9 0 0 1 3.8-17.2A10.5 10.5 0 0 1 37 11.9a8 8 0 0 1-2.4 15.4V39a3 3 0 0 1-3 3H16.4a3 3 0 0 1-3-3V27.3a8 8 0 0 1 1.1-4.8Zm3.7 3.1V37h11.6V25.6l2-.7a3.4 3.4 0 0 0-1.1-6.6h-1.8l-.2-1.8a5.9 5.9 0 0 0-11.4-1.2l-.7 2-2.1-.3a4.4 4.4 0 0 0-1.2 8.7l2 .3v6h2.9v-6.4Zm0 13.5h11.6v-2.8H18.2v2.8Z"/></svg></div>
-    <div class="mobile-title-wrap">
-      <span class="mobile-product">Rezeptliebe</span>
-      <strong class="mobile-page-title" x-text="pageTitle()"></strong>
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+    <div class="logo">Rezepte</div>
+
+    <!-- Primäre Tabs (sichtbar auf Mobile + Desktop) -->
+    <div class="nav-item nav-primary" :class="page==='recipes' && 'active'" @click="navTo('recipes')" title="Rezepte">
+      <span class="nav-icon">🍳</span><span class="nav-label">Rezepte</span>
+      <span class="badge" x-show="recipes.extractionPending > 0" x-text="recipes.extractionPending" title="Zutaten werden gerade extrahiert"></span>
     </div>
-    <div class="mobile-runtime" aria-label="Systemstatus">
-      <span class="status-dot" :class="isOnline ? 'online' : 'offline'" :title="isOnline ? 'Online' : 'Offline'"></span>
-      <span class="status-dot busy" x-show="status.scraper || status.reanalyze" title="Import oder Analyse läuft"></span>
+    <div class="nav-item nav-primary" :class="page==='cart' && 'active'" @click="navTo('cart')" title="Einkaufskorb">
+      <span class="nav-icon">🛒</span><span class="nav-label">Cart</span>
+      <span class="badge" x-show="cart.items.length > 0" x-text="cart.items.length"></span>
     </div>
-  </header>
-
-  <aside class="sidebar" aria-label="Hauptnavigation">
-    <div class="brand-block">
-      <div class="brand-mark" aria-hidden="true"><svg class="brand-chef-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M14.5 22.5a9 9 0 0 1 3.8-17.2A10.5 10.5 0 0 1 37 11.9a8 8 0 0 1-2.4 15.4V39a3 3 0 0 1-3 3H16.4a3 3 0 0 1-3-3V27.3a8 8 0 0 1 1.1-4.8Zm3.7 3.1V37h11.6V25.6l2-.7a3.4 3.4 0 0 0-1.1-6.6h-1.8l-.2-1.8a5.9 5.9 0 0 0-11.4-1.2l-.7 2-2.1-.3a4.4 4.4 0 0 0-1.2 8.7l2 .3v6h2.9v-6.4Zm0 13.5h11.6v-2.8H18.2v2.8Z"/></svg></div>
-      <div>
-        <div class="logo">Rezeptliebe</div>
-        <div class="brand-subtitle">Meine Rezeptbibliothek</div>
-      </div>
+    <div class="nav-item nav-primary" :class="page==='pending' && 'active'" @click="navTo('pending')" title="Pending">
+      <span class="nav-icon">⏳</span><span class="nav-label">Pending</span>
+      <span class="badge" x-show="status.pending_count > 0" x-text="status.pending_count"></span>
+    </div>
+    <div class="nav-item nav-primary" :class="page==='audit' && 'active'" @click="navTo('audit')" title="Audit">
+      <span class="nav-icon">🔍</span><span class="nav-label">Audit</span>
+      <span class="badge badge-warn" x-show="audit.summary && (audit.summary.exact_groups + audit.summary.similar_clusters + audit.summary.bad_count + audit.summary.sync_error_count + audit.summary.ai_category_count + audit.summary.ai_name_count + (audit.summary.ai_folder_count||0)) > 0"
+            x-text="(audit.summary?.exact_groups || 0) + (audit.summary?.similar_clusters || 0) + (audit.summary?.bad_count || 0) + (audit.summary?.sync_error_count || 0) + (audit.summary?.ai_category_count || 0) + (audit.summary?.ai_name_count || 0) + (audit.summary?.ai_folder_count || 0)"></span>
     </div>
 
-    <nav class="nav-list" aria-label="Bereiche">
-      <button type="button" class="nav-item" :class="page==='recipes' && 'active'"
-              :aria-current="page==='recipes' ? 'page' : null" @click="navigate('recipes')">
-        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 3a4.5 4.5 0 0 0-1 8.89V21h8v-9.11A4.5 4.5 0 0 0 15.5 3a4.47 4.47 0 0 0-3 1.15A4.47 4.47 0 0 0 9.5 3ZM10 19v-6h5v6h-5Z"/></svg>
-        <span class="nav-label">Rezepte</span>
-      </button>
-      <button type="button" class="nav-item" :class="page==='import' && 'active'"
-              :aria-current="page==='import' ? 'page' : null" @click="navigate('import')">
-        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3h2v10.17l3.59-3.58L18 11l-6 6-6-6 1.41-1.41L11 13.17V3ZM5 19h14v2H5v-2Z"/></svg>
-        <span class="nav-label">Import</span>
-      </button>
-      <button type="button" class="nav-item" :class="page==='pending' && 'active'"
-              :aria-current="page==='pending' ? 'page' : null" @click="navigate('pending')">
-        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 10 10A10.01 10.01 0 0 0 12 2Zm1 11H7v-2h4V5h2v8Z"/></svg>
-        <span class="nav-label">Prüfen</span>
-        <span class="badge" x-cloak x-show="status.pending_count > 0" x-text="status.pending_count" aria-label="Offene Einträge"></span>
-      </button>
-      <button type="button" class="nav-item" :class="page==='history' && 'active'"
-              :aria-current="page==='history' ? 'page' : null" @click="navigate('history')">
-        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 1 1-8.47 6H2l3.5-3.5L9 9H6.62A7 7 0 1 0 13 5v4l5 3-1 1.73-6-3.6V3Z"/></svg>
-        <span class="nav-label">Historie</span>
-      </button>
-      <button type="button" class="nav-item" :class="page==='config' && 'active'"
-              :aria-current="page==='config' ? 'page' : null" @click="navigate('config')">
-        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m19.14 12.94.04-.94-.04-.94 2.03-1.58-1.92-3.32-2.39.96a7.1 7.1 0 0 0-1.63-.94L14.87 3h-3.74l-.36 3.18c-.58.24-1.12.55-1.63.94l-2.39-.96-1.92 3.32 2.03 1.58-.04.94.04.94-2.03 1.58 1.92 3.32 2.39-.96c.5.39 1.05.7 1.63.94l.36 3.18h3.74l.36-3.18a7.1 7.1 0 0 0 1.63-.94l2.39.96 1.92-3.32-2.03-1.58ZM13 15.5A3.5 3.5 0 1 1 13 8a3.5 3.5 0 0 1 0 7.5Z"/></svg>
-        <span class="nav-label">Einstellungen</span>
-      </button>
-    </nav>
+    <!-- Sekundäre Tabs (auf Mobile im Mehr-Drawer, auf Desktop in Sidebar) -->
+    <div class="nav-item nav-secondary" :class="page==='jobs' && 'active'" @click="navTo('jobs')" title="Jobs & Logs">
+      <span class="nav-icon">⚡</span><span class="nav-label">Jobs &amp; Logs</span>
+    </div>
+    <div class="nav-item nav-secondary" :class="page==='config' && 'active'" @click="navTo('config')" title="Einstellungen">
+      <span class="nav-icon">⚙️</span><span class="nav-label">Einstellungen</span>
+    </div>
+    <div class="nav-item nav-secondary" :class="page==='master' && 'active'" @click="navTo('master')" title="Stammdaten">
+      <span class="nav-icon">📚</span><span class="nav-label">Stammdaten</span>
+    </div>
+    <div class="nav-item nav-secondary" :class="page==='trash' && 'active'" @click="navTo('trash')" title="Papierkorb">
+      <span class="nav-icon">🗑</span>
+      <span class="nav-label">Papierkorb<span x-show="trash.totalCount > 0" class="nav-badge" x-text="trash.totalCount"></span></span>
+    </div>
+
+    <!-- Mehr-Button (nur Mobile sichtbar) -->
+    <div class="nav-item nav-more" :class="moreDrawerOpen && 'active'" @click="moreDrawerOpen = !moreDrawerOpen" title="Mehr">
+      <span class="nav-icon">⋯</span><span class="nav-label">Mehr</span>
+    </div>
 
     <div class="foot">
-      <div class="runtime-row"><span class="status-dot" :class="isOnline ? 'online' : 'offline'"></span><span x-text="isOnline ? 'Dienst erreichbar' : 'Browser offline'"></span></div>
-      <div class="runtime-row" x-cloak x-show="status.scraper || status.reanalyze"><span class="status-dot busy"></span><span x-text="status.scraper ? 'Import läuft' : 'Analyse läuft'"></span></div>
-      <div class="sidebar-meta"><span>v1.3.1</span><a class="logout-link" href="/logout">Abmelden</a></div>
+      <div x-show="status.scraper">
+        <span class="pill running">scraper</span> läuft
+      </div>
+      <div style="margin-top: 12px">
+        v1.0 · <a href="/logout">Logout</a> ·
+        <a href="#" @click.prevent="cycleTheme()"
+           :title="'Aktuelles Theme: ' + currentTheme().label + '. Klick = nächstes Theme.'">
+          <span x-text="currentTheme().icon + ' ' + currentTheme().label"></span>
+        </a>
+      </div>
     </div>
   </aside>
 
-  <main class="main" id="main-content" tabindex="-1">
-
-    <!-- REZEPTSUCHE -->
-    <section class="page-section recipes-page" x-cloak x-show="page==='recipes'">
-      <div class="recipe-hero">
-        <div class="recipe-hero-copy">
-          <span class="eyebrow">Meine Rezeptbibliothek</span>
-          <h1>Rezepte</h1>
-          <p><strong>Was möchtest du kochen?</strong> Durchsuche deine Sammlung nach Name, Gerichtstyp, Kategorie oder Inhalt.</p>
-        </div>
-        <div class="recipe-total" aria-live="polite">
-          <strong x-text="recipeTotal"></strong>
-          <span>Rezepte</span>
-        </div>
-      </div>
-
-      <div class="recipe-search-panel" role="search">
-        <div class="recipe-search-row">
-          <label class="recipe-search-main">
-            <span class="sr-only">Rezepte durchsuchen</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 19.6-5.2-5.2a7.5 7.5 0 1 0-1.4 1.4l5.2 5.2L21 19.6ZM5 10.5a5.5 5.5 0 1 1 11 0 5.5 5.5 0 0 1-11 0Z"/></svg>
-            <input type="search" x-model.debounce.300ms="recipeQuery" @input.debounce.300ms="loadRecipes(true)"
-                   @keydown.enter.prevent="loadRecipes(true)" placeholder="Suche nach Rezepten, Zutaten, Kategorien …" autocomplete="off" enterkeyhint="search">
-            <button type="button" class="search-clear" x-show="recipeQuery" @click="recipeQuery=''; loadRecipes(true)" aria-label="Suche leeren">×</button>
-          </label>
-          <button type="button" class="btn btn-primary recipe-search-submit" @click="loadRecipes(true)">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 19.6-5.2-5.2a7.5 7.5 0 1 0-1.4 1.4l5.2 5.2L21 19.6ZM5 10.5a5.5 5.5 0 1 1 11 0 5.5 5.5 0 0 1-11 0Z"/></svg>
-            <span>Suche</span>
+  <!-- Mehr-Drawer (nur Mobile, Bottom-Sheet) -->
+  <div class="more-drawer-backdrop" x-show="moreDrawerOpen"
+       @click="moreDrawerOpen = false" x-transition.opacity></div>
+  <div class="more-drawer" :class="moreDrawerOpen && 'open'">
+    <div class="more-drawer-grip"></div>
+    <div class="more-drawer-item" :class="page==='jobs' && 'active'"
+         @click="navTo('jobs'); moreDrawerOpen = false">
+      <span class="more-icon">⚡</span><span>Jobs &amp; Logs</span>
+    </div>
+    <div class="more-drawer-item" :class="page==='config' && 'active'"
+         @click="navTo('config'); moreDrawerOpen = false">
+      <span class="more-icon">⚙️</span><span>Einstellungen</span>
+    </div>
+    <div class="more-drawer-item" :class="page==='master' && 'active'"
+         @click="navTo('master'); moreDrawerOpen = false">
+      <span class="more-icon">📚</span><span>Stammdaten</span>
+    </div>
+    <div class="more-drawer-item" :class="page==='trash' && 'active'"
+         @click="navTo('trash'); moreDrawerOpen = false">
+      <span class="more-icon">🗑</span><span>Papierkorb<span x-show="trash.totalCount > 0" style="margin-left:6px; color:var(--accent);">(<span x-text="trash.totalCount"></span>)</span></span>
+    </div>
+    <!-- Theme-Picker im Drawer: alle Themes als Chips zum direkten Auswählen.
+         Aktuelles Theme ist visuell markiert. -->
+    <div style="padding: 10px 14px; border-top: 1px solid var(--border); margin-top: 6px;">
+      <div style="font-size: 11px; color: var(--fg-mute); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">Theme</div>
+      <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+        <template x-for="t in themes" :key="t.id">
+          <button class="btn btn-sm"
+                  :class="t.id === theme ? 'btn-primary' : ''"
+                  @click="setTheme(t.id); moreDrawerOpen = false"
+                  style="flex: 0 0 auto; padding: 4px 10px;">
+            <span x-text="t.icon + ' ' + t.label"></span>
           </button>
-          <button type="button" class="btn recipe-filter-toggle" @click="recipeFiltersOpen=!recipeFiltersOpen"
-                  :aria-expanded="recipeFiltersOpen.toString()" aria-controls="recipe-filter-options" aria-label="Filter ein- oder ausblenden">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10a3 3 0 1 0 0-2H4v2Zm16-2h-2v2h2V5ZM4 13h2a3 3 0 1 0 0-2H4v2Zm16-2h-8v2h8v-2ZM4 19h10a3 3 0 1 0 0-2H4v2Zm16-2h-2v2h2v-2Z"/></svg>
-          </button>
-        </div>
-        <div class="recipe-filter-row" id="recipe-filter-options" :class="recipeFiltersOpen && 'is-open'">
-          <label><span>Kategorie</span><select x-model="recipeCategory" @change="loadRecipes(true)"><option value="">Alle Kategorien</option><template x-for="value in recipeFilters.categories" :key="value"><option :value="value" x-text="value"></option></template></select></label>
-          <label><span>Typ</span><select x-model="recipeType" @change="loadRecipes(true)"><option value="">Alle Typen</option><template x-for="value in recipeFilters.types" :key="value"><option :value="value" x-text="value"></option></template></select></label>
-          <label><span>Sortierung</span><select x-model="recipeSort" @change="loadRecipes(true)"><option value="newest">Neueste zuerst</option><option value="name">Name A–Z</option><option value="type">Nach Typ</option><option value="oldest">Älteste zuerst</option></select></label>
-          <button type="button" class="btn btn-ghost filter-reset" @click="resetRecipeFilters()" :disabled="!recipeQuery && !recipeType && !recipeCategory">
-            <span aria-hidden="true">↻</span> Filter zurücksetzen
-          </button>
-        </div>
-      </div>
-
-      <div class="type-chips" aria-label="Schnellfilter">
-        <button type="button" :class="!recipeType && 'active'" @click="recipeType=''; loadRecipes(true)">Alle</button>
-        <template x-for="value in recipeFilters.types.slice(0, 8)" :key="value">
-          <button type="button" :class="recipeType===value && 'active'" @click="recipeType=value; loadRecipes(true)" x-text="value"></button>
         </template>
       </div>
+    </div>
+    <!-- Status + Logout (Desktop-Fußzeile ist mobil ausgeblendet — hier die Heimat) -->
+    <div style="padding: 10px 14px; border-top: 1px solid var(--border); margin-top: 6px; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+      <span class="muted" style="font-size: 13px;">
+        <span x-show="status.scraper"><span class="pill running">scraper</span> läuft</span>
+        <span x-show="!status.scraper">Scraper bereit</span>
+      </span>
+      <a href="/logout" class="btn btn-secondary btn-sm" style="min-height: 38px; display: inline-flex; align-items: center;">Logout</a>
+    </div>
+  </div>
 
-      <div class="recipe-section-heading">
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+
+    <!-- ========== DASHBOARD ========== -->
+    <!-- ========== PENDING ========== -->
+    <section x-show="page==='pending'">
+      <div class="page-head">
         <div>
-          <span class="eyebrow">Deine Sammlung</span>
-          <h2>Gefundene Rezepte</h2>
+          <h1>Pending</h1>
+          <div class="subtitle">Unklare Analysen manuell zuordnen oder per KI neu analysieren</div>
         </div>
-        <div class="result-meta">
-          <span x-show="!recipesLoading" x-text="recipeResultLabel()"></span>
-          <span x-show="recipesLoading">Rezepte werden geladen …</span>
-          <button class="btn btn-ghost" @click="loadRecipes(true)" :disabled="recipesLoading" aria-label="Rezepte neu laden">⟳</button>
+        <div class="flex">
+          <select class="btn" x-model="pendingSort" @change="loadPending()" style="font-family: inherit;">
+            <option value="newest">Neueste zuerst</option>
+            <option value="oldest">Älteste zuerst</option>
+            <option value="confidence_asc">Confidence ↑</option>
+            <option value="confidence_desc">Confidence ↓</option>
+          </select>
+          <button class="btn" @click="reanalyzeAll()" :disabled="reanalyzingAll || pending.length === 0">
+            <span x-show="!reanalyzingAll">🔄 Alle neu analysieren</span>
+            <span x-show="reanalyzingAll">… läuft</span>
+          </button>
+          <button class="btn" @click="loadPending()">⟳ Neu laden</button>
         </div>
       </div>
 
-      <div class="recipe-grid" x-show="recipes.length">
-        <template x-for="recipe in recipes" :key="recipe.id">
-          <article class="recipe-card" @click="openRecipe(recipe)" @keydown.enter.prevent="openRecipe(recipe)" tabindex="0">
-            <div class="recipe-card-media" :class="'media-' + recipe.media_kind">
-              <template x-if="recipe.media_kind === 'image' && recipe.media_url"><img :src="recipe.media_url" :alt="recipe.name" loading="lazy"></template>
-              <template x-if="recipe.media_kind !== 'image' || !recipe.media_url">
-                <div class="media-symbol" aria-hidden="true" x-text="mediaSymbol(recipe.media_kind)"></div>
+      <!-- Bulk-Action-Bar (nur sichtbar wenn Items markiert) -->
+      <div x-show="selectedPending.length > 0" x-transition class="bulk-bar">
+        <span><strong x-text="selectedPending.length"></strong> markiert</span>
+        <button class="btn btn-ghost" @click="selectedPending = []">Auswahl aufheben</button>
+        <button class="btn btn-ghost" @click="selectAllPending()">Alle auswählen</button>
+        <span style="flex:1"></span>
+        <button class="btn btn-danger" @click="bulkSkipPending()" :disabled="bulkBusy">
+          <span x-show="!bulkBusy">✗ <span x-text="selectedPending.length"></span> überspringen</span>
+          <span x-show="bulkBusy">… läuft</span>
+        </button>
+      </div>
+
+      <div class="empty" x-show="pending.length === 0">
+        Keine offenen Items. ✓
+      </div>
+
+      <div class="pending-grid">
+        <template x-for="item in pending" :key="item.url">
+          <div class="pending-item" :class="{ 'is-selected': selectedPending.includes(item.url) }">
+            <!-- Auswahl-Checkbox top-left, Alters-Badge top-right -->
+            <div class="pending-overlay">
+              <label class="select-check">
+                <input type="checkbox"
+                       :checked="selectedPending.includes(item.url)"
+                       @change="togglePendingSelection(item.url)">
+              </label>
+              <span class="age-badge" :class="ageBadgeClass(item.created_at)"
+                    x-text="formatAge(item.created_at)"></span>
+            </div>
+            <div class="preview">
+              <video :src="'/api/pending/video?url=' + encodeURIComponent(item.url)"
+                     preload="metadata" controls muted playsinline
+                     style="width:100%; height:100%; object-fit:cover; background:#000"
+                     @error="$el.style.display='none'; $el.nextElementSibling.style.display='flex'"></video>
+              <div class="placeholder" style="display:none">Video nicht verfügbar</div>
+              <span class="type-badge"
+                    :class="item.content_type"
+                    x-text="item.content_type === 'recipe' ? 'Rezept' : 'Hochzeit'"></span>
+            </div>
+            <div class="body">
+              <div class="ai-suggest">
+                <div><span class="key">KI-Vorschlag:</span></div>
+                <div><span class="key">Name:</span> <span class="val" x-text="(item.ai_suggestion && item.ai_suggestion.name) || '—'"></span></div>
+                <template x-if="item.content_type === 'recipe'">
+                  <div>
+                    <div><span class="key">Typ:</span> <span class="val" x-text="(item.ai_suggestion && item.ai_suggestion.type) || '—'"></span></div>
+                    <div><span class="key">Kategorie:</span> <span class="val" x-text="(item.ai_suggestion && item.ai_suggestion.category) || '—'"></span></div>
+                  </div>
+                </template>
+                <template x-if="item.content_type === 'wedding'">
+                  <div>
+                    <div><span class="key">Kategorie:</span> <span class="val" x-text="(item.ai_suggestion && item.ai_suggestion.category) || '—'"></span></div>
+                  </div>
+                </template>
+                <div><span class="key">Confidence:</span> <span class="val" x-text="formatConfidence((item.ai_suggestion && item.ai_suggestion.confidence))"></span></div>
+              </div>
+
+              <details>
+                <summary style="cursor:pointer; font-size:12px; color: var(--fg-dim)">Beschreibung anzeigen</summary>
+                <pre style="white-space:pre-wrap; font-family:var(--mono); font-size:11px; max-height:140px; overflow-y:auto; margin-top:8px; color:var(--fg-dim)" x-text="item.description || '(keine)'"></pre>
+              </details>
+
+              <div class="url-row">
+                <a :href="item.url" target="_blank" x-text="item.url"></a>
+              </div>
+
+              <!-- Inline Resolve-Form -->
+              <div class="field" style="margin: 0">
+                <label>Name</label>
+                <input x-model="item._name" :placeholder="(item.ai_suggestion && item.ai_suggestion.name)">
+              </div>
+              <template x-if="item.content_type === 'recipe'">
+                <div class="row" style="gap:10px">
+                  <div class="field" style="margin:0">
+                    <label>Typ</label>
+                    <select x-model="item._type">
+                      <option value="">— wählen —</option>
+                      <template x-for="t in recipeTypes"><option :value="t" x-text="t" :selected="t===(item.ai_suggestion && item.ai_suggestion.type)"></option></template>
+                    </select>
+                  </div>
+                  <div class="field" style="margin:0">
+                    <label>Kategorie</label>
+                    <input x-model="item._category" :placeholder="(item.ai_suggestion && item.ai_suggestion.category) || 'Pasta'">
+                  </div>
+                </div>
               </template>
-              <span class="media-label" x-text="mediaLabel(recipe.media_kind)"></span>
+              <template x-if="item.content_type === 'wedding'">
+                <div class="field" style="margin:0">
+                  <label>Kategorie</label>
+                  <select x-model="item._category">
+                    <option value="">— wählen —</option>
+                    <template x-for="c in weddingCategories"><option :value="c" x-text="c" :selected="c===(item.ai_suggestion && item.ai_suggestion.category)"></option></template>
+                  </select>
+                </div>
+              </template>
+
+              <div class="actions">
+                <button class="btn btn-primary" @click="resolveItem(item, 'save')">✓ Speichern</button>
+                <button class="btn" @click="reanalyzeOne(item)" :disabled="reanalyzing[item.url]" title="Mit aktueller KI-Cascade nochmal analysieren">
+                  <span x-show="!reanalyzing[item.url]">🔄 KI</span>
+                  <span x-show="reanalyzing[item.url]">…</span>
+                </button>
+                <button class="btn btn-danger" @click="resolveItem(item, 'skip')">✗ Skip</button>
+              </div>
             </div>
-            <div class="recipe-card-body">
-              <div class="recipe-tags"><span x-text="recipe.type"></span><span x-show="recipe.category" x-text="recipe.category"></span></div>
-              <h2 x-text="recipe.name"></h2>
-              <p x-text="recipe.description || 'Keine Beschreibung hinterlegt.'"></p>
-              <div class="recipe-card-footer"><span x-text="formatDate(recipe.processed_at)"></span><span class="open-cue">Öffnen →</span></div>
-            </div>
-          </article>
+          </div>
         </template>
       </div>
 
-      <div class="empty-state" x-show="!recipesLoading && recipes.length===0">
-        <div class="empty-icon">⌕</div>
-        <h2>Kein Rezept gefunden</h2>
-        <p>Versuche einen anderen Begriff oder entferne einzelne Filter.</p>
-        <button class="btn btn-primary" @click="resetRecipeFilters()">Alle Rezepte anzeigen</button>
-      </div>
-
-      <div class="load-more" x-show="recipes.length < recipeTotal">
-        <button class="btn" @click="loadMoreRecipes()" :disabled="recipesLoading"><span x-show="!recipesLoading">Weitere Rezepte laden</span><span x-show="recipesLoading">Lädt …</span></button>
-      </div>
-    </section>
-
-    <!-- IMPORT & BETRIEB -->
-    <section class="page-section" x-cloak x-show="page==='import'">
-      <div class="page-head"><div><h1>Import</h1><div class="subtitle">Neue Rezept- und Hochzeitsinhalte aus den eingerichteten Postfächern einlesen</div></div><button class="btn" @click="loadImportPage()">⟳ Aktualisieren</button></div>
-
-      <div class="stats-grid">
-        <div class="stat accent"><div class="label">Rezepte im Katalog</div><div class="value" x-text="recipeTotal"></div><div class="hint">direkt durchsuchbar</div></div>
-        <div class="stat pending"><div class="label">Offen zur Prüfung</div><div class="value" x-text="status.pending_count || 0"></div><div class="hint">manuelle Zuordnung</div></div>
-        <div class="stat ok"><div class="label">Letzter Import</div><div class="value compact-value" x-text="lastScraper ? statusText(lastScraper.status) : '—'"></div><div class="hint" x-text="lastScraper ? formatDateTime(lastScraper.started_at) : 'noch kein Lauf'"></div></div>
-      </div>
-
-      <div class="feature-grid">
-        <div class="card import-primary-card">
-          <div class="card-head"><h3>Inhalte einlesen</h3><span class="pill running" x-show="status.scraper">läuft</span></div>
-          <p class="muted">Ruft die Postfächer ab, lädt TikTok- und Instagram-Inhalte, analysiert sie und legt sichere Treffer direkt im Katalog ab.</p>
-          <div class="button-row">
-            <button class="btn btn-primary" @click="runScraper()" :disabled="status.scraper"><span x-show="!status.scraper">▶ Import starten</span><span x-show="status.scraper">… Import läuft</span></button>
-            <button class="btn btn-danger" x-show="status.scraper" @click="cancelScraper()">Abbrechen</button>
-            <button class="btn" @click="navigate('pending')">Offene prüfen <span x-text="status.pending_count || 0"></span></button>
+      <!-- ========== Fehlgeschlagene Downloads ========== -->
+      <div class="card" style="margin-top: 24px;">
+        <div class="card-head">
+          <h3>
+            Wiederholbare Fehler
+            <span class="muted" style="font-weight: normal; font-size: 12px;"
+                  x-show="failedDownloads.length > 0"
+                  x-text="'· ' + failedDownloads.length + ' URLs'"></span>
+          </h3>
+          <div class="flex">
+            <button class="btn" @click="loadFailedDownloads()">⟳</button>
+            <button class="btn btn-danger" @click="clearAllFailed()"
+                    x-show="failedDownloads.length > 0">
+              ↻ Alle zurücksetzen
+            </button>
           </div>
         </div>
-        <div class="card">
-          <div class="card-head"><h3>Zeitplan</h3></div>
-          <div class="schedule-summary" x-show="schedule.scraper"><strong x-text="humanSchedule(schedule.scraper && schedule.scraper.oncalendar)"></strong><span x-text="schedule.scraper && schedule.scraper.next_run ? schedule.scraper.next_run : 'Nächster Lauf wird von systemd bestimmt'"></span></div>
-          <button class="btn" @click="navigate('config'); setTimeout(() => scrollToConfig('schedule'), 100)">Zeitplan bearbeiten</button>
+        <p class="muted" style="font-size: 12px; margin: 0 0 12px;">
+          URLs deren Download mehrfach gescheitert ist (yt-dlp Fehler nach 3 Versuchen).
+          Beim Zurücksetzen werden sie beim nächsten Mail-Sync nochmal versucht -
+          aber nur wenn sie noch in einer Email vorhanden sind.
+        </p>
+        <div x-show="failedDownloads.length === 0" class="muted" style="text-align:center; padding: 12px;">
+          Keine fehlgeschlagenen Downloads.
+        </div>
+        <div x-show="failedDownloads.length > 0" class="table-wrap" style="overflow-x: auto;">
+          <table class="data-table" style="width:100%; font-size: 12px;">
+            <thead>
+              <tr>
+                <th style="text-align:left;">URL</th>
+                <th style="text-align:right;">Versuche</th>
+                <th style="text-align:right;">Letzter Fehler</th>
+                <th style="text-align:right;">Letzter Versuch</th>
+                <th style="text-align:right;">Aktion</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="f in failedDownloads" :key="f.url">
+                <tr>
+                  <td class="mono" style="font-size: 11px; word-break: break-all;" x-text="f.url"></td>
+                  <td style="text-align:right;" class="mono" x-text="f.attempts"></td>
+                  <td class="muted" style="font-size: 11px; max-width: 280px; word-break: break-word;" x-text="(f.last_error || '—').slice(0, 100)"></td>
+                  <td style="text-align:right;" class="mono muted" x-text="formatTs(f.last_try)"></td>
+                  <td style="text-align:right;">
+                    <button class="btn" @click="retryFailed(f.url)" :disabled="retryingUrl === f.url">
+                      <span x-show="retryingUrl !== f.url">↻ Reset</span>
+                      <span x-show="retryingUrl === f.url">…</span>
+                    </button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== HISTORY ========== -->
+    <!-- ========== JOBS ========== -->
+    <section x-show="page==='jobs'">
+      <div class="page-head">
+        <div>
+          <h1>Jobs &amp; Logs</h1>
+          <div class="subtitle">Lauf-Historie und Live-Logs</div>
+        </div>
+        <div class="flex">
+          <button class="btn btn-ghost" @click="cleanupFailedJobs()"
+                  x-show="jobs.some(j => j.status === 'error')"
+                  title="Löscht alle Jobs mit Status=error aus der Liste. Reine UI-Aufräumung - nichts in History/Pending wird geändert.">
+            🗑️ Failed-Jobs löschen
+          </button>
+          <button class="btn" @click="loadJobs()">⟳ Neu laden</button>
         </div>
       </div>
 
-      <div class="card import-progress" x-show="scraperProgress && scraperProgress.running">
-        <div class="card-head"><h3>Aktueller Import</h3><span class="mono" x-text="scraperProgress ? formatDuration(scraperProgress.elapsed_sec) : '—'"></span></div>
-        <div class="progress-bar"><div class="progress-fill indeterminate"></div></div>
-        <p class="muted" x-text="scraperProgress && scraperProgress.current ? scraperProgress.current : 'Postfächer und neue Links werden geprüft …'"></p>
+      <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 18px;">
+        <table class="table">
+          <thead><tr>
+            <th>Start</th><th>Typ</th><th>Status</th><th>Dauer</th><th>Summary</th><th></th>
+          </tr></thead>
+          <tbody>
+            <template x-for="j in jobs" :key="j.id">
+              <tr>
+                <td x-text="formatTs(j.started_at)"></td>
+                <td><span class="pill" :class="j.kind === 'scraper' ? 'warn' : 'running'" x-text="j.kind"></span></td>
+                <td><span class="pill" :class="statusClass(j.status)" x-text="j.status"></span></td>
+                <td x-text="j.ended_at ? Math.round(j.ended_at - j.started_at) + 's' : '—'"></td>
+                <td x-text="summarize(j)"></td>
+                <td>
+                  <button class="btn btn-ghost" @click="loadJobLog(j.id)">Log</button>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="jobs.length === 0">
+              <td colspan="6" class="empty">noch keine Jobs</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
+      <!-- Log-Viewer als Modal-Popup -->
+      <div x-cloak x-show="currentLog" class="modal-backdrop" @click.self="currentLog = ''">
+        <div class="modal modal-wide modal-log" @click.stop>
+          <div class="modal-head">
+            <h3>Log <span class="mono muted" x-text="'#' + currentLogJob"></span></h3>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button class="btn btn-ghost" @click="loadJobLog(currentLogJob)" title="Neu laden">↻</button>
+              <button class="btn btn-ghost" @click="copyLog()" title="In Zwischenablage kopieren">⎘ Kopieren</button>
+              <button class="btn btn-ghost" @click="currentLog = ''">✗ Schließen</button>
+            </div>
+          </div>
+          <div class="modal-body" style="padding: 0;">
+            <pre class="log-view" x-text="currentLog" style="margin:0; max-height:70vh; overflow:auto; padding:14px;"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== CONFIG ========== -->
+    <section x-show="page==='config'">
+      <div class="page-head">
+        <div>
+          <h1>Einstellungen</h1>
+          <div class="subtitle">Wird in <span class="mono">data/config.yaml</span> persistiert</div>
+        </div>
+        <button class="btn btn-primary" @click="saveConfig()">💾 Speichern</button>
+      </div>
+
+      <template x-if="!config.web">
+        <div class="empty">lädt…</div>
+      </template>
+
+      <template x-if="config.web">
+        <div>
+          <!-- Web -->
+          <div class="config-section">
+            <div class="head">Web-Interface</div>
+            <div class="body">
+              <div class="row">
+                <div class="field"><label>Benutzer</label><input x-model="config.web.username"></div>
+                <div class="field"><label>Passwort</label><input type="password" x-model="config.web.password"><div class="hint">leer lassen → unverändert</div></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Host</label><input x-model="config.web.bind_host"></div>
+                <div class="field"><label>Port</label><input type="number" x-model.number="config.web.bind_port"></div>
+              </div>
+              <div class="field"><label>Session Secret</label><input x-model="config.web.secret_key"><div class="hint">mind. 32 Zeichen, zufällig</div></div>
+            </div>
+          </div>
+
+
+          <!-- ════ Benutzer-Verwaltung ════ -->
+          <div class="config-section">
+            <div class="head">
+              <span style="flex: 1;">👥 Benutzer</span>
+              <button class="btn" @click="loadUsers()" :disabled="users.loading">
+                <span x-show="!users.loading">⟳ Neu laden</span>
+                <span x-show="users.loading">…</span>
+              </button>
+              <button class="btn btn-primary" @click="users.showAdd = true">+ Neuer Benutzer</button>
+            </div>
+            <div class="body">
+              <div class="muted" style="margin-bottom: 12px; font-size: 13px;">
+                Multi-User-Login. Mindestens 1 aktiver Admin muss bleiben (Lockout-Schutz).
+                Selbst-Löschen blockiert.
+              </div>
+
+              <table class="master-table" x-show="users.list.length > 0">
+                <thead>
+                  <tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>Letzter Login</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <template x-for="u in users.list" :key="u.id">
+                    <tr :class="u.disabled && 'unused'">
+                      <td>
+                        <strong x-text="u.username"></strong>
+                      </td>
+                      <td>
+                        <select :value="u.role" @change="setUserRole(u, $event.target.value)"
+                                class="master-search" style="width: auto; padding: 4px 8px;">
+                          <option value="user">User</option>
+                          <option value="admin">Admin</option>
+                        </select>
+                      </td>
+                      <td>
+                        <label style="font-size:12px;">
+                          <input type="checkbox" :checked="!u.disabled"
+                                 @change="setUserDisabled(u, !$event.target.checked)">
+                          aktiv
+                        </label>
+                      </td>
+                      <td class="muted" style="font-size: 12px;"
+                          x-text="u.last_login_at ? formatTs(u.last_login_at) : '—'"></td>
+                      <td class="actions">
+                        <button class="btn btn-sm" @click="changeUserPassword(u)" title="Passwort ändern">🔑</button>
+                        <button class="btn btn-sm btn-danger" @click="deleteUser(u)" title="Löschen">🗑</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+
+              <div x-show="users.list.length === 0 && !users.loading" class="empty-state" style="margin: 12px 0;">
+                — keine Benutzer in DB — der config-Login funktioniert weiterhin als Fallback.
+              </div>
+
+              <!-- Add-User-Inline-Form -->
+              <div x-show="users.showAdd" class="card" style="margin-top: 14px;">
+                <h4 style="margin-top:0;">Neuen Benutzer anlegen</h4>
+                <div class="row">
+                  <div class="field">
+                    <label>Username</label>
+                    <input x-model="users.addForm.username" placeholder="3-32 Zeichen, a-z 0-9 _ . -">
+                  </div>
+                  <div class="field">
+                    <label>Passwort</label>
+                    <input type="password" x-model="users.addForm.password" placeholder="≥ 8 Zeichen">
+                  </div>
+                  <div class="field" style="max-width: 140px;">
+                    <label>Rolle</label>
+                    <select x-model="users.addForm.role">
+                      <option value="user">User</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </div>
+                </div>
+                <div style="display:flex; gap:8px; margin-top: 10px; justify-content: flex-end;">
+                  <button class="btn btn-secondary" @click="users.showAdd = false">Abbrechen</button>
+                  <button class="btn btn-primary" @click="createUser()" :disabled="users.creating">
+                    <span x-show="!users.creating">Anlegen</span>
+                    <span x-show="users.creating">…</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+
+          <!-- Schedule (Startzeit-Planung) -->
+          <div class="config-section">
+            <div class="head">
+              <span style="flex: 1;">Zeitplan / Schedule</span>
+              <button class="btn" @click="previewSchedule()" :disabled="testing.schedule_preview">
+                <span x-show="!testing.schedule_preview">⌬ Vorschau</span>
+                <span x-show="testing.schedule_preview">… berechnet</span>
+              </button>
+            </div>
+            <div class="body">
+              <!-- Job-Karten -->
+              <div class="row" style="margin-bottom: 18px;">
+                <div class="job-card">
+                  <div class="job-card-head">
+                    <span class="job-icon">🤖</span>
+                    <strong>Scraper</strong>
+                    <span class="muted" style="margin-left: auto; font-size: 11px;">E-Mails abrufen + KI</span>
+                  </div>
+                  <div class="job-stat-row">
+                    <span class="muted">Letzter Lauf</span>
+                    <span class="mono" x-text="schedule.scraper && schedule.scraper.last_run ? formatTs(schedule.scraper.last_run) : 'noch nicht gelaufen'"></span>
+                  </div>
+                  <div class="job-stat-row" x-show="schedule.scraper && schedule.scraper.last_summary">
+                    <span class="muted">Ergebnis</span>
+                    <span class="mono" x-text="schedule.scraper && schedule.scraper.last_summary ? ((schedule.scraper.last_summary.auto || 0) + ' auto / ' + (schedule.scraper.last_summary.pending || 0) + ' pending / ' + (schedule.scraper.last_summary.errors || 0) + ' err · ' + (schedule.scraper.last_summary.duration || 0) + 's') : '—'"></span>
+                  </div>
+                  <div class="job-stat-row">
+                    <span class="muted">Nächster Lauf</span>
+                    <span class="mono" style="color: var(--accent)" x-text="(schedule.scraper && schedule.scraper.next_run) || '—'"></span>
+                  </div>
+                  <div style="margin-top: 14px;">
+                    <div class="muted" style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;">Schnellauswahl</div>
+                    <div class="preset-chips">
+                      <template x-for="preset in SCHEDULE_PRESETS_SCRAPER" :key="preset.value">
+                        <button type="button" class="chip" :class="scheduleEdit.scraper === preset.value && 'active'"
+                                @click="scheduleEdit.scraper = preset.value" x-text="preset.label"></button>
+                      </template>
+                    </div>
+                    <div class="field" style="margin: 12px 0 0;">
+                      <label style="display:flex; justify-content:space-between; align-items:baseline;">
+                        <span>Cron-Ausdruck</span>
+                        <span class="muted" style="font-size: 10px;" x-text="humanCron(scheduleEdit.scraper)"></span>
+                      </label>
+                      <input class="mono" x-model="scheduleEdit.scraper" placeholder="*:0/30">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Backup-Schedule-Card entfernt — rclone im separaten Container. -->
+              </div>
+
+              <div class="hint" style="margin-bottom: 14px;">
+                Wähle einen der Presets oder schreib einen eigenen systemd-OnCalendar-Ausdruck.
+                Mit <strong>⌬ Vorschau</strong> rechnest du die nächsten 5 Termine durch.
+              </div>
+
+              <div x-show="schedulePreview" class="test-result ok">
+                <strong>Nächste Termine laut Vorschau:</strong>
+                <template x-for="(info, kind) in (schedulePreview || {})" :key="kind">
+                  <div style="margin-top: 8px;">
+                    <strong x-text="kind"></strong>:
+                    <span x-show="info.ok" class="muted" style="font-size: 11px;">
+                      <template x-for="t in info.next_runs" :key="t">
+                        <div style="margin-left: 12px;" x-text="'· ' + t"></div>
+                      </template>
+                    </span>
+                    <span x-show="!info.ok" style="color: var(--err)" x-text="'✗ ' + info.error"></span>
+                  </div>
+                </template>
+              </div>
+
+              <div style="margin-top: 14px; text-align: right;">
+                <button class="btn btn-primary" @click="saveSchedule()" :disabled="testing.schedule_save">
+                  <span x-show="!testing.schedule_save">💾 Schedule speichern + Timer neu laden</span>
+                  <span x-show="testing.schedule_save">… speichert</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <!-- Mail Recipe -->
+          <div class="config-section">
+            <div class="head">
+              <span style="flex: 1;">E-Mail · Rezepte (alle Links → Rezept-Ordner)</span>
+              <button class="btn" @click="testMail('recipe')" :disabled="testing.mail_recipe">
+                <span x-show="!testing.mail_recipe">⌬ Verbindung testen</span>
+                <span x-show="testing.mail_recipe">… testet</span>
+              </button>
+            </div>
+            <div class="body">
+              <div x-show="testResults.mail_recipe" class="test-result" :class="(testResults.mail_recipe && testResults.mail_recipe.ok) ? 'ok' : 'err'">
+                <span x-text="(testResults.mail_recipe && (testResults.mail_recipe.message || testResults.mail_recipe.error))"></span>
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
+                <input type="checkbox" x-model="config.mail.recipe.enabled" id="mr-en">
+                <label for="mr-en">Aktiv</label>
+              </div>
+              <div class="row">
+                <div class="field"><label>IMAP Host</label><input x-model="config.mail.recipe.imap_host"></div>
+                <div class="field"><label>Port</label><input type="number" x-model.number="config.mail.recipe.imap_port"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Benutzer / E-Mail</label><input x-model="config.mail.recipe.username"></div>
+                <div class="field"><label>Passwort / App-Pass</label><input type="password" x-model="config.mail.recipe.password"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Folder</label><input x-model="config.mail.recipe.folder"></div>
+                <div class="field"><label>Max Mails</label><input type="number" x-model.number="config.mail.recipe.max_mails"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Mail Wedding -->
+          <div class="config-section">
+            <div class="head">
+              <span style="flex: 1;">E-Mail · Hochzeit (alle Links → Hochzeit-Ordner)</span>
+              <button class="btn" @click="testMail('wedding')" :disabled="testing.mail_wedding">
+                <span x-show="!testing.mail_wedding">⌬ Verbindung testen</span>
+                <span x-show="testing.mail_wedding">… testet</span>
+              </button>
+            </div>
+            <div class="body">
+              <div x-show="testResults.mail_wedding" class="test-result" :class="(testResults.mail_wedding && testResults.mail_wedding.ok) ? 'ok' : 'err'">
+                <span x-text="(testResults.mail_wedding && (testResults.mail_wedding.message || testResults.mail_wedding.error))"></span>
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
+                <input type="checkbox" x-model="config.mail.wedding.enabled" id="mw-en">
+                <label for="mw-en">Aktiv</label>
+              </div>
+              <div class="row">
+                <div class="field"><label>IMAP Host</label><input x-model="config.mail.wedding.imap_host"></div>
+                <div class="field"><label>Port</label><input type="number" x-model.number="config.mail.wedding.imap_port"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Benutzer / E-Mail</label><input x-model="config.mail.wedding.username"></div>
+                <div class="field"><label>Passwort / App-Pass</label><input type="password" x-model="config.mail.wedding.password"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>Folder</label><input x-model="config.mail.wedding.folder"></div>
+                <div class="field"><label>Default-Kategorie</label><input x-model="config.mail.wedding.default_category"></div>
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 6px;">
+                <input type="checkbox" x-model="config.mail.wedding.always_pending" id="wd-pending">
+                <label for="wd-pending" style="font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--fg);">
+                  Hochzeit-Items <strong>immer</strong> in Pending – Name/Kategorie manuell vergeben
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pfade -->
+          <div class="config-section">
+            <div class="head">
+              <span style="flex: 1;">Verzeichnisse</span>
+              <button class="btn" @click="testPaths()" :disabled="testing.paths">
+                <span x-show="!testing.paths">⌬ Pfade prüfen</span>
+                <span x-show="testing.paths">… prüft</span>
+              </button>
+            </div>
+            <div class="body">
+              <div x-show="testResults.paths" class="test-result" :class="(testResults.paths && testResults.paths.ok) ? 'ok' : 'err'">
+                <template x-for="entry in pathsTestEntries()" :key="entry.key">
+                  <div>
+                    <span x-text="entry.key + \': \' + entry.info.path"></span>
+                    <span x-show="entry.info.ok" style="color: var(--ok)">  ✓ ok</span>
+                    <span x-show="!entry.info.exists" style="color: var(--err)">  ✗ existiert nicht</span>
+                    <span x-show="entry.info.exists && !entry.info.writable" style="color: var(--warn)">  ⚠ nicht beschreibbar</span>
+                  </div>
+                </template>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Rezepte</label>
+                  <div class="input-with-btn">
+                    <input x-model="config.paths.recipe_dir">
+                    <button type="button" class="btn" @click="openLocalBrowser(config.paths.recipe_dir, (p) => config.paths.recipe_dir = p)">📂</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Hochzeit</label>
+                  <div class="input-with-btn">
+                    <input x-model="config.paths.wedding_dir">
+                    <button type="button" class="btn" @click="openLocalBrowser(config.paths.wedding_dir, (p) => config.paths.wedding_dir = p)">📂</button>
+                  </div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Temp</label>
+                  <div class="input-with-btn">
+                    <input x-model="config.paths.temp_dir">
+                    <button type="button" class="btn" @click="openLocalBrowser(config.paths.temp_dir, (p) => config.paths.temp_dir = p)">📂</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Logs</label>
+                  <div class="input-with-btn">
+                    <input x-model="config.paths.logs_dir">
+                    <button type="button" class="btn" @click="openLocalBrowser(config.paths.logs_dir, (p) => config.paths.logs_dir = p)">📂</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- AI · OpenAI (einziger Provider seit Ollama-Removal) -->
+          <div class="config-section">
+            <div class="head">
+              <span style="flex: 1;">KI · OpenAI API</span>
+              <button class="btn" @click="testOpenAI()" :disabled="testing.openai">
+                <span x-show="!testing.openai">⌬ API-Key testen</span>
+                <span x-show="testing.openai">… testet</span>
+              </button>
+            </div>
+            <div class="body">
+              <div x-show="testResults.openai" class="test-result" :class="(testResults.openai && testResults.openai.ok) ? 'ok' : 'err'">
+                <span x-text="(testResults.openai && (testResults.openai.message || testResults.openai.error))"></span>
+              </div>
+              <div class="field">
+                <label>API-Key</label>
+                <input type="password" x-model="config.ai.openai.api_key" placeholder="sk-...">
+                <div class="hint">
+                  Aus <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com/api-keys</a>.
+                  Wird verschlüsselt gespeichert und im UI maskiert (••••).
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Modell</label>
+                  <input x-model="config.ai.openai.model" placeholder="gpt-4o-mini">
+                  <div class="hint">
+                    Empfohlen: <code>gpt-4o-mini</code> ($0.15/M tokens, sehr günstig).
+                    Größer: <code>gpt-4o</code>.
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Timeout (s)</label>
+                  <input type="number" x-model.number="config.ai.openai.timeout" placeholder="30">
+                </div>
+              </div>
+              <div class="field">
+                <label>Base-URL (optional)</label>
+                <input x-model="config.ai.openai.base_url" placeholder="leer = api.openai.com">
+                <div class="hint">
+                  Nur setzen für Azure-OpenAI, OpenRouter, lokale Proxies (LM-Studio etc.) -
+                  alles mit OpenAI-kompatibler API.
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Confidence-Schwelle</label>
+                  <input type="number" step="0.05" min="0" max="1" x-model.number="config.ai.confidence_threshold">
+                  <div class="hint">Darunter → Pending (manuell im Web-UI)</div>
+                </div>
+                <div class="field" style="flex-direction: row; align-items: center; gap: 8px; padding-top: 18px;">
+                  <input type="checkbox" x-model="config.ai.auto_translate" id="ai-trans">
+                  <label for="ai-trans">Nicht-deutsche Captions automatisch übersetzen</label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Telegram-Block entfernt: Benachrichtigungen sind raus. -->
+
+          <!-- Backup-Section entfernt — rclone-Sync läuft im separaten Container. -->
+
+          <!-- yt-dlp -->
+          <div class="config-section">
+            <div class="head">
+              <span style="flex: 1;">yt-dlp</span>
+              <button class="btn" @click="testYtdlp()" :disabled="testing.ytdlp">
+                <span x-show="!testing.ytdlp">⌬ Version prüfen</span>
+                <span x-show="testing.ytdlp">…</span>
+              </button>
+            </div>
+            <div class="body">
+              <div x-show="testResults.ytdlp" class="test-result" :class="(testResults.ytdlp && testResults.ytdlp.ok) ? 'ok' : 'err'">
+                <span x-show="(testResults.ytdlp && testResults.ytdlp.ok)" x-text="'Version: ' + (testResults.ytdlp && testResults.ytdlp.version)"></span>
+                <span x-show="!(testResults.ytdlp && testResults.ytdlp.ok)" x-text="(testResults.ytdlp && testResults.ytdlp.error)"></span>
+              </div>
+              <div class="field"><label>Binary Path</label><input x-model="config.ytdlp.binary"></div>
+              <div class="field">
+                <label>Cookie-Datei (optional, für private Inhalte)</label>
+                <input x-model="config.ytdlp.cookies_file" placeholder="/opt/scrapper/data/cookies.txt">
+                <div class="hint">
+                  Netscape-Format. Export per Browser-Extension wie „Get cookies.txt LOCALLY".
+                  Leer lassen wenn nur öffentliche Inhalte gescrapet werden.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Webhooks -->
+          <div class="card" style="margin-top: 18px;">
+            <div class="card-head">
+              <h3>Webhook-Notifications</h3>
+              <button class="btn" @click="addWebhook()">+ Webhook</button>
+            </div>
+            <p class="muted" style="margin: 0 0 14px; font-size: 12px;">
+              JSON-POST bei Events. Funktioniert mit Discord, ntfy.sh, Slack, Teams, Home Assistant, n8n.
+              Discord-URLs bekommen automatisch ein hübsches Embed-Format.
+            </p>
+            <template x-for="(hook, idx) in (config.webhooks || [])" :key="idx">
+              <div style="border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px;">
+                <div class="row">
+                  <div class="field">
+                    <label>Name</label>
+                    <input x-model="hook.name" placeholder="z.B. Discord-Alerts">
+                  </div>
+                  <div class="field">
+                    <label>Aktiviert</label>
+                    <select x-model.boolean="hook.enabled">
+                      <option :value="true">Ja</option>
+                      <option :value="false">Nein</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>URL</label>
+                  <input x-model="hook.url" placeholder="https://discord.com/api/webhooks/... oder https://ntfy.sh/your-topic">
+                </div>
+                <div class="field">
+                  <label>Events (Mehrfachauswahl)</label>
+                  <div class="flex" style="flex-wrap: wrap; gap: 8px;">
+                    <template x-for="ev in ['scraper_done','job_failed','pending_high']" :key="ev">
+                      <label style="display:inline-flex; align-items:center; gap:5px; text-transform:none; letter-spacing:0; font-size:12px; color:var(--fg);">
+                        <input type="checkbox" :value="ev"
+                               :checked="(hook.events || []).includes(ev)"
+                               @change="toggleWebhookEvent(idx, ev, $event.target.checked)">
+                        <span x-text="ev"></span>
+                      </label>
+                    </template>
+                  </div>
+                </div>
+                <div class="flex" style="margin-top: 10px;">
+                  <button class="btn" @click="testWebhook(idx)" :disabled="testing.webhook === idx">
+                    <span x-show="testing.webhook !== idx">⌬ Test senden</span>
+                    <span x-show="testing.webhook === idx">…</span>
+                  </button>
+                  <button class="btn btn-danger" @click="removeWebhook(idx)">✗ Löschen</button>
+                  <div x-show="testResults.webhook && testResults.webhook.idx === idx"
+                       class="test-result"
+                       :class="testResults.webhook.ok ? 'ok' : 'err'"
+                       style="flex:1;">
+                    <span x-text="testResults.webhook && (testResults.webhook.message || testResults.webhook.error)"></span>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <div class="empty" x-show="!config.webhooks || config.webhooks.length === 0"
+                 style="padding: 14px; text-align:center;">
+              Noch keine Webhooks. Klick „+ Webhook" oben rechts.
+            </div>
+          </div>
+
+          <!-- Wartung: Logs + Backups -->
+          <div class="card" style="margin-top: 18px;">
+            <div class="card-head">
+              <h3>Wartung</h3>
+              <button class="btn btn-ghost" @click="loadMaintenance()" :disabled="maintBusy">
+                <span x-show="!maintBusy">⟳</span>
+                <span x-show="maintBusy">…</span>
+              </button>
+            </div>
+
+            <!-- Logs -->
+            <h4 style="margin: 8px 0; font-size:12px; color: var(--fg-dim); text-transform: uppercase">Logs</h4>
+            <div class="row">
+              <div class="field">
+                <label>Aufbewahrung (Tage)</label>
+                <input type="number" min="0" max="365" x-model.number="config.paths.log_retention_days" placeholder="30">
+                <div class="hint">0 = nie löschen. Cleanup läuft täglich um 04:00 mit Backup.</div>
+              </div>
+              <div class="field">
+                <label>Aktueller Verbrauch</label>
+                <div class="value" style="padding: 8px 0;">
+                  <span x-show="maintenance && maintenance.logs"
+                        x-text="maintenance && maintenance.logs ? (formatBytes(maintenance.logs.total_bytes) + ' · ' + maintenance.logs.count + ' Files · ältester: ' + maintenance.logs.oldest_age_days + ' Tage') : '—'"></span>
+                  <span x-show="!maintenance">…</span>
+                </div>
+              </div>
+            </div>
+            <div style="margin-top: 6px;">
+              <button class="btn" @click="runLogCleanup()" :disabled="maintBusy">🧹 Logs jetzt aufräumen</button>
+            </div>
+
+            <!-- DB Backups -->
+            <h4 style="margin: 22px 0 8px; font-size:12px; color: var(--fg-dim); text-transform: uppercase">DB-Backups</h4>
+            <div style="margin-bottom: 12px;">
+              <button class="btn btn-primary" @click="runBackupNow()" :disabled="maintBusy">💾 Backup jetzt erstellen</button>
+              <span class="hint" style="margin-left: 8px;">
+                Multi-Tier: täglich (7 T) · wöchentlich (4 W) · monatlich (12 M)
+              </span>
+            </div>
+            <template x-for="tier in ['daily','weekly','monthly']" :key="tier">
+              <div x-show="maintenance && maintenance.backups && maintenance.backups[tier] && maintenance.backups[tier].length > 0"
+                   style="margin-bottom: 10px;">
+                <div style="font-size: 11px; color: var(--fg-dim); text-transform: uppercase; margin-bottom: 4px;"
+                     x-text="tier + ' (' + (maintenance && maintenance.backups && maintenance.backups[tier] ? maintenance.backups[tier].length : 0) + ' Backups)'"></div>
+                <div class="mono" style="font-size: 11px; max-height: 110px; overflow-y: auto; background: var(--bg); padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px;">
+                  <template x-for="b in (maintenance && maintenance.backups && maintenance.backups[tier] || [])" :key="b.name">
+                    <div x-text="formatTs(b.mtime) + '  ' + (b.size_bytes/1024/1024).toFixed(2) + ' MB  ' + b.name"
+                         style="padding: 2px 0;"></div>
+                  </template>
+                </div>
+              </div>
+            </template>
+            <div x-show="maintenance && maintenance.backups && !maintenance.backups.daily && !maintenance.backups.weekly && !maintenance.backups.monthly"
+                 class="muted" style="font-size: 12px;">
+              Noch keine Backups vorhanden. Klick „Backup jetzt erstellen" oder warte auf den nächsten Timer-Run um 04:00.
+            </div>
+
+            <!-- Output vom letzten Cleanup/Backup -->
+            <div x-show="maintenanceOutput" class="mono"
+                 style="margin-top: 14px; font-size: 11px; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; max-height: 200px; overflow-y: auto; white-space: pre-wrap;"
+                 x-text="maintenanceOutput"></div>
+          </div>
+
+          <!-- ════ Einkauf-App-Integration ════ -->
+          <div class="card">
+            <h3>📦 Einkauf-App-Integration</h3>
+            <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
+              Cart-Items per „An Einkauf-App senden"-Button an externe API pushen.
+              Endpoint: <code>POST /items</code> mit <code>{raw_text}</code>, danach optional
+              <code>POST /consolidate</code>.
+            </div>
+            <div class="field">
+              <label>API-Basis-URL</label>
+              <input x-model="config.einkauf.api_url" placeholder="https://einkaufen.mausbaeren.me">
+              <div class="hint">Leer lassen = Feature deaktiviert. Ohne abschließenden Slash.</div>
+            </div>
+            <div class="field">
+              <label>
+                <input type="checkbox" x-model="config.einkauf.auto_consolidate">
+                Nach Push automatisch <code>/consolidate</code> aufrufen
+              </label>
+            </div>
+          </div>
+
+          <div style="text-align: right; margin: 20px 0 60px;">
+            <button class="btn btn-primary" @click="saveConfig()">💾 Speichern</button>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- ========== REZEPTE ========== -->
+    <section x-show="page==='recipes'" class="recipes-page">
+      <div class="recipes-layout">
+        <!-- Filter-Drawer-Backdrop (nur Mobile, beim Tippen schließen) -->
+        <div class="recipes-filters-backdrop" x-show="recipes.filterDrawerOpen"
+             @click="recipes.filterDrawerOpen = false" x-transition.opacity></div>
+
+        <!-- Filter-Sidebar / Drawer -->
+        <aside class="recipes-filters" :class="recipes.filterDrawerOpen && 'open'">
+          <div class="recipes-filters-head">
+            <strong>Filter <span class="muted" x-show="activeFilterCount()" x-text="'('+activeFilterCount()+' aktiv)'"></span></strong>
+            <div style="display:flex; gap:6px;">
+              <button class="btn btn-secondary btn-sm" @click="resetFilters()"
+                      x-show="activeFilterCount()">Zurücksetzen</button>
+              <button class="btn btn-primary btn-sm" @click="recipes.filterDrawerOpen = false">Fertig</button>
+            </div>
+          </div>
+          <div class="filter-block">
+            <label>Suche</label>
+            <input type="text" x-model.debounce.300ms="recipes.filters.search" @input="loadRecipes()" placeholder="Name, Beschreibung…" />
+          </div>
+
+          <div class="filter-block">
+            <label>Typ</label>
+            <select x-model="recipes.filters.type" @change="loadRecipes()">
+              <option value="">— alle —</option>
+              <template x-for="t in recipes.facets.types" :key="t">
+                <option :value="t" x-text="t"></option>
+              </template>
+            </select>
+          </div>
+
+          <div class="filter-block">
+            <label>Kategorie</label>
+            <select x-model="recipes.filters.category" @change="loadRecipes()">
+              <option value="">— alle —</option>
+              <template x-for="c in recipes.facets.categories" :key="c">
+                <option :value="c" x-text="c"></option>
+              </template>
+            </select>
+          </div>
+
+          <div class="filter-block">
+            <label>Zutaten-Status</label>
+            <select x-model="recipes.filters.ingredients_status" @change="recipes.filters.offset=0; loadRecipes()">
+              <option value="">— alle —</option>
+              <option value="ok">✓ Geprüft (KI-Extraktion ok)</option>
+              <option value="pending">⏳ Wartet auf KI</option>
+              <option value="error">⚠ Fehler</option>
+              <option value="skipped">— Übersprungen</option>
+            </select>
+          </div>
+
+          <div class="filter-block">
+            <label>Manuell geprüft</label>
+            <select x-model="recipes.filters.verified" @change="recipes.filters.offset=0; loadRecipes()">
+              <option value="">— alle —</option>
+              <option :value="true">✓ Nur geprüfte</option>
+              <option :value="false">☐ Nur ungeprüfte</option>
+            </select>
+          </div>
+
+          <div class="filter-block">
+            <label>Favoriten</label>
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 6px 0;">
+              <input type="checkbox" x-model="recipes.filters.favorite_only"
+                     @change="loadRecipes()" />
+              <span>⭐ Nur Favoriten anzeigen</span>
+            </label>
+          </div>
+
+          <div class="filter-block">
+            <label>Mindestbewertung</label>
+            <select x-model.number="recipes.filters.min_rating" @change="loadRecipes()">
+              <option :value="0">— alle —</option>
+              <option :value="1">★ mind. 1 Stern</option>
+              <option :value="2">★★ mind. 2 Sterne</option>
+              <option :value="3">★★★ mind. 3 Sterne</option>
+              <option :value="4">★★★★ mind. 4 Sterne</option>
+              <option :value="5">★★★★★ nur 5 Sterne</option>
+            </select>
+          </div>
+
+          <div class="filter-block">
+            <label>Tags <span class="muted" x-text="recipes.filters.tag_ids.length ? '('+recipes.filters.tag_ids.length+' aktiv)' : ''"></span></label>
+            <div class="chip-list">
+              <template x-for="t in recipes.facets.tags" :key="t.id">
+                <span class="chip" :class="recipes.filters.tag_ids.includes(t.id) && 'on'"
+                      @click="toggleTagFilter(t.id)">
+                  <span x-text="t.name"></span>
+                  <span class="muted">·<span x-text="t.n"></span></span>
+                </span>
+              </template>
+              <span x-show="recipes.facets.tags.length === 0" class="muted">— keine Tags —</span>
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <label>Zutaten <span class="muted" x-text="recipes.filters.ingredients.length ? '('+recipes.filters.ingredients.length+' aktiv)' : ''"></span></label>
+            <input type="text" x-model="recipes.ingredientSearch"
+                   placeholder="🔍 Zutat suchen…"
+                   style="width:100%; margin-bottom:8px; padding:6px 10px;
+                          background:var(--bg); border:1px solid var(--border);
+                          border-radius:5px; color:var(--fg); font-size:13px;">
+            <div class="chip-list">
+              <!-- Ausgewählte immer zuerst, durchstreichbar -->
+              <template x-for="canonical in recipes.filters.ingredients" :key="'sel-'+canonical">
+                <span class="chip on" @click="toggleIngredientFilter(canonical)">
+                  <span x-text="(recipes.facets.ingredients.find(i => i.canonical_name === canonical) || {}).display_name || canonical"></span>
+                  <span style="margin-left:4px;">✗</span>
+                </span>
+              </template>
+              <!-- Restliche Facets, gefiltert + auf 60 begrenzt -->
+              <template x-for="i in filteredIngredientFacets()" :key="i.canonical_name">
+                <span class="chip" @click="toggleIngredientFilter(i.canonical_name)">
+                  <span x-text="i.display_name"></span>
+                  <span class="muted">·<span x-text="i.n"></span></span>
+                </span>
+              </template>
+              <span x-show="recipes.facets.ingredients.length === 0" class="muted">
+                <span x-show="recipes.extractionPending > 0">Zutaten werden noch extrahiert…</span>
+                <span x-show="recipes.extractionPending === 0">— keine Zutaten —</span>
+              </span>
+              <span x-show="recipes.facets.ingredients.length > 0 && filteredIngredientFacets().length === 0 && !recipes.ingredientSearch" class="muted small">
+                — alle ausgewählt —
+              </span>
+              <span x-show="recipes.ingredientSearch && filteredIngredientFacets().length === 0" class="muted small">
+                kein Treffer für „<span x-text="recipes.ingredientSearch"></span>"
+              </span>
+            </div>
+            <div x-show="ingredientFacetsLimited" class="muted small" style="margin-top:4px;">
+              … weitere ausgeblendet. Mehr Treffer? Suche eingrenzen.
+            </div>
+          </div>
+
+          <button class="btn btn-secondary" @click="resetFilters()" style="width: 100%; margin-top: 12px;">Filter zurücksetzen</button>
+          <button class="btn btn-secondary" @click="syncRecipes()" style="width: 100%; margin-top: 6px;" title="Filesystem neu scannen">↻ FS-Sync</button>
+        </aside>
+
+        <!-- Grid -->
+        <div class="recipes-main">
+          <div class="recipes-header">
+            <h2 style="margin: 0">Rezepte
+              <span class="muted" x-text="recipes.total + ' insgesamt'"></span>
+            </h2>
+            <div class="recipes-header-actions">
+              <button class="btn btn-secondary recipes-filter-btn"
+                      @click="recipes.filterDrawerOpen = true">
+                ☰ Filter
+                <span class="badge" x-show="activeFilterCount() > 0" x-text="activeFilterCount()"></span>
+              </button>
+              <div class="recipes-info" x-show="recipes.extractionRunning">
+                <span class="pill running">KI</span>
+                <span>Extrahiere Zutaten… <span x-text="recipes.extractionStats.pending || 0"></span> übrig</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="recipes-grid">
+            <template x-for="r in recipes.items" :key="r.id">
+              <div class="recipe-card"
+                   @click="openRecipe(r.id)"
+                   @pointerenter="prefetchRecipeDetail(r.id)"
+                   @touchstart.passive="prefetchRecipeDetail(r.id)">
+                <div class="recipe-thumb">
+                  <img :src="'/api/recipes/'+r.id+'/thumb?w=400'"
+                       :srcset="'/api/recipes/'+r.id+'/thumb?w=400 1x, /api/recipes/'+r.id+'/thumb?w=800 2x'"
+                       loading="lazy" decoding="async"
+                       @error="$el.style.display='none'" alt="" />
+                  <div class="recipe-thumb-placeholder" :style="'background:'+recipePlaceholderGradient(r.name)">
+                    <span class="rtp-emoji" x-text="recipeEmoji(r)"></span>
+                    <span class="rtp-name" x-text="r.name"></span>
+                  </div>
+                  <!-- Favorit-Overlay oben rechts -->
+                  <button class="recipe-fav"
+                          @click.stop="toggleFavorite(r.id)"
+                          :class="r.is_favorite && 'active'"
+                          :title="r.is_favorite ? 'Favorit entfernen' : 'Als Favorit markieren'">
+                    <span x-text="r.is_favorite ? '⭐' : '☆'"></span>
+                  </button>
+                </div>
+                <div class="recipe-meta">
+                  <div class="recipe-name" x-text="r.name"></div>
+                  <div class="recipe-tags">
+                    <span class="pill" x-text="r.type" x-show="r.type"></span>
+                    <span class="pill muted" x-text="r.category" x-show="r.category"></span>
+                  </div>
+                  <div class="recipe-status muted" style="font-size: 11px; margin-top: 6px; display: flex; justify-content: space-between; align-items: center;">
+                    <span>
+                      <span x-show="r.ingredients_status === 'pending'">⏳ wartet auf KI</span>
+                      <span x-show="r.ingredients_status === 'ok'">✓ Zutaten</span>
+                      <span x-show="r.ingredients_status === 'error'">⚠ Fehler</span>
+                      <span x-show="r.ingredients_status === 'skipped'">— keine Beschreibung</span>
+                    </span>
+                    <span x-show="r.rating > 0" style="color: var(--accent); letter-spacing: 1px;"
+                          x-text="'★'.repeat(r.rating)" :title="r.rating + ' / 5'"></span>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <div x-show="recipes.items.length === 0 && !recipes.loading" class="empty-state">
+              Keine Rezepte gefunden.
+            </div>
+          </div>
+
+          <!-- Infinite-Scroll-Sentinel: wird via IntersectionObserver beobachtet.
+               Wenn sichtbar im Viewport → loadMoreRecipes() lädt die nächsten 60.
+               Counter darunter zeigt 'X von Y geladen'. -->
+          <div x-show="recipes.items.length > 0" x-ref="scrollSentinel"
+               x-init="$nextTick(() => initScrollObserver())"
+               style="text-align: center; padding: 24px 0; color: var(--fg-mute); font-size: 12px;">
+            <div x-show="recipes.loading">… wird geladen</div>
+            <div x-show="!recipes.loading && recipes.items.length < recipes.total">
+              Scrolle weiter — <span x-text="recipes.items.length"></span> von <span x-text="recipes.total"></span> geladen
+            </div>
+            <div x-show="!recipes.loading && recipes.items.length >= recipes.total && recipes.total > 0">
+              ✓ Alle <span x-text="recipes.total"></span> Rezepte geladen
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== EINKAUFSKORB ========== -->
+    <section x-show="page==='cart'" class="cart-page">
       <div class="card">
-        <div class="card-head"><h3>Letzte Läufe</h3><button class="btn btn-ghost" @click="loadJobs()">⟳</button></div>
-        <div class="table-wrap">
-          <table class="data-table"><thead><tr><th>Zeit</th><th>Art</th><th>Status</th><th>Ergebnis</th><th></th></tr></thead><tbody>
-            <template x-for="job in jobs.slice(0,20)" :key="job.id"><tr><td x-text="formatDateTime(job.started_at)"></td><td x-text="job.kind==='scraper' ? 'Import' : 'Analyse'"></td><td><span class="pill" :class="statusClass(job.status)" x-text="statusText(job.status)"></span></td><td x-text="summarizeJob(job)"></td><td><button class="btn btn-ghost" @click="openLog(job)" :disabled="!job.log_file">Log</button></td></tr></template>
-            <tr x-show="jobs.length===0"><td colspan="5" class="muted">Noch keine Läufe vorhanden.</td></tr>
-          </tbody></table>
+        <div class="page-head" style="margin-bottom: 16px; border-bottom: none; padding-bottom: 0;">
+          <div>
+            <h1 style="margin:0; font-size: 22px;">🛒 Einkaufskorb <span class="muted" style="font-weight: normal; font-size: 14px;" x-text="'('+cart.items.length+' Posten)'"></span></h1>
+          </div>
+          <div class="flex" style="gap: 8px;">
+            <button class="btn btn-primary" @click="pushToEinkauf()"
+                    :disabled="cart.items.length === 0 || pushingToEinkauf"
+                    x-show="config?.einkauf?.api_url"
+                    :title="'Items an ' + (config?.einkauf?.api_url || 'Einkauf-App') + ' senden'">
+              <span x-show="!pushingToEinkauf">📦 Senden</span>
+              <span x-show="pushingToEinkauf">… sende</span>
+            </button>
+            <button class="btn btn-secondary" @click="exportCart()" :disabled="cart.items.length === 0">📋 Export</button>
+            <button class="btn btn-secondary" @click="clearCheckedFromCart()" :disabled="!cart.items.some(i => i.checked)">✓ Erledigte weg</button>
+            <button class="btn btn-danger" @click="clearCart()" :disabled="cart.items.length === 0">🗑 Alles</button>
+          </div>
+        </div>
+
+        <!-- Manuell hinzufügen -->
+        <div class="cart-add">
+          <input type="text" x-model="cart.add.name" placeholder="Zutat" />
+          <input type="number" step="any" x-model.number="cart.add.amount" placeholder="Menge" style="width: 90px;" />
+          <input type="text" x-model="cart.add.unit" placeholder="Einheit" style="width: 80px;" />
+          <button class="btn btn-primary" @click="addToCart()">＋ Hinzufügen</button>
+        </div>
+
+        <!-- Liste -->
+        <div class="cart-list" x-show="cart.items.length > 0">
+          <template x-for="it in cart.items" :key="it.id">
+            <!-- Swipe-Wrapper: enthält Action-Layer (links erledigt, rechts löschen)
+                 + die eigentliche Karte die ge-swiped wird. -->
+            <div class="cart-swipe-row">
+              <div class="cart-swipe-actions cart-swipe-left">
+                <span>✓ erledigt</span>
+              </div>
+              <div class="cart-swipe-actions cart-swipe-right">
+                <span>🗑 löschen</span>
+              </div>
+              <div class="cart-item" :class="it.checked && 'checked'"
+                   @touchstart="cartSwipeStart($event, it.id)"
+                   @touchmove="cartSwipeMove($event, it.id)"
+                   @touchend="cartSwipeEnd($event, it)">
+                <input type="checkbox" :checked="it.checked" @change="toggleCartItem(it.id, $event.target.checked)" />
+                <div class="cart-item-name">
+                  <span x-text="it.name"></span>
+                </div>
+                <div class="cart-item-amount">
+                  <span x-show="it.amount !== null" x-text="formatAmount(it.amount)"></span>
+                  <span class="muted" x-text="it.unit || ''"></span>
+                </div>
+                <div class="cart-item-source muted" x-show="it.source_recipe_ids.length > 0"
+                     :title="'aus '+it.source_recipe_ids.length+' Rezept(en)'">
+                  <span x-text="it.source_recipe_ids.length"></span>×
+                </div>
+                <button class="btn-icon" @click="deleteCartItem(it.id)" title="Entfernen">✕</button>
+              </div>
+            </div>
+          </template>
+        </div>
+        <div x-show="cart.items.length === 0" class="empty-state">
+          Einkaufskorb ist leer. Klick im Rezept-Tab auf „Kochen" um Zutaten hinzuzufügen.
         </div>
       </div>
     </section>
 
-    <!-- PENDING -->
-    <section class="page-section" x-cloak x-show="page==='pending'">
-      <div class="page-head"><div><h1>Prüfen</h1><div class="subtitle">Unsichere Ergebnisse kontrollieren und dem Rezeptkatalog zuordnen</div></div><div class="page-actions"><select class="btn" x-model="pendingSort" @change="loadPending()"><option value="newest">Neueste zuerst</option><option value="oldest">Älteste zuerst</option><option value="confidence_asc">Unsicherste zuerst</option><option value="confidence_desc">Sicherste zuerst</option></select><button class="btn" @click="reanalyzeAllPending()" :disabled="status.reanalyze || !pending.length">KI erneut prüfen</button><button class="btn" @click="loadPending()">⟳</button></div></div>
+    <!-- ========== STAMMDATEN ========== -->
+    <section x-show="page==='master'" class="master-page">
+      <div class="card">
+        <div class="master-header">
+          <h2 style="margin:0">📚 Stammdaten</h2>
+          <button class="btn btn-secondary" @click="loadMaster()" :disabled="master.loading">
+            <span x-show="!master.loading">⟳ Neu laden</span>
+            <span x-show="master.loading">…</span>
+          </button>
+        </div>
 
-      <div class="pending-grid" x-show="pending.length">
-        <template x-for="item in pending" :key="item.url">
-          <article class="pending-card">
-            <div class="pending-media">
-              <template x-if="item.file_available && item.media_kind==='video'"><video controls preload="metadata" playsinline :src="pendingFileUrl(item)"></video></template>
-              <template x-if="item.file_available && item.media_kind==='image'"><img :src="pendingFileUrl(item)" :alt="item.form.name || 'Vorschau'" loading="lazy"></template>
-              <template x-if="item.file_available && item.media_kind==='pdf'"><iframe :src="pendingFileUrl(item)" title="PDF-Vorschau"></iframe></template>
-              <div class="media-symbol" x-show="!item.file_available" aria-hidden="true">?</div>
+        <!-- Tabs: Tags / Zutaten -->
+        <div class="master-tabs">
+          <button class="master-tab" :class="master.tab === 'tags' && 'active'"
+                  @click="master.tab = 'tags'">
+            🏷 Tags
+            <span class="muted" x-text="'(' + master.tags.length + ')'"></span>
+          </button>
+          <button class="master-tab" :class="master.tab === 'canonicals' && 'active'"
+                  @click="master.tab = 'canonicals'; if (master.canonicals.length === 0) loadCanonicals()">
+            🥕 Zutaten
+            <span class="muted" x-text="'(' + master.canonicals.length + ')'"></span>
+          </button>
+        </div>
+
+        <!-- ────── Tags-Tab ────── -->
+        <div x-show="master.tab === 'tags'">
+          <div class="master-toolbar">
+            <input type="text" x-model="master.tagFilter" placeholder="Filter Tags…" class="master-search">
+            <span class="muted" x-text="filteredTags().length + ' / ' + master.tags.length"></span>
+          </div>
+
+          <div class="master-table-wrap">
+            <table class="master-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th class="num">Nutzung</th>
+                  <th class="num">Auto</th>
+                  <th class="num">User</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="tag in filteredTags()" :key="tag.id">
+                  <tr :class="tag.recipe_count === 0 && 'unused'">
+                    <td x-text="tag.name"></td>
+                    <td class="num" x-text="tag.recipe_count"></td>
+                    <td class="num muted" x-text="tag.auto_count"></td>
+                    <td class="num muted" x-text="tag.user_count"></td>
+                    <td class="actions">
+                      <button class="btn btn-sm" @click="renameTag(tag)" title="Umbenennen / Mergen">✎</button>
+                      <button class="btn btn-sm btn-danger" @click="deleteTag(tag)" title="Löschen">🗑</button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            <div x-show="filteredTags().length === 0" class="empty-state">
+              <span x-show="master.tags.length === 0">— keine Tags in der DB —</span>
+              <span x-show="master.tags.length > 0">— keine Treffer für Filter —</span>
             </div>
-            <div class="pending-content">
-              <div class="recipe-tags"><span x-text="item.content_type==='recipe' ? 'Rezept' : 'Hochzeit'"></span><span x-text="confidenceLabel(item)"></span></div>
-              <div class="field"><label>Name</label><input x-model="item.form.name" placeholder="Bezeichnung"></div>
-              <template x-if="item.content_type==='recipe'"><div class="form-grid"><div class="field"><label>Typ</label><select x-model="item.form.type"><template x-for="type in recipeTypes" :key="type"><option :value="type" x-text="type"></option></template></select></div><div class="field"><label>Kategorie</label><input x-model="item.form.category" placeholder="z. B. Pasta"></div></div></template>
-              <template x-if="item.content_type==='wedding'"><div class="field"><label>Kategorie</label><select x-model="item.form.category"><template x-for="cat in weddingCategories" :key="cat"><option :value="cat" x-text="cat"></option></template></select></div></template>
-              <details class="description-details" x-show="item.description"><summary>Beschreibung anzeigen</summary><p x-text="item.description"></p></details>
-              <div class="button-row"><button class="btn btn-primary" @click="resolvePending(item, 'save')">Speichern</button><button class="btn" @click="reanalyzePending(item)" :disabled="reanalyzing[item.url]" x-text="reanalyzing[item.url] ? '… analysiert' : 'Neu analysieren'"></button><button class="btn btn-danger" @click="resolvePending(item, 'skip')">Überspringen</button></div>
+          </div>
+        </div>
+
+        <!-- ────── Canonicals-Tab ────── -->
+        <div x-show="master.tab === 'canonicals'">
+          <div class="master-toolbar">
+            <input type="text" x-model="master.canFilter" placeholder="Filter Zutaten / Schreibweisen…" class="master-search">
+            <span class="muted" x-text="filteredCanonicals().length + ' / ' + master.canonicals.length"></span>
+          </div>
+
+          <div class="master-table-wrap">
+            <table class="master-table">
+              <thead>
+                <tr>
+                  <th>Canonical-Name</th>
+                  <th class="num">Rezepte</th>
+                  <th class="num">Vorkommen</th>
+                  <th>Schreibweisen</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="c in filteredCanonicals()" :key="c.canonical_name">
+                  <tr>
+                    <td><code x-text="c.canonical_name"></code></td>
+                    <td class="num" x-text="c.recipe_count"></td>
+                    <td class="num muted" x-text="c.ingredient_count"></td>
+                    <td class="muted" style="font-size: 12px;" x-text="c.raw_names"></td>
+                    <td class="actions">
+                      <button class="btn btn-sm" @click="renameCanonical(c)" title="Umbenennen / Mergen">✎</button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            <div x-show="filteredCanonicals().length === 0" class="empty-state">
+              <span x-show="master.canonicals.length === 0 && !master.canLoaded">Klick „Neu laden" zum Initialisieren.</span>
+              <span x-show="master.canonicals.length === 0 && master.canLoaded">— keine Zutaten in der DB —</span>
+              <span x-show="master.canonicals.length > 0">— keine Treffer für Filter —</span>
             </div>
-          </article>
-        </template>
-      </div>
-      <div class="empty-state" x-show="!pendingLoading && pending.length===0"><div class="empty-icon">✓</div><h2>Alles geprüft</h2><p>Aktuell warten keine Inhalte auf eine manuelle Zuordnung.</p><button class="btn btn-primary" @click="navigate('recipes')">Zur Rezeptsuche</button></div>
-
-      <div class="card failed-card" x-show="failedDownloads.length">
-        <div class="card-head"><h3>Fehlgeschlagene Downloads</h3><button class="btn btn-danger" @click="clearAllFailed()">Alle zurücksetzen</button></div>
-        <div class="failed-list"><template x-for="failure in failedDownloads" :key="failure.url"><div class="failed-row"><div><strong x-text="shortUrl(failure.url)"></strong><span x-text="failure.attempts + ' Versuche · ' + (failure.last_error || 'unbekannter Fehler')"></span></div><button class="btn" @click="retryFailed(failure.url)">Erneut zulassen</button></div></template></div>
+          </div>
+        </div>
       </div>
     </section>
 
-    <!-- HISTORY -->
-    <section class="page-section" x-cloak x-show="page==='history'">
-      <div class="page-head"><div><h1>Historie</h1><div class="subtitle">Alle verarbeiteten Inhalte verwalten</div></div><button class="btn" @click="loadHistory()">⟳ Neu laden</button></div>
-      <div class="toolbar-card"><label class="search-control"><span class="sr-only">Historie durchsuchen</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 19.6-5.2-5.2a7.5 7.5 0 1 0-1.4 1.4l5.2 5.2L21 19.6ZM5 10.5a5.5 5.5 0 1 1 11 0 5.5 5.5 0 0 1-11 0Z"/></svg><input type="search" x-model.debounce.200ms="historyQuery" placeholder="Name, Ordner oder URL suchen"></label><select x-model="historyTypeFilter"><option value="all">Alle Inhalte</option><option value="recipe">Rezepte</option><option value="wedding">Hochzeit</option></select></div>
-      <div class="card"><div class="table-wrap"><table class="data-table"><thead><tr><th>Zeit</th><th>Art</th><th>Name</th><th>Ziel</th><th></th></tr></thead><tbody>
-        <template x-for="item in filteredHistory()" :key="item.url"><tr><td x-text="formatDateTime(item.processed_at)"></td><td><span class="pill" :class="item.content_type==='recipe' ? 'warn' : 'running'" x-text="item.content_type==='recipe' ? 'Rezept' : 'Hochzeit'"></span></td><td><strong x-text="item.name || '—'"></strong></td><td class="mono muted" x-text="item.target_dir || '—'"></td><td><div class="button-row compact"><button class="btn btn-ghost" @click="openEditItem(item)" :disabled="!item.target_dir">Bearbeiten</button><button class="btn btn-danger" @click="deleteHistoryItem(item)">Löschen</button></div></td></tr></template>
-        <tr x-show="filteredHistory().length===0"><td colspan="5" class="muted">Keine passenden Einträge.</td></tr>
-      </tbody></table></div></div>
-    </section>
+    <!-- ========== AUDIT ========== -->
+    <section x-show="page==='audit'" class="audit-page">
+      <div class="card">
+        <div class="audit-header">
+          <div>
+            <h2 style="margin:0">🔍 Audit
+              <span class="muted" x-show="audit.data"
+                    x-text="'· ' + audit.data.total_recipes + ' Rezepte gescannt'"></span>
+            </h2>
+            <div class="muted" style="font-size: 12px; margin-top: 4px;">
+              Read-only Übersicht: Dubletten, ähnliche Namen, verdächtige Namen.
+              Fixen geht per Klick auf „Im Modal öffnen" → dort umbenennen oder Tags editieren.
+            </div>
+          </div>
+          <div class="audit-actions">
+            <label style="display:flex; align-items:center; gap:6px; font-size: 12px;">
+              <input type="checkbox" x-model="audit.withAi" />
+              KI-Namensvorschläge (kostet ~$0.001 pro 50)
+            </label>
+            <button class="btn btn-secondary" @click="loadAudit()" :disabled="audit.loading">
+              <span x-show="!audit.loading">↻ Neu scannen</span>
+              <span x-show="audit.loading">… scannt</span>
+            </button>
+          </div>
+        </div>
 
-    <!-- CONFIG -->
-    <section class="page-section" x-cloak x-show="page==='config'">
-      <div class="page-head"><div><h1>Einstellungen</h1><div class="subtitle">Import, Ablage, KI und Zugang konfigurieren</div></div><div class="page-actions"><button class="btn" @click="loadConfig()">Zurücksetzen</button><button class="btn btn-primary" @click="saveConfig()" :disabled="configSaving"><span x-show="!configSaving">Speichern</span><span x-show="configSaving">… speichert</span></button></div></div>
+        <!-- Summary-Counts als Badge-Reihe -->
+        <div class="audit-summary" x-show="audit.data">
+          <div class="audit-stat" :class="(audit.summary?.exact_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.exact_count || 0"></div>
+            <div class="audit-stat-label">Exakte Dubletten</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.url_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.url_count || 0"></div>
+            <div class="audit-stat-label">URL-Dubletten</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.folder_count || 0) > 0 && 'has-err'">
+            <div class="audit-stat-n" x-text="audit.summary?.folder_count || 0"></div>
+            <div class="audit-stat-label">Folder-Dubletten</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.similar_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.similar_count || 0"></div>
+            <div class="audit-stat-label">Ähnliche Namen</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.bad_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.bad_count || 0"></div>
+            <div class="audit-stat-label">Schlechte Namen</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.sync_error_count || 0) > 0 && 'has-err'">
+            <div class="audit-stat-n" x-text="audit.summary?.sync_error_count || 0"></div>
+            <div class="audit-stat-label">🔴 FS-Konflikte</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.ai_category_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.ai_category_count || 0"></div>
+            <div class="audit-stat-label">🤖 Falsche Kategorie</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.ai_name_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.ai_name_count || 0"></div>
+            <div class="audit-stat-label">🤖 Schlechter Name</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.ai_folder_count || 0) > 0 && 'has'">
+            <div class="audit-stat-n" x-text="audit.summary?.ai_folder_count || 0"></div>
+            <div class="audit-stat-label">🤖 Falscher Ordner</div>
+          </div>
+          <div class="audit-stat" :class="(audit.summary?.empty_recipe_count || 0) > 0 && 'has-err'">
+            <div class="audit-stat-n" x-text="audit.summary?.empty_recipe_count || 0"></div>
+            <div class="audit-stat-label">📭 Verdächtig leer</div>
+          </div>
+          <div class="audit-stat" x-show="audit.summary?.with_ai_suggestions > 0">
+            <div class="audit-stat-n" x-text="audit.summary?.with_ai_suggestions"></div>
+            <div class="audit-stat-label">💡 KI-Vorschläge</div>
+          </div>
+        </div>
 
-      <div class="config-stack" x-show="config.web">
-        <section class="config-section" id="config-schedule"><div class="head"><h3>Automatischer Import</h3><span class="muted">Wann neue Mails geprüft werden</span></div><div class="body"><div class="form-grid"><div class="field"><label>Intervall</label><select x-model="scheduleEdit.scraper"><option value="*:0/15">Alle 15 Minuten</option><option value="*:0/30">Alle 30 Minuten</option><option value="hourly">Stündlich</option><option value="00,06,12,18:00">Alle 6 Stunden</option><option value="*-*-* 08:00:00">Täglich 08:00</option></select></div><div class="field action-field"><label>&nbsp;</label><button class="btn" @click="saveSchedule()">Zeitplan anwenden</button></div></div></div></section>
+        <!-- KI-Sanity-Check-Trigger -->
+        <div class="audit-ai-sanity-box" x-show="audit.data">
+          <div>
+            <strong>🤖 KI-Sanity-Check</strong>
+            <span class="muted" style="font-size: 12px;">
+              Prüft für jedes Rezept ob Kategorie + Name zur Beschreibung passen (~$0.001/Rezept)
+            </span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <span x-show="audit.aiSanity.running" class="muted" style="font-size: 13px;">
+              <span x-text="audit.aiSanity.processed"></span>
+              /
+              <span x-text="audit.aiSanity.total"></span>
+              <span class="muted">(<span x-text="audit.aiSanity.findings"></span> Findings)</span>
+            </span>
+            <button class="btn btn-secondary" @click="startAiSanity()"
+                    :disabled="audit.aiSanity.running">
+              <span x-show="!audit.aiSanity.running">▶ Starten</span>
+              <span x-show="audit.aiSanity.running">läuft…</span>
+            </button>
+          </div>
+        </div>
 
-        <section class="config-section"><div class="head"><h3>Rezept-Postfach</h3><button class="btn" @click="testMail('recipe')">Verbindung testen</button></div><div class="body"><label class="checkbox-line"><input type="checkbox" x-model="config.mail.recipe.enabled"> Rezeptimport aktiv</label><div class="form-grid"><div class="field"><label>IMAP-Host</label><input x-model="config.mail.recipe.imap_host"></div><div class="field"><label>Port</label><input type="number" x-model.number="config.mail.recipe.imap_port"></div><div class="field"><label>Benutzer / E-Mail</label><input x-model="config.mail.recipe.username"></div><div class="field"><label>Passwort / App-Passwort</label><input type="password" x-model="config.mail.recipe.password"></div><div class="field"><label>Ordner</label><input x-model="config.mail.recipe.folder"></div><div class="field"><label>Max. Mails je Lauf</label><input type="number" x-model.number="config.mail.recipe.max_mails"></div></div><p class="test-message" x-show="testResults.mail_recipe" :class="testResults.mail_recipe && testResults.mail_recipe.ok ? 'ok' : 'err'" x-text="testResultMessage('mail_recipe')"></p></div></section>
+        <!-- Tab-Bar zur Strukturierung der vielen Findings-Sektionen -->
+        <div class="audit-tabs" x-show="audit.data">
+          <button class="audit-tab" :class="audit.activeTab === 'duplicates' && 'active'"
+                  @click="audit.activeTab = 'duplicates'">
+            📑 Duplikate
+            <span class="audit-tab-count" x-text="(audit.summary?.exact_count||0) + (audit.summary?.url_count||0) + (audit.summary?.folder_count||0) + (audit.summary?.similar_count||0) + (audit.summary?.bad_count||0)"></span>
+          </button>
+          <button class="audit-tab" :class="audit.activeTab === 'ai' && 'active'"
+                  @click="audit.activeTab = 'ai'">
+            🤖 KI-Findings
+            <span class="audit-tab-count" x-text="(audit.summary?.ai_category_count||0) + (audit.summary?.ai_name_count||0) + (audit.summary?.ai_folder_count||0)"></span>
+          </button>
+          <button class="audit-tab" :class="audit.activeTab === 'fs' && 'active'"
+                  @click="audit.activeTab = 'fs'">
+            🔴 FS-Konflikte
+            <span class="audit-tab-count" x-text="audit.summary?.sync_error_count||0"></span>
+          </button>
+          <button class="audit-tab" :class="audit.activeTab === 'gaps' && 'active'"
+                  @click="audit.activeTab = 'gaps'">
+            📭 Daten-Lücken
+            <span class="audit-tab-count" x-text="(audit.summary?.empty_recipe_count||0) + (audit.summary?.no_image_count||0) + (audit.summary?.no_steps_count||0) + (audit.summary?.no_url_count||0) + (audit.summary?.few_ingredients_count||0) + (audit.summary?.no_description_count||0) + (audit.summary?.no_nutrition_count||0) + (audit.summary?.fs_missing_count||0) + (audit.summary?.unverified_count||0)"></span>
+          </button>
+        </div>
 
-        <section class="config-section"><div class="head"><h3>Hochzeits-Postfach</h3><button class="btn" @click="testMail('wedding')">Verbindung testen</button></div><div class="body"><label class="checkbox-line"><input type="checkbox" x-model="config.mail.wedding.enabled"> Hochzeitsinhalte aktiv</label><div class="form-grid"><div class="field"><label>IMAP-Host</label><input x-model="config.mail.wedding.imap_host"></div><div class="field"><label>Port</label><input type="number" x-model.number="config.mail.wedding.imap_port"></div><div class="field"><label>Benutzer / E-Mail</label><input x-model="config.mail.wedding.username"></div><div class="field"><label>Passwort / App-Passwort</label><input type="password" x-model="config.mail.wedding.password"></div><div class="field"><label>Ordner</label><input x-model="config.mail.wedding.folder"></div><div class="field"><label>Standard-Kategorie</label><input x-model="config.mail.wedding.default_category"></div></div><p class="test-message" x-show="testResults.mail_wedding" :class="testResults.mail_wedding && testResults.mail_wedding.ok ? 'ok' : 'err'" x-text="testResultMessage('mail_wedding')"></p></div></section>
+        <!-- ════ Tab: Daten-Lücken ════ -->
+        <div x-show="audit.activeTab === 'gaps'">
+          <!-- Verdächtig leere Rezepte: status=ok aber 0 Zutaten -->
+        <div class="audit-section" x-show="(audit.data?.empty_recipes?.length || 0) > 0">
+          <h3>📭 Verdächtig leer (<span x-text="audit.data?.empty_recipes?.length"></span>)</h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte mit Status „ok" aber 0 Zutaten — die KI hat in einem früheren Lauf nichts gefunden.
+            Häufig PDF-Header / Markdown-Bullets die der alte Prompt übersehen hat.
+            Klick „Alle neu extrahieren" setzt sie auf „pending", Worker probiert mit aktuellem Prompt.
+          </div>
+          <div style="margin-bottom: 12px;">
+            <button class="btn btn-primary btn-sm" @click="recoverEmpty()">
+              ⟳ Alle <span x-text="audit.data?.empty_recipes?.length"></span> neu extrahieren
+            </button>
+          </div>
+          <template x-for="r in (audit.data?.empty_recipes || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong>
+                  <span class="muted" style="font-size: 12px;" x-text="'· ' + r.desc_len + ' chars description'"></span>
+                </div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
 
-        <section class="config-section"><div class="head"><h3>Ablagepfade</h3><button class="btn" @click="testPaths()">Pfade prüfen</button></div><div class="body"><div class="field"><label>Rezeptordner</label><div class="input-action"><input x-model="config.paths.recipe_dir"><button class="btn" @click="openLocalBrowser(config.paths.recipe_dir, p => config.paths.recipe_dir=p, 'Rezeptordner wählen')">📂</button></div></div><div class="field"><label>Hochzeitsordner</label><div class="input-action"><input x-model="config.paths.wedding_dir"><button class="btn" @click="openLocalBrowser(config.paths.wedding_dir, p => config.paths.wedding_dir=p, 'Hochzeitsordner wählen')">📂</button></div></div><div class="form-grid"><div class="field"><label>Temporäre Dateien</label><input x-model="config.paths.temp_dir"></div><div class="field"><label>Logs</label><input x-model="config.paths.logs_dir"></div></div><p class="test-message" x-show="testResults.paths" :class="testResults.paths && testResults.paths.ok ? 'ok' : 'err'" x-text="testResultMessage('paths')"></p></div></section>
+        <!-- 🖼 Kein Bild (thumb_filename ist NULL) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.no_image?.length || 0) > 0">
+          <h3>🖼 Kein Bild (<span x-text="audit.summary?.no_image_count"></span>)
+            <span style="float:right; display:flex; gap:6px; flex-wrap:wrap;">
+              <button class="btn btn-sm" @click="bulkExtractFrames()"
+                      :disabled="audit.extractingBulk"
+                      title="Frame aus Video extrahieren — alle ohne Bild, ~1s pro Rezept">
+                <span x-show="!audit.extractingBulk">🎬 Bulk Frame-Extract (alle)</span>
+                <span x-show="audit.extractingBulk" x-text="'… ' + audit.extractProgress + '/' + audit.extractTotal + ' (Klick=Cancel)'"
+                      @click.stop="audit.extractingBulk = false"></span>
+              </button>
+              <button class="btn btn-sm" @click="bulkVerifyDetection('no_image')"
+                      title="Alle als geprüft markieren (Files bleiben)">
+                ✓ Alle als geprüft markieren
+              </button>
+              <button class="btn btn-sm btn-danger" @click="bulkDeleteDetection('no_image')"
+                      title="Alle Rezepte + Files dieser Liste löschen">
+                🗑 Alle löschen
+              </button>
+              <button class="btn btn-sm btn-primary"
+                      @click="rescrapeBulkNoImage()"
+                      :disabled="audit.rescrapingBulk"
+                      title="yt-dlp neu pullen für alle ohne Bild (~15s pro Rezept)">
+                <span x-show="!audit.rescrapingBulk">🔄 Bulk-Re-Scrape (alle)</span>
+                <span x-show="audit.rescrapingBulk" x-text="'… ' + audit.rescrapeProgress + '/' + audit.rescrapeTotal + ' (Klick=Cancel)'"
+                      @click.stop="audit.rescrapingBulk = false"></span>
+              </button>
+            </span>
+          </h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte ohne Thumbnail. Reihenfolge nach Aufwand:
+            <strong>🎬 Frame-Extract</strong> (schnellste, nutzt lokales Video) →
+            <strong>🔄 Re-Scrape</strong> (frisch von TikTok/IG) →
+            <strong>✓ markieren</strong> (nicht reparierbar) →
+            <strong>🗑 löschen</strong> (Rezept + Files weg).
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.no_image || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong></div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+                <button class="btn btn-sm" @click="extractFrame(r.id)"
+                        :disabled="audit.extractingId === r.id"
+                        title="Frame aus Video (lokal, schnell)">
+                  <span x-show="audit.extractingId !== r.id">🎬</span>
+                  <span x-show="audit.extractingId === r.id">…</span>
+                </button>
+                <label class="btn btn-sm" :title="'Eigenes Bild hochladen (max 10MB)'"
+                       style="cursor:pointer;">
+                  📤
+                  <input type="file" accept="image/jpeg,image/png,image/webp"
+                         @change="uploadThumbnail(r.id, $event.target.files[0]); $event.target.value=''"
+                         style="display:none;">
+                </label>
+                <button class="btn btn-sm btn-primary" @click="rescrapeRecipe(r.id)"
+                        :disabled="audit.rescrapingId === r.id"
+                        title="yt-dlp neu pullen">
+                  <span x-show="audit.rescrapingId !== r.id">🔄</span>
+                  <span x-show="audit.rescrapingId === r.id">…</span>
+                </button>
+                <button class="btn btn-sm" @click="verifyRecipe(r.id)"
+                        title="Als geprüft markieren">✓</button>
+                <button class="btn btn-sm btn-danger" @click="deleteRecipe(r.id, true)"
+                        title="Rezept + Files löschen">🗑</button>
+              </div>
+            </div>
+          </template>
+        </div>
 
-        <section class="config-section"><div class="head"><h3>KI-Analyse</h3><button class="btn" @click="testAi()">Provider testen</button></div><div class="body"><div class="form-grid"><div class="field"><label>Provider</label><select x-model="config.ai.provider"><option value="ollama">Ollama lokal</option><option value="openai">OpenAI-kompatibel</option></select></div><div class="field"><label>Automatisch ab Confidence</label><input type="number" min="0" max="1" step="0.05" x-model.number="config.ai.confidence_threshold"></div></div><div x-show="config.ai.provider==='ollama'" class="form-grid"><div class="field"><label>Ollama URL</label><input x-model="config.ai.ollama.url"></div><div class="field"><label>Modell</label><input x-model="config.ai.ollama.model"></div><div class="field"><label>Fallback-Modell</label><input x-model="config.ai.ollama.fallback_model"></div><div class="field"><label>Timeout Sekunden</label><input type="number" x-model.number="config.ai.ollama.timeout"></div></div><div x-show="config.ai.provider==='openai'" class="form-grid"><div class="field"><label>API-Key</label><input type="password" x-model="config.ai.openai.api_key"></div><div class="field"><label>Modell</label><input x-model="config.ai.openai.model"></div><div class="field"><label>Base URL</label><input x-model="config.ai.openai.base_url"></div><div class="field"><label>Timeout Sekunden</label><input type="number" x-model.number="config.ai.openai.timeout"></div></div><p class="test-message" x-show="testResults.ai" :class="testResults.ai && testResults.ai.ok ? 'ok' : 'err'" x-text="testResultMessage('ai')"></p></div></section>
+        <!-- 📋 Keine Schritte (Zutaten da, aber 0 steps) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.no_steps?.length || 0) > 0">
+          <h3>📋 Keine Schritte (<span x-text="audit.summary?.no_steps_count"></span>) <button class="btn btn-sm" style="float:right;" @click="bulkVerifyDetection('no_steps')" title="Alle in der Liste als geprüft markieren">✓ Alle als geprüft markieren</button><button class="btn btn-sm btn-danger" style="float:right; margin-right:6px;" @click="bulkDeleteDetection('no_steps')" title="Alle Rezepte + Files dieser Liste löschen">🗑 Alle löschen</button></h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte mit Zutaten aber leerer Schritt-Liste. KI hat keine fand oder Description war nur eine Zutatenliste.
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.no_steps || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong>
+                  <span class="muted" style="font-size: 12px;" x-text="'· ' + r.ing_count + ' Zutaten'"></span>
+                </div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
 
-        <section class="config-section"><div class="head"><h3>Download</h3><button class="btn" @click="testYtdlp()">yt-dlp testen</button></div><div class="body"><div class="form-grid"><div class="field"><label>Binary</label><input x-model="config.ytdlp.binary"></div><div class="field"><label>Cookies-Datei</label><input x-model="config.ytdlp.cookies_file"></div><div class="field"><label>Timeout Sekunden</label><input type="number" x-model.number="config.ytdlp.timeout_sec"></div><div class="field"><label>Max. Dateigröße MB</label><input type="number" x-model.number="config.ytdlp.max_filesize_mb"></div></div><p class="test-message" x-show="testResults.ytdlp" :class="testResults.ytdlp && testResults.ytdlp.ok ? 'ok' : 'err'" x-text="testResultMessage('ytdlp')"></p></div></section>
+        <!-- 🔗 Keine URL (manuell angelegt oder Scraper-Bug) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.no_url?.length || 0) > 0">
+          <h3>🔗 Keine URL (<span x-text="audit.summary?.no_url_count"></span>) <button class="btn btn-sm" style="float:right;" @click="bulkVerifyDetection('no_url')" title="Alle in der Liste als geprüft markieren">✓ Alle als geprüft markieren</button><button class="btn btn-sm btn-danger" style="float:right; margin-right:6px;" @click="bulkDeleteDetection('no_url')" title="Alle Rezepte + Files dieser Liste löschen">🗑 Alle löschen</button></h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte ohne TikTok/Insta-URL. Meist manuell angelegt — kein Re-Scrape möglich.
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.no_url || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong></div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
 
-        <section class="config-section"><div class="head"><h3>Zugang & Web</h3></div><div class="body"><div class="form-grid"><div class="field"><label>Benutzername</label><input x-model="config.web.username"></div><div class="field"><label>Neues Passwort</label><input type="password" x-model="config.web.password"><small>Mindestens 12 Zeichen; Maske unverändert lassen, wenn das Passwort bleiben soll.</small></div><div class="field"><label>Bind Host</label><input x-model="config.web.bind_host"></div><div class="field"><label>Port</label><input type="number" x-model.number="config.web.bind_port"></div></div></div></section>
+        <!-- 🥄 Nur 1-2 Zutaten (verdächtig wenig) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.few_ingredients?.length || 0) > 0">
+          <h3>🥄 Nur 1-2 Zutaten (<span x-text="audit.summary?.few_ingredients_count"></span>) <button class="btn btn-sm" style="float:right;" @click="bulkVerifyDetection('few_ingredients')" title="Alle in der Liste als geprüft markieren">✓ Alle als geprüft markieren</button><button class="btn btn-sm btn-danger" style="float:right; margin-right:6px;" @click="bulkDeleteDetection('few_ingredients')" title="Alle Rezepte + Files dieser Liste löschen">🗑 Alle löschen</button></h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte mit nur 1-2 Zutaten. Möglich, aber meist Halbextrakt der KI — manuell editieren oder neu extrahieren.
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.few_ingredients || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong>
+                  <span class="muted" style="font-size: 12px;" x-text="'· ' + r.ing_count + ' Zutat' + (r.ing_count === 1 ? '' : 'en')"></span>
+                </div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
 
-        <section class="config-section"><div class="head"><h3>Wartung & Datenbanksicherung</h3><button class="btn" @click="loadMaintenance()">Status laden</button></div><div class="body"><div class="button-row"><button class="btn" @click="runDbBackup()" :disabled="maintenanceBusy">Datenbank jetzt sichern</button><button class="btn" @click="cleanupLogs()" :disabled="maintenanceBusy">Alte Logs löschen</button></div><pre class="maintenance-output" x-show="maintenanceOutput" x-text="maintenanceOutput"></pre><div class="backup-list" x-show="maintenance && maintenance.tiers"><template x-for="(files,tier) in (maintenance && maintenance.tiers ? maintenance.tiers : {})" :key="tier"><div><strong x-text="tier"></strong><span x-text="files.length + ' Sicherungen'"></span></div></template></div></div></section>
+        <!-- 📝 Keine Beschreibung (description leer/<20 chars) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.no_description?.length || 0) > 0">
+          <h3>📝 Keine Beschreibung (<span x-text="audit.summary?.no_description_count"></span>) <button class="btn btn-sm" style="float:right;" @click="bulkVerifyDetection('no_description')" title="Alle in der Liste als geprüft markieren">✓ Alle als geprüft markieren</button><button class="btn btn-sm btn-danger" style="float:right; margin-right:6px;" @click="bulkDeleteDetection('no_description')" title="Alle Rezepte + Files dieser Liste löschen">🗑 Alle löschen</button></h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte ohne (oder mit fast leerer) Beschreibung. KI kann nichts extrahieren — info.json oder .txt-Datei fehlt.
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.no_description || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong>
+                  <span class="muted" style="font-size: 12px;" x-text="'· ' + r.desc_len + ' chars'"></span>
+                </div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- ☐ Zutaten nicht verifiziert -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.unverified?.length || 0) > 0">
+          <h3>☐ Nicht verifiziert (<span x-text="audit.summary?.unverified_count"></span>)
+            <button class="btn btn-sm btn-primary" style="float:right;"
+                    @click="verifyBulkUnverified()"
+                    :disabled="audit.verifyingBulk">
+              <span x-show="!audit.verifyingBulk">✓ Alle als geprüft markieren</span>
+              <span x-show="audit.verifyingBulk">…</span>
+            </button>
+          </h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte mit ≥ 1 Zutat, die noch nicht manuell als ok markiert wurden.
+            Klick „Ansehen" → im Modal ✓-Button. Oder pro Eintrag das ✓-Icon
+            für schnelle Einzel-Verifikation. Bulk-Button setzt alle auf
+            einmal (Vorsicht: pauschal).
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.unverified || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong>
+                  <span class="muted" style="font-size: 12px;"
+                        x-text="'· ' + r.ing_count + ' Zutaten, ' + r.step_count + ' Schritte'"></span>
+                </div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+                <button class="btn btn-sm btn-primary" @click="quickVerify(r.id)"
+                        title="Direkt als geprüft markieren">✓</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 📂 FS-Pfad fehlt (DB zeigt auf nicht-existenten Folder) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.fs_missing?.length || 0) > 0">
+          <h3>📂 FS-Pfad fehlt (<span x-text="audit.summary?.fs_missing_count"></span>)
+            <span style="float:right; display:flex; gap:6px;">
+              <button class="btn btn-sm btn-primary"
+                      @click="healFsPaths()"
+                      :disabled="audit.healingFs">
+                <span x-show="!audit.healingFs">🔧 Auto-Heal</span>
+                <span x-show="audit.healingFs">… läuft</span>
+              </button>
+              <button class="btn btn-sm btn-danger"
+                      @click="deleteUnresolvableFsMissing()"
+                      :disabled="audit.deletingUnresolvable"
+                      title="Alle 'Kein FS-Match'-Rezepte aus DB löschen (Files unangetastet)">
+                <span x-show="!audit.deletingUnresolvable">🗑 Tote DB-Einträge</span>
+                <span x-show="audit.deletingUnresolvable">… löscht</span>
+              </button>
+            </span>
+          </h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            DB-Pfad zeigt auf Folder der nicht (mehr) existiert. Auto-Heal
+            sucht passenden FS-Folder (Underscore↔Space, Case). Bei
+            'Kein FS-Match' ist der Folder weg — entweder im FS anlegen
+            oder den DB-Eintrag löschen (🗑-Button am Eintrag oder Bulk).
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.fs_missing || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong></div>
+                <div class="muted" style="font-size: 12px;">
+                  DB: <code x-text="r.folder_path"></code>
+                </div>
+                <div class="muted" style="font-size: 12px;" x-show="r.resolved_path">
+                  FS: <code style="color: var(--accent);" x-text="r.resolved_path"></code> ← Match
+                </div>
+                <div class="muted" style="font-size: 12px; color: #c66;" x-show="!r.resolved_path">
+                  ✕ Kein FS-Match — manuell prüfen
+                </div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+                <button class="btn btn-sm btn-danger"
+                        x-show="!r.resolved_path"
+                        @click="deleteRecipeDbOnly(r.id, r.name)"
+                        title="Nur DB-Eintrag löschen, FS unangetastet">🗑</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 💥 Endgültig fehlgeschlagene Downloads (>= MAX Versuche, kein Rezept) -->
+        <div class="audit-section" x-show="(audit.data?.failed_downloads?.length || 0) > 0">
+          <h3>💥 Endgültig fehlgeschlagen (<span x-text="audit.summary?.failed_download_count"></span>)</h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Download scheiterte mehrfach (z.B. IG-Login, gelöschtes Video).
+            🔄 Retry setzt den Zähler zurück — der nächste Lauf versucht es
+            automatisch neu (Mail nicht nötig). 🗑 Verwerfen sperrt die URL dauerhaft.
+          </div>
+          <template x-for="f in (audit.data?.failed_downloads || [])" :key="f.url">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><code style="font-size: 12px; word-break: break-all;" x-text="f.url"></code></div>
+                <div class="muted" style="font-size: 12px;">
+                  <span x-text="f.attempts"></span> Versuche ·
+                  <span x-text="f.last_error || 'kein Fehlertext'"></span>
+                </div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="retryFailedDownload(f.url)" title="Zähler zurücksetzen — nächster Lauf versucht es neu">🔄</button>
+                <button class="btn btn-sm btn-danger" @click="discardFailedDownload(f.url)" title="Dauerhaft verwerfen (URL wird nie wieder versucht)">🗑</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- ⚡ Nährwerte fehlen (>= 3 Zutaten aber kein calories_per_serving) -->
+        <div class="audit-section" x-show="(audit.data?.data_gaps?.no_nutrition?.length || 0) > 0">
+          <h3>⚡ Nährwerte fehlen (<span x-text="audit.summary?.no_nutrition_count"></span>)
+            <span style="float:right; display:flex; gap:6px;">
+              <button class="btn btn-sm" @click="bulkVerifyDetection('no_nutrition')"
+                      title="Alle als geprüft markieren (aus Audit entfernen)">
+                ✓ Alle als geprüft markieren
+              </button>
+              <button class="btn btn-sm btn-primary"
+                      @click="bulkComputeNutrition()"
+                      :disabled="audit.computingNutritionBulk">
+                <span x-show="!audit.computingNutritionBulk">⚡ Bis zu 50 berechnen</span>
+                <span x-show="audit.computingNutritionBulk">… läuft</span>
+              </button>
+            </span>
+          </h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Rezepte mit ≥ 3 Zutaten ohne KI-geschätzte Nährwerte. Bulk-Berechnung
+            macht max. 50 in einem Lauf (~$0.025, ~30s) — bei mehr wiederholt klicken.
+          </div>
+          <template x-for="r in (audit.data?.data_gaps?.no_nutrition || [])" :key="r.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="r.name"></strong>
+                  <span class="muted" style="font-size: 12px;" x-text="'· ' + r.ing_count + ' Zutaten'"></span>
+                </div>
+                <div class="muted" style="font-size: 12px;"><code x-text="r.folder_path"></code></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm" @click="openRecipe(r.id)">Ansehen</button>
+              </div>
+            </div>
+          </template>
+        </div>
+        </div>
+        <!-- ════ /Tab: Daten-Lücken ════ -->
+
+        <!-- ════ Tab: FS-Konflikte ════ -->
+        <div x-show="audit.activeTab === 'fs'">
+        <!-- FS-Konflikte (vom letzten Sync) -->
+        <div class="audit-section" x-show="(audit.data?.sync_errors?.length || 0) > 0">
+          <h3>🔴 FS-Sync-Konflikte (<span x-text="audit.data?.sync_errors?.length"></span>)</h3>
+          <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+            Diese Folder konnten beim letzten Sync nicht in die DB. Meist URL-Dubletten —
+            ein anderer Folder hat schon die gleiche TikTok/Insta-URL.
+            Klick „🔍 Vergleichen" um beide Folder Side-by-Side zu sehen und zu entscheiden welcher behalten wird.
+          </div>
+          <template x-for="se in (audit.data?.sync_errors || [])" :key="se.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><code x-text="se.folder_path"></code></div>
+                <div class="muted" style="font-size: 12px;" x-text="se.error_msg"></div>
+                <div class="muted" style="font-size: 12px;" x-show="se.conflict_folder">
+                  → Konflikt mit:
+                  <code x-text="se.conflict_folder"></code>
+                  (<span x-text="se.conflict_name"></span>)
+                </div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm btn-primary" @click="openFsCompare(se)"
+                        x-show="se.conflict_with_id">
+                  🔍 Vergleichen
+                </button>
+                <button class="btn btn-sm btn-danger" @click="deleteFsConflictFolder(se.folder_path)">
+                  🗑 FS-Folder löschen
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+        </div>
+        <!-- ════ /Tab: FS-Konflikte ════ -->
+
+        <!-- ════ Tab: KI-Findings ════ -->
+        <div x-show="audit.activeTab === 'ai'">
+        <!-- KI-Findings: Falsche Kategorie -->
+        <div class="audit-section" x-show="(audit.data?.ai_category_findings?.length || 0) > 0">
+          <h3>🤖 Falsche Kategorie (<span x-text="audit.data?.ai_category_findings?.length"></span>)
+            <button class="btn btn-sm btn-primary" style="float:right;"
+                    @click="applyAllFindings('category_mismatch')"
+                    :disabled="audit.bulkApplying">
+              Alle anwenden
+            </button>
+          </h3>
+          <template x-for="f in (audit.data?.ai_category_findings || [])" :key="f.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><strong x-text="f.recipe_name"></strong></div>
+                <div class="muted" style="font-size: 12px;">
+                  aktuell: <code x-text="f.current_value"></code>
+                  →
+                  vorgeschlagen: <code style="color: var(--accent);" x-text="f.suggested_value"></code>
+                </div>
+                <div class="muted" style="font-size: 12px;" x-text="f.reason"></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm btn-primary" @click="applyFinding(f)" title="Folder in neue Kategorie verschieben">
+                  ✓ Anwenden
+                </button>
+                <button class="btn btn-sm" @click="openRecipe(f.recipe_id)">Ansehen</button>
+                <button class="btn btn-sm" @click="resolveFinding(f.id)">Ignorieren</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- KI-Findings: Schlechter Name -->
+        <div class="audit-section" x-show="(audit.data?.ai_name_findings?.length || 0) > 0">
+          <h3>🤖 Schlechter Name (<span x-text="audit.data?.ai_name_findings?.length"></span>)
+            <button class="btn btn-sm btn-primary" style="float:right;"
+                    @click="applyAllFindings('name_mismatch')"
+                    :disabled="audit.bulkApplying">
+              Alle anwenden
+            </button>
+          </h3>
+          <template x-for="f in (audit.data?.ai_name_findings || [])" :key="f.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><span class="muted" style="font-size:12px;">Rezept:</span> <span x-text="f.recipe_name || '(unbenannt)'"></span></div>
+                <div>aktuell: <code x-text="f.current_value || '(leer)'"></code></div>
+                <div>vorgeschlagen: <code style="color: var(--accent);" x-text="f.suggested_value"></code></div>
+                <div class="muted" style="font-size: 12px;" x-text="f.reason"></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm btn-primary" @click="applyFinding(f)" title="recipe.name updaten + Folder umbenennen + info.json">
+                  ✓ Anwenden
+                </button>
+                <button class="btn btn-sm" @click="openRecipe(f.recipe_id)">Ansehen</button>
+                <button class="btn btn-sm" @click="resolveFinding(f.id)">Ignorieren</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- KI-Findings: Falscher Folder-Name -->
+        <div class="audit-section" x-show="(audit.data?.ai_folder_findings?.length || 0) > 0">
+          <h3>🤖 Falscher Ordner-Name (<span x-text="audit.data?.ai_folder_findings?.length"></span>)
+            <button class="btn btn-sm btn-primary" style="float:right;"
+                    @click="applyAllFindings('folder_mismatch')"
+                    :disabled="audit.bulkApplying">
+              Alle anwenden
+            </button>
+          </h3>
+          <template x-for="f in (audit.data?.ai_folder_findings || [])" :key="f.id">
+            <div class="audit-finding">
+              <div class="audit-finding-main">
+                <div><span class="muted" style="font-size:12px;">Rezept:</span> <span x-text="f.recipe_name"></span></div>
+                <div>aktuell: <code x-text="f.current_value || '(leer)'"></code></div>
+                <div>vorgeschlagen: <code style="color: var(--accent);" x-text="f.suggested_value"></code></div>
+                <div class="muted" style="font-size: 12px;" x-text="f.reason"></div>
+              </div>
+              <div class="audit-finding-actions">
+                <button class="btn btn-sm btn-primary" @click="applyFinding(f)" title="Folder auf FS umbenennen, recipe.name bleibt">
+                  ✓ Anwenden
+                </button>
+                <button class="btn btn-sm" @click="openRecipe(f.recipe_id)">Ansehen</button>
+                <button class="btn btn-sm" @click="resolveFinding(f.id)">Ignorieren</button>
+              </div>
+            </div>
+          </template>
+        </div>
+        </div>
+        <!-- ════ /Tab: KI-Findings ════ -->
+
+        <!-- Loading / leerer Zustand (global, außerhalb der Tabs) -->
+        <div x-show="!audit.data && audit.loading" class="empty-state">
+          Scanne Rezepte<span x-show="audit.withAi"> + frage KI</span>…
+        </div>
+        <div x-show="!audit.data && !audit.loading" class="empty-state">
+          Klick „Neu scannen" um zu starten.
+        </div>
+
+        <!-- ════ Tab: Duplikate ════ -->
+        <div x-show="audit.activeTab === 'duplicates'">
+        <!-- 1) Exakte Dubletten -->
+        <div class="audit-section" x-show="audit.data?.exact_duplicates?.length > 0">
+          <h3>Exakte Namens-Dubletten <span class="muted" x-text="'(' + audit.data.exact_duplicates.length + ' Gruppen)'"></span></h3>
+          <template x-for="g in audit.data.exact_duplicates" :key="g.name">
+            <div class="audit-group">
+              <div class="audit-group-head">
+                <code x-text="g.name"></code> · <span class="muted" x-text="g.items.length + '× indiziert'"></span>
+                <button x-show="g.items.length === 2" class="btn btn-secondary btn-sm" style="float:right;"
+                        @click="auditMerge(g.items[1].id, g.items[0].id)" title="Verschmilzt #2 in #1, behält #1">
+                  ⇆ Mergen (#<span x-text="g.items[1].id"></span> → #<span x-text="g.items[0].id"></span>)
+                </button>
+              </div>
+              <template x-for="r in g.items" :key="r.id">
+                <div class="audit-item">
+                  <span class="audit-item-id">#<span x-text="r.id"></span></span>
+                  <span class="audit-item-name" x-text="r.name"></span>
+                  <span class="audit-item-folder muted" x-text="r.folder_path"></span>
+                  <div class="audit-actions-inline">
+                    <button class="btn btn-secondary btn-sm" @click="openRecipe(r.id)">Öffnen</button>
+                    <button class="btn-icon btn-danger" @click="auditDelete(r)" title="Löschen (DB + Files)">🗑️</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <!-- 2) URL-Dubletten -->
+        <div class="audit-section" x-show="audit.data?.url_duplicates?.length > 0">
+          <h3>URL-Dubletten</h3>
+          <template x-for="g in audit.data.url_duplicates" :key="g.url">
+            <div class="audit-group">
+              <div class="audit-group-head">
+                <code x-text="g.url"></code>
+                <button x-show="g.items.length === 2" class="btn btn-secondary btn-sm" style="float:right;"
+                        @click="auditMerge(g.items[1].id, g.items[0].id)">
+                  ⇆ Mergen
+                </button>
+              </div>
+              <template x-for="r in g.items" :key="r.id">
+                <div class="audit-item">
+                  <span class="audit-item-id">#<span x-text="r.id"></span></span>
+                  <span class="audit-item-name" x-text="r.name"></span>
+                  <div class="audit-actions-inline">
+                    <button class="btn btn-secondary btn-sm" @click="openRecipe(r.id)">Öffnen</button>
+                    <button class="btn-icon btn-danger" @click="auditDelete(r)" title="Löschen">🗑️</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <!-- 3) Folder-Path-Dubletten -->
+        <div class="audit-section" x-show="audit.data?.folder_duplicates?.length > 0">
+          <h3 class="audit-warn">⚠️ Folder-Path-Dubletten</h3>
+          <div class="muted" style="margin-bottom: 8px; font-size: 12px;">
+            DB-Inkonsistenz — Schema hat UNIQUE-Constraint, sollte nie passieren. Bitte manuell prüfen.
+          </div>
+          <template x-for="g in audit.data.folder_duplicates" :key="g.folder">
+            <div class="audit-group">
+              <div class="audit-group-head"><code x-text="g.folder"></code></div>
+              <template x-for="r in g.items" :key="r.id">
+                <div class="audit-item">
+                  <span class="audit-item-id">#<span x-text="r.id"></span></span>
+                  <span class="audit-item-name" x-text="r.name"></span>
+                  <div class="audit-actions-inline">
+                    <button class="btn btn-secondary btn-sm" @click="openRecipe(r.id)">Öffnen</button>
+                    <button class="btn-icon btn-danger" @click="auditDelete(r)" title="Löschen">🗑️</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <!-- 4) Ähnliche Namen -->
+        <div class="audit-section" x-show="audit.data?.similar_clusters?.length > 0">
+          <h3>Ähnliche Namen <span class="muted">(potentielle Tippfehler)</span></h3>
+          <template x-for="(c, ci) in audit.data.similar_clusters" :key="ci">
+            <div>
+              <div x-show="c.warning" class="audit-warning" x-text="c.warning"></div>
+              <div class="audit-group" x-show="!c.warning">
+                <div class="audit-group-head">
+                  Cluster: <template x-for="(n, ni) in c.names || []" :key="ni"><code x-text="n" style="margin-right: 6px;"></code></template>
+                  <button x-show="(c.items || []).length === 2" class="btn btn-secondary btn-sm" style="float:right;"
+                          @click="auditMerge(c.items[1].id, c.items[0].id)">
+                    ⇆ Mergen
+                  </button>
+                </div>
+                <template x-for="r in c.items || []" :key="r.id">
+                  <div class="audit-item">
+                    <span class="audit-item-id">#<span x-text="r.id"></span></span>
+                    <span class="audit-item-name" x-text="r.name"></span>
+                    <span class="audit-item-folder muted" x-text="r.folder_path"></span>
+                    <div class="audit-actions-inline">
+                      <button class="btn btn-secondary btn-sm" @click="auditRenamePrompt(r)" title="Umbenennen">✏️</button>
+                      <button class="btn btn-secondary btn-sm" @click="openRecipe(r.id)">Öffnen</button>
+                      <button class="btn-icon btn-danger" @click="auditDelete(r)" title="Löschen">🗑️</button>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 5) Schlechte Namen -->
+        <div class="audit-section" x-show="audit.data?.bad_names?.length > 0">
+          <h3>Schlechte / unklare Namen <span class="muted" x-text="'(' + (audit.data?.bad_names?.length || 0) + ')'"></span></h3>
+          <template x-for="b in groupedBadNames()" :key="b.reason">
+            <div class="audit-group">
+              <div class="audit-group-head" x-text="b.reason + ' (' + b.items.length + ')'"></div>
+              <template x-for="entry in b.items" :key="entry.recipe.id">
+                <div class="audit-item audit-item-bad">
+                  <span class="audit-item-id">#<span x-text="entry.recipe.id"></span></span>
+                  <span class="audit-item-name" x-text="entry.recipe.name || '(leer)'"></span>
+                  <span class="audit-item-suggest" x-show="audit.data.ai_suggestions[entry.recipe.id]">
+                    💡 <span x-text="audit.data.ai_suggestions[entry.recipe.id]"></span>
+                  </span>
+                  <div class="audit-actions-inline">
+                    <button class="btn btn-primary btn-sm"
+                            x-show="audit.data.ai_suggestions[entry.recipe.id]"
+                            @click="auditApplySuggestion(entry.recipe, audit.data.ai_suggestions[entry.recipe.id])"
+                            title="KI-Vorschlag als neuen Namen übernehmen">
+                      ✓ Übernehmen
+                    </button>
+                    <button class="btn btn-secondary btn-sm" @click="auditRenamePrompt(entry.recipe)" title="Eigenen Namen eingeben">✏️</button>
+                    <button class="btn btn-secondary btn-sm" @click="openRecipe(entry.recipe.id)">Öffnen</button>
+                    <button class="btn-icon btn-danger" @click="auditDelete(entry.recipe)" title="Löschen">🗑️</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+        </div>
+        <!-- ════ /Tab: Duplikate ════ -->
+
+        <!-- Alles sauber (global, nur wenn alle Counter 0) -->
+        <div x-show="audit.data && (audit.summary?.exact_count || 0) === 0 && (audit.summary?.url_count || 0) === 0 && (audit.summary?.similar_count || 0) === 0 && (audit.summary?.bad_count || 0) === 0 && (audit.summary?.sync_error_count || 0) === 0 && (audit.summary?.ai_category_count || 0) === 0 && (audit.summary?.ai_name_count || 0) === 0 && (audit.summary?.ai_folder_count || 0) === 0 && (audit.summary?.empty_recipe_count || 0) === 0" class="empty-state">
+          ✓ Keine Findings. Alles sauber.
+        </div>
       </div>
-      <div class="mobile-savebar"><button class="btn btn-primary" @click="saveConfig()" :disabled="configSaving">Einstellungen speichern</button></div>
     </section>
+
+    <!-- ========== PAPIERKORB ========== -->
+    <section x-show="page==='trash'">
+      <div class="page-head">
+        <div>
+          <h1>🗑 Papierkorb</h1>
+          <div class="subtitle">
+            Gelöschte Rezepte. Werden nach 30 Tagen endgültig entfernt.
+            <span x-show="trash.totalCount > 0" x-text="'· ' + trash.totalCount + ' Rezepte'"></span>
+          </div>
+        </div>
+        <div class="flex" style="gap:6px;">
+          <button class="btn btn-secondary" @click="loadTrash()" :disabled="trash.loading">↻ Aktualisieren</button>
+          <button class="btn btn-danger" @click="emptyTrash()"
+                  :disabled="trash.emptying || trash.totalCount === 0"
+                  title="Alle Rezepte im Papierkorb endgültig löschen (mit Files)">
+            <span x-show="!trash.emptying">🗑 Papierkorb leeren</span>
+            <span x-show="trash.emptying">… leeren</span>
+          </button>
+        </div>
+      </div>
+
+      <template x-if="trash.totalCount === 0 && !trash.loading">
+        <div class="card" style="text-align:center; padding:40px 20px;">
+          <div style="font-size:48px; opacity:0.4;">🗑</div>
+          <div class="muted" style="margin-top:10px;">Papierkorb ist leer.</div>
+        </div>
+      </template>
+
+      <template x-if="trash.totalCount > 0">
+        <div class="card">
+          <div class="audit-section">
+            <template x-for="r in trash.items" :key="r.id">
+              <div class="audit-finding" style="align-items:center;">
+                <div class="audit-finding-main" style="min-width:0;">
+                  <div><strong x-text="r.name"></strong></div>
+                  <div class="muted" style="font-size:12px;">
+                    <span x-text="r.type"></span> · <span x-text="r.category"></span>
+                    · gelöscht <span x-text="formatTs(r.deleted_at)"></span>
+                    <span x-show="r.days_until_purge > 0"
+                          :style="`color: ${r.days_until_purge < 7 ? 'var(--accent)' : 'var(--fg-mute)'}; margin-left:6px;`">
+                      · noch <span x-text="r.days_until_purge"></span> Tage
+                    </span>
+                    <span x-show="r.files_deleted" class="muted" style="margin-left:6px;" title="Files wurden beim Löschen mit entfernt">
+                      · 📁 Files weg
+                    </span>
+                  </div>
+                  <div class="muted" style="font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                       x-text="r.folder_path" :title="r.folder_path"></div>
+                </div>
+                <div class="audit-finding-actions">
+                  <button class="btn btn-sm btn-primary" @click="restoreRecipe(r.id)"
+                          title="Wiederherstellen — Rezept ist wieder aktiv">
+                    ↺ Wiederherstellen
+                  </button>
+                  <button class="btn btn-sm btn-danger" @click="purgeRecipe(r.id, r.name)"
+                          title="Endgültig löschen (Files + DB)">🗑</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+    </section>
+
   </main>
 
-  <!-- Rezeptdetail -->
-  <div class="modal-backdrop" x-cloak x-show="recipeDetail" @click.self="recipeDetail=null">
-    <section class="modal recipe-modal" role="dialog" aria-modal="true" aria-labelledby="recipe-detail-title">
-      <div class="modal-head"><div><div class="recipe-tags"><span x-text="recipeDetail && recipeDetail.type"></span><span x-text="recipeDetail && recipeDetail.category"></span></div><h2 id="recipe-detail-title" x-text="recipeDetail && recipeDetail.name"></h2></div><button class="btn btn-ghost modal-close" @click="recipeDetail=null" aria-label="Schließen">×</button></div>
-      <div class="recipe-detail-media" x-show="recipeDetail && recipeDetail.has_media">
-        <template x-if="recipeDetail && recipeDetail.media_kind==='video'"><video controls playsinline preload="metadata" :src="recipeDetail.media_url"></video></template>
-        <template x-if="recipeDetail && recipeDetail.media_kind==='image'"><img :src="recipeDetail.media_url" :alt="recipeDetail.name"></template>
-        <template x-if="recipeDetail && recipeDetail.media_kind==='pdf'"><iframe :src="recipeDetail.media_url" title="Rezept-PDF"></iframe></template>
+  <!-- FS-Konflikt-Compare-Modal: Side-by-Side beider Folder -->
+  <div x-cloak x-show="fsCompare.show" class="modal-backdrop" @click.self="fsCompare.show = false" x-transition.opacity>
+    <div class="modal modal-wide fs-compare-modal">
+      <div class="modal-head">
+        <h3>🔍 FS-Konflikt-Vergleich</h3>
+        <button class="btn-icon" @click="fsCompare.show = false">✕</button>
       </div>
-      <div class="recipe-detail-body"><h3>Beschreibung</h3><p class="recipe-description" x-text="recipeDetail && (recipeDetail.description || 'Keine Beschreibung hinterlegt.')"></p><div class="detail-meta"><span x-text="recipeDetail && formatDateTime(recipeDetail.processed_at)"></span><a x-show="recipeDetail && recipeDetail.source_url" :href="recipeDetail && recipeDetail.source_url" target="_blank" rel="noopener noreferrer">Original öffnen ↗</a></div></div>
-    </section>
-  </div>
+      <div class="modal-body fs-compare-body">
+        <!-- Links: in-DB-Rezept -->
+        <div class="fs-compare-col">
+          <div class="fs-compare-head">
+            <span class="pill pill-ok">In DB</span>
+            <strong x-text="fsCompare.dbRecipe?.name || '…'"></strong>
+          </div>
+          <div x-show="fsCompare.loadingDb" class="muted">Wird geladen…</div>
+          <div x-show="!fsCompare.loadingDb && !fsCompare.dbRecipe" class="muted">
+            Kein DB-Match angegeben — möglicherweise wurde der Konflikt aus
+            anderem Grund (z.B. fehlende info.json, defekter Folder) gelistet.
+            Schau dir den FS-Folder rechts an + ggf. „Aus DB entfernen" wenn
+            er nicht eingelesen werden soll.
+          </div>
+          <template x-if="fsCompare.dbRecipe">
+            <div class="fs-compare-content">
+              <div class="fs-compare-meta">
+                <div><strong>Folder:</strong> <code x-text="fsCompare.dbRecipe.folder_path"></code></div>
+                <div><strong>URL:</strong> <a :href="fsCompare.dbRecipe.url" target="_blank" x-text="fsCompare.dbRecipe.url"></a></div>
+                <div x-show="fsCompare.dbRecipe.type || fsCompare.dbRecipe.category">
+                  <strong>Kategorie:</strong>
+                  <span x-text="(fsCompare.dbRecipe.type || '?') + ' / ' + (fsCompare.dbRecipe.category || '?')"></span>
+                </div>
+                <div><strong>Zutaten:</strong> <span x-text="fsCompare.dbRecipe.ingredients?.length || 0"></span></div>
+              </div>
+              <div class="fs-compare-desc">
+                <strong>Beschreibung:</strong>
+                <pre x-text="(fsCompare.dbRecipe.description || '').substring(0, 1500)"></pre>
+              </div>
+              <div class="fs-compare-actions">
+                <button class="btn btn-secondary btn-sm" @click="openRecipe(fsCompare.dbRecipe.id); fsCompare.show = false">
+                  Im Detail-Modal öffnen
+                </button>
+                <button class="btn btn-danger btn-sm" @click="deleteFsCompareDb()">
+                  🗑 DB-Rezept + Folder löschen
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
 
-  <!-- Log -->
-  <div class="modal-backdrop" x-cloak x-show="currentLog" @click.self="currentLog=''">
-    <section class="modal log-modal" role="dialog" aria-modal="true"><div class="modal-head"><h2>Job-Log</h2><button class="btn btn-ghost modal-close" @click="currentLog=''" aria-label="Schließen">×</button></div><pre x-text="currentLog"></pre></section>
-  </div>
-
-  <!-- Historie bearbeiten -->
-  <template x-if="editingItem">
-    <div class="modal-backdrop" @click.self="editingItem=null">
-      <section class="modal" role="dialog" aria-modal="true"><div class="modal-head"><h2>Eintrag bearbeiten</h2><button class="btn btn-ghost modal-close" @click="editingItem=null" aria-label="Schließen">×</button></div><div class="field"><label>Name</label><input x-model="editingItem.name"></div><template x-if="editingItem.content_type==='recipe'"><div class="form-grid"><div class="field"><label>Typ</label><select x-model="editingItem.type"><template x-for="type in recipeTypes" :key="type"><option :value="type" x-text="type"></option></template></select></div><div class="field"><label>Kategorie</label><input x-model="editingItem.category"></div></div></template><template x-if="editingItem.content_type==='wedding'"><div class="field"><label>Kategorie</label><select x-model="editingItem.category"><template x-for="cat in weddingCategories" :key="cat"><option :value="cat" x-text="cat"></option></template></select></div></template><div class="button-row modal-actions"><button class="btn" @click="editingItem=null">Abbrechen</button><button class="btn btn-primary" @click="saveEditItem()">Speichern</button></div></section>
+        <!-- Rechts: FS-Konflikt-Folder -->
+        <div class="fs-compare-col">
+          <div class="fs-compare-head">
+            <span class="pill pill-warn">FS (nicht in DB)</span>
+            <strong x-text="fsCompare.fsPreview?.info?.name || fsCompare.fsPreview?.folder_name || '…'"></strong>
+          </div>
+          <div x-show="fsCompare.loadingFs" class="muted">Wird geladen…</div>
+          <div x-show="!fsCompare.loadingFs && !fsCompare.fsPreview" class="muted">
+            Folder-Preview konnte nicht geladen werden — Folder fehlt oder nicht zugreifbar.
+          </div>
+          <template x-if="fsCompare.fsPreview">
+            <div class="fs-compare-content">
+              <div class="fs-compare-meta">
+                <div><strong>Folder:</strong> <code x-text="fsCompare.fsPreview.folder_path"></code></div>
+                <div x-show="fsCompare.fsPreview.info?.url">
+                  <strong>URL:</strong>
+                  <a :href="fsCompare.fsPreview.info.url" target="_blank" x-text="fsCompare.fsPreview.info.url"></a>
+                </div>
+                <div><strong>Medien:</strong>
+                  <template x-for="m in fsCompare.fsPreview.media" :key="m.name">
+                    <span class="pill" style="margin-right: 4px;" x-text="m.name + ' (' + Math.round(m.size/1024) + 'KB)'"></span>
+                  </template>
+                </div>
+              </div>
+              <div class="fs-compare-desc">
+                <strong>Beschreibung:</strong>
+                <pre x-text="(fsCompare.fsPreview.description || '— keine Beschreibung gefunden —').substring(0, 1500)"></pre>
+              </div>
+              <div class="fs-compare-actions">
+                <button class="btn btn-danger btn-sm" @click="deleteFsCompareFs()">
+                  🗑 FS-Folder löschen
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
     </div>
-  </template>
-
-  <!-- Lokaler Browser -->
-  <div class="modal-backdrop" x-cloak x-show="browser.show" @click.self="browserCancel()">
-    <section class="modal browser-modal" role="dialog" aria-modal="true"><div class="modal-head"><h2 x-text="browser.title"></h2><button class="btn btn-ghost modal-close" @click="browserCancel()" aria-label="Schließen">×</button></div><div class="browser-path mono" x-text="browser.currentPath || 'Erlaubte Pfade'"></div><div class="browser-actions"><button class="btn" x-show="browser.parent!==null" @click="loadBrowserPath(browser.parent)">← Eine Ebene hoch</button><button class="btn" @click="browserMkdir()" x-show="browser.currentPath">Neuer Ordner</button></div><div class="browser-list"><template x-for="entry in browser.entries" :key="entry.path"><button class="browser-entry" @click="entry.is_dir && loadBrowserPath(entry.path)"><span>📁</span><strong x-text="entry.name"></strong></button></template><div class="muted" x-show="!browser.loading && browser.entries.length===0">Keine Unterordner.</div></div><div class="button-row modal-actions"><button class="btn" @click="browserCancel()">Abbrechen</button><button class="btn btn-primary" @click="browserPick()" :disabled="!browser.currentPath">Diesen Ordner wählen</button></div></section>
   </div>
 
-  <div class="toast" x-cloak x-show="toast.show" x-transition :class="toast.type" role="status" x-text="toast.message"></div>
+  <!-- Rezept-Detail-Modal -->
+  <div x-cloak x-show="recipeDetail.show" class="modal-backdrop" @click.self="closeRecipeDetail()">
+    <div class="modal modal-wide" :class="recipeDetail.cookMode && 'cook-mode'" @click.stop x-show="recipeDetail.data">
+      <div class="modal-header">
+        <h3 x-text="recipeDetail.data?.name || ''"></h3>
+        <div style="display:flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-right: 48px;">
+          <span x-show="recipeDetail.wakeLockActive" class="wake-lock-indicator" title="Bildschirm bleibt wach">🔆 wach</span>
+          <!-- Re-Scrape: yt-dlp nochmal für die URL — frische Caption + Bild -->
+          <button class="btn btn-secondary btn-sm"
+                  x-show="!recipeDetail.cookMode && recipeDetail.data?.url"
+                  @click="rescrapeFromDetailModal()"
+                  :disabled="recipeDetail.rescraping"
+                  title="URL erneut abrufen — frische Caption + Thumbnail">
+            <span x-show="!recipeDetail.rescraping">🔄</span>
+            <span x-show="recipeDetail.rescraping">…</span>
+          </button>
+          <!-- Drucken / PDF: öffnet print-View in neuem Tab, Browser-cmd+P → PDF -->
+          <button class="btn btn-secondary btn-sm"
+                  x-show="!recipeDetail.cookMode"
+                  @click="printRecipe()"
+                  title="Print-View öffnen — Browser Cmd+P → Als PDF speichern">
+            📄
+          </button>
+          <!-- Teilen: signierten Share-Link erstellen + in Clipboard -->
+          <button class="btn btn-secondary btn-sm"
+                  x-show="!recipeDetail.cookMode"
+                  @click="shareRecipe()"
+                  :disabled="recipeDetail.sharing"
+                  title="Read-only-Link erstellen (30 Tage gültig)">
+            <span x-show="!recipeDetail.sharing">🔗</span>
+            <span x-show="recipeDetail.sharing">…</span>
+          </button>
+          <button class="btn btn-secondary cook-mode-toggle"
+                  :class="recipeDetail.cookMode && 'on'"
+                  x-show="(recipeDetail.data?.steps?.length || 0) > 0"
+                  @click="toggleCookMode()"
+                  :title="recipeDetail.cookMode ? 'Koch-Modus beenden' : 'Koch-Modus: nur Schritte, große Schrift, Screen bleibt wach'">
+            <span x-show="!recipeDetail.cookMode">👨‍🍳 Kochen</span>
+            <span x-show="recipeDetail.cookMode">← Zurück</span>
+          </button>
+          <button class="btn-icon" @click="toggleFavorite(recipeDetail.data?.id)"
+                  :title="recipeDetail.data?.is_favorite ? 'Favorit entfernen' : 'Als Favorit'">
+            <span x-text="recipeDetail.data?.is_favorite ? '⭐' : '☆'"
+                  :style="recipeDetail.data?.is_favorite ? 'color: var(--accent); font-size: 20px;' : 'font-size: 20px;'"></span>
+          </button>
+          <button class="btn-icon" @click="shareRecipe(recipeDetail.data)"
+                  title="Teilen (Mail, iMessage, WhatsApp…)">📤</button>
+          <label class="btn-icon" title="Eigenes Bild hochladen" style="cursor:pointer;">
+            🖼
+            <input type="file" accept="image/jpeg,image/png,image/webp"
+                   @change="uploadThumbnail(recipeDetail.data?.id, $event.target.files[0]); $event.target.value=''"
+                   style="display:none;">
+          </label>
+          <button class="btn-icon" @click="deleteRecipeFromDetail()"
+                  title="Rezept + Files löschen"
+                  style="color: var(--err);">🗑</button>
+          <button class="btn-icon" @click="closeRecipeDetail()">✕</button>
+        </div>
+      </div>
+
+      <!-- Rating-Picker direkt unter dem Modal-Header.
+           Klick auf Stern setzt Rating. Klick auf den gleichen Stern nochmal = 0 (entfernen). -->
+      <div x-show="recipeDetail.data" style="padding: 8px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px;">
+        <span style="font-size: 12px; color: var(--fg-mute);">Meine Bewertung:</span>
+        <div style="display: flex; gap: 2px; font-size: 22px; line-height: 1; cursor: pointer;">
+          <template x-for="n in [1,2,3,4,5]" :key="n">
+            <span @click="setRating(recipeDetail.data.id, (recipeDetail.data?.rating === n) ? 0 : n)"
+                  :style="'color: ' + ((recipeDetail.data?.rating || 0) >= n ? 'var(--accent)' : 'var(--fg-mute)') + '; transition: color 0.1s; -webkit-tap-highlight-color: transparent;'"
+                  x-text="(recipeDetail.data?.rating || 0) >= n ? '★' : '☆'"></span>
+          </template>
+        </div>
+        <span x-show="(recipeDetail.data?.rating || 0) > 0" class="muted" style="font-size: 12px;"
+              x-text="(recipeDetail.data?.rating) + ' / 5'"></span>
+      </div>
+      <!-- Detail-Reiter: kompaktes Layout statt Endlos-Scroll (Mobile-first).
+           Im Koch-Modus ausgeblendet — dort zählt nur die Schritt-Ansicht. -->
+      <div class="detail-tabs" x-show="recipeDetail.data && !recipeDetail.cookMode">
+        <button class="detail-tab" :class="recipeDetail.tab === 'info' && 'active'"
+                @click="recipeDetail.tab = 'info'">📋 Info</button>
+        <button class="detail-tab" :class="recipeDetail.tab === 'zutaten' && 'active'"
+                @click="recipeDetail.tab = 'zutaten'">
+          🥕 Zutaten <span class="detail-tab-count" x-show="recipeDetail.data?.ingredients?.length" x-text="recipeDetail.data?.ingredients?.length"></span>
+        </button>
+        <button class="detail-tab" :class="recipeDetail.tab === 'steps' && 'active'"
+                @click="recipeDetail.tab = 'steps'"
+                x-show="(recipeDetail.data?.steps?.length || 0) > 0">
+          👨‍🍳 Schritte <span class="detail-tab-count" x-text="recipeDetail.data?.steps?.length"></span>
+        </button>
+      </div>
+      <div class="modal-body recipe-detail-body" x-show="recipeDetail.data">
+        <div class="recipe-detail-grid" :class="recipeDetail.tab !== 'info' && 'single-col'">
+          <div class="recipe-detail-video" x-show="recipeDetail.tab === 'info'">
+            <video x-show="recipeDetail.data?.video_filename" controls preload="metadata"
+                   :src="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/video' : ''"
+                   :poster="recipeDetail.data?.thumb_filename ? '/api/recipes/'+recipeDetail.data.id+'/thumb?w=800' : ''"
+                   style="max-width: 100%; background: #000; border-radius: 8px; display: block; margin: 0 auto;"></video>
+            <!-- Fallback: Thumbnail wenn kein Video aber Bild vorhanden -->
+            <img x-show="!recipeDetail.data?.video_filename && recipeDetail.data?.thumb_filename"
+                 :src="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/thumb' : ''"
+                 alt=""
+                 style="max-width: 100%; max-height: 60vh; object-fit: contain; background: #000; border-radius: 4px;"
+                 @error="$el.style.display='none'" />
+            <div x-show="!recipeDetail.data?.video_filename && !recipeDetail.data?.thumb_filename"
+                 class="muted">Kein Video, kein Bild.</div>
+            <div class="recipe-detail-meta muted" style="margin-top: 8px; font-size: 12px; min-width: 0; overflow: hidden;">
+              <a x-show="recipeDetail.data?.pdf_filename"
+                 :href="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/pdf' : '#'"
+                 target="_blank" rel="noopener"
+                 class="btn btn-secondary btn-sm"
+                 style="display:inline-flex; align-items:center; gap:6px; min-height:38px; margin-bottom:8px;">
+                📄 PDF öffnen
+              </a>
+              <div><span x-text="recipeDetail.data?.type"></span> · <span x-text="recipeDetail.data?.category"></span></div>
+              <div x-show="recipeDetail.data?.url" style="overflow:hidden;">
+                <a :href="recipeDetail.data?.url" target="_blank" rel="noopener"
+                   style="display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom;"
+                   :title="recipeDetail.data?.url">
+                  🔗 <span x-text="(recipeDetail.data?.url || '').replace(/^https?:\/\//, '').split('?')[0]"></span>
+                </a>
+              </div>
+              <div x-text="recipeDetail.data?.folder_path"
+                   style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                   :title="recipeDetail.data?.folder_path"></div>
+            </div>
+          </div>
+
+          <div class="recipe-detail-right">
+            <!-- Tags -->
+            <div class="recipe-detail-section" x-show="recipeDetail.tab === 'info'">
+              <h4>Tags <span class="muted" style="font-size: 11px; font-weight: normal;">🤖 = automatisch (KI/Regel-Pass)</span></h4>
+              <div class="chip-list">
+                <template x-for="t in recipeDetail.data?.tags || []" :key="t.id">
+                  <span class="chip on" :class="t.auto && 'chip-auto'">
+                    <span x-show="t.auto" class="chip-auto-icon" title="Automatisch — wird beim Re-Extract regeneriert">🤖</span>
+                    <span x-text="t.name"></span>
+                    <button x-show="!t.auto" class="chip-x" @click="removeTagFromRecipe(t.name)" title="Entfernen">×</button>
+                  </span>
+                </template>
+              </div>
+              <div style="display:flex; gap:6px; margin-top: 6px;">
+                <input type="text" x-model="recipeDetail.newTag" @keydown.enter="addTagToRecipe()" placeholder="Eigenen Tag hinzufügen…" style="flex:1;" />
+                <button class="btn btn-secondary" @click="addTagToRecipe()">+</button>
+              </div>
+            </div>
+
+            <!-- Kochen-Button mit Portionen-Skalierung -->
+            <div class="cook-block" x-show="recipeDetail.tab === 'zutaten'">
+              <div class="cook-multiplier">
+                <span class="muted">Portionen:</span>
+                <template x-for="m in [0.5, 1, 2, 4]" :key="m">
+                  <button type="button" class="chip"
+                          :class="recipeDetail.multiplier === m && 'on'"
+                          @click="recipeDetail.multiplier = m"
+                          x-text="'× ' + (Number.isInteger(m) ? m : m.toString().replace('.',','))"></button>
+                </template>
+                <input type="number" step="0.5" min="0.1" max="20"
+                       x-model.number="recipeDetail.multiplier"
+                       class="cook-custom" title="Eigener Faktor" />
+              </div>
+              <div class="cook-hint muted" x-show="recipeDetail.data?.servings && recipeDetail.multiplier !== 1">
+                Original für <span x-text="recipeDetail.data?.servings"></span> →
+                gerechnet für <span x-text="Math.round((recipeDetail.data?.servings || 0) * recipeDetail.multiplier * 10) / 10"></span> Portion(en)
+              </div>
+              <button class="btn btn-primary" style="width: 100%;" @click="cookRecipe()"
+                      :disabled="!(recipeDetail.data?.ingredients?.length) || recipeDetail.cooking">
+                <span x-show="!recipeDetail.cooking">
+                  🛒 Kochen — Zutaten in den Einkaufskorb
+                  <span x-show="recipeDetail.multiplier !== 1" x-text="'(× ' + _formatMultiplier(recipeDetail.multiplier) + ')'"></span>
+                </span>
+                <span x-show="recipeDetail.cooking">…</span>
+              </button>
+            </div>
+
+            <!-- Zutaten -->
+            <div class="recipe-detail-section" x-show="recipeDetail.tab === 'zutaten'">
+              <h4 class="ing-section-head">
+                <span>
+                  Zutaten
+                  <span class="muted" x-text="'('+(recipeDetail.data?.ingredients?.length || 0)+')'"></span>
+                  <span x-show="recipeDetail.data?.servings" class="muted" style="margin-left: 8px;">
+                    für <span x-text="recipeDetail.data?.servings"></span> Portion(en)
+                  </span>
+                </span>
+              </h4>
+              <div class="ing-actions">
+                <!-- View-Mode-Buttons -->
+                <template x-if="!recipeDetail.editingIngredients">
+                  <div class="ing-actions-row">
+                    <!-- Verify-Toggle -->
+                    <button class="btn btn-sm btn-verify"
+                            :class="recipeDetail.data?.user_verified ? 'verified' : ''"
+                            @click="toggleVerified(!recipeDetail.data?.user_verified)"
+                            :disabled="recipeDetail.verifying"
+                            :title="recipeDetail.data?.user_verified
+                              ? ('Geprüft von '+ (recipeDetail.data?.verified_by||'?') +' am '+ formatTs(recipeDetail.data?.verified_at) +' — klick zum Aufheben')
+                              : 'Als geprüft markieren (verschwindet aus Audit-Daten-Lücken)'">
+                      <span x-show="!recipeDetail.verifying">
+                        <span x-show="recipeDetail.data?.user_verified">✓ Geprüft</span>
+                        <span x-show="!recipeDetail.data?.user_verified">☐ Prüfen</span>
+                      </span>
+                      <span x-show="recipeDetail.verifying">…</span>
+                    </button>
+                    <button class="btn btn-secondary btn-sm" @click="startEditIngredients()"
+                            :disabled="recipeDetail.extracting"
+                            title="Zutaten manuell editieren">
+                      ✎ Bearbeiten
+                    </button>
+                    <button class="btn btn-secondary btn-sm" @click="extractIngredients()"
+                            :disabled="recipeDetail.extracting"
+                            :title="recipeDetail.data?.ingredients?.length ? 'Neu extrahieren (überschreibt Zutaten + Schritte)' : 'KI-Extraktion starten'">
+                      <span x-show="!recipeDetail.extracting">⟳ <span x-text="recipeDetail.data?.ingredients?.length ? 'Neu' : 'Extrahieren'"></span></span>
+                      <span x-show="recipeDetail.extracting">…</span>
+                    </button>
+                    <button class="btn btn-secondary btn-sm" @click="computeNutrition()"
+                            :disabled="recipeDetail.computingNutrition || (recipeDetail.data?.ingredients?.length || 0) < 3"
+                            title="Kalorien + Makros aus den Zutaten schätzen (KI)">
+                      <span x-show="!recipeDetail.computingNutrition"
+                            x-text="recipeDetail.data?.calories_per_serving ? '⚡ Neu' : '⚡ Kalorien'"></span>
+                      <span x-show="recipeDetail.computingNutrition">…</span>
+                    </button>
+                  </div>
+                </template>
+                <!-- Edit-Mode-Buttons -->
+                <template x-if="recipeDetail.editingIngredients">
+                  <div class="ing-actions-row">
+                    <button class="btn btn-secondary btn-sm" @click="cancelEditIngredients()">Abbrechen</button>
+                    <button class="btn btn-primary btn-sm" @click="saveIngredients()"
+                            :disabled="recipeDetail.savingIngredients">
+                      <span x-show="!recipeDetail.savingIngredients">💾 Speichern</span>
+                      <span x-show="recipeDetail.savingIngredients">…</span>
+                    </button>
+                  </div>
+                </template>
+              </div>
+
+              <!-- View-Mode: read-only Liste -->
+              <div class="ingredient-list" x-show="!recipeDetail.editingIngredients">
+                <template x-for="(ing, idx) in recipeDetail.data?.ingredients || []" :key="idx">
+                  <div class="ingredient-item">
+                    <span class="ingredient-amount" x-show="ing.amount !== null">
+                      <span x-text="formatAmount(ing.amount)"></span>
+                      <span x-text="ing.unit || ''"></span>
+                    </span>
+                    <!-- Wenn amount null ist, Platzhalter damit Grid nicht verrutscht -->
+                    <span class="ingredient-amount muted" x-show="ing.amount === null">—</span>
+                    <div>
+                      <span class="ingredient-name" x-text="ing.name"></span>
+                      <span class="ingredient-raw" x-text="ing.raw"
+                            x-show="ing.raw && ing.raw !== ing.name"></span>
+                    </div>
+                    <span class="ingredient-kcal muted" x-show="ing.calories"
+                          x-text="'~' + Math.round(ing.calories) + ' kcal'"></span>
+                  </div>
+                </template>
+                <div x-show="(recipeDetail.data?.ingredients?.length || 0) === 0" class="muted">
+                  <span x-show="recipeDetail.data?.ingredients_status === 'pending'">⏳ Wartet auf KI-Extraktion…</span>
+                  <span x-show="recipeDetail.data?.ingredients_status === 'error'">⚠ Extraktion fehlgeschlagen — klick „Neu" zum Erneut-Versuchen.</span>
+                  <span x-show="recipeDetail.data?.ingredients_status === 'skipped'">Beschreibung zu kurz für KI.</span>
+                  <span x-show="recipeDetail.data?.ingredients_status === 'ok'">— keine Zutaten erkannt — klick „Bearbeiten" um manuell hinzuzufügen.</span>
+                </div>
+              </div>
+
+              <!-- Edit-Mode: jede Zutat als 3-Spalten-Input (Menge, Einheit, Name) -->
+              <div class="ingredient-edit" x-show="recipeDetail.editingIngredients">
+                <template x-for="(ing, idx) in recipeDetail.editIngs" :key="idx">
+                  <div class="ingredient-edit-row">
+                    <input type="number" step="0.01" min="0" class="ing-amount"
+                           x-model.number="ing.amount" placeholder="Menge">
+                    <select class="ing-unit" x-model="ing.unit">
+                      <option value="">—</option>
+                      <option value="g">g</option>
+                      <option value="kg">kg</option>
+                      <option value="ml">ml</option>
+                      <option value="l">l</option>
+                      <option value="TL">TL</option>
+                      <option value="EL">EL</option>
+                      <option value="Stück">Stück</option>
+                      <option value="Prise">Prise</option>
+                      <option value="Bund">Bund</option>
+                      <option value="Zehe">Zehe</option>
+                      <option value="Scheibe">Scheibe</option>
+                      <option value="Blatt">Blatt</option>
+                      <option value="Pck">Pck</option>
+                      <option value="Dose">Dose</option>
+                      <option value="Tasse">Tasse</option>
+                      <option value="Flasche">Flasche</option>
+                      <option value="Glas">Glas</option>
+                    </select>
+                    <input type="text" class="ing-name" x-model="ing.name" placeholder="Zutat"
+                           list="known-ingredients"
+                           :style="isDuplicateIngredient(idx) && 'border-color:#f59e0b; background:rgba(245,158,11,0.08);'"
+                           :title="isDuplicateIngredient(idx) ? 'Diese Zutat ist in dieser Liste bereits vorhanden' : ''">
+                    <span x-show="isDuplicateIngredient(idx)" title="Dublette in dieser Liste" style="font-size:15px;">⚠️</span>
+                    <button class="btn-icon" @click="removeIngredientRow(idx)" title="Entfernen">✕</button>
+                  </div>
+                  <div x-show="globalIngredientMatch(idx)" class="ing-global-hint"
+                       style="font-size:12px; color:var(--fg-mute); margin:-2px 0 8px 2px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <span>↔ existiert bereits als „<strong x-text="globalIngredientMatch(idx)"></strong>"</span>
+                    <button class="btn btn-secondary btn-sm" style="padding:2px 8px; min-height:0;"
+                            @click="adoptIngredientName(idx, globalIngredientMatch(idx))">übernehmen</button>
+                  </div>
+                </template>
+                <button class="btn btn-secondary btn-sm" @click="addIngredientRow()" style="margin-top: 8px;">
+                  + Zutat hinzufügen
+                </button>
+                <datalist id="known-ingredients"></datalist>
+              </div>
+            </div>
+
+            <!-- Nährwerte (pro Portion, KI-Schätzung) -->
+            <div class="recipe-detail-section nutrition-section"
+                 x-show="recipeDetail.tab === 'zutaten' && (recipeDetail.data?.ingredients?.length || 0) > 0">
+              <h4>
+                Nährwerte
+                <span class="muted" style="font-size: 12px;"
+                      x-text="recipeDetail.data?.calories_per_serving ? '~ pro Portion (KI-Schätzung)' : '(noch nicht berechnet)'"></span>
+                <button class="btn btn-secondary btn-sm" style="float: right;"
+                        @click="computeNutrition()"
+                        :disabled="recipeDetail.computingNutrition || (recipeDetail.data?.ingredients?.length || 0) < 3">
+                  <span x-show="!recipeDetail.computingNutrition">
+                    <span x-text="recipeDetail.data?.calories_per_serving ? '⟳ Neu' : '⚡ Berechnen'"></span>
+                  </span>
+                  <span x-show="recipeDetail.computingNutrition">…</span>
+                </button>
+              </h4>
+              <div class="nutrition-grid" x-show="recipeDetail.data?.calories_per_serving">
+                <div class="nutrition-box">
+                  <div class="nutrition-value">
+                    ~<span x-text="Math.round((recipeDetail.data?.calories_per_serving || 0) * recipeDetail.multiplier)"></span>
+                  </div>
+                  <div class="nutrition-label">kcal</div>
+                </div>
+                <div class="nutrition-box">
+                  <div class="nutrition-value">
+                    <span x-text="((recipeDetail.data?.protein_g || 0) * recipeDetail.multiplier).toFixed(1)"></span>
+                    <span class="nutrition-unit">g</span>
+                  </div>
+                  <div class="nutrition-label">Eiweiß</div>
+                </div>
+                <div class="nutrition-box">
+                  <div class="nutrition-value">
+                    <span x-text="((recipeDetail.data?.carbs_g || 0) * recipeDetail.multiplier).toFixed(1)"></span>
+                    <span class="nutrition-unit">g</span>
+                  </div>
+                  <div class="nutrition-label">Kohlenhydrate</div>
+                </div>
+                <div class="nutrition-box">
+                  <div class="nutrition-value">
+                    <span x-text="((recipeDetail.data?.fat_g || 0) * recipeDetail.multiplier).toFixed(1)"></span>
+                    <span class="nutrition-unit">g</span>
+                  </div>
+                  <div class="nutrition-label">Fett</div>
+                </div>
+              </div>
+              <div x-show="!recipeDetail.data?.calories_per_serving" class="muted" style="font-size: 13px;">
+                Klick „⚡ Berechnen" — KI schätzt Kalorien + Makros aus den Zutaten (~$0.0005, ~3s).
+              </div>
+            </div>
+
+            <!-- Zubereitung -->
+            <div class="recipe-detail-section steps-section" x-show="(recipeDetail.tab === 'steps' || recipeDetail.cookMode) && (recipeDetail.data?.steps?.length || 0) > 0">
+              <h4>
+                Zubereitung
+                <span class="muted" x-text="'('+(recipeDetail.data?.steps?.length || 0)+' Schritte)'"></span>
+              </h4>
+              <ol class="step-list">
+                <template x-for="(step, idx) in recipeDetail.data?.steps || []" :key="idx">
+                  <li class="step-item" :class="timers[step.id]?.running && 'step-running'">
+                    <div class="step-text" x-text="step.instruction"></div>
+                    <div class="step-timer" x-show="step.timer_seconds">
+                      <template x-if="!timers[step.id] || timers[step.id].status === 'idle'">
+                        <button class="btn btn-secondary btn-sm" @click="startStepTimer(step)">
+                          ⏱ <span x-text="formatDuration(step.timer_seconds)"></span>
+                        </button>
+                      </template>
+                      <template x-if="timers[step.id] && timers[step.id].status !== 'idle'">
+                        <div class="timer-active">
+                          <span class="timer-display" x-text="formatDuration(timers[step.id].remaining)"
+                                :class="timers[step.id].status === 'done' && 'timer-done'"></span>
+                          <button class="btn-icon" @click="stopStepTimer(step)" title="Stop">✕</button>
+                        </div>
+                      </template>
+                    </div>
+                  </li>
+                </template>
+              </ol>
+            </div>
+
+            <!-- Beschreibung mit Rich-Rendering (Hashtags, Mentions, URLs) -->
+            <div class="recipe-detail-section" x-data="{ expanded: false }"
+                 x-show="recipeDetail.tab === 'info' && recipeDetail.data?.description">
+              <h4 style="display:flex; align-items:center; justify-content: space-between;">
+                <span>Beschreibung</span>
+                <button class="btn btn-secondary btn-sm"
+                        x-show="(recipeDetail.data?.description || '').length > 280"
+                        @click="expanded = !expanded">
+                  <span x-show="!expanded">▾ Mehr</span>
+                  <span x-show="expanded">▴ Weniger</span>
+                </button>
+              </h4>
+              <div class="recipe-description rich-caption"
+                   :class="expanded && 'expanded'">
+                <template x-for="(seg, idx) in formatCaption(recipeDetail.data?.description || '')" :key="idx">
+                  <template x-if="seg.type === 'text'"><span x-text="seg.value"></span></template>
+                  <template x-if="seg.type === 'hashtag'">
+                    <a class="caption-hashtag" @click.prevent="clickCaptionHashtag(seg.value)"
+                       :href="'#' + seg.value" x-text="seg.value"></a>
+                  </template>
+                  <template x-if="seg.type === 'mention'">
+                    <span class="caption-mention" x-text="seg.value"></span>
+                  </template>
+                  <template x-if="seg.type === 'url'">
+                    <a class="caption-url" :href="seg.value" target="_blank"
+                       rel="noopener noreferrer" x-text="seg.value"></a>
+                  </template>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Sticky-Bottom-Bar (Mobile only — Desktop hat den cook-block inline) -->
+      <div class="modal-action-bar" x-show="recipeDetail.data && !recipeDetail.cookMode && recipeDetail.tab === 'zutaten'">
+        <div class="action-bar-mult">
+          <template x-for="m in [0.5, 1, 2, 4]" :key="m">
+            <button type="button" class="chip"
+                    :class="recipeDetail.multiplier === m && 'on'"
+                    @click="recipeDetail.multiplier = m"
+                    x-text="'× ' + (Number.isInteger(m) ? m : m.toString().replace('.',','))"></button>
+          </template>
+        </div>
+        <button class="btn btn-primary action-bar-cook" @click="cookRecipe()"
+                :disabled="!(recipeDetail.data?.ingredients?.length) || recipeDetail.cooking">
+          <span x-show="!recipeDetail.cooking">
+            🛒 Kochen
+            <span x-show="recipeDetail.multiplier !== 1" x-text="'× ' + _formatMultiplier(recipeDetail.multiplier)"></span>
+          </span>
+          <span x-show="recipeDetail.cooking">…</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" :class="toast.type" x-show="toast.show" x-text="toast.message"></div>
+
+  <!-- Verzeichnis-Browser Modal -->
+  <div x-cloak x-show="browser.show" class="modal-backdrop" @click.self="browserCancel()">
+    <div class="modal modal-wide" @click.stop>
+      <div class="modal-head">
+        <h3 x-text="browser.title"></h3>
+        <button class="btn btn-ghost" @click="browserCancel()">✗</button>
+      </div>
+      <div class="modal-body">
+        <!-- Aktueller Pfad + nav -->
+        <div class="flex" style="margin-bottom: 12px; gap:6px;">
+          <button class="btn" @click="loadBrowserPath(browser.parent)" :disabled="!browser.parent && browser.parent !== ''">⬆ Hoch</button>
+          <input class="mono" :value="browser.currentPath" readonly style="flex:1; background: var(--bg); border:1px solid var(--border); color: var(--fg); padding: 8px; border-radius: var(--radius); font-size: 12px;">
+          <button class="btn" x-show="browser.mode === 'local'" @click="browserMkdir()">+ Ordner</button>
+        </div>
+
+        <!-- Quick-Roots -->
+        <div x-show="browser.suggestedRoots.length" style="margin-bottom: 10px;">
+          <span class="muted" style="font-size:11px;">Schnellzugriff: </span>
+          <template x-for="r in browser.suggestedRoots" :key="r">
+            <button class="btn btn-ghost" style="font-size:11px; padding: 2px 8px;" @click="loadBrowserPath(r)" x-text="r"></button>
+          </template>
+        </div>
+
+        <!-- Liste -->
+        <div class="browser-list">
+          <div x-show="browser.loading" class="muted" style="padding:20px; text-align:center;">lädt…</div>
+          <template x-for="e in browser.entries" :key="e.path">
+            <div class="browser-entry" @dblclick="loadBrowserPath(e.path)" @click="browser.currentPath = e.path">
+              <span class="icon" x-text="e.is_dir ? '📁' : '📄'"></span>
+              <span class="name" x-text="e.name"></span>
+              <span class="muted" style="font-size:11px;" x-show="!e.is_dir && e.size" x-text="Math.round(e.size/1024) + ' KB'"></span>
+            </div>
+          </template>
+          <div x-show="!browser.loading && browser.entries.length === 0" class="muted" style="padding:20px; text-align:center;">leer</div>
+        </div>
+
+        <div class="hint" style="margin-top: 10px;">Doppelklick zum Reingehen · Einfachklick markiert · Übernehmen wählt den aktuellen Pfad.</div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" @click="browserCancel()">Abbrechen</button>
+        <button class="btn btn-primary" @click="browserPick()">✓ Übernehmen</button>
+      </div>
+    </div>
+  </div>
+
 </div>
+<script src="/static/app.js?v={VERSION}"></script>
 </body>
 </html>

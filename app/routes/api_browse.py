@@ -1,4 +1,4 @@
-"""API für den sicheren lokalen Verzeichnis-Browser."""
+"""API für Verzeichnis-Browser (lokal)."""
 from __future__ import annotations
 
 import os
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/browse", tags=["browse"], dependencies=[Depends(
 
 
 # Whitelist: nur diese Roots + alles darunter ist erlaubt.
-# /mnt ist ein optionaler Mountpoint; restliche Roots stammen aus der Config.
+# /mnt ist der NAS-/Backup-Mountpoint; restliche stammen aus der Config.
 _BASE_ALLOWED = ("/mnt", "/opt/scrapper/data", "/opt/scrapper/logs", "/opt/scrapper/temp")
 
 

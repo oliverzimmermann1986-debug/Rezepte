@@ -1,38 +1,26 @@
-RECIPE-FOCUS-VERSION PUSHEN
-===========================
+==============================================
+Repo befüllen — schnellster Weg
+==============================================
 
-1. ZIP entpacken und Repository prüfen:
+# 1. Zip entpacken in einen neuen Ordner:
+unzip Scrappercontainer.zip
+cd scrappercontainer
 
-   cd Scrappercontainer-main-recipe-focus
-   git status
+# 2. Git initialisieren und pushen:
+git init
+git branch -M main
+git remote add origin https://github.com/appear7240/Scrappercontainer.git
+git add .
+git commit -m "Initial: Scrapper + Backup container with Web-UI"
+git push -u origin main
 
-2. Tests ausführen:
+# 3. Auf dem Proxmox Host:
+curl -O https://raw.githubusercontent.com/appear7240/Scrappercontainer/main/proxmox/create-container.sh
+curl -O https://raw.githubusercontent.com/appear7240/Scrappercontainer/main/proxmox/install.sh
+chmod +x *.sh
+./create-container.sh
+pct push 200 install.sh /root/install.sh
+pct exec 200 -- bash /root/install.sh
 
-   python3 -m venv .venv
-   .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
-   .venv/bin/pytest -q
-   node --check app/static/app.js
-   bash -n proxmox/install.sh
-
-3. Änderungen committen:
-
-   git add -A
-   git commit -m "Make recipe search primary and remove file sync"
-   git push origin main
-
-4. Im Proxmox-LXC aktualisieren:
-
-   cd /opt/scrapper
-   sudo bash proxmox/install.sh
-
-5. Danach prüfen:
-
-   systemctl status scrapper-web scrapper-job.timer scrapper-db-backup.timer
-   systemctl list-timers 'scrapper-*'
-   journalctl -u scrapper-web -n 100 --no-pager
-
-6. Oberfläche öffnen:
-
-   /#recipes
-
-Der Installer erstellt vor dem Update eine konsistente Datenbanksicherung und entfernt nicht mehr verwendete Alt-Units sowie den alten Konfigurationsblock.
+# 4. Browser:
+http://<container-ip>:8000   →  admin / changeme

@@ -5,11 +5,10 @@ from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
-from ..auth import (cleanup_initial_password_file, hash_password, is_hashed,
-                    require_auth)
-from ..config_store import deep_merge, get_config, validate_config
-from ..db import get_db
+from ..auth import hash_password, is_hashed, require_auth
+from ..config_store import get_config
 from ..jobs.scraper import invalidate_scraper_job
 
 router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_auth)])
@@ -19,7 +18,6 @@ router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(
 def read_config() -> Dict[str, Any]:
     """Liefert die Config zurück. Passwörter werden maskiert."""
     cfg = get_config().all()
-    cfg.pop("backup", None)
     return _mask(cfg)
 
 
@@ -28,39 +26,19 @@ def update_config(payload: Dict[str, Any]):
     """Schreibt die komplette Config neu. Maskierte Felder werden zurückgemerged."""
     store = get_config()
     current = store.all()
-    unmasked = _unmask(payload, current)
-    merged = deep_merge(current, unmasked)
-    # Rclone/Dateisynchronisierung wurde vollständig entfernt. Alte Installationen
-    # verlieren den Legacy-Block beim nächsten Speichern kontrolliert.
-    merged.pop("backup", None)
-    # Ein leeres Web-Passwort bedeutet laut UI "unverändert".
+    merged = _unmask(payload, current)
+    # Web-Passwort, falls Klartext, immer bcrypt-hashen
     pw = _get(merged, ("web", "password"))
-    password_changed = False
-    if not pw:
-        _set(merged, ("web", "password"), _get(current, ("web", "password")))
-        pw = _get(merged, ("web", "password"))
     if isinstance(pw, str) and pw and not is_hashed(pw):
-        if len(pw) < 12:
-            raise HTTPException(400, "Passwort muss mindestens 12 Zeichen haben")
+        if len(pw) < 8:
+            raise HTTPException(400, "Passwort muss mindestens 8 Zeichen haben")
         _set(merged, ("web", "password"), hash_password(pw))
-        password_changed = True
-
-    errors = validate_config(merged)
-    if errors:
-        raise HTTPException(400, detail={"message": "Konfiguration ungültig", "errors": errors})
-
-    restart_keys = (("web", "bind_host"), ("web", "bind_port"), ("web", "trusted_proxies"))
-    restart_required = any(_get(current, key) != _get(merged, key) for key in restart_keys)
-    try:
-        store.replace(merged)
-        store.save()
-    except Exception:
-        store.replace(current)
-        raise
-    if password_changed:
-        cleanup_initial_password_file()
+    store.replace(merged)
+    store.save()
+    # ScraperJob hat 30+ Config-Werte gecached - invalidieren damit der
+    # nächste Resolve/Reanalyze die neuen Settings nutzt.
     invalidate_scraper_job()
-    return {"ok": True, "restart_required": restart_required}
+    return {"ok": True}
 
 
 @router.post("/reload")
@@ -77,7 +55,6 @@ MASK_PATHS = [
     ("mail", "recipe", "password"),
     ("mail", "wedding", "password"),
     ("ai", "openai", "api_key"),
-    ("monitoring", "metrics_token"),
 ]
 
 
@@ -134,8 +111,7 @@ def _unmask(incoming: dict, current: dict) -> dict:
     return out
 
 
-# ---------------- Log- und Datenbank-Sicherungsverwaltung ----------------
-
+# ---------------- Log + Backup Management ----------------
 
 @router.get("/logs/stats")
 def logs_stats() -> dict:
@@ -175,7 +151,7 @@ def logs_cleanup(days: int = None) -> dict:
     if days is not None:
         cmd.append(str(days))
     try:
-        r = _sp.run(cmd, capture_output=True, text=True, timeout=120, cwd=str(Path(__file__).resolve().parents[2]))
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=120, cwd="/opt/scrapper")
         return {"ok": r.returncode == 0, "stdout": r.stdout[-1500:],
                 "stderr": r.stderr[-1500:] if r.stderr else ""}
     except Exception as e:
@@ -185,7 +161,9 @@ def logs_cleanup(days: int = None) -> dict:
 @router.get("/backups/list")
 def backups_list() -> dict:
     """Listet alle vorhandenen DB-Backups gegliedert nach Tier."""
-    backups_root = get_db().path.parent / "backups"
+    cfg = get_config()
+    data_dir = Path(cfg.get("paths", "data_dir", default="/opt/scrapper/data"))
+    backups_root = data_dir / "backups"
     tiers: dict = {}
     if backups_root.exists():
         for tier in ("daily", "weekly", "monthly"):
@@ -210,7 +188,7 @@ def backups_run_now() -> dict:
     try:
         r = _sp.run(
             [_sys.executable, "-m", "app.cli", "db-backup"],
-            capture_output=True, text=True, timeout=300, cwd=str(Path(__file__).resolve().parents[2]),
+            capture_output=True, text=True, timeout=300, cwd="/opt/scrapper",
         )
         return {"ok": r.returncode == 0, "stdout": r.stdout[-2000:],
                 "stderr": r.stderr[-2000:] if r.stderr else ""}

@@ -1,19 +1,20 @@
 """API für Pending-Items: Auflisten, Vorschau, Auflösen."""
 from __future__ import annotations
 
-import mimetypes
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from ..auth import require_auth
 from ..config_store import get_config
 from ..db import get_db
 from ..jobs.scraper import get_scraper_job
-from ..path_utils import ensure_within
 
 router = APIRouter(prefix="/api/pending", tags=["pending"], dependencies=[Depends(require_auth)])
 
@@ -23,8 +24,11 @@ def _is_under_temp(path_str: str) -> bool:
     if not path_str:
         return False
     try:
-        temp_root = Path(get_config().get("paths", "temp_dir", default="/opt/scrapper/temp"))
-        ensure_within(Path(path_str), temp_root)
+        p = Path(path_str).resolve()
+        temp_root = Path(
+            get_config().get("paths", "temp_dir", default="/opt/scrapper/temp")
+        ).resolve()
+        p.relative_to(temp_root)
         return True
     except (ValueError, OSError):
         return False
@@ -32,28 +36,11 @@ def _is_under_temp(path_str: str) -> bool:
 
 @router.get("")
 def list_pending(status: str = "pending", sort: str = "newest") -> List[Dict[str, Any]]:
-    if status not in {"pending", "resolved", "skipped", "auto_skipped"}:
-        raise HTTPException(400, "Ungültiger Pending-Status")
-    items = get_db().pending_list(status=status, sort=sort)
-    for item in items:
-        suggestion = item.get("ai_suggestion") or {}
-        file_value = item.get("video_path")
-        file_path = Path(file_value) if file_value else None
-        suffix = file_path.suffix.lower() if file_path else ""
-        item["media_kind"] = suggestion.get("media_kind") or (
-            "pdf" if suffix == ".pdf" else
-            "image" if suffix in {".jpg", ".jpeg", ".png", ".webp"} else
-            "video" if suffix in {".mp4", ".webm", ".mkv", ".mov"} else "file"
-        )
-        item["filename"] = suggestion.get("filename") or (file_path.name if file_path else None)
-        item["file_available"] = bool(
-            file_path and _is_under_temp(str(file_path)) and file_path.is_file()
-        )
-    return items
+    return get_db().pending_list(status=status, sort=sort)
 
 
 class BulkSkipBody(BaseModel):
-    urls: List[str] = Field(min_length=1, max_length=500)
+    urls: List[str]
 
 
 @router.post("/bulk-skip")
@@ -66,8 +53,7 @@ def bulk_skip(body: BulkSkipBody) -> Dict[str, Any]:
     job = get_scraper_job()
     skipped = 0
     errors = []
-    urls = list(dict.fromkeys(str(url).strip() for url in body.urls if str(url).strip()))
-    for url in urls:
+    for url in body.urls:
         try:
             r = job.resolve_pending(url, {"action": "skip"})
             if r.get("ok"):
@@ -77,7 +63,7 @@ def bulk_skip(body: BulkSkipBody) -> Dict[str, Any]:
         except Exception as e:
             errors.append({"url": url, "error": str(e)})
     return {"ok": True, "skipped": skipped, "errors": errors,
-            "total_requested": len(urls)}
+            "total_requested": len(body.urls)}
 
 
 # /preview Endpoint wurde entfernt - Frame-Extraktion ist raus.
@@ -85,33 +71,15 @@ def bulk_skip(body: BulkSkipBody) -> Dict[str, Any]:
 # wenn der GET 404 zurückgibt (siehe @error-Handler in index.html).
 
 
-def _pending_file_response(url: str):
+@router.get("/video")
+def video_file(url: str):
     entry = get_db().pending_get(url)
     if not entry:
         raise HTTPException(404, "Nicht gefunden")
-    file_value = entry.get("video_path")
-    path = Path(file_value) if file_value else None
-    if not path or not _is_under_temp(str(path)) or not path.is_file():
-        raise HTTPException(404, "Pending-Datei nicht verfügbar")
-    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    safe_name = Path(str((entry.get("ai_suggestion") or {}).get("filename") or path.name)).name
-    return FileResponse(
-        path,
-        media_type=media_type,
-        filename=safe_name,
-        content_disposition_type="inline",
-    )
-
-
-@router.get("/file")
-def pending_file(url: str):
-    return _pending_file_response(url)
-
-
-@router.get("/video")
-def video_file(url: str):
-    """Kompatibilitätsalias für ältere Frontends."""
-    return _pending_file_response(url)
+    video = entry.get("video_path")
+    if not video or not _is_under_temp(video) or not Path(video).exists():
+        raise HTTPException(404, "Video nicht verfügbar")
+    return FileResponse(video, media_type="video/mp4")
 
 
 class ResolveBody(BaseModel):
@@ -133,6 +101,32 @@ def resolve(body: ResolveBody):
         "category": body.category,
     }
     return get_scraper_job().resolve_pending(body.url, decision)
+
+
+class BulkSkipRequest(BaseModel):
+    urls: List[str]
+
+
+@router.post("/bulk-skip")
+def bulk_skip(body: BulkSkipRequest) -> Dict[str, Any]:
+    """Markiert mehrere Pending-Items in einem Rutsch als 'skipped'.
+    Spart Klicks wenn man z.B. zehn Karnevals-Videos auf einmal abräumen will."""
+    if not body.urls:
+        return {"ok": True, "skipped": 0}
+    db = get_db()
+    job = get_scraper_job()
+    skipped = 0
+    errors = []
+    for url in body.urls:
+        try:
+            r = job.resolve_pending(url, {"action": "skip"})
+            if r.get("ok"):
+                skipped += 1
+            else:
+                errors.append({"url": url, "error": r.get("error")})
+        except Exception as e:
+            errors.append({"url": url, "error": str(e)})
+    return {"ok": True, "skipped": skipped, "errors": errors}
 
 
 class ReanalyzeRequest(BaseModel):
@@ -205,8 +199,7 @@ def _reanalyze_all_thread(job_id: int):
                 db.job_update_summary(job_id, summary)
 
             summary["current"] = None
-            status = "ok" if summary["errors"] == 0 else "partial"
-            db.job_finish(job_id, status, summary)
+            db.job_finish(job_id, "ok", summary)
             _logger.info(f"=== Pending-Reanalyze {job_id} fertig: {summary} ===")
         except Exception as e:
             _logger.exception("Reanalyze-Job crashed")
@@ -258,7 +251,7 @@ def reanalyze_progress():
 # ---------------- Failed Downloads (Email Recovery) ----------------
 
 @router.get("/failed")
-def list_failed_downloads(limit: int = Query(100, ge=1, le=1000)) -> List[Dict[str, Any]]:
+def list_failed_downloads(limit: int = 100) -> List[Dict[str, Any]]:
     """Liste aller URLs, deren Download mehrfach fehlgeschlagen ist.
 
     Werden vom Scraper nach MAX_DOWNLOAD_ATTEMPTS (default 3) übersprungen.
@@ -271,15 +264,29 @@ def list_failed_downloads(limit: int = Query(100, ge=1, le=1000)) -> List[Dict[s
 
 @router.post("/failed/{url:path}/retry")
 def retry_failed(url: str) -> Dict[str, Any]:
-    """Setzt Failure-Counter für diese URL zurück.
+    """Setzt den Failure-Counter zurück (Zeile bleibt erhalten).
 
-    Hinweis: Damit der Sync sie tatsächlich nochmal versucht, muss die
-    URL noch in einer Email vorhanden sein. Wenn die Mail bereits weg
-    ist, hilft auch Reset nicht - dann muss die URL manuell in eine
-    neue Email gestellt und der Scraper getriggert werden.
+    Der nächste Scraper-Lauf nimmt die URL als Retry-Kandidat direkt aus
+    download_failures auf — die Quell-Mail wird NICHT mehr benötigt
+    (verarbeitete Mails werden gelöscht, wenn delete_processed aktiv ist).
     """
-    get_db().download_failure_clear(url)
+    get_db().download_failure_reset(url)
     return {"ok": True, "url": url, "reset": True}
+
+
+@router.post("/failed/{url:path}/discard")
+def discard_failed(url: str) -> Dict[str, Any]:
+    """Verwirft eine endgültig fehlgeschlagene URL dauerhaft.
+
+    Schreibt sie als '(verworfen)' in die History (→ Mail-Sync überspringt
+    sie ab jetzt, auch wenn die Mail im Postfach bleibt) und entfernt den
+    Failure-Eintrag. Bewusste User-Entscheidung — das frühere automatische
+    History-Schreiben nach MAX Versuchen wurde entfernt.
+    """
+    db = get_db()
+    db.history_add(url, content_type="recipe", name="(verworfen)")
+    db.download_failure_clear(url)
+    return {"ok": True, "url": url, "discarded": True}
 
 
 @router.post("/failed/clear-all")
