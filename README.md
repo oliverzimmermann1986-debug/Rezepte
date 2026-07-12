@@ -15,6 +15,8 @@ Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Sta
 - Mobile-First mit vollständig freigehaltener Bottom-Navigation und iPhone-Safe-Area
 - erweiterte Filter als Side-Sheet am Desktop und Bottom-Sheet auf Smartphones
 - keine externen Schriftarten oder Design-CDNs
+- zentraler Admin-Reiter für Import, Qualität, Versionen, PDF/Scan, Suche und Wartung
+- automatische PDF-/Scan-Aufbereitung mit Ausrichtung, OCR, Randbeschnitt und Seiteneditor
 
 
 ---
@@ -59,11 +61,19 @@ Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Butto
 - `/api/docs` standardmäßig **aus** (Opt-in via `SCRAPPER_ENABLE_DOCS=1`)
 
 **Datenintegrität**
-- SQLite mit WAL-Mode + `synchronous=NORMAL` + 10s busy_timeout
+- SQLite mit WAL-Mode + `synchronous=FULL` + 10s busy_timeout
 - Indizes auf häufige Queries
 - `pending_add` ist idempotent (Status/Timestamp bleiben bei Re-Insert erhalten)
 - Path-Whitelists auf alle FileResponse-Endpoints (defense in depth)
 - Stale-Job-Recovery beim Start (alte `running`-Jobs werden auf `error` gesetzt)
+
+**Admin-Zentrale**
+- Importzentrale mit offenen Prüfungen, Fehlern, laufenden Jobs und Verlauf
+- Rezept-Versionen vor inhaltlichen Änderungen mit Vergleich und Wiederherstellung
+- PDF-/Scan-Stapelverarbeitung sowie manueller Seiteneditor
+- Suchsynonyme, Ausschlüsse (`-Zutat` / `ohne Zutat`) und transparente Tippfehlerkorrektur
+- Datenbank-, Medien-, Backup-, FTS-, Temp- und VACUUM-Wartung mit protokollierten Läufen
+- technische Module getrennt in `api_admin.py`, `pdf_processing.py` und `recipes/search.py`
 
 **Robustheit**
 - File-Lock (`fcntl.flock`) zwischen Web-Trigger und systemd-CLI
@@ -76,6 +86,22 @@ Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Butto
 
 
 ---
+
+## Admin-Zentrale
+
+Der Reiter **Admin** ist nur für Administratoren sichtbar. Er bündelt bewusst alle technischen und qualitätssichernden Funktionen, damit die normale Rezeptansicht übersichtlich bleibt.
+
+- **Importzentrale:** offene Prüfungen, fehlgeschlagene Downloads, laufende Jobs und letzte Importe
+- **Qualität:** bestehende KI-Prüfungen, Duplikate und Qualitätsfunde
+- **Versionen:** Snapshot, Vergleich und Wiederherstellung eines Rezeptstands
+- **PDF & Scan:** Stapelverarbeitung, OCR sowie Seiten drehen, sortieren oder löschen
+- **Suche:** Synonyme pflegen und den FTS-Index neu aufbauen
+- **Wartung:** Integrität, Testbackup, Medienprüfung, Temp-Bereinigung und VACUUM
+- **Stammdaten/Einstellungen/Papierkorb:** bestehende Verwaltungsfunktionen an einem Ort
+
+Versionen erfassen strukturierte Rezeptdaten. Binärmedien wie Videos, frei ersetzte Bilder oder PDF-Originale werden nicht in der Datenbankversion dupliziert. PDF-Änderungen legen deshalb separat ein Original im Datenverzeichnis ab.
+
+Details stehen in [`ADMIN_CENTER.md`](ADMIN_CENTER.md) und [`PDF_PROCESSING.md`](PDF_PROCESSING.md).
 
 ## Setup
 
@@ -219,6 +245,12 @@ sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-vacuum
 
 # Logs aufräumen (älter als paths.log_retention_days)
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli log-cleanup [days]
+
+# Bereits vorhandene Rezept-PDFs einmalig automatisch ausrichten
+# Erweiterte Stapelverarbeitung (OCR, Beschnitt, Leerseiten) erfolgt im Admin-Reiter
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-auto-rotate
+# Optional anderes Wurzelverzeichnis:
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-auto-rotate /pfad/zu/pdfs
 ```
 
 ```bash
@@ -390,10 +422,15 @@ ai:
 ytdlp:
   binary: /opt/scrapper/venv/bin/yt-dlp
 
-    - name: hochzeit-pcloud
-      remote: pcloud:/Hochzeit
-      local: /mnt/local/hochzeit
-      direction: copy
+pdf:
+  auto_rotate: true
+  remove_blank_pages: true
+  auto_crop: true
+  deskew_scans: false
+  ocr_scans: true
+  improve_contrast: false
+  ocr_language: deu+eng
+  keep_original: true
 ```
 
 `paths.recipe_dir` und `paths.wedding_dir` müssen **lokal beschreibbar** sein (Scraper macht `shutil.copy2`). Cloud-/NAS-Ziele müssen vorab als lokales Dateisystem eingebunden sein.

@@ -33,6 +33,7 @@ from ..config_store import get_config
 from ..db import get_db
 from pathlib import Path
 from ..recipes.canonical import canonical_name as _canonical
+from ..recipes.search import parse_search_query, score_recipe, suggest_query
 
 logger = logging.getLogger(__name__)
 from ..recipes.indexer import (
@@ -43,6 +44,31 @@ from ..recipes.indexer import (
 from ..recipes.units import normalize_unit
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"], dependencies=[Depends(require_auth)])
+
+
+def _actor(request: Request) -> str:
+    from ..auth import SESSION_COOKIE, auth_disabled, session_user
+    if auth_disabled():
+        return "local"
+    return session_user(request.cookies.get(SESSION_COOKIE, "")) or "unknown"
+
+
+def _version_before(recipe_id: int, request: Request, reason: str, source: str = "user") -> int:
+    """Erstellt den zwingenden Rücksprungpunkt vor einer Inhaltsänderung.
+
+    Eine Mutation ohne Snapshot würde den zugesagten Rückgängig-Schutz brechen.
+    Deshalb wird bei einem DB-/Serialisierungsfehler bewusst nicht weitergeschrieben.
+    """
+    try:
+        version_id = get_db().recipe_version_create(
+            recipe_id, created_by=_actor(request), source=source, reason=reason
+        )
+    except Exception as exc:
+        logger.exception("Versions-Snapshot für Rezept #%s fehlgeschlagen", recipe_id)
+        raise HTTPException(500, "Änderung abgebrochen: Versions-Snapshot konnte nicht gespeichert werden") from exc
+    if version_id is None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    return int(version_id)
 
 # Auto-Sync-Drossel: FS→DB-Scan höchstens alle _SYNC_THROTTLE_S Sekunden,
 # damit vom Scraper neu abgelegte Rezepte ohne manuellen Sync erscheinen,
@@ -113,6 +139,42 @@ def list_recipes(
         min_rating=min_rating,
     )
 
+    search_meta: Dict[str, Any] = {
+        "original": search or "", "query": search or "", "corrected": False,
+        "suggestion": "", "corrections": {},
+    }
+    effective_search = search
+    if search and total == 0:
+        suggestion = suggest_query(search, db.search_vocabulary(), db.search_synonyms_map())
+        if suggestion and suggestion.corrected_query:
+            effective_search = suggestion.corrected_query
+            items = db.recipe_list(
+                type=type, category=category, folder_prefix=folder, tag_ids=tag_id,
+                ingredient_canonical=ingredient, search=effective_search,
+                ingredients_status=ingredients_status, verified=verified,
+                favorite_only=favorite_only, min_rating=min_rating,
+                limit=limit, offset=offset,
+            )
+            total = db.recipe_count(
+                type=type, category=category, folder_prefix=folder, tag_ids=tag_id,
+                ingredient_canonical=ingredient, search=effective_search,
+                ingredients_status=ingredients_status, verified=verified,
+                favorite_only=favorite_only, min_rating=min_rating,
+            )
+            if total:
+                search_meta["query"] = effective_search
+                search_meta["corrected"] = True
+                search_meta["suggestion"] = effective_search
+                search_meta["corrections"] = suggestion.corrections
+
+    if effective_search and items:
+        plan = parse_search_query(effective_search, db.search_synonyms_map())
+        ingredient_map = db.recipe_ingredients_for_ids([int(item["id"]) for item in items])
+        items.sort(
+            key=lambda item: score_recipe(item, ingredient_map.get(int(item["id"]), []), plan),
+            reverse=True,
+        )
+
     # Pro Item nur die wichtigsten Felder + ingredients_count
     out = []
     for r in items:
@@ -132,7 +194,8 @@ def list_recipes(
             "rating": r.get("rating") or 0,
             "description": ((r.get("description") or "").strip()[:220]),
         })
-    return {"total": total, "items": out, "extraction_running": is_extraction_running()}
+    return {"total": total, "items": out, "extraction_running": is_extraction_running(),
+            "search_meta": search_meta}
 
 
 @router.get("/facets")
@@ -226,10 +289,11 @@ class TagsUpdate(BaseModel):
 
 
 @router.put("/{recipe_id}/tags")
-def update_tags(recipe_id: int, payload: TagsUpdate):
+def update_tags(recipe_id: int, payload: TagsUpdate, request: Request):
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
+    _version_before(recipe_id, request, "Tags geändert")
     db.recipe_tags_set(recipe_id, payload.tags)
     return {"ok": True, "tags": db.recipe_tags_get(recipe_id)}
 
@@ -246,7 +310,7 @@ class IngredientsUpdate(BaseModel):
 
 
 @router.put("/{recipe_id}/ingredients")
-def update_ingredients(recipe_id: int, payload: IngredientsUpdate):
+def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Request):
     """Manuelle Override der Zutatenliste. Setzt ingredients_status='ok',
     sodass der Background-Worker das Rezept nicht überschreibt.
 
@@ -259,6 +323,7 @@ def update_ingredients(recipe_id: int, payload: IngredientsUpdate):
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
+    _version_before(recipe_id, request, "Zutaten manuell geändert")
     prepared = []
     for ing in payload.ingredients:
         if not ing.name.strip():
@@ -302,13 +367,14 @@ class StepsUpdate(BaseModel):
 
 
 @router.put("/{recipe_id}/steps")
-def update_steps(recipe_id: int, payload: StepsUpdate):
+def update_steps(recipe_id: int, payload: StepsUpdate, request: Request):
     """Manuelles Override der Zubereitungs-Schritte. step_number wird beim
     Insert automatisch aus der Listen-Position abgeleitet (1-basiert),
     sodass das Frontend nur die Reihenfolge ändern muss."""
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
+    _version_before(recipe_id, request, "Zubereitungsschritte geändert")
     db.recipe_steps_set(recipe_id, [s.model_dump() for s in payload.steps])
     return {"ok": True, "steps": db.recipe_steps_get(recipe_id)}
 
@@ -318,10 +384,11 @@ class ServingsUpdate(BaseModel):
 
 
 @router.put("/{recipe_id}/servings")
-def update_servings(recipe_id: int, payload: ServingsUpdate):
+def update_servings(recipe_id: int, payload: ServingsUpdate, request: Request):
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
+    _version_before(recipe_id, request, "Portionszahl geändert")
     db.recipe_set_servings(recipe_id, payload.servings)
     return {"ok": True, "servings": payload.servings}
 
@@ -344,7 +411,7 @@ def extraction_status():
 
 
 @router.post("/recover-empty")
-def recover_empty() -> Dict[str, Any]:
+def recover_empty(request: Request) -> Dict[str, Any]:
     """Setzt ingredients_status='pending' für alle Rezepte die status IN
     ('ok','error') haben aber 0 Zutaten in recipe_ingredients. Meist alte
     Extracts wo das Prompt zu restriktiv war oder das JSON abgeschnitten
@@ -370,7 +437,10 @@ def recover_empty() -> Dict[str, Any]:
             """).fetchall()
         ids = [int(r["id"]) for r in rows]
 
-        # 2. Write: alle IDs in einer Transaktion via executemany
+        # 2. Vor der Sammeländerung für jedes Rezept einen Rücksprungpunkt
+        # sichern. Erst wenn alle Snapshots erfolgreich sind, folgt das Update.
+        for rid in ids:
+            _version_before(rid, request, "Leere Extraktion erneut eingeplant", source="admin")
         if ids:
             with db.conn() as c:
                 c.executemany(
@@ -403,7 +473,7 @@ def recover_empty() -> Dict[str, Any]:
 
 
 @router.post("/{recipe_id}/rescrape")
-def rescrape_recipe(recipe_id: int) -> Dict[str, Any]:
+def rescrape_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
     """Re-Scrape: ruft yt-dlp nochmal für die ursprüngliche URL auf und
     aktualisiert Caption + Thumbnail im Folder. Video wird NICHT neu
     heruntergeladen (--skip-download). Zutaten/Schritte bleiben unberührt.
@@ -449,6 +519,7 @@ def rescrape_recipe(recipe_id: int) -> Dict[str, Any]:
     if new_desc and new_desc.strip():
         old_desc = rec.get("description") or ""
         if new_desc != old_desc:
+            _version_before(recipe_id, request, "Beschreibung aus Quelle aktualisiert", source="import")
             with db.conn() as c:
                 c.execute("UPDATE recipes SET description=? WHERE id=?",
                           (new_desc, recipe_id))
@@ -639,13 +710,14 @@ def toggle_verify(recipe_id: int, request: Request,
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
     username = session_user(request.cookies.get(SESSION_COOKIE, "")) or "?"
+    _version_before(recipe_id, request, "Prüfstatus geändert")
     db.recipe_set_verified(recipe_id, verified, username if verified else None)
     logger.info(f"verify #{recipe_id}: {verified} von '{username}'")
     return {"ok": True, "verified": verified, "by": username}
 
 
 @router.post("/{recipe_id}/nutrition")
-def compute_nutrition_for(recipe_id: int) -> Dict[str, Any]:
+def compute_nutrition_for(recipe_id: int, request: Request) -> Dict[str, Any]:
     """On-Demand Nährwert-Berechnung für ein Rezept. KI-Single-Call.
     Setzt calories_per_serving + protein/carbs/fat_g + computed_at."""
     db = get_db()
@@ -655,7 +727,6 @@ def compute_nutrition_for(recipe_id: int) -> Dict[str, Any]:
     ings = db.recipe_ingredients_get(recipe_id)
     if len(ings) < 3:
         raise HTTPException(400, f"Zu wenig Zutaten ({len(ings)}) für sinnvolle Schätzung")
-
     cfg = get_config()
     try:
         analyzer = build_analyzer(cfg.get("ai", default={}) or {})
@@ -666,6 +737,7 @@ def compute_nutrition_for(recipe_id: int) -> Dict[str, Any]:
     if not nutr:
         raise HTTPException(502, "KI konnte keine Nährwerte berechnen (zu wenig Info?)")
 
+    _version_before(recipe_id, request, "Nährwerte neu berechnet", source="ai")
     db.recipe_set_nutrition(
         recipe_id, nutr["calories"], nutr["protein_g"],
         nutr["carbs_g"], nutr["fat_g"],
@@ -677,7 +749,7 @@ def compute_nutrition_for(recipe_id: int) -> Dict[str, Any]:
 
 
 @router.post("/compute-nutrition-bulk")
-def compute_nutrition_bulk(limit: int = Query(50, ge=1, le=200)) -> Dict[str, Any]:
+def compute_nutrition_bulk(request: Request, limit: int = Query(50, ge=1, le=200)) -> Dict[str, Any]:
     """Bulk: bis zu N Rezepte ohne Nährwerte berechnen. Synchroner Lauf —
     bei vielen Rezepten >30s, daher mit Limit. UI ruft das wiederholt auf
     bis pending=0."""
@@ -696,6 +768,7 @@ def compute_nutrition_bulk(limit: int = Query(50, ge=1, le=200)) -> Dict[str, An
         try:
             nutr = analyzer.compute_nutrition(ings, r.get("servings"))
             if nutr:
+                _version_before(int(r["id"]), request, "Nährwerte gesammelt berechnet", source="ai")
                 db.recipe_set_nutrition(
                     int(r["id"]), nutr["calories"], nutr["protein_g"],
                     nutr["carbs_g"], nutr["fat_g"],
@@ -719,13 +792,14 @@ def compute_nutrition_bulk(limit: int = Query(50, ge=1, le=200)) -> Dict[str, An
 
 
 @router.post("/{recipe_id}/extract")
-def extract_one(recipe_id: int, background_tasks: BackgroundTasks):
+def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Request):
     """Manueller Trigger: extrahiert (oder re-extrahiert) Zutaten + Schritte +
     Portionen für EIN Rezept synchron. Single KI-Call via analyze_recipe_content."""
     db = get_db()
     recipe = db.recipe_get(recipe_id)
     if not recipe:
         raise HTTPException(404, "Rezept nicht gefunden")
+    _version_before(recipe_id, request, "KI-Inhalte neu extrahiert", source="ai")
 
     desc = recipe.get("description") or ""
     if len(desc.strip()) < 20:
@@ -807,8 +881,9 @@ class RenamePayload(BaseModel):
 
 
 @router.put("/{recipe_id}/rename")
-def rename_recipe(recipe_id: int, payload: RenamePayload):
+def rename_recipe(recipe_id: int, payload: RenamePayload, request: Request):
     from ..recipes.manage import safe_rename_recipe
+    _version_before(recipe_id, request, "Rezept umbenannt")
     try:
         return safe_rename_recipe(
             get_db(), recipe_id,
@@ -827,11 +902,12 @@ class DeletePayload(BaseModel):
 
 
 @router.delete("/{recipe_id}")
-def delete_recipe(recipe_id: int, delete_files: bool = False, hard: bool = False):
+def delete_recipe(recipe_id: int, request: Request, delete_files: bool = False, hard: bool = False):
     """Soft-Delete in Papierkorb (Default). Mit ?hard=true endgültig.
     ?delete_files=true entfernt den Folder zusätzlich (auch beim Soft-Delete —
     dann kann Restore die Files nicht zurückholen, nur den DB-Eintrag)."""
     from ..recipes.manage import safe_delete_recipe
+    _version_before(recipe_id, request, "Rezept gelöscht" if hard else "In Papierkorb verschoben")
     try:
         return safe_delete_recipe(get_db(), recipe_id,
                                   delete_files=delete_files, hard=hard)
@@ -862,9 +938,10 @@ def trash_list(limit: int = Query(200, ge=1, le=500),
 
 
 @router.post("/{recipe_id}/restore")
-def restore_recipe(recipe_id: int) -> Dict[str, Any]:
+def restore_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
     """Aus Papierkorb wiederherstellen (deleted_at = NULL)."""
     db = get_db()
+    _version_before(recipe_id, request, "Aus Papierkorb wiederhergestellt")
     result = db.recipe_restore(recipe_id)
     if not result.get("ok"):
         raise HTTPException(404, result.get("error", "Restore fehlgeschlagen"))
@@ -899,8 +976,10 @@ class MergePayload(BaseModel):
 
 
 @router.post("/merge")
-def merge_recipes(payload: MergePayload):
+def merge_recipes(payload: MergePayload, request: Request):
     from ..recipes.manage import safe_merge_recipes
+    _version_before(payload.source_id, request, f"Mit Rezept #{payload.target_id} zusammengeführt")
+    _version_before(payload.target_id, request, f"Rezept #{payload.source_id} übernommen")
     try:
         return safe_merge_recipes(
             get_db(),

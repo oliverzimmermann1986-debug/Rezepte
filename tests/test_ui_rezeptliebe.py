@@ -78,3 +78,33 @@ def test_audit_state_is_safe_before_hidden_page_is_loaded():
     assert "exact_duplicates: []" in js
     assert "data_gaps: { no_image: []" in js
     assert "summary: {" in js
+
+
+def test_pdf_auto_rotation_settings_are_exposed_with_safe_defaults():
+    html = (STATIC / "index.html").read_text()
+    js = (STATIC / "app.js").read_text()
+    assert "PDF-Verarbeitung" in html
+    assert 'x-model="config.pdf.auto_rotate"' in html
+    assert 'x-model="config.pdf.use_tesseract_osd"' in html
+    assert "cfg.pdf ||= {}" in js
+    assert "cfg.pdf.auto_rotate = true" in js
+
+
+def test_admin_center_replaces_fragmented_navigation():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    css = (STATIC / "rezeptliebe.css").read_text(encoding="utf-8")
+    assert "Administration" in html
+    for label in ("Importzentrale", "Versionen", "PDF &amp; Scan", "Suche", "Wartung"):
+        assert label in html
+    assert "page==='admin'" in html
+    assert "['recipes','favorites','cart','admin']" in js.replace(" ", "") or "'recipes','favorites','cart','admin'" in js.replace(" ", "")
+    assert ".admin-tabs" in css
+    assert ".maintenance-grid" in css
+
+
+def test_mobile_admin_and_footer_have_reserved_space():
+    css = (STATIC / "rezeptliebe.css").read_text(encoding="utf-8")
+    assert "@media (max-width: 900px)" in css
+    assert ".admin-two-col { grid-template-columns: 1fr; }" in css
+    assert "var(--mobile-nav-height)" in css

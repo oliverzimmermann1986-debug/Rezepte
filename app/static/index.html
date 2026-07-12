@@ -73,72 +73,57 @@
       <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h2l2.4 11.2a2 2 0 0 0 2 1.6h7.8a2 2 0 0 0 2-1.6L21 7H6"/><circle cx="10" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg></span><span class="nav-label">Einkaufsliste</span>
       <span class="badge" x-show="cart.items.length > 0" x-text="cart.items.length"></span>
     </button>
-    <button type="button" class="nav-item nav-primary" :class="page==='audit' && 'active'" @click="navTo('audit')" title="Rezepte prüfen">
-      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11l2 2 4-4"/></svg></span><span class="nav-label">Prüfen</span>
-      <span class="badge badge-warn" x-show="audit.summary && (audit.summary.exact_groups + audit.summary.similar_clusters + audit.summary.bad_count + audit.summary.sync_error_count + audit.summary.ai_category_count + audit.summary.ai_name_count + (audit.summary.ai_folder_count||0)) > 0"
-            x-text="(audit.summary?.exact_groups || 0) + (audit.summary?.similar_clusters || 0) + (audit.summary?.bad_count || 0) + (audit.summary?.sync_error_count || 0) + (audit.summary?.ai_category_count || 0) + (audit.summary?.ai_name_count || 0) + (audit.summary?.ai_folder_count || 0)"></span>
+    <button type="button" class="nav-item nav-primary" x-show="session.is_admin"
+            :class="page==='admin' && 'active'" @click="navTo('admin')" title="Administration">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/><circle cx="18" cy="17" r="3"/></svg></span>
+      <span class="nav-label">Admin</span>
+      <span class="badge badge-warn" x-show="(admin.overview?.counts?.pending || 0) + (admin.overview?.counts?.failed_downloads || 0) > 0"
+            x-text="(admin.overview?.counts?.pending || 0) + (admin.overview?.counts?.failed_downloads || 0)"></span>
     </button>
-
-    <button type="button" class="nav-item nav-secondary" :class="page==='pending' && 'active'" @click="navTo('pending')" title="Import prüfen">
-      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="nav-label">Import prüfen</span>
-      <span class="badge" x-show="status.pending_count > 0" x-text="status.pending_count"></span>
-    </button>
-    <button type="button" class="nav-item nav-secondary" :class="page==='jobs' && 'active'" @click="navTo('jobs')" title="Jobs & Logs">
-      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span><span class="nav-label">Jobs &amp; Logs</span>
-    </button>
-    <button type="button" class="nav-item nav-secondary" :class="page==='master' && 'active'" @click="navTo('master')" title="Stammdaten">
-      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5z"/><path d="M4 6.5v13M8 8h8M8 12h8"/></svg></span><span class="nav-label">Stammdaten</span>
-    </button>
-    <button type="button" class="nav-item nav-secondary" :class="page==='config' && 'active'" @click="navTo('config')" title="Einstellungen">
-      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></svg></span><span class="nav-label">Einstellungen</span>
-    </button>
-    <button type="button" class="nav-item nav-secondary" :class="page==='trash' && 'active'" @click="navTo('trash')" title="Papierkorb">
-      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></span><span class="nav-label">Papierkorb</span>
-      <span class="badge" x-show="trash.totalCount > 0" x-text="trash.totalCount"></span>
-    </button>
-
-    <button type="button" class="nav-item nav-more" :class="moreDrawerOpen && 'active'" @click="moreDrawerOpen = !moreDrawerOpen" title="Mehr">
-      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></span><span class="nav-label">Mehr</span>
-    </button>
-
     <div class="foot">
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
-      <div class="sidebar-meta"><span>v1.1</span><a href="/logout">Abmelden</a></div>
+      <div class="sidebar-meta"><span>v1.2</span><a href="/logout">Abmelden</a></div>
     </div>
   </aside>
-
-  <!-- Mehr-Drawer (nur Mobile, Bottom-Sheet) -->
-  <div class="more-drawer-backdrop" x-show="moreDrawerOpen" @click="moreDrawerOpen = false" x-transition.opacity></div>
-  <div class="more-drawer" :class="moreDrawerOpen && 'open'" aria-label="Weitere Bereiche">
-    <div class="more-drawer-grip"></div>
-    <div class="more-drawer-item" :class="page==='pending' && 'active'" @click="navTo('pending'); moreDrawerOpen = false">
-      <span class="more-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>Import prüfen <strong x-show="status.pending_count > 0" x-text="'(' + status.pending_count + ')'" style="margin-left:4px"></strong></span>
-    </div>
-    <div class="more-drawer-item" :class="page==='jobs' && 'active'" @click="navTo('jobs'); moreDrawerOpen = false">
-      <span class="more-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span><span>Jobs &amp; Logs</span>
-    </div>
-    <div class="more-drawer-item" :class="page==='master' && 'active'" @click="navTo('master'); moreDrawerOpen = false">
-      <span class="more-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5z"/><path d="M4 6.5v13M8 8h8M8 12h8"/></svg></span><span>Stammdaten</span>
-    </div>
-    <div class="more-drawer-item" :class="page==='config' && 'active'" @click="navTo('config'); moreDrawerOpen = false">
-      <span class="more-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></svg></span><span>Einstellungen</span>
-    </div>
-    <div class="more-drawer-item" :class="page==='trash' && 'active'" @click="navTo('trash'); moreDrawerOpen = false">
-      <span class="more-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></span><span>Papierkorb <strong x-show="trash.totalCount > 0" x-text="'(' + trash.totalCount + ')'" style="margin-left:4px"></strong></span>
-    </div>
-    <div style="padding: 12px 14px 2px; border-top: 1px solid var(--border); margin-top: 7px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
-      <span class="muted" style="font-size:12px;" x-text="status.scraper ? 'Import läuft' : 'Importdienst bereit'"></span>
-      <a href="/logout" class="btn btn-secondary btn-sm">Abmelden</a>
-    </div>
-  </div>
 
   <!-- ============ MAIN ============ -->
   <main class="main">
 
+    <section class="admin-shell" x-show="page==='admin'">
+      <div class="page-head admin-page-head">
+        <div>
+          <h1>Administration</h1>
+          <div class="subtitle">Import, Qualität, Versionen, PDF-Aufbereitung, Suche und Systempflege an einem Ort</div>
+        </div>
+        <button class="btn" @click="loadAdminOverview()">⟳ Status</button>
+      </div>
+
+      <div class="admin-overview-grid" x-show="admin.overview">
+        <div class="admin-kpi"><strong x-text="admin.overview?.counts?.pending || 0"></strong><span>Offene Importe</span></div>
+        <div class="admin-kpi"><strong x-text="admin.overview?.counts?.failed_downloads || 0"></strong><span>Fehlgeschlagen</span></div>
+        <div class="admin-kpi"><strong x-text="admin.overview?.counts?.versions || 0"></strong><span>Versionen</span></div>
+        <div class="admin-kpi"><strong x-text="admin.overview?.pdf_count || 0"></strong><span>PDF-Dateien</span></div>
+        <div class="admin-kpi"><strong x-text="admin.overview?.counts?.open_findings || 0"></strong><span>Offene Findings</span></div>
+        <div class="admin-kpi"><strong x-text="formatBytes(admin.overview?.db_size_bytes || 0)"></strong><span>Datenbank</span></div>
+      </div>
+
+      <nav class="admin-tabs" aria-label="Admin-Bereiche">
+        <button :class="admin.tab==='import' && 'active'" @click="selectAdminTab('import')">Importzentrale</button>
+        <button :class="admin.tab==='quality' && 'active'" @click="selectAdminTab('quality')">Qualität</button>
+        <button :class="admin.tab==='versions' && 'active'" @click="selectAdminTab('versions')">Versionen</button>
+        <button :class="admin.tab==='pdf' && 'active'" @click="selectAdminTab('pdf')">PDF &amp; Scan</button>
+        <button :class="admin.tab==='search' && 'active'" @click="selectAdminTab('search')">Suche</button>
+        <button :class="admin.tab==='maintenance' && 'active'" @click="selectAdminTab('maintenance')">Wartung</button>
+        <button :class="admin.tab==='master' && 'active'" @click="selectAdminTab('master')">Stammdaten</button>
+        <button :class="admin.tab==='settings' && 'active'" @click="selectAdminTab('settings')">Einstellungen</button>
+        <button :class="admin.tab==='trash' && 'active'" @click="selectAdminTab('trash')">Papierkorb</button>
+      </nav>
+    </section>
+
     <!-- ========== DASHBOARD ========== -->
     <!-- ========== PENDING ========== -->
-    <section x-show="page==='pending'">
+    <section x-show="page==='admin' && admin.tab==='import'" class="admin-panel">
       <div class="page-head">
         <div>
           <h1>Import prüfen</h1>
@@ -157,6 +142,13 @@
           </button>
           <button class="btn" @click="loadPending()">⟳ Neu laden</button>
         </div>
+      </div>
+
+      <div class="admin-stage-grid" x-show="admin.importCenter?.stages">
+        <div class="admin-stage-card"><strong x-text="admin.importCenter?.stages?.needs_review || 0"></strong><span>Rückfrage erforderlich</span></div>
+        <div class="admin-stage-card"><strong x-text="admin.importCenter?.stages?.running || 0"></strong><span>Wird verarbeitet</span></div>
+        <div class="admin-stage-card"><strong x-text="admin.importCenter?.stages?.failed || 0"></strong><span>Fehlgeschlagen</span></div>
+        <div class="admin-stage-card"><strong x-text="admin.importCenter?.stages?.completed_recent || 0"></strong><span>Kürzlich abgeschlossen</span></div>
       </div>
 
       <!-- Bulk-Action-Bar (nur sichtbar wenn Items markiert) -->
@@ -327,7 +319,7 @@
 
     <!-- ========== HISTORY ========== -->
     <!-- ========== JOBS ========== -->
-    <section x-show="page==='jobs'">
+    <section x-show="page==='admin' && admin.tab==='import'" class="admin-panel admin-jobs-panel">
       <div class="page-head">
         <div>
           <h1>Jobs &amp; Logs</h1>
@@ -387,7 +379,7 @@
     </section>
 
     <!-- ========== CONFIG ========== -->
-    <section x-show="page==='config'">
+    <section x-show="page==='admin' && admin.tab==='settings'" class="admin-panel">
       <div class="page-head">
         <div>
           <h1>Einstellungen</h1>
@@ -766,6 +758,74 @@
             </div>
           </div>
 
+          <!-- PDF-Ausrichtung -->
+          <div class="config-section">
+            <div class="head">
+              <span style="flex: 1;">PDF-Verarbeitung</span>
+            </div>
+            <div class="body">
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+                <input type="checkbox" x-model="config.pdf.auto_rotate" id="pdf-auto-rotate">
+                <label for="pdf-auto-rotate">PDF-Seiten beim Import automatisch ausrichten</label>
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+                <input type="checkbox" x-model="config.pdf.use_tesseract_osd" id="pdf-use-osd"
+                       :disabled="!config.pdf.auto_rotate">
+                <label for="pdf-use-osd">Gescannte PDFs mit Tesseract OSD erkennen</label>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>OSD-Mindestvertrauen</label>
+                  <input type="number" min="0" step="0.5"
+                         x-model.number="config.pdf.osd_min_confidence"
+                         :disabled="!config.pdf.auto_rotate || !config.pdf.use_tesseract_osd">
+                  <div class="hint">Bei unsicherer Erkennung wird die Seite nicht verändert.</div>
+                </div>
+                <div class="field">
+                  <label>Max. Scan-Seiten pro PDF</label>
+                  <input type="number" min="0" max="100"
+                         x-model.number="config.pdf.max_osd_pages"
+                         :disabled="!config.pdf.auto_rotate || !config.pdf.use_tesseract_osd">
+                  <div class="hint">Text-PDFs werden unabhängig davon vollständig geprüft.</div>
+                </div>
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+                <input type="checkbox" x-model="config.pdf.remove_blank_pages" id="pdf-remove-blank">
+                <label for="pdf-remove-blank">Eindeutig leere Seiten automatisch entfernen</label>
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+                <input type="checkbox" x-model="config.pdf.auto_crop" id="pdf-auto-crop">
+                <label for="pdf-auto-crop">Große Weißränder automatisch beschneiden</label>
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+                <input type="checkbox" x-model="config.pdf.deskew_scans" id="pdf-deskew">
+                <label for="pdf-deskew">Schiefe Scan-Seiten begradigen (nur betroffene Seiten werden gerastert)</label>
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+                <input type="checkbox" x-model="config.pdf.ocr_scans" id="pdf-ocr-scans">
+                <label for="pdf-ocr-scans">Scan-PDFs lokal mit durchsuchbarem OCR-Textlayer versehen</label>
+              </div>
+              <div class="field" x-show="config.pdf.ocr_scans">
+                <label>OCR-Sprachen</label>
+                <input x-model="config.pdf.ocr_language" placeholder="deu+eng">
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+                <input type="checkbox" x-model="config.pdf.improve_contrast" id="pdf-improve-contrast">
+                <label for="pdf-improve-contrast">Kontrast gescannter Seiten verbessern</label>
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+                <input type="checkbox" x-model="config.pdf.keep_original" id="pdf-keep-original">
+                <label for="pdf-keep-original">Unverändertes Original-PDF sichern</label>
+              </div>
+              <div class="hint">
+                Die Korrektur setzt nach Möglichkeit nur die PDF-Seitenrotation; Text-Layer, Bilder und Vektoren
+                werden nicht gerastert. Signierte oder verschlüsselte PDFs bleiben unverändert.
+                Bereits vorhandene Dateien einmalig per
+                <code>python -m app.cli pdf-auto-rotate</code> ausrichten.
+              </div>
+            </div>
+          </div>
+
           <!-- Telegram-Block entfernt: Benachrichtigungen sind raus. -->
 
 
@@ -950,13 +1010,196 @@
     </section>
 
     <!-- ========== REZEPTE ========== -->
+    <!-- ========== ADMIN · VERSIONEN ========== -->
+    <section x-show="page==='admin' && admin.tab==='versions'" class="admin-panel">
+      <div class="page-head">
+        <div><h1>Rezept-Versionen</h1><div class="subtitle">Automatische Snapshots vor Änderungen und sichere Wiederherstellung</div></div>
+        <div class="flex">
+          <input class="admin-inline-input" type="number" min="1" placeholder="Rezept-ID (optional)" x-model="admin.versionRecipeId">
+          <button class="btn" @click="loadAdminVersions()" :disabled="admin.versionsLoading">⟳ Laden</button>
+        </div>
+      </div>
+      <div class="admin-info-card">Vor jeder Inhaltsänderung wird der komplette logische Stand aus Metadaten, Zutaten, Schritten und Tags gespeichert. Binärdateien bleiben unverändert.</div>
+      <div class="card version-detail-card" x-show="admin.versionDetail">
+        <div class="flex" style="justify-content:space-between; align-items:flex-start; gap:12px;">
+          <div>
+            <h3 style="margin-bottom:4px;" x-text="'Version v'+(admin.versionDetail?.version_no || '')"></h3>
+            <div class="muted" x-text="(admin.versionDetail?.reason || 'Änderung') + ' · ' + formatTs(admin.versionDetail?.created_at)"></div>
+          </div>
+          <button class="btn btn-sm" @click="admin.versionDetail=null" aria-label="Versionsdetails schließen">×</button>
+        </div>
+        <div class="version-diff-grid">
+          <div><strong x-text="admin.versionDetail?.diff?.before_counts?.ingredients || 0"></strong><span>Zutaten damals</span></div>
+          <div><strong x-text="admin.versionDetail?.diff?.before_counts?.steps || 0"></strong><span>Schritte damals</span></div>
+          <div><strong x-text="admin.versionDetail?.diff?.before_counts?.tags || 0"></strong><span>Tags damals</span></div>
+        </div>
+        <div class="version-change-list">
+          <template x-for="change in (admin.versionDetail?.diff?.fields || [])" :key="change.field">
+            <div class="version-change"><strong x-text="change.field"></strong><span x-text="String(change.before ?? '—') + ' → ' + String(change.current ?? '—')"></span></div>
+          </template>
+          <div class="version-change" x-show="admin.versionDetail?.diff?.steps_changed"><strong>Schritte</strong><span>Zubereitungsschritte wurden verändert</span></div>
+          <div class="version-change" x-show="(admin.versionDetail?.diff?.ingredients_added_since || []).length"><strong>Zutaten hinzugekommen</strong><span x-text="admin.versionDetail?.diff?.ingredients_added_since?.join(', ')"></span></div>
+          <div class="version-change" x-show="(admin.versionDetail?.diff?.ingredients_removed_since || []).length"><strong>Zutaten entfernt</strong><span x-text="admin.versionDetail?.diff?.ingredients_removed_since?.join(', ')"></span></div>
+          <div class="empty" x-show="!(admin.versionDetail?.diff?.fields || []).length && !admin.versionDetail?.diff?.steps_changed && !(admin.versionDetail?.diff?.ingredients_added_since || []).length && !(admin.versionDetail?.diff?.ingredients_removed_since || []).length">Der aktuelle logische Stand entspricht dieser Version.</div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table admin-table">
+          <thead><tr><th>Zeit</th><th>Rezept</th><th>Version</th><th>Grund</th><th>Quelle</th><th>Benutzer</th><th></th></tr></thead>
+          <tbody>
+            <template x-for="v in admin.versions" :key="v.id">
+              <tr>
+                <td data-label="Zeit" x-text="formatTs(v.created_at)"></td>
+                <td data-label="Rezept"><strong x-text="v.recipe_name || ('#'+v.recipe_id)"></strong></td>
+                <td data-label="Version" x-text="'v'+v.version_no"></td>
+                <td data-label="Grund" x-text="v.reason || 'Änderung'"></td>
+                <td data-label="Quelle"><span class="pill" x-text="v.source"></span></td>
+                <td data-label="Benutzer" x-text="v.created_by || 'system'"></td>
+                <td><div class="flex"><button class="btn btn-sm" @click="viewAdminVersion(v)">Ansehen</button><button class="btn btn-primary btn-sm" @click="restoreAdminVersion(v)">↶ Wiederherstellen</button></div></td>
+              </tr>
+            </template>
+            <tr x-show="admin.versions.length===0"><td colspan="7" class="empty">Noch keine Versionen vorhanden.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== ADMIN · PDF ========== -->
+    <section x-show="page==='admin' && admin.tab==='pdf'" class="admin-panel">
+      <div class="page-head"><div><h1>PDF- &amp; Scan-Aufbereitung</h1><div class="subtitle">Erst analysieren, dann gezielt verlustarm korrigieren</div></div></div>
+      <div class="admin-two-col">
+        <div class="card admin-form-card">
+          <h3>Umfang</h3>
+          <div class="field"><label>Einzelne Rezept-ID</label><input type="number" min="1" x-model="admin.pdf.recipe_id" placeholder="leer = Bestand"></div>
+          <div class="field" x-show="!admin.pdf.recipe_id"><label>Maximal verarbeiten</label><input type="number" min="1" max="300" x-model.number="admin.pdf.limit"></div>
+          <label class="check-row"><input type="checkbox" x-model="admin.pdf.auto_rotate"> Seiten automatisch drehen</label>
+          <label class="check-row"><input type="checkbox" x-model="admin.pdf.remove_blank_pages"> Eindeutig leere Seiten entfernen</label>
+          <label class="check-row"><input type="checkbox" x-model="admin.pdf.auto_crop"> Große Weißränder beschneiden</label>
+          <label class="check-row"><input type="checkbox" x-model="admin.pdf.deskew_scans"> Schiefe Scan-Seiten begradigen <span class="muted">(rastert nur betroffene Seiten)</span></label>
+          <label class="check-row"><input type="checkbox" x-model="admin.pdf.ocr_scans"> Scan-Seiten mit durchsuchbarem OCR-Textlayer versehen</label>
+          <label class="check-row"><input type="checkbox" x-model="admin.pdf.improve_contrast"> Scan-Kontrast verbessern</label>
+          <div class="field" x-show="admin.pdf.ocr_scans"><label>OCR-Sprachen</label><input x-model="admin.pdf.ocr_language" placeholder="deu+eng"><div class="hint">Tesseract-Sprachcodes, z. B. deu+eng.</div></div>
+          <label class="check-row"><input type="checkbox" x-model="admin.pdf.keep_original"> Original immer sichern</label>
+          <div class="flex admin-action-row">
+            <button class="btn" @click="runAdminPdf(true)" :disabled="admin.pdf.running">🔎 Nur analysieren</button>
+            <button class="btn btn-primary" @click="runAdminPdf(false)" :disabled="admin.pdf.running">✨ Aufbereiten</button>
+          </div>
+        </div>
+        <div class="card admin-result-card">
+          <h3>Ergebnis</h3>
+          <div class="empty" x-show="!admin.pdf.result && !admin.pdf.running">Noch kein Lauf gestartet.</div>
+          <div class="empty" x-show="admin.pdf.running">PDFs werden geprüft…</div>
+          <template x-if="admin.pdf.result">
+            <div>
+              <div class="admin-result-summary">
+                <span><strong x-text="admin.pdf.result.scanned || 0"></strong> geprüft</span>
+                <span><strong x-text="admin.pdf.result.changed || 0"></strong> geändert</span>
+                <span><strong x-text="admin.pdf.result.errors || 0"></strong> Fehler</span>
+              </div>
+              <div class="admin-file-results">
+                <template x-for="f in (admin.pdf.result.files || []).slice(0,50)" :key="f.path">
+                  <div class="admin-file-result">
+                    <strong x-text="f.path.split('/').pop()"></strong>
+                    <span x-text="f.error || ((f.rotated_pages||0)+' gedreht · '+(f.cropped_pages||0)+' beschnitten · '+(f.removed_blank_pages||0)+' leer entfernt')"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+      <div class="card pdf-page-editor">
+        <div class="flex" style="justify-content:space-between; align-items:flex-start; gap:12px;">
+          <div><h3>Seiteneditor</h3><div class="muted">Einzelne Seiten drehen, löschen und neu anordnen. Rezept-ID oben eintragen.</div></div>
+          <div class="flex"><button class="btn" @click="loadPdfPages()" :disabled="admin.pageEditor.loading || !admin.pdf.recipe_id">Seiten laden</button><button class="btn btn-primary" @click="applyPdfPageEdits()" :disabled="admin.pageEditor.saving || !admin.pageEditor.pages.length">Speichern</button></div>
+        </div>
+        <div class="empty" x-show="admin.pageEditor.loading">Seiten werden analysiert…</div>
+        <div class="pdf-page-grid" x-show="admin.pageEditor.pages.length">
+          <template x-for="(pageItem, index) in admin.pageEditor.pages" :key="pageItem.page">
+            <article class="pdf-page-card" :class="pageItem.deleted && 'deleted'">
+              <div class="pdf-page-preview-wrap">
+                <img :src="'/api/admin/pdf/'+admin.pdf.recipe_id+'/pages/'+pageItem.page+'/preview?width=420&v='+admin.pageEditor.previewKey"
+                     :alt="'PDF-Seite '+pageItem.page" class="pdf-page-preview"
+                     :style="'transform: rotate('+pageItem.rotation_delta+'deg)'">
+                <span class="pdf-page-number" x-text="'Originalseite '+pageItem.page"></span>
+              </div>
+              <div class="pdf-page-meta">
+                <span x-text="pageItem.text_chars+' Textzeichen'"></span>
+                <span x-show="pageItem.blank" class="pill warn">leer</span>
+                <span x-show="pageItem.skew_angle" class="pill" x-text="pageItem.skew_angle+'° schief'"></span>
+              </div>
+              <div class="pdf-page-actions">
+                <button class="btn btn-sm" @click="movePdfPage(index,-1)" :disabled="index===0" aria-label="Seite nach vorne">←</button>
+                <button class="btn btn-sm" @click="movePdfPage(index,1)" :disabled="index===admin.pageEditor.pages.length-1" aria-label="Seite nach hinten">→</button>
+                <button class="btn btn-sm" @click="rotatePdfPage(pageItem,-90)" aria-label="Links drehen">↶</button>
+                <button class="btn btn-sm" @click="rotatePdfPage(pageItem,90)" aria-label="Rechts drehen">↷</button>
+                <button class="btn btn-sm" :class="pageItem.deleted ? 'btn-primary' : 'btn-danger'" @click="pageItem.deleted=!pageItem.deleted; admin.pageEditor.pages=[...admin.pageEditor.pages]" x-text="pageItem.deleted ? 'Behalten' : 'Löschen'"></button>
+              </div>
+            </article>
+          </template>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== ADMIN · SUCHE ========== -->
+    <section x-show="page==='admin' && admin.tab==='search'" class="admin-panel">
+      <div class="page-head">
+        <div><h1>Intelligente Suche</h1><div class="subtitle">Synonyme, Ausschlüsse und Tippfehlerkorrektur lokal verwalten</div></div>
+        <button class="btn" @click="rebuildAdminSearch()" :disabled="admin.maintenanceBusy==='search'">↻ Suchindex neu aufbauen</button>
+      </div>
+      <div class="admin-info-card">In der normalen Suche funktionieren jetzt Synonyme, Tippfehler sowie Ausschlüsse wie <code>pasta -zwiebel</code> oder <code>pasta ohne zwiebel</code>.</div>
+      <div class="admin-two-col">
+        <div class="card admin-form-card">
+          <h3>Synonymgruppe</h3>
+          <div class="field"><label>Hauptbegriff</label><input x-model="admin.synonymForm.term" placeholder="z. B. Hackfleisch"></div>
+          <div class="field"><label>Synonyme, komma-separiert</label><textarea rows="5" x-model="admin.synonymForm.synonymsText" placeholder="Hack, Gehacktes, Faschiertes"></textarea></div>
+          <button class="btn btn-primary" @click="saveAdminSynonym()">Speichern</button>
+        </div>
+        <div class="card">
+          <h3>Gespeicherte Gruppen</h3>
+          <div class="admin-synonym-list">
+            <template x-for="item in admin.synonyms" :key="item.id">
+              <div class="admin-synonym-row">
+                <div><strong x-text="item.term"></strong><span x-text="(item.synonyms || []).join(', ')"></span></div>
+                <div class="flex"><button class="btn btn-sm" @click="editAdminSynonym(item)">Bearbeiten</button><button class="btn btn-danger btn-sm" @click="deleteAdminSynonym(item)">Löschen</button></div>
+              </div>
+            </template>
+            <div class="empty" x-show="admin.synonyms.length===0">Noch keine eigenen Synonyme.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== ADMIN · WARTUNG ========== -->
+    <section x-show="page==='admin' && admin.tab==='maintenance'" class="admin-panel">
+      <div class="page-head"><div><h1>Technische Wartung</h1><div class="subtitle">Datenbank, Medien, Backups, Suchindex und temporäre Dateien prüfen</div></div></div>
+      <div class="maintenance-grid">
+        <button class="maintenance-action" @click="runMaintenance('integrity')" :disabled="admin.maintenanceBusy"><strong>DB-Integrität</strong><span>integrity_check + Fremdschlüssel</span></button>
+        <button class="maintenance-action" @click="runMaintenance('backup_verify')" :disabled="admin.maintenanceBusy"><strong>Backup testen</strong><span>Online-Sicherung erstellen und öffnen</span></button>
+        <button class="maintenance-action" @click="runMaintenance('media_scan')" :disabled="admin.maintenanceBusy"><strong>Medien prüfen</strong><span>Fehlende, verwaiste und unsichere Pfade</span></button>
+        <button class="maintenance-action" @click="runMaintenance('cleanup_temp')" :disabled="admin.maintenanceBusy"><strong>Temp bereinigen</strong><span>Alte Arbeitsdateien über 7 Tage</span></button>
+        <button class="maintenance-action" @click="runMaintenance('rebuild_fts')" :disabled="admin.maintenanceBusy"><strong>Suchindex reparieren</strong><span>FTS5 vollständig neu aufbauen</span></button>
+        <button class="maintenance-action" @click="runMaintenance('vacuum')" :disabled="admin.maintenanceBusy"><strong>Datenbank komprimieren</strong><span>Freien SQLite-Speicher zurückholen</span></button>
+      </div>
+      <div class="card" x-show="admin.maintenanceResult">
+        <h3>Letztes Ergebnis</h3>
+        <pre class="admin-json" x-text="JSON.stringify(admin.maintenanceResult, null, 2)"></pre>
+      </div>
+      <div class="card">
+        <h3>Letzte Wartungsläufe</h3>
+        <table class="table admin-table"><thead><tr><th>Zeit</th><th>Aktion</th><th>Status</th><th>Benutzer</th></tr></thead><tbody>
+          <template x-for="run in admin.maintenanceRuns" :key="run.id"><tr><td x-text="formatTs(run.started_at)"></td><td x-text="run.kind"></td><td><span class="pill" :class="run.status==='ok'?'ok':'err'" x-text="run.status"></span></td><td x-text="run.started_by || 'system'"></td></tr></template>
+        </tbody></table>
+      </div>
+    </section>
+
     <section x-show="page==='recipes' || page==='favorites'" class="recipes-page">
       <div class="recipes-hero">
         <h1 x-text="page === 'favorites' ? 'Favoriten' : 'Rezepte'"></h1>
         <div class="recipes-hero-subtitle" x-text="page === 'favorites' ? 'Deine gespeicherten Lieblingsrezepte.' : 'Entdecke und finde deine Lieblingsrezepte.'"></div>
         <div class="recipes-searchbar">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11l2 2 4-4"/></svg>
-          <input type="search" x-model.debounce.300ms="recipes.filters.search" @input="recipes.filters.offset=0; loadRecipes()" placeholder="Suche nach Rezepten, Zutaten, Kategorien …" aria-label="Rezepte durchsuchen">
+          <input type="search" x-model.debounce.300ms="recipes.filters.search" @input="recipes.filters.offset=0; loadRecipes()" placeholder="Suche, z. B. Pasta ohne Zwiebel oder Hack -scharf …" aria-label="Rezepte durchsuchen">
           <button type="button" class="btn btn-primary" @click="recipes.filters.offset=0; loadRecipes()" aria-label="Suche ausführen">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11l2 2 4-4"/></svg><span class="search-label">Suche</span>
           </button>
@@ -976,6 +1219,14 @@
           </button>
           <button type="button" class="btn btn-ghost" @click="resetFilters()" x-show="activeFilterCount() > 0">Zurücksetzen</button>
           <span class="recipes-filter-summary" x-text="recipes.total + ' Rezepte'"></span>
+        </div>
+        <div class="search-correction" x-show="recipes.searchMeta?.corrected || recipes.searchMeta?.suggestion">
+          <span>
+            <strong x-show="recipes.searchMeta?.corrected">Suche automatisch korrigiert:</strong>
+            <strong x-show="!recipes.searchMeta?.corrected">Meintest du:</strong>
+            <span x-text="recipes.searchMeta?.suggestion || recipes.searchMeta?.query"></span>
+          </span>
+          <button type="button" class="btn btn-sm" @click="applySearchSuggestion()">Übernehmen</button>
         </div>
       </div>
       <div class="recipes-layout">
@@ -1264,7 +1515,7 @@
     </section>
 
     <!-- ========== STAMMDATEN ========== -->
-    <section x-show="page==='master'" class="master-page">
+    <section x-show="page==='admin' && admin.tab==='master'" class="master-page admin-panel">
       <div class="card">
         <div class="master-header">
           <h2 style="margin:0">📚 Stammdaten</h2>
@@ -1371,7 +1622,7 @@
     </section>
 
     <!-- ========== AUDIT ========== -->
-    <section x-show="page==='audit'" class="audit-page">
+    <section x-show="page==='admin' && admin.tab==='quality'" class="audit-page admin-panel">
       <div class="card">
         <div class="audit-header">
           <div>
@@ -2105,7 +2356,7 @@
     </section>
 
     <!-- ========== PAPIERKORB ========== -->
-    <section x-show="page==='trash'">
+    <section x-show="page==='admin' && admin.tab==='trash'">
       <div class="page-head">
         <div>
           <h1>🗑 Papierkorb</h1>
@@ -2370,6 +2621,11 @@
                  style="display:inline-flex; align-items:center; gap:6px; min-height:38px; margin-bottom:8px;">
                 📄 PDF öffnen
               </a>
+              <button x-show="session.is_admin" type="button" class="btn btn-secondary btn-sm"
+                      @click="openRecipeVersions()"
+                      style="display:inline-flex; align-items:center; gap:6px; min-height:38px; margin:0 0 8px 6px;">
+                ↶ Versionen
+              </button>
               <div><span x-text="recipeDetail.data?.type"></span> · <span x-text="recipeDetail.data?.category"></span></div>
               <div x-show="recipeDetail.data?.url" style="overflow:hidden;">
                 <a :href="recipeDetail.data?.url" target="_blank" rel="noopener"

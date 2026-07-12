@@ -2,16 +2,36 @@
 function scrapperApp() {
   return {
     page: 'recipes',
-    moreDrawerOpen: false,  // Bottom-Sheet mit Dashboard/Historie/Jobs/Config (Mobile only)
+    session: { username: '', role: 'user', is_admin: false, loaded: false },
+    admin: {
+      tab: 'import',
+      overview: null,
+      importCenter: null,
+      versions: [],
+      versionsLoading: false,
+      versionDetail: null,
+      versionRecipeId: '',
+      synonyms: [],
+      synonymForm: { term: '', synonymsText: '' },
+      pdf: {
+        running: false, result: null, recipe_id: '', process_all: true,
+        auto_rotate: true, remove_blank_pages: true, auto_crop: true,
+        deskew_scans: false, ocr_scans: true, improve_contrast: false,
+        ocr_language: 'deu+eng', keep_original: true, limit: 50,
+      },
+      pageEditor: { loading: false, saving: false, filename: '', pages: [], previewKey: Date.now() },
+      maintenanceRuns: [],
+      maintenanceBusy: '',
+      maintenanceResult: null,
+    },
 
     // Zentrale Navigations-Helper — page-switch plus die zugehörigen
     // Loader. Vorher waren die Loader direkt im @click jeder nav-item,
     // was beim Refactor (z.B. neue Bottom-Sheet) duplication erzeugte.
     navTo(targetPage, { updateUrl = true } = {}) {
-      const allowed = new Set(['recipes','favorites','cart','pending','audit','jobs','config','master','trash']);
+      const allowed = new Set(['recipes','favorites','cart','admin']);
       if (!allowed.has(targetPage)) targetPage = 'recipes';
       this.page = targetPage;
-      this.moreDrawerOpen = false;
       if (this.browser?.show) this.browser.show = false;
       if (this.recipeDetail?.show) this.recipeDetail.show = false;
 
@@ -22,15 +42,10 @@ function scrapperApp() {
       }
 
       switch (targetPage) {
-        case 'pending':   this.loadPending(); this.loadFailedDownloads(); break;
-        case 'jobs':      this.loadJobs(); break;
-        case 'config':    this.loadConfig(); this.loadUsers(); break;
+        case 'admin':     this.selectAdminTab(this.admin.tab || 'import', { updateUrl: false }); break;
         case 'recipes':
         case 'favorites': this.recipes.filters.offset = 0; this.loadRecipes(); this.loadFacets(); break;
         case 'cart':      this.loadCart(); if (!this.config?.einkauf) this.loadConfig(); break;
-        case 'trash':     this.loadTrash(); break;
-        case 'audit':     this.loadAudit(); break;
-        case 'master':    this.loadMaster(); break;
       }
 
       if (updateUrl && window.history?.replaceState) {
@@ -42,8 +57,7 @@ function scrapperApp() {
     pageLabel() {
       return ({
         recipes: 'Alle Rezepte', favorites: 'Favoriten', cart: 'Einkaufsliste',
-        pending: 'Import prüfen', audit: 'Rezepte prüfen', jobs: 'Jobs & Logs',
-        config: 'Einstellungen', master: 'Stammdaten', trash: 'Papierkorb',
+        admin: 'Admin',
       })[this.page] || 'Rezepte';
     },
     config: {},
@@ -79,6 +93,7 @@ function scrapperApp() {
     recipes: {
       items: [], total: 0, loading: false,
       filters: { search: '', type: '', category: '', tag_ids: [], ingredients: [], ingredients_status: '', verified: '', favorite_only: false, min_rating: 0, limit: 60, offset: 0 },
+      searchMeta: { corrected: false, original: '', query: '', suggestion: '' },
       filterDrawerOpen: false,  // nur auf Mobile sichtbar: Filter als Drawer statt Sidebar
       ingredientSearch: '',     // Such-Input im Zutaten-Filter-Block
       _ingFacetsLimited: false, // True wenn die Chip-Liste auf MAX geclipped wurde
@@ -180,9 +195,14 @@ function scrapperApp() {
     _audioCtx: null,
     init() {
       const tab = new URLSearchParams(window.location.search).get('tab');
-      const validTab = ['recipes','favorites','cart','pending','audit','jobs','config','master','trash'].includes(tab) ? tab : 'recipes';
+      const validTab = ['recipes','favorites','cart','admin'].includes(tab) ? tab : 'recipes';
       this.page = validTab;
+      if (validTab === 'admin') {
+        const requestedAdmin = new URLSearchParams(window.location.search).get('admin');
+        if (requestedAdmin) this.admin.tab = requestedAdmin;
+      }
 
+      this.loadSession();
       this.loadRecentJobs();
       this.loadStats();
       this.loadHddStatus();
@@ -200,6 +220,214 @@ function scrapperApp() {
         this.navTo(next, { updateUrl: false });
       });
       this.$nextTick(() => this.initPullToRefresh());
+    },
+
+    async loadSession() {
+      try {
+        const r = await this.api('GET', '/api/session');
+        this.session = { ...this.session, ...(r || {}), loaded: true };
+        if (this.page === 'admin' && !this.session.is_admin) this.navTo('recipes');
+      } catch (_) {
+        this.session.loaded = true;
+        this.session.is_admin = false;
+        if (this.page === 'admin') this.navTo('recipes');
+      }
+    },
+
+    async selectAdminTab(tab, { updateUrl = true } = {}) {
+      if (!this.session.is_admin && this.session.loaded) {
+        this.showToast('Admin-Rechte erforderlich', 'err');
+        return;
+      }
+      const allowed = new Set(['import','quality','versions','pdf','search','maintenance','master','settings','trash']);
+      this.admin.tab = allowed.has(tab) ? tab : 'import';
+      this.page = 'admin';
+      if (updateUrl && window.history?.replaceState) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('tab', 'admin');
+        url.searchParams.set('admin', this.admin.tab);
+        window.history.replaceState({}, '', url);
+      }
+      this.loadAdminOverview();
+      switch (this.admin.tab) {
+        case 'import':
+          this.loadAdminImport(); this.loadPending(); this.loadFailedDownloads(); this.loadJobs(); break;
+        case 'quality': this.loadAudit(); break;
+        case 'versions': this.loadAdminVersions(); break;
+        case 'pdf': if (!this.config?.pdf) this.loadConfig(); break;
+        case 'search': this.loadAdminSynonyms(); break;
+        case 'maintenance': this.loadMaintenanceRuns(); break;
+        case 'master': this.loadMaster(); break;
+        case 'settings': this.loadConfig(); this.loadUsers(); break;
+        case 'trash': this.loadTrash(); break;
+      }
+    },
+
+    async loadAdminOverview() {
+      if (!this.session.is_admin && this.session.loaded) return;
+      try { this.admin.overview = await this.api('GET', '/api/admin/overview'); }
+      catch (_) { /* nav remains usable */ }
+    },
+
+    async loadAdminImport() {
+      try { this.admin.importCenter = await this.api('GET', '/api/admin/import-center?limit=100'); }
+      catch (e) { this.showToast('Importzentrale konnte nicht geladen werden', 'err'); }
+    },
+
+    async loadAdminVersions() {
+      this.admin.versionsLoading = true;
+      try {
+        const q = this.admin.versionRecipeId ? `?recipe_id=${encodeURIComponent(this.admin.versionRecipeId)}` : '';
+        const r = await this.api('GET', '/api/admin/versions' + q);
+        this.admin.versions = r.items || [];
+      } catch (_) { this.showToast('Versionen konnten nicht geladen werden', 'err'); }
+      finally { this.admin.versionsLoading = false; }
+    },
+
+    async viewAdminVersion(item) {
+      try {
+        this.admin.versionDetail = await this.api('GET', `/api/admin/versions/${item.id}`);
+      } catch (_) { this.showToast('Versionsdetails konnten nicht geladen werden', 'err'); }
+    },
+
+    async restoreAdminVersion(item) {
+      if (!confirm(`Version ${item.version_no} von „${item.recipe_name || item.recipe_id}“ wiederherstellen? Der aktuelle Stand wird vorher ebenfalls versioniert.`)) return;
+      const r = await this.api('POST', `/api/admin/versions/${item.id}/restore`, {});
+      if (r?.ok) {
+        this.showToast('Version wiederhergestellt');
+        await this.loadAdminVersions();
+        if (this.recipeDetail?.data?.id === item.recipe_id) await this.openRecipe(item.recipe_id);
+      }
+    },
+
+    async loadAdminSynonyms() {
+      try {
+        const r = await this.api('GET', '/api/admin/search/synonyms');
+        this.admin.synonyms = r.items || [];
+      } catch (_) { this.showToast('Synonyme konnten nicht geladen werden', 'err'); }
+    },
+
+    async saveAdminSynonym() {
+      const term = (this.admin.synonymForm.term || '').trim();
+      const synonyms = (this.admin.synonymForm.synonymsText || '').split(/[,;\n]/).map(v => v.trim()).filter(Boolean);
+      if (term.length < 2) return this.showToast('Suchbegriff fehlt', 'err');
+      const r = await this.api('POST', '/api/admin/search/synonyms', { term, synonyms });
+      if (r?.ok) {
+        this.admin.synonyms = r.items || [];
+        this.admin.synonymForm = { term: '', synonymsText: '' };
+        this.showToast('Synonymgruppe gespeichert');
+      }
+    },
+
+    async editAdminSynonym(item) {
+      this.admin.synonymForm = { term: item.term, synonymsText: (item.synonyms || []).join(', ') };
+    },
+
+    async deleteAdminSynonym(item) {
+      if (!confirm(`Synonymgruppe „${item.term}“ löschen?`)) return;
+      await this.api('DELETE', `/api/admin/search/synonyms/${item.id}`);
+      await this.loadAdminSynonyms();
+    },
+
+    async rebuildAdminSearch() {
+      this.admin.maintenanceBusy = 'search';
+      try {
+        const r = await this.api('POST', '/api/admin/search/rebuild', {});
+        this.showToast(`${r.indexed || 0} Rezepte neu indiziert`);
+      } finally { this.admin.maintenanceBusy = ''; }
+    },
+
+    async loadPdfPages() {
+      const id = Number(this.admin.pdf.recipe_id || 0);
+      if (!id) return this.showToast('Bitte zuerst eine Rezept-ID eingeben', 'err');
+      this.admin.pageEditor.loading = true;
+      try {
+        const r = await this.api('GET', `/api/admin/pdf/${id}/pages`);
+        this.admin.pageEditor.filename = r.filename || '';
+        this.admin.pageEditor.pages = (r.pages || []).map(page => ({ ...page, rotation_delta: 0, deleted: false }));
+        this.admin.pageEditor.previewKey = Date.now();
+      } catch (_) { this.showToast('PDF-Seiten konnten nicht geladen werden', 'err'); }
+      finally { this.admin.pageEditor.loading = false; }
+    },
+
+    movePdfPage(index, delta) {
+      const target = index + delta;
+      const pages = this.admin.pageEditor.pages;
+      if (target < 0 || target >= pages.length) return;
+      const [item] = pages.splice(index, 1);
+      pages.splice(target, 0, item);
+      this.admin.pageEditor.pages = [...pages];
+    },
+
+    rotatePdfPage(page, delta) {
+      page.rotation_delta = ((Number(page.rotation_delta || 0) + delta) % 360 + 360) % 360;
+      this.admin.pageEditor.pages = [...this.admin.pageEditor.pages];
+    },
+
+    async applyPdfPageEdits() {
+      const id = Number(this.admin.pdf.recipe_id || 0);
+      const active = this.admin.pageEditor.pages.filter(page => !page.deleted);
+      if (!id || !active.length) return this.showToast('Mindestens eine Seite muss erhalten bleiben', 'err');
+      if (!confirm(`${active.length} PDF-Seite(n) in der angezeigten Reihenfolge speichern? Das Original wird vorher gesichert.`)) return;
+      this.admin.pageEditor.saving = true;
+      try {
+        const rotations = {};
+        active.forEach(page => { if (page.rotation_delta) rotations[String(page.page)] = page.rotation_delta; });
+        const r = await this.api('POST', `/api/admin/pdf/${id}/pages/apply`, {
+          order: active.map(page => page.page), rotations, keep_original: true,
+        });
+        if (r?.ok) {
+          this.showToast('PDF-Seiten gespeichert');
+          await this.loadPdfPages();
+          await this.loadAdminOverview();
+          if (typeof this.loadRecipes === 'function') await this.loadRecipes();
+        }
+      } catch (_) { this.showToast('PDF-Seiten konnten nicht gespeichert werden', 'err'); }
+      finally { this.admin.pageEditor.saving = false; }
+    },
+
+    async runAdminPdf(dryRun = true) {
+      this.admin.pdf.running = true;
+      this.admin.pdf.result = null;
+      try {
+        const p = this.admin.pdf;
+        const payload = {
+          recipe_id: p.recipe_id ? Number(p.recipe_id) : null,
+          process_all: !p.recipe_id && p.process_all,
+          dry_run: dryRun,
+          limit: Number(p.limit || 50),
+          auto_rotate: !!p.auto_rotate,
+          remove_blank_pages: !!p.remove_blank_pages,
+          auto_crop: !!p.auto_crop,
+          deskew_scans: !!p.deskew_scans,
+          ocr_scans: !!p.ocr_scans,
+          improve_contrast: !!p.improve_contrast,
+          ocr_language: p.ocr_language || 'deu+eng',
+          keep_original: !!p.keep_original,
+        };
+        this.admin.pdf.result = await this.api('POST', '/api/admin/pdf/process', payload);
+        this.showToast(dryRun ? 'PDF-Analyse abgeschlossen' : 'PDF-Aufbereitung abgeschlossen');
+      } catch (_) { this.showToast('PDF-Verarbeitung fehlgeschlagen', 'err'); }
+      finally { this.admin.pdf.running = false; }
+    },
+
+    async runMaintenance(kind) {
+      this.admin.maintenanceBusy = kind;
+      this.admin.maintenanceResult = null;
+      try {
+        this.admin.maintenanceResult = await this.api('POST', `/api/admin/maintenance/run/${kind}`, {});
+        this.showToast('Wartung abgeschlossen');
+        await this.loadMaintenanceRuns();
+        await this.loadAdminOverview();
+      } catch (_) { this.showToast('Wartung fehlgeschlagen', 'err'); }
+      finally { this.admin.maintenanceBusy = ''; }
+    },
+
+    async loadMaintenanceRuns() {
+      try {
+        const r = await this.api('GET', '/api/admin/maintenance/runs');
+        this.admin.maintenanceRuns = r.items || [];
+      } catch (_) { this.admin.maintenanceRuns = []; }
     },
 
     _startEventStream() {
@@ -346,10 +574,9 @@ function scrapperApp() {
     reloadCurrentPage() {
       const map = {
         recipes: () => this.loadRecipes(),
+        favorites: () => this.loadRecipes(),
         cart: () => this.loadCart(),
-        pending: () => this.loadPending(),
-        audit: () => this.loadAudit(),
-        dashboard: () => this.loadDashboard(),
+        admin: () => this.selectAdminTab(this.admin.tab, { updateUrl: false }),
       };
       const fn = map[this.page];
       if (fn) {
@@ -1085,6 +1312,20 @@ function scrapperApp() {
       cfg.ai ||= {};
       cfg.ai.openai ||= { api_key: '', model: 'gpt-4o-mini', base_url: '', timeout: 30 };
       if (cfg.ai.auto_translate === undefined) cfg.ai.auto_translate = true;
+      cfg.pdf ||= {};
+      if (cfg.pdf.auto_rotate === undefined) cfg.pdf.auto_rotate = true;
+      if (cfg.pdf.use_tesseract_osd === undefined) cfg.pdf.use_tesseract_osd = true;
+      if (cfg.pdf.min_text_chars === undefined) cfg.pdf.min_text_chars = 20;
+      if (cfg.pdf.text_dominance === undefined) cfg.pdf.text_dominance = 0.65;
+      if (cfg.pdf.osd_min_confidence === undefined) cfg.pdf.osd_min_confidence = 3.0;
+      if (cfg.pdf.max_osd_pages === undefined) cfg.pdf.max_osd_pages = 12;
+      if (cfg.pdf.remove_blank_pages === undefined) cfg.pdf.remove_blank_pages = true;
+      if (cfg.pdf.auto_crop === undefined) cfg.pdf.auto_crop = true;
+      if (cfg.pdf.deskew_scans === undefined) cfg.pdf.deskew_scans = false;
+      if (cfg.pdf.ocr_scans === undefined) cfg.pdf.ocr_scans = true;
+      if (cfg.pdf.improve_contrast === undefined) cfg.pdf.improve_contrast = false;
+      if (cfg.pdf.ocr_language === undefined) cfg.pdf.ocr_language = 'deu+eng';
+      if (cfg.pdf.keep_original === undefined) cfg.pdf.keep_original = true;
       cfg.ytdlp ||= {};
       cfg.webhooks ||= [];
       cfg.einkauf ||= { api_url: '', auto_consolidate: true };
@@ -1732,6 +1973,7 @@ function scrapperApp() {
         if (!r) return;
         this.recipes.items = r.items || [];
         this.recipes.total = r.total || 0;
+        this.recipes.searchMeta = r.search_meta || { corrected: false, original: '', query: '', suggestion: '' };
         this.recipes.extractionRunning = !!r.extraction_running;
         this._scheduleExtractionPoll();
         this.loadFacets();   // Facetten-Counts an aktuelle Filter anpassen
@@ -1745,6 +1987,23 @@ function scrapperApp() {
       const r = await this.api('GET', '/api/recipes/facets?' + this._buildRecipeQuery());
       if (!r) return;
       this.recipes.facets = r;
+    },
+
+    applySearchSuggestion() {
+      const suggestion = this.recipes.searchMeta?.suggestion || this.recipes.searchMeta?.query;
+      if (!suggestion) return;
+      this.recipes.filters.search = suggestion;
+      this.recipes.filters.offset = 0;
+      this.loadRecipes();
+    },
+
+    openRecipeVersions() {
+      const id = this.recipeDetail?.data?.id;
+      if (!id) return;
+      this.admin.versionRecipeId = String(id);
+      this.closeRecipeDetail();
+      this.navTo('admin');
+      this.selectAdminTab('versions');
     },
 
     resetFilters() {

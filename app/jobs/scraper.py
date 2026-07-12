@@ -28,6 +28,7 @@ from ..db import get_db
 from ..core.analyzer import RecipeAnalysis, WeddingAnalysis, build_analyzer
 from ..core.downloader import VideoDownloader
 from ..core.email_processor import MailAccount, EmailRouter
+from ..core.pdf_processing import process_pdf_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,22 @@ class ScraperJob:
         # Auto-Translate: bei Default true; lässt sich per Config deaktivieren
         # falls jemand das Original behalten will.
         self.auto_translate = bool(cfg.get("ai", "auto_translate", default=True))
+
+        # PDF-Ausrichtung: Text-Layer lokal, Scan-Fallback optional via Tesseract OSD.
+        pdf_cfg = cfg.get("pdf", default={}) or {}
+        self.pdf_auto_rotate = bool(pdf_cfg.get("auto_rotate", True))
+        self.pdf_use_tesseract_osd = bool(pdf_cfg.get("use_tesseract_osd", True))
+        self.pdf_min_text_chars = max(4, int(pdf_cfg.get("min_text_chars", 20) or 20))
+        self.pdf_text_dominance = min(1.0, max(0.5, float(pdf_cfg.get("text_dominance", 0.65) or 0.65)))
+        self.pdf_osd_min_confidence = max(0.0, float(pdf_cfg.get("osd_min_confidence", 3.0) or 3.0))
+        self.pdf_max_osd_pages = max(0, int(pdf_cfg.get("max_osd_pages", 12) or 12))
+        self.pdf_remove_blank_pages = bool(pdf_cfg.get("remove_blank_pages", True))
+        self.pdf_auto_crop = bool(pdf_cfg.get("auto_crop", True))
+        self.pdf_deskew_scans = bool(pdf_cfg.get("deskew_scans", False))
+        self.pdf_ocr_scans = bool(pdf_cfg.get("ocr_scans", True))
+        self.pdf_improve_contrast = bool(pdf_cfg.get("improve_contrast", False))
+        self.pdf_ocr_language = str(pdf_cfg.get("ocr_language", "deu+eng") or "deu+eng")[:80]
+        self.pdf_keep_original = bool(pdf_cfg.get("keep_original", True))
 
         # Downloader (mit optionalem Cookie-Jar für private Inhalte)
         ytdlp_cfg = cfg.get("ytdlp", default={}) or {}
@@ -422,6 +439,10 @@ class ScraperJob:
         target_dir.mkdir(parents=True, exist_ok=True)
         file_base = target_dir.name
         atomic_write_bytes(target_dir / f"{file_base}{ext}", attachment_data)
+        if ext == ".pdf" and original_pdf_data and original_pdf_data != attachment_data:
+            original_dir = target_dir / ".pdf-originals"
+            original_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(original_dir / f"{file_base}.original.pdf", original_pdf_data)
         if source_text:
             atomic_write_text(target_dir / "description.txt", source_text)
         atomic_write_json(target_dir / "info.json", info)
@@ -440,10 +461,41 @@ class ScraperJob:
         ext = att["ext"]
         content_type = att["type"]
         data = att["data"]
+        original_pdf_data = data if ext == ".pdf" else None
         subject = att.get("subject", "")
         body_excerpt = att.get("body_excerpt", "")
         default_cat = att.get("default_category") or "Sonstiges"
         result: Dict = {"url": synth_url, "type": content_type, "status": "error"}
+        pdf_rotation = None
+
+        # PDF vor Textanalyse und Ablage konservativ aufbereiten. Das Original
+        # wird bei jeder echten Änderung versteckt im Rezeptordner aufbewahrt.
+        if ext == ".pdf" and (self.pdf_auto_rotate or self.pdf_remove_blank_pages
+                              or self.pdf_auto_crop or self.pdf_deskew_scans
+                              or self.pdf_ocr_scans or self.pdf_improve_contrast):
+            data, pdf_rotation = process_pdf_bytes(
+                data,
+                auto_rotate=self.pdf_auto_rotate,
+                use_tesseract_osd=self.pdf_use_tesseract_osd,
+                remove_blank_pages=self.pdf_remove_blank_pages,
+                auto_crop=self.pdf_auto_crop,
+                deskew_scans=self.pdf_deskew_scans,
+                ocr_scans=self.pdf_ocr_scans,
+                improve_contrast=self.pdf_improve_contrast,
+                ocr_language=self.pdf_ocr_language,
+                min_text_chars=self.pdf_min_text_chars,
+                text_dominance=self.pdf_text_dominance,
+                osd_min_confidence=self.pdf_osd_min_confidence,
+                max_osd_pages=self.pdf_max_osd_pages,
+            )
+            if pdf_rotation.changed:
+                logger.info(
+                    "PDF aufbereitet: %s (rotate=%s crop=%s blank=%s deskew=%s ocr=%s contrast=%s)",
+                    att.get("filename"), pdf_rotation.rotated_pages,
+                    pdf_rotation.cropped_pages, pdf_rotation.removed_blank_pages,
+                    pdf_rotation.deskewed_pages, pdf_rotation.ocr_pages,
+                    pdf_rotation.contrast_pages,
+                )
 
         # Description bestimmen
         if ext == ".pdf":
@@ -474,6 +526,7 @@ class ScraperJob:
                             "name": analysis.name, "type": analysis.type,
                             "category": analysis.category, "confidence": analysis.confidence,
                             "source": "mail-attachment", "filename": att["filename"],
+                            "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
                         },
                     )
                     result.update({"status": "pending", "name": analysis.name})
@@ -489,10 +542,14 @@ class ScraperJob:
                         "category": analysis.category, "confidence": analysis.confidence,
                         "content_type": "recipe", "source": "mail-attachment",
                         "filename": att["filename"], "mail_subject": subject,
+                        "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
                         "description": description[:5000],
                         "timestamp": datetime.now().isoformat(),
                     }
-                    self._save_attachment_file(target, data, ext, info, description)
+                    self._save_attachment_file(
+                        target, data, ext, info, description,
+                        original_pdf_data=original_pdf_data if self.pdf_keep_original else None,
+                    )
                     self.db.history_add(synth_url, content_type="recipe",
                                         name=analysis.name, target_dir=str(target))
                     result.update({"status": "auto", "name": analysis.name, "target": str(target)})
@@ -517,6 +574,7 @@ class ScraperJob:
                             "name": analysis.name, "category": analysis.category or default_cat,
                             "confidence": analysis.confidence,
                             "source": "mail-attachment", "filename": att["filename"],
+                            "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
                         },
                     )
                     result.update({"status": "pending", "name": analysis.name})
@@ -533,10 +591,14 @@ class ScraperJob:
                         "confidence": analysis.confidence,
                         "content_type": "wedding", "source": "mail-attachment",
                         "filename": att["filename"], "mail_subject": subject,
+                        "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
                         "description": description[:5000],
                         "timestamp": datetime.now().isoformat(),
                     }
-                    self._save_attachment_file(target, data, ext, info, description)
+                    self._save_attachment_file(
+                        target, data, ext, info, description,
+                        original_pdf_data=original_pdf_data if self.pdf_keep_original else None,
+                    )
                     self.db.history_add(synth_url, content_type="wedding",
                                         name=analysis.name, target_dir=str(target))
                     result.update({"status": "auto", "name": analysis.name, "target": str(target)})

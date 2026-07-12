@@ -188,6 +188,55 @@ CREATE TABLE IF NOT EXISTS audit_ai_findings (
 CREATE INDEX IF NOT EXISTS idx_aaf_recipe ON audit_ai_findings(recipe_id);
 CREATE INDEX IF NOT EXISTS idx_aaf_open   ON audit_ai_findings(resolved, finding_type);
 
+-- recipe_versions: unveränderliche Snapshots vor relevanten Änderungen.
+-- Der Snapshot enthält Rezept-Metadaten, Zutaten, Schritte und Tags als JSON.
+CREATE TABLE IF NOT EXISTS recipe_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id INTEGER NOT NULL,
+  version_no INTEGER NOT NULL,
+  created_at REAL NOT NULL,
+  created_by TEXT,
+  source TEXT NOT NULL DEFAULT 'user',
+  reason TEXT,
+  snapshot_json TEXT NOT NULL,
+  UNIQUE(recipe_id, version_no)
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_versions_recipe
+  ON recipe_versions(recipe_id, version_no DESC);
+CREATE INDEX IF NOT EXISTS idx_recipe_versions_created
+  ON recipe_versions(created_at DESC);
+
+-- search_synonyms: administrierbare Suchbegriffe. Ein Eintrag bildet eine
+-- Gruppe gleichwertiger Begriffe ab, z.B. Tomate -> [Tomaten, Paradeiser].
+CREATE TABLE IF NOT EXISTS search_synonyms (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  term TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  synonyms_json TEXT NOT NULL DEFAULT '[]',
+  updated_at REAL NOT NULL,
+  updated_by TEXT
+);
+
+-- maintenance_runs: nachvollziehbare Admin-Wartungsläufe.
+CREATE TABLE IF NOT EXISTS maintenance_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  started_at REAL NOT NULL,
+  ended_at REAL,
+  status TEXT NOT NULL DEFAULT 'running',
+  result_json TEXT,
+  started_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_runs_created
+  ON maintenance_runs(started_at DESC);
+
+-- schema_migrations: kleine, nachvollziehbare interne Migrationen ohne
+-- externes Tool. Bestehende idempotente ALTERs bleiben kompatibel.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at REAL NOT NULL
+);
+
 -- recipes_fts: SQLite-FTS5-Volltextindex für recipes.{name, description, type, category}.
 -- 'unicode61 remove_diacritics 2' = Umlauten-/Akzent-Folding (Tomaten matcht Tomáten),
 -- 'content=recipes' = contentless FTS (kein doppelter Speicher, recipes ist Source of Truth).
@@ -375,6 +424,29 @@ class Database:
                 _logger.info("FTS-Index erfolgreich rebuilt")
             except Exception as e2:
                 _logger.error(f"FTS-Rebuild failed: {e2} — Volltext-Suche evtl kaputt")
+
+        # Feature-Migrations werden zusätzlich protokolliert. Die eigentlichen
+        # DDL-Schritte bleiben idempotent, damit auch sehr alte Installationen
+        # sicher direkt auf den aktuellen Stand springen können.
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (120, "admin_center_versions_search_pdf", time.time()),
+        )
+        if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
+            defaults = {
+                "Hackfleisch": ["Hack", "Gehacktes", "Faschiertes"],
+                "Kartoffel": ["Kartoffeln", "Erdapfel", "Erdäpfel"],
+                "Tomate": ["Tomaten", "Paradeiser"],
+                "Sahne": ["Rahm", "Schlagobers"],
+                "Frühlingszwiebel": ["Lauchzwiebel", "Bundzwiebel"],
+            }
+            now = time.time()
+            for term, synonyms in defaults.items():
+                c.execute(
+                    "INSERT OR IGNORE INTO search_synonyms(term, synonyms_json, updated_at, updated_by) "
+                    "VALUES (?, ?, ?, 'system')",
+                    (term, json.dumps(synonyms, ensure_ascii=False), now),
+                )
 
     @contextmanager
     def conn(self):
@@ -989,6 +1061,49 @@ class Database:
                 "SELECT COUNT(*) AS n FROM recipes WHERE deleted_at IS NOT NULL"
             ).fetchone()["n"])
 
+    def _append_smart_search(self, where: List[str], params: List[Any], search: str) -> None:
+        """Erweitert WHERE um Synonyme und Ausschlüsse. Positive Gruppen
+        werden AND-verknüpft, Synonyme innerhalb einer Gruppe OR."""
+        from .recipes.search import parse_search_query
+        plan = parse_search_query(search, self.search_synonyms_map())
+        for group in plan.positive_groups:
+            fts_parts = [_build_fts_query(term) for term in group]
+            fts_parts = [part for part in fts_parts if part]
+            likes = [str(term).strip() for term in group if len(str(term).strip()) >= 2]
+            clauses = []
+            if fts_parts:
+                clauses.append(
+                    "r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?)"
+                )
+                params.append(" OR ".join(f"({part})" for part in fts_parts))
+            if likes:
+                # FTS5 ist schnell, matcht aber nur Wortanfänge. Der ergänzende
+                # LIKE-Pfad findet auch zusammengesetzte deutsche Begriffe wie
+                # „Kartoffelpfanne“ bei der Suche nach „Pfanne“.
+                broad_parts = []
+                for term in likes:
+                    like = f"%{term}%"
+                    broad_parts.append(
+                        "(COALESCE(r.name,'') LIKE ? OR COALESCE(r.description,'') LIKE ? "
+                        "OR COALESCE(r.type,'') LIKE ? OR COALESCE(r.category,'') LIKE ? "
+                        "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
+                        "AND (COALESCE(ri.canonical_name,'') LIKE ? OR COALESCE(ri.name,'') LIKE ?)))"
+                    )
+                    params.extend([like, like, like, like, like, like])
+                clauses.append("(" + " OR ".join(broad_parts) + ")")
+            if clauses:
+                where.append("(" + " OR ".join(clauses) + ")")
+
+        for term in plan.negative_terms:
+            like = f"%{term}%"
+            where.append(
+                "NOT (COALESCE(r.name,'') LIKE ? OR COALESCE(r.description,'') LIKE ? "
+                "OR COALESCE(r.type,'') LIKE ? OR COALESCE(r.category,'') LIKE ? "
+                "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
+                "AND (COALESCE(ri.canonical_name,'') LIKE ? OR COALESCE(ri.name,'') LIKE ?)))"
+            )
+            params.extend([like, like, like, like, like, like])
+
     def recipe_list(
         self,
         *,
@@ -1024,32 +1139,7 @@ class Database:
         if folder_prefix:
             where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
         if search:
-            # FTS5 für name/description/type/category + zusätzlich LIKE auf
-            # recipe_ingredients. So findet "tomate" Rezepte mit Tomaten in
-            # der Zutatenliste, auch wenn das Wort nicht im Namen/Description
-            # steht. OR-verknüpft — beide Quellen tragen bei.
-            fts_q = _build_fts_query(search)
-            # cleaned-Plain für ingredient-LIKE (FTS5-Syntax nicht für LIKE)
-            import re as _re
-            ing_q = _re.sub(r'[^\w\s\u00C0-\u017F-]+', ' ', search, flags=_re.UNICODE).strip()
-            if fts_q and ing_q and len(ing_q) >= 2:
-                where.append(
-                    "(r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?) "
-                    "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
-                    "  AND (ri.canonical_name LIKE ? OR ri.name LIKE ?)))"
-                )
-                params.append(fts_q)
-                params.append(f"%{ing_q}%")
-                params.append(f"%{ing_q}%")
-            elif fts_q:
-                where.append(
-                    "r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?)"
-                )
-                params.append(fts_q)
-            else:
-                where.append("(r.name LIKE ? OR r.description LIKE ?)")
-                params.append(f"%{search}%"); params.append(f"%{search}%")
-        # Tag-AND: für jedes Tag eine EXISTS-Subquery
+            self._append_smart_search(where, params, search)
         if tag_ids:
             for tid in tag_ids:
                 where.append(
@@ -1113,26 +1203,7 @@ class Database:
         if folder_prefix:
             where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
         if search:
-            fts_q = _build_fts_query(search)
-            import re as _re
-            ing_q = _re.sub(r'[^\w\s\u00C0-\u017F-]+', ' ', search, flags=_re.UNICODE).strip()
-            if fts_q and ing_q and len(ing_q) >= 2:
-                where.append(
-                    "(r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?) "
-                    "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
-                    "  AND (ri.canonical_name LIKE ? OR ri.name LIKE ?)))"
-                )
-                params.append(fts_q)
-                params.append(f"%{ing_q}%")
-                params.append(f"%{ing_q}%")
-            elif fts_q:
-                where.append(
-                    "r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?)"
-                )
-                params.append(fts_q)
-            else:
-                where.append("(r.name LIKE ? OR r.description LIKE ?)")
-                params.append(f"%{search}%"); params.append(f"%{search}%")
+            self._append_smart_search(where, params, search)
         if tag_ids:
             for tid in tag_ids:
                 where.append(
@@ -1300,26 +1371,7 @@ class Database:
         if folder_prefix:
             where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
         if search:
-            fts_q = _build_fts_query(search)
-            import re as _re
-            ing_q = _re.sub(r'[^\w\s\u00C0-\u017F-]+', ' ', search, flags=_re.UNICODE).strip()
-            if fts_q and ing_q and len(ing_q) >= 2:
-                where.append(
-                    "(r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?) "
-                    "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
-                    "  AND (ri.canonical_name LIKE ? OR ri.name LIKE ?)))"
-                )
-                params.append(fts_q)
-                params.append(f"%{ing_q}%")
-                params.append(f"%{ing_q}%")
-            elif fts_q:
-                where.append(
-                    "r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?)"
-                )
-                params.append(fts_q)
-            else:
-                where.append("(r.name LIKE ? OR r.description LIKE ?)")
-                params.append(f"%{search}%"); params.append(f"%{search}%")
+            self._append_smart_search(where, params, search)
         if tag_ids:
             for tid in tag_ids:
                 where.append(
@@ -1774,6 +1826,259 @@ class Database:
             else:
                 cur = c.execute("DELETE FROM shopping_cart")
             return cur.rowcount
+
+
+    def recipe_ingredients_for_ids(self, recipe_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+        """Lädt Zutaten für eine Ergebnisliste in genau einer SQL-Abfrage.
+        Vermeidet N+1-Queries beim Relevanz-Ranking der intelligenten Suche."""
+        ids = sorted({int(v) for v in recipe_ids if int(v) > 0})[:500]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        with self.conn() as c:
+            rows = c.execute(
+                f"SELECT recipe_id, name, canonical_name, amount, unit, raw, sort_order "
+                f"FROM recipe_ingredients WHERE recipe_id IN ({placeholders}) "
+                "ORDER BY recipe_id, sort_order, id",
+                ids,
+            ).fetchall()
+        result: Dict[int, List[Dict[str, Any]]] = {recipe_id: [] for recipe_id in ids}
+        for row in rows:
+            item = dict(row)
+            result.setdefault(int(item.pop("recipe_id")), []).append(item)
+        return result
+
+    # ─── Recipe versions / Undo ──────────────────────────────────────────
+    def recipe_snapshot(self, recipe_id: int) -> Optional[Dict[str, Any]]:
+        """Kompletter logischer Rezept-Snapshot ohne Binärdateien."""
+        with self.conn() as c:
+            row = c.execute("SELECT * FROM recipes WHERE id=?", (recipe_id,)).fetchone()
+            if not row:
+                return None
+            ingredients = [dict(r) for r in c.execute(
+                "SELECT name, canonical_name, amount, unit, raw, sort_order, calories "
+                "FROM recipe_ingredients WHERE recipe_id=? ORDER BY sort_order, id",
+                (recipe_id,),
+            ).fetchall()]
+            steps = [dict(r) for r in c.execute(
+                "SELECT step_number, instruction, timer_seconds FROM recipe_steps "
+                "WHERE recipe_id=? ORDER BY step_number, id", (recipe_id,),
+            ).fetchall()]
+            tags = [dict(r) for r in c.execute(
+                "SELECT t.name, rt.auto FROM tags t JOIN recipe_tags rt ON rt.tag_id=t.id "
+                "WHERE rt.recipe_id=? ORDER BY rt.auto, t.name", (recipe_id,),
+            ).fetchall()]
+            return {
+                "recipe": dict(row),
+                "ingredients": ingredients,
+                "steps": steps,
+                "tags": tags,
+            }
+
+    def recipe_version_create(self, recipe_id: int, *, created_by: str = "system",
+                              source: str = "user", reason: str = "Änderung",
+                              max_versions: int = 50) -> Optional[int]:
+        snapshot = self.recipe_snapshot(recipe_id)
+        if not snapshot:
+            return None
+        with self.conn() as c:
+            next_no = int(c.execute(
+                "SELECT COALESCE(MAX(version_no), 0) + 1 FROM recipe_versions WHERE recipe_id=?",
+                (recipe_id,),
+            ).fetchone()[0])
+            cur = c.execute(
+                "INSERT INTO recipe_versions (recipe_id, version_no, created_at, created_by, "
+                "source, reason, snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (recipe_id, next_no, time.time(), created_by, source, reason,
+                 json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))),
+            )
+            if max_versions > 0:
+                c.execute(
+                    "DELETE FROM recipe_versions WHERE recipe_id=? AND id NOT IN ("
+                    "SELECT id FROM recipe_versions WHERE recipe_id=? "
+                    "ORDER BY version_no DESC LIMIT ?)",
+                    (recipe_id, recipe_id, int(max_versions)),
+                )
+            return int(cur.lastrowid)
+
+    def recipe_versions_list(self, recipe_id: Optional[int] = None,
+                             limit: int = 200) -> List[Dict[str, Any]]:
+        sql = (
+            "SELECT v.id, v.recipe_id, v.version_no, v.created_at, v.created_by, "
+            "v.source, v.reason, r.name AS recipe_name "
+            "FROM recipe_versions v LEFT JOIN recipes r ON r.id=v.recipe_id"
+        )
+        params: List[Any] = []
+        if recipe_id is not None:
+            sql += " WHERE v.recipe_id=?"; params.append(int(recipe_id))
+        sql += " ORDER BY v.created_at DESC LIMIT ?"; params.append(max(1, min(1000, int(limit))))
+        with self.conn() as c:
+            return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+    def recipe_version_get(self, version_id: int) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute("SELECT * FROM recipe_versions WHERE id=?", (version_id,)).fetchone()
+            if not row:
+                return None
+            out = dict(row)
+            try:
+                out["snapshot"] = json.loads(out.pop("snapshot_json"))
+            except Exception:
+                out["snapshot"] = None
+            return out
+
+    def recipe_version_restore(self, version_id: int, *, restored_by: str = "system") -> Dict[str, Any]:
+        version = self.recipe_version_get(version_id)
+        if not version or not version.get("snapshot"):
+            return {"ok": False, "error": "Version nicht gefunden oder beschädigt"}
+        recipe_id = int(version["recipe_id"])
+        current = self.recipe_get(recipe_id)
+        if not current:
+            return {"ok": False, "error": "Rezept existiert nicht mehr"}
+        # Undo-Snapshot des aktuellen Stands anlegen, bevor zurückgerollt wird.
+        self.recipe_version_create(
+            recipe_id, created_by=restored_by, source="restore",
+            reason=f"Stand vor Wiederherstellung von Version {version['version_no']}",
+        )
+        snap = version["snapshot"]
+        recipe = snap.get("recipe") or {}
+        allowed = [
+            "name", "type", "category", "description", "thumb_filename",
+            "video_filename", "source_added_at", "ingredients_extracted_at",
+            "ingredients_status", "servings", "calories_per_serving", "protein_g",
+            "carbs_g", "fat_g", "nutrition_computed_at", "user_verified",
+            "verified_at", "verified_by",
+        ]
+        sets, params = [], []
+        for col in allowed:
+            if col in recipe:
+                sets.append(f"{col}=?"); params.append(recipe.get(col))
+        params.append(recipe_id)
+        with self.conn() as c:
+            if sets:
+                c.execute(f"UPDATE recipes SET {', '.join(sets)} WHERE id=?", params)
+            c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
+            for idx, ing in enumerate(snap.get("ingredients") or []):
+                c.execute(
+                    "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, amount, unit, raw, sort_order, calories) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (recipe_id, ing.get("name") or "", ing.get("canonical_name"),
+                     ing.get("amount"), ing.get("unit"), ing.get("raw"),
+                     ing.get("sort_order", idx), ing.get("calories")),
+                )
+            c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
+            for idx, step in enumerate(snap.get("steps") or [], start=1):
+                c.execute(
+                    "INSERT INTO recipe_steps (recipe_id, step_number, instruction, timer_seconds) VALUES (?, ?, ?, ?)",
+                    (recipe_id, int(step.get("step_number") or idx),
+                     step.get("instruction") or "", step.get("timer_seconds")),
+                )
+            c.execute("DELETE FROM recipe_tags WHERE recipe_id=?", (recipe_id,))
+            for tag in snap.get("tags") or []:
+                name = str(tag.get("name") or "").strip()
+                if not name:
+                    continue
+                c.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (name,))
+                tag_id = int(c.execute("SELECT id FROM tags WHERE name=? COLLATE NOCASE", (name,)).fetchone()[0])
+                c.execute(
+                    "INSERT OR IGNORE INTO recipe_tags(recipe_id, tag_id, auto) VALUES (?, ?, ?)",
+                    (recipe_id, tag_id, 1 if tag.get("auto") else 0),
+                )
+        return {"ok": True, "recipe_id": recipe_id, "restored_version": version["version_no"]}
+
+    # ─── Intelligent search administration ──────────────────────────────
+    def search_synonyms_list(self) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute("SELECT * FROM search_synonyms ORDER BY term COLLATE NOCASE").fetchall()
+            out = []
+            for row in rows:
+                d = dict(row)
+                try:
+                    d["synonyms"] = json.loads(d.pop("synonyms_json") or "[]")
+                except Exception:
+                    d["synonyms"] = []
+                out.append(d)
+            return out
+
+    def search_synonym_upsert(self, term: str, synonyms: List[str], *, updated_by: str = "system") -> int:
+        term = str(term or "").strip()
+        clean = []
+        seen = {term.casefold()}
+        for value in synonyms or []:
+            value = str(value or "").strip()
+            if value and value.casefold() not in seen:
+                clean.append(value); seen.add(value.casefold())
+        if not term:
+            raise ValueError("Begriff fehlt")
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO search_synonyms(term, synonyms_json, updated_at, updated_by) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(term) DO UPDATE SET synonyms_json=excluded.synonyms_json, "
+                "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                (term, json.dumps(clean, ensure_ascii=False), time.time(), updated_by),
+            )
+            return int(c.execute("SELECT id FROM search_synonyms WHERE term=? COLLATE NOCASE", (term,)).fetchone()[0])
+
+    def search_synonym_delete(self, synonym_id: int) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM search_synonyms WHERE id=?", (synonym_id,))
+
+    def search_synonyms_map(self) -> Dict[str, List[str]]:
+        from .recipes.search import fold
+        mapping: Dict[str, List[str]] = {}
+        for row in self.search_synonyms_list():
+            group = [row["term"], *(row.get("synonyms") or [])]
+            group = [str(v).strip() for v in group if str(v).strip()]
+            for value in group:
+                mapping[fold(value)] = group
+        return mapping
+
+    def search_vocabulary(self, limit: int = 3000) -> List[str]:
+        with self.conn() as c:
+            values = []
+            values.extend(r[0] for r in c.execute(
+                "SELECT DISTINCT canonical_name FROM recipe_ingredients "
+                "WHERE canonical_name IS NOT NULL AND canonical_name != '' LIMIT ?", (limit,),
+            ).fetchall())
+            values.extend(r[0] for r in c.execute(
+                "SELECT DISTINCT name FROM tags WHERE name != '' LIMIT ?", (limit,),
+            ).fetchall())
+            for row in c.execute("SELECT name FROM recipes WHERE deleted_at IS NULL LIMIT ?", (limit,)).fetchall():
+                values.extend(str(row[0] or "").replace("-", " ").split())
+        return sorted({str(v).strip() for v in values if len(str(v).strip()) >= 3}, key=str.casefold)
+
+    # ─── Maintenance audit trail ────────────────────────────────────────
+    def maintenance_start(self, kind: str, started_by: str = "system") -> int:
+        with self.conn() as c:
+            cur = c.execute(
+                "INSERT INTO maintenance_runs(kind, started_at, status, started_by) VALUES (?, ?, 'running', ?)",
+                (kind, time.time(), started_by),
+            )
+            return int(cur.lastrowid)
+
+    def maintenance_finish(self, run_id: int, *, ok: bool, result: Dict[str, Any]) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE maintenance_runs SET ended_at=?, status=?, result_json=? WHERE id=?",
+                (time.time(), "ok" if ok else "error",
+                 json.dumps(result, ensure_ascii=False, default=str), run_id),
+            )
+
+    def maintenance_list(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM maintenance_runs ORDER BY started_at DESC LIMIT ?",
+                (max(1, min(200, int(limit))),),
+            ).fetchall()
+            out = []
+            for row in rows:
+                d = dict(row)
+                try:
+                    d["result"] = json.loads(d.pop("result_json") or "{}")
+                except Exception:
+                    d["result"] = {}
+                out.append(d)
+            return out
 
 
 _db: Database | None = None

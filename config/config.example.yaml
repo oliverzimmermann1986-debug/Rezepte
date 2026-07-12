@@ -74,6 +74,31 @@ ai:
   # bleibt als description_original.txt im Rezept-Ordner erhalten.
   auto_translate: true
 
+# PDF-Verarbeitung. Falsch gedrehte Seiten werden beim Mail-Import
+# automatisch ausgerichtet. Text-PDFs werden lokal über den Text-Layer
+# erkannt; gescannte Seiten optional über Tesseract OSD. Bei Unsicherheit
+# wird nichts verändert. Digitale Signaturen bleiben unangetastet.
+pdf:
+  auto_rotate: true
+  use_tesseract_osd: true
+  min_text_chars: 20
+  text_dominance: 0.65
+  osd_min_confidence: 3.0
+  max_osd_pages: 12
+  # Konservative Scan-Aufbereitung. auto_crop verändert nur die sichtbare
+  # CropBox; deskew_scans rastert nur schiefe Scan-Seiten neu und ist daher
+  # bewusst standardmäßig aus. Originale werden versteckt gesichert.
+  remove_blank_pages: true
+  auto_crop: true
+  deskew_scans: false
+  # Scan-PDFs lokal per Tesseract durchsuchbar machen. Spart bei vielen
+  # Anhängen zusätzliche Vision-Aufrufe und verbessert Copy/Paste.
+  ocr_scans: true
+  ocr_language: "deu+eng"
+  # Optional: nur Scan-Seiten kontrastverstärken (rastert diese Seiten).
+  improve_contrast: false
+  keep_original: true
+
 # yt-dlp
 ytdlp:
   binary: /opt/scrapper/venv/bin/yt-dlp

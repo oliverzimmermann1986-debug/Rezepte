@@ -279,6 +279,40 @@ def _cmd_log_cleanup(args: list) -> int:
     return 0
 
 
+
+def _cmd_pdf_auto_rotate(args: list) -> int:
+    """Richtet bereits vorhandene PDFs unterhalb eines Verzeichnisses aus."""
+    from .core.pdf_rotation import rotate_pdf_tree
+
+    cfg = get_config()
+    pdf_cfg = cfg.get("pdf", default={}) or {}
+    root = Path(args[0]) if args and args[0] else Path(
+        cfg.get("paths", "recipe_dir", default="/opt/scrapper/files/rezepte")
+    )
+    print(f"PDF-Ausrichtung scannt: {root}")
+    result = rotate_pdf_tree(
+        root,
+        enabled=bool(pdf_cfg.get("auto_rotate", True)),
+        use_tesseract_osd=bool(pdf_cfg.get("use_tesseract_osd", True)),
+        min_text_chars=max(4, int(pdf_cfg.get("min_text_chars", 20) or 20)),
+        text_dominance=min(1.0, max(0.5, float(pdf_cfg.get("text_dominance", 0.65) or 0.65))),
+        osd_min_confidence=max(0.0, float(pdf_cfg.get("osd_min_confidence", 3.0) or 3.0)),
+        max_osd_pages=max(0, int(pdf_cfg.get("max_osd_pages", 12) or 12)),
+    )
+    if result.get("error"):
+        print(f"Fehler: {result['error']}", file=sys.stderr)
+        return 1
+    print(
+        f"Fertig: {result['scanned']} PDFs, {result['changed']} geändert, "
+        f"{result['rotated_pages']} Seiten gedreht, {result['errors']} Fehler"
+    )
+    for item in result.get("files", []):
+        if item.get("changed"):
+            print(f"  gedreht: {item['path']} ({item.get('rotated_pages', 0)} Seiten)")
+        elif not item.get("ok", True):
+            print(f"  Fehler:   {item['path']} - {item.get('reason')}: {item.get('error') or ''}", file=sys.stderr)
+    return 1 if result.get("errors") else 0
+
 def main() -> int:
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help", "help"):
@@ -290,7 +324,8 @@ def main() -> int:
             "  python -m app.cli db-restore PATH     # Service vorher stoppen!\n"
             "  python -m app.cli db-vacuum           # Reclaim Disk-Speicher\n"
             "  python -m app.cli list-backups\n"
-            "  python -m app.cli log-cleanup [DAYS]  # Default aus config (30)",
+            "  python -m app.cli log-cleanup [DAYS]  # Default aus config (30)\n"
+            "  python -m app.cli pdf-auto-rotate [ROOT] # bestehende PDFs ausrichten",
             file=sys.stderr,
         )
         return 1
@@ -309,6 +344,8 @@ def main() -> int:
         return _cmd_list_backups(args[1:])
     if cmd == "log-cleanup":
         return _cmd_log_cleanup(args[1:])
+    if cmd == "pdf-auto-rotate":
+        return _cmd_pdf_auto_rotate(args[1:])
     print(f"Unbekanntes Kommando: {cmd}", file=sys.stderr)
     return 1
 

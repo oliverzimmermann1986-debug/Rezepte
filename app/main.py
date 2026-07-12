@@ -19,7 +19,7 @@ from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, auth_disabled, check_credent
                     verify_session)
 from .config_store import get_config
 from .db import get_db
-from .routes import (api_audit, api_browse, api_config, api_events, api_hdd, api_history,
+from .routes import (api_admin, api_audit, api_browse, api_config, api_events, api_hdd, api_history,
                      api_jobs, api_master, api_metrics, api_pending, api_recipes, api_schedule,
                      api_share, api_shopping, api_stats, api_test, api_users, sharing)
 from .security import SecurityHeadersMiddleware, client_ip, login_limiter
@@ -209,7 +209,7 @@ async def _lifespan(app):
 _enable_docs = os.getenv("SCRAPPER_ENABLE_DOCS", "0") == "1"
 app = FastAPI(
     title="Rezeptliebe",
-    version="1.1.0",
+    version="1.1.1",
     docs_url="/api/docs" if _enable_docs else None,
     redoc_url=None,
     openapi_url="/api/openapi.json" if _enable_docs else None,
@@ -251,6 +251,8 @@ def serve_manifest():
 
 
 # API-Routen
+app.include_router(api_admin.session_router)
+app.include_router(api_admin.router)
 app.include_router(api_config.router)
 app.include_router(api_jobs.router)
 app.include_router(api_pending.router)
