@@ -17,7 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, auth_disabled, check_credentials,
                     create_session, migrate_security, migrate_users_to_db,
                     verify_session)
-from .config_store import get_config
+from .config_store import get_config, migrate_pdf_quality_defaults
 from .db import get_db
 from .routes import (api_admin, api_audit, api_browse, api_config, api_events, api_hdd, api_history,
                      api_jobs, api_master, api_metrics, api_pending, api_recipes, api_schedule,
@@ -74,6 +74,8 @@ logger = logging.getLogger(__name__)
 # -------- Security-Migration (Erststart) --------
 # Hasht Klartext-Pwd, generiert Secret, blockt admin/changeme.
 migrate_security()
+if migrate_pdf_quality_defaults():
+    logger.info("PDF-Qualitätsprofil auf v1.2.1 migriert")
 
 # DB initialisieren + Stale-Running-Jobs vom letzten Crash/Restart aufräumen
 _db = get_db()
@@ -209,7 +211,7 @@ async def _lifespan(app):
 _enable_docs = os.getenv("SCRAPPER_ENABLE_DOCS", "0") == "1"
 app = FastAPI(
     title="Rezeptliebe",
-    version="1.1.1",
+    version="1.2.1",
     docs_url="/api/docs" if _enable_docs else None,
     redoc_url=None,
     openapi_url="/api/openapi.json" if _enable_docs else None,
@@ -398,6 +400,23 @@ def _static_version() -> str:
         return "0"
 
 
+@app.get("/admin")
+def admin_shortcut(request: Request):
+    """Merkbarer Einstieg in das SPA-Admin-Center."""
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if not auth_disabled() and (not token or not verify_session(token)):
+        return RedirectResponse(url="/login?next=/admin", status_code=303)
+    return RedirectResponse(url="/?tab=admin", status_code=303)
+
+
+@app.get("/admin/pdf")
+def admin_pdf_shortcut(request: Request):
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if not auth_disabled() and (not token or not verify_session(token)):
+        return RedirectResponse(url="/login?next=/admin/pdf", status_code=303)
+    return RedirectResponse(url="/?tab=admin&admin=pdf", status_code=303)
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     token = request.cookies.get(SESSION_COOKIE, "")
@@ -435,7 +454,7 @@ def healthz_deep():
     Status-Code immer 200, Details im Body. Wir wollen nicht dass eine
     kaputte IMAP-Config den ganzen Container als 'unhealthy' markiert."""
     import shutil
-    from .config_store import get_config
+    from .config_store import get_config, migrate_pdf_quality_defaults
 
     checks = {}
     cfg = get_config()

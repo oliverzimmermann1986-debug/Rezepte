@@ -140,14 +140,17 @@ class ScraperJob:
         self.pdf_auto_rotate = bool(pdf_cfg.get("auto_rotate", True))
         self.pdf_use_tesseract_osd = bool(pdf_cfg.get("use_tesseract_osd", True))
         self.pdf_min_text_chars = max(4, int(pdf_cfg.get("min_text_chars", 20) or 20))
-        self.pdf_text_dominance = min(1.0, max(0.5, float(pdf_cfg.get("text_dominance", 0.65) or 0.65)))
-        self.pdf_osd_min_confidence = max(0.0, float(pdf_cfg.get("osd_min_confidence", 3.0) or 3.0))
-        self.pdf_max_osd_pages = max(0, int(pdf_cfg.get("max_osd_pages", 12) or 12))
+        self.pdf_text_dominance = min(1.0, max(0.5, float(pdf_cfg.get("text_dominance", 0.60) or 0.60)))
+        self.pdf_osd_min_confidence = max(0.0, float(pdf_cfg.get("osd_min_confidence", 1.0) or 1.0))
+        self.pdf_max_osd_pages = max(0, int(pdf_cfg.get("max_osd_pages", 100) or 100))
+        self.pdf_use_ocr_vote = bool(pdf_cfg.get("use_ocr_vote", True))
         self.pdf_remove_blank_pages = bool(pdf_cfg.get("remove_blank_pages", True))
         self.pdf_auto_crop = bool(pdf_cfg.get("auto_crop", True))
-        self.pdf_deskew_scans = bool(pdf_cfg.get("deskew_scans", False))
+        self.pdf_deskew_scans = bool(pdf_cfg.get("deskew_scans", True))
         self.pdf_ocr_scans = bool(pdf_cfg.get("ocr_scans", True))
-        self.pdf_improve_contrast = bool(pdf_cfg.get("improve_contrast", False))
+        self.pdf_improve_contrast = bool(pdf_cfg.get("improve_contrast", True))
+        self.pdf_sharpen_scans = bool(pdf_cfg.get("sharpen_scans", True))
+        self.pdf_scan_dpi = max(180, min(400, int(pdf_cfg.get("scan_dpi", 300) or 300)))
         self.pdf_ocr_language = str(pdf_cfg.get("ocr_language", "deu+eng") or "deu+eng")[:80]
         self.pdf_keep_original = bool(pdf_cfg.get("keep_original", True))
 
@@ -472,16 +475,20 @@ class ScraperJob:
         # wird bei jeder echten Änderung versteckt im Rezeptordner aufbewahrt.
         if ext == ".pdf" and (self.pdf_auto_rotate or self.pdf_remove_blank_pages
                               or self.pdf_auto_crop or self.pdf_deskew_scans
-                              or self.pdf_ocr_scans or self.pdf_improve_contrast):
+                              or self.pdf_ocr_scans or self.pdf_improve_contrast
+                              or self.pdf_sharpen_scans):
             data, pdf_rotation = process_pdf_bytes(
                 data,
                 auto_rotate=self.pdf_auto_rotate,
                 use_tesseract_osd=self.pdf_use_tesseract_osd,
+                use_ocr_vote=self.pdf_use_ocr_vote,
                 remove_blank_pages=self.pdf_remove_blank_pages,
                 auto_crop=self.pdf_auto_crop,
                 deskew_scans=self.pdf_deskew_scans,
                 ocr_scans=self.pdf_ocr_scans,
                 improve_contrast=self.pdf_improve_contrast,
+                sharpen_scans=self.pdf_sharpen_scans,
+                scan_dpi=self.pdf_scan_dpi,
                 ocr_language=self.pdf_ocr_language,
                 min_text_chars=self.pdf_min_text_chars,
                 text_dominance=self.pdf_text_dominance,

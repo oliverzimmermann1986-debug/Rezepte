@@ -82,21 +82,26 @@ pdf:
   auto_rotate: true
   use_tesseract_osd: true
   min_text_chars: 20
-  text_dominance: 0.65
-  osd_min_confidence: 3.0
-  max_osd_pages: 12
+  text_dominance: 0.60
+  osd_min_confidence: 1.0
+  max_osd_pages: 100
+  # Wenn OSD bei kurzen oder bildlastigen Rezeptseiten unsicher ist, werden
+  # vier Ausrichtungen lokal per OCR verglichen. Langsamer, aber robuster.
+  use_ocr_vote: true
   # Konservative Scan-Aufbereitung. auto_crop verändert nur die sichtbare
   # CropBox; deskew_scans rastert nur schiefe Scan-Seiten neu und ist daher
   # bewusst standardmäßig aus. Originale werden versteckt gesichert.
   remove_blank_pages: true
   auto_crop: true
-  deskew_scans: false
+  deskew_scans: true
   # Scan-PDFs lokal per Tesseract durchsuchbar machen. Spart bei vielen
   # Anhängen zusätzliche Vision-Aufrufe und verbessert Copy/Paste.
   ocr_scans: true
   ocr_language: "deu+eng"
   # Optional: nur Scan-Seiten kontrastverstärken (rastert diese Seiten).
-  improve_contrast: false
+  improve_contrast: true
+  sharpen_scans: true
+  scan_dpi: 300
   keep_original: true
 
 # yt-dlp

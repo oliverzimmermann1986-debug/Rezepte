@@ -267,3 +267,49 @@ def test_mutation_is_blocked_when_version_snapshot_fails(client, test_db: Databa
     response = client.put(f"/api/recipes/{recipe_id}/tags", json={"tags": ["Darf nicht gespeichert werden"]})
     assert response.status_code == 500
     assert test_db.recipe_tags_get(recipe_id) == []
+
+
+def test_admin_pdf_dry_run_detects_rotation_without_writing(client, test_db: Database,
+                                                              tmp_path: Path, monkeypatch):
+    from app.main import app
+    import app.routes.api_admin as admin_api
+
+    root = tmp_path / "recipes"; folder = root / "Sideways"; folder.mkdir(parents=True)
+    pdf_path = folder / "recipe.pdf"
+    doc = pymupdf.open(); page = doc.new_page(width=600, height=800)
+    text = "Zutaten Kartoffeln Butter Sahne Salz Rezept Anleitung " * 4
+    page.insert_text((160, 700), text, fontsize=12, rotate=90)
+    pdf_path.write_bytes(doc.tobytes()); doc.close()
+    recipe_id = test_db.recipe_upsert(
+        url="https://example.test/sideways", name="Sideways", type="Hauptgericht",
+        category="Test", folder_path=str(folder), description="Test",
+        thumb_filename=None, video_filename=None, source_added_at=1.0,
+    )
+    original = pdf_path.read_bytes()
+
+    class FakeConfig:
+        def get(self, section, key=None, default=None):
+            values = {
+                ("paths", "recipe_dir"): str(root),
+                ("paths", "data_dir"): str(tmp_path / "data"),
+                ("pdf", None): {"use_tesseract_osd": True, "use_ocr_vote": True},
+            }
+            return values.get((section, key), default)
+
+    monkeypatch.setattr(admin_api, "get_config", lambda: FakeConfig())
+    app.dependency_overrides[require_admin] = lambda: None
+    try:
+        response = client.post("/api/admin/pdf/process", json={
+            "recipe_id": recipe_id, "dry_run": True, "auto_rotate": True,
+            "remove_blank_pages": False, "auto_crop": False,
+            "deskew_scans": False, "ocr_scans": False,
+            "improve_contrast": False, "sharpen_scans": False,
+        })
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["changed"] == 1
+        assert result["files"][0]["rotated_pages"] == 1
+        assert result["files"][0]["rotation_decisions"][0]["method"] == "text-layer"
+        assert pdf_path.read_bytes() == original
+    finally:
+        app.dependency_overrides.pop(require_admin, None)

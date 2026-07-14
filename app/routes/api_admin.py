@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from ..auth import SESSION_COOKIE, auth_disabled, require_admin, require_auth, session_user
 from ..config_store import get_config
 from ..core.pdf_processing import (
-    analyze_pdf_bytes, backup_original_pdf, find_recipe_pdfs, process_pdf_path,
+    analyze_pdf_bytes, backup_original_pdf, find_recipe_pdfs, process_pdf_bytes, process_pdf_path,
 )
 from ..core.safety import atomic_write_bytes
 from ..db import get_db
@@ -186,13 +186,15 @@ class PdfBatchPayload(BaseModel):
     recipe_id: Optional[int] = None
     process_all: bool = False
     dry_run: bool = True
-    limit: int = Field(50, ge=1, le=300)
+    limit: int = Field(500, ge=1, le=2000)
     auto_rotate: bool = True
     remove_blank_pages: bool = True
     auto_crop: bool = True
-    deskew_scans: bool = False
-    ocr_scans: bool = False
-    improve_contrast: bool = False
+    deskew_scans: bool = True
+    ocr_scans: bool = True
+    improve_contrast: bool = True
+    sharpen_scans: bool = True
+    scan_dpi: int = Field(300, ge=180, le=400)
     ocr_language: str = Field("deu+eng", min_length=3, max_length=80)
     keep_original: bool = True
 
@@ -224,22 +226,27 @@ def process_pdfs(payload: PdfBatchPayload, request: Request) -> Dict[str, Any]:
     changed = errors = 0
     for path in targets:
         try:
+            kwargs = dict(
+                auto_rotate=payload.auto_rotate,
+                use_tesseract_osd=bool(pdf_cfg.get("use_tesseract_osd", True)),
+                use_ocr_vote=bool(pdf_cfg.get("use_ocr_vote", True)),
+                remove_blank_pages=payload.remove_blank_pages,
+                auto_crop=payload.auto_crop, deskew_scans=payload.deskew_scans,
+                ocr_scans=payload.ocr_scans,
+                improve_contrast=payload.improve_contrast,
+                sharpen_scans=payload.sharpen_scans, scan_dpi=payload.scan_dpi,
+                ocr_language=payload.ocr_language,
+                min_text_chars=int(pdf_cfg.get("min_text_chars", 20) or 20),
+                text_dominance=float(pdf_cfg.get("text_dominance", 0.60) or 0.60),
+                osd_min_confidence=float(pdf_cfg.get("osd_min_confidence", 1.0) or 1.0),
+                max_osd_pages=int(pdf_cfg.get("max_osd_pages", 100) or 100),
+            )
             if payload.dry_run:
-                report = analyze_pdf_bytes(path.read_bytes(), detect_skew=payload.deskew_scans)
+                _preview, report = process_pdf_bytes(path.read_bytes(), **kwargs)
             else:
                 report = process_pdf_path(
                     path, backup_root=backup_root, keep_original=payload.keep_original,
-                    auto_rotate=payload.auto_rotate,
-                    use_tesseract_osd=bool(pdf_cfg.get("use_tesseract_osd", True)),
-                    remove_blank_pages=payload.remove_blank_pages,
-                    auto_crop=payload.auto_crop, deskew_scans=payload.deskew_scans,
-                    ocr_scans=payload.ocr_scans,
-                    improve_contrast=payload.improve_contrast,
-                    ocr_language=payload.ocr_language,
-                    min_text_chars=int(pdf_cfg.get("min_text_chars", 20) or 20),
-                    text_dominance=float(pdf_cfg.get("text_dominance", 0.65) or 0.65),
-                    osd_min_confidence=float(pdf_cfg.get("osd_min_confidence", 3.0) or 3.0),
-                    max_osd_pages=int(pdf_cfg.get("max_osd_pages", 12) or 12),
+                    **kwargs,
                 )
             data = report.as_dict(); data["path"] = str(path)
             files.append(data)

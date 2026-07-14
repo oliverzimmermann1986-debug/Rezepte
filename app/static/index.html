@@ -47,8 +47,15 @@
       <span class="mobile-product">Rezeptliebe</span>
       <span class="mobile-page-title" x-text="pageLabel()"></span>
     </div>
-    <div class="mobile-runtime" :title="status.scraper ? 'Import läuft' : 'Bereit'">
-      <span class="status-dot" :class="status.scraper ? 'busy' : 'online'"></span>
+    <div class="mobile-appbar-actions">
+      <button type="button" class="mobile-admin-button" x-show="session.is_admin"
+              @click="navTo('admin')" :class="page==='admin' && 'active'"
+              aria-label="Admin Center öffnen" title="Admin Center">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/><circle cx="18" cy="17" r="3"/></svg>
+      </button>
+      <div class="mobile-runtime" :title="status.scraper ? 'Import läuft' : 'Bereit'">
+        <span class="status-dot" :class="status.scraper ? 'busy' : 'online'"></span>
+      </div>
     </div>
   </header>
 
@@ -83,7 +90,7 @@
     <div class="foot">
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
-      <div class="sidebar-meta"><span>v1.2</span><a href="/logout">Abmelden</a></div>
+      <div class="sidebar-meta"><span>v1.2.1</span><a href="/logout">Abmelden</a></div>
     </div>
   </aside>
 
@@ -97,6 +104,11 @@
           <div class="subtitle">Import, Qualität, Versionen, PDF-Aufbereitung, Suche und Systempflege an einem Ort</div>
         </div>
         <button class="btn" @click="loadAdminOverview()">⟳ Status</button>
+      </div>
+
+      <div class="admin-access-note">
+        <strong>Angemeldet als <span x-text="session.username || 'unbekannt'"></span></strong>
+        <span>Rolle: <b x-text="session.role || 'user'"></b> · Direktaufruf: <code>/admin</code></span>
       </div>
 
       <div class="admin-overview-grid" x-show="admin.overview">
@@ -773,6 +785,11 @@
                        :disabled="!config.pdf.auto_rotate">
                 <label for="pdf-use-osd">Gescannte PDFs mit Tesseract OSD erkennen</label>
               </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+                <input type="checkbox" x-model="config.pdf.use_ocr_vote" id="pdf-use-ocr-vote"
+                       :disabled="!config.pdf.auto_rotate">
+                <label for="pdf-use-ocr-vote">Bei unsicherem OSD alle vier Ausrichtungen per OCR vergleichen</label>
+              </div>
               <div class="row">
                 <div class="field">
                   <label>OSD-Mindestvertrauen</label>
@@ -811,7 +828,19 @@
               </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
                 <input type="checkbox" x-model="config.pdf.improve_contrast" id="pdf-improve-contrast">
-                <label for="pdf-improve-contrast">Kontrast gescannter Seiten verbessern</label>
+                <label for="pdf-improve-contrast">Kontrast und Weißpunkt gescannter Seiten verbessern</label>
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+                <input type="checkbox" x-model="config.pdf.sharpen_scans" id="pdf-sharpen-scans">
+                <label for="pdf-sharpen-scans">Schrift und Linien gescannter Seiten nachschärfen</label>
+              </div>
+              <div class="field">
+                <label>Scan-Auflösung</label>
+                <select x-model.number="config.pdf.scan_dpi">
+                  <option :value="240">240 DPI · gut</option>
+                  <option :value="300">300 DPI · empfohlen</option>
+                  <option :value="400">400 DPI · maximale Qualität</option>
+                </select>
               </div>
               <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
                 <input type="checkbox" x-model="config.pdf.keep_original" id="pdf-keep-original">
@@ -1071,18 +1100,21 @@
         <div class="card admin-form-card">
           <h3>Umfang</h3>
           <div class="field"><label>Einzelne Rezept-ID</label><input type="number" min="1" x-model="admin.pdf.recipe_id" placeholder="leer = Bestand"></div>
-          <div class="field" x-show="!admin.pdf.recipe_id"><label>Maximal verarbeiten</label><input type="number" min="1" max="300" x-model.number="admin.pdf.limit"></div>
+          <div class="field" x-show="!admin.pdf.recipe_id"><label>Maximal verarbeiten</label><input type="number" min="1" max="2000" x-model.number="admin.pdf.limit"><div class="hint">Leer gelassene Rezept-ID = gesamter Bestand bis zu diesem Limit.</div></div>
           <label class="check-row"><input type="checkbox" x-model="admin.pdf.auto_rotate"> Seiten automatisch drehen</label>
           <label class="check-row"><input type="checkbox" x-model="admin.pdf.remove_blank_pages"> Eindeutig leere Seiten entfernen</label>
           <label class="check-row"><input type="checkbox" x-model="admin.pdf.auto_crop"> Große Weißränder beschneiden</label>
           <label class="check-row"><input type="checkbox" x-model="admin.pdf.deskew_scans"> Schiefe Scan-Seiten begradigen <span class="muted">(rastert nur betroffene Seiten)</span></label>
           <label class="check-row"><input type="checkbox" x-model="admin.pdf.ocr_scans"> Scan-Seiten mit durchsuchbarem OCR-Textlayer versehen</label>
-          <label class="check-row"><input type="checkbox" x-model="admin.pdf.improve_contrast"> Scan-Kontrast verbessern</label>
+          <label class="check-row"><input type="checkbox" x-model="admin.pdf.improve_contrast"> Scan-Kontrast und Weißpunkt verbessern</label>
+          <label class="check-row"><input type="checkbox" x-model="admin.pdf.sharpen_scans"> Schrift und Linien nachschärfen</label>
+          <div class="field"><label>Scan-Qualität</label><select x-model.number="admin.pdf.scan_dpi"><option :value="240">Gut · 240 DPI</option><option :value="300">Hoch · 300 DPI</option><option :value="400">Maximum · 400 DPI</option></select><div class="hint">300 DPI ist der empfohlene Kompromiss aus Lesbarkeit, Dateigröße und Geschwindigkeit.</div></div>
           <div class="field" x-show="admin.pdf.ocr_scans"><label>OCR-Sprachen</label><input x-model="admin.pdf.ocr_language" placeholder="deu+eng"><div class="hint">Tesseract-Sprachcodes, z. B. deu+eng.</div></div>
           <label class="check-row"><input type="checkbox" x-model="admin.pdf.keep_original"> Original immer sichern</label>
+          <div class="admin-info-card pdf-run-hint">„Nur analysieren“ führt dieselbe Erkennung aus, speichert aber nichts. „Aufbereiten“ korrigiert die Dateien und sichert vorher jedes Original.</div>
           <div class="flex admin-action-row">
-            <button class="btn" @click="runAdminPdf(true)" :disabled="admin.pdf.running">🔎 Nur analysieren</button>
-            <button class="btn btn-primary" @click="runAdminPdf(false)" :disabled="admin.pdf.running">✨ Aufbereiten</button>
+            <button class="btn" @click="runAdminPdf(true)" :disabled="admin.pdf.running">🔎 Bestand analysieren</button>
+            <button class="btn btn-primary" @click="runAdminPdf(false)" :disabled="admin.pdf.running">✨ Bestand jetzt aufbereiten</button>
           </div>
         </div>
         <div class="card admin-result-card">
@@ -1100,7 +1132,8 @@
                 <template x-for="f in (admin.pdf.result.files || []).slice(0,50)" :key="f.path">
                   <div class="admin-file-result">
                     <strong x-text="f.path.split('/').pop()"></strong>
-                    <span x-text="f.error || ((f.rotated_pages||0)+' gedreht · '+(f.cropped_pages||0)+' beschnitten · '+(f.removed_blank_pages||0)+' leer entfernt')"></span>
+                    <span x-text="f.error || ((f.rotated_pages||0)+' gedreht · '+(f.orientation_detected_pages||0)+' erkannt · '+(f.cropped_pages||0)+' beschnitten · '+(f.ocr_pages||0)+' OCR · '+(f.sharpened_pages||0)+' geschärft' + (f.rotation_reason ? ' · '+f.rotation_reason : ''))"></span>
+                    <small x-show="(f.rotation_decisions || []).length" x-text="(f.rotation_decisions || []).map(d => 'S.'+d.page+': '+d.method+' '+d.old_rotation+'°→'+d.new_rotation+'°').join(' · ')"></small>
                   </div>
                 </template>
               </div>

@@ -38,11 +38,16 @@ class PdfProcessReport:
     pages_before: int = 0
     pages_after: int = 0
     rotated_pages: int = 0
+    orientation_detected_pages: int = 0
+    orientation_skipped_pages: int = 0
+    rotation_reason: Optional[str] = None
+    rotation_decisions: list[dict] = field(default_factory=list)
     cropped_pages: int = 0
     removed_blank_pages: int = 0
     deskewed_pages: int = 0
     ocr_pages: int = 0
     contrast_pages: int = 0
+    sharpened_pages: int = 0
     original_backup: Optional[str] = None
     warnings: list[str] = field(default_factory=list)
     reason: Optional[str] = None
@@ -159,7 +164,7 @@ def analyze_pdf_bytes(pdf_bytes: bytes, *, detect_skew: bool = False,
         doc.close()
 
 
-def _crop_page(page: Any, analysis: PdfPageAnalysis, *, margin_points: float = 10.0) -> bool:
+def _crop_page(page: Any, analysis: PdfPageAnalysis, *, margin_points: float = 18.0) -> bool:
     if not analysis.crop_possible:
         return False
     image = _render_gray(page, dpi=96)
@@ -177,7 +182,9 @@ def _crop_page(page: Any, analysis: PdfPageAnalysis, *, margin_points: float = 1
         rect.y0 + y1 * sy + margin_points,
     )
     crop &= rect
-    if crop.width < rect.width * 0.45 or crop.height < rect.height * 0.45:
+    # Keine schmalen Mittelstreifen erzeugen. Gerade bei gedrehten Scans kann
+    # eine aggressive Bounding-Box sonst sichtbaren Text abschneiden.
+    if crop.width < rect.width * 0.70 or crop.height < rect.height * 0.70:
         return False
     if crop.width > rect.width * 0.98 and crop.height > rect.height * 0.98:
         return False
@@ -194,12 +201,15 @@ def process_pdf_bytes(
     auto_crop: bool = True,
     deskew_scans: bool = False,
     ocr_scans: bool = False,
-    improve_contrast: bool = False,
+    improve_contrast: bool = True,
+    sharpen_scans: bool = True,
+    scan_dpi: int = 300,
     ocr_language: str = "deu+eng",
     min_text_chars: int = 20,
-    text_dominance: float = 0.65,
-    osd_min_confidence: float = 3.0,
-    max_osd_pages: int = 12,
+    text_dominance: float = 0.60,
+    osd_min_confidence: float = 1.0,
+    max_osd_pages: int = 100,
+    use_ocr_vote: bool = True,
 ) -> Tuple[bytes, PdfProcessReport]:
     report = PdfProcessReport()
     source = pdf_bytes
@@ -209,8 +219,16 @@ def process_pdf_bytes(
             source, enabled=True, use_tesseract_osd=use_tesseract_osd,
             min_text_chars=min_text_chars, text_dominance=text_dominance,
             osd_min_confidence=osd_min_confidence, max_osd_pages=max_osd_pages,
+            use_ocr_vote=use_ocr_vote, ocr_language=ocr_language,
+            ocr_vote_dpi=min(240, max(150, int(scan_dpi * 0.65))),
         )
         report.rotated_pages = rotation_report.rotated_pages
+        report.orientation_detected_pages = rotation_report.detected_pages
+        report.orientation_skipped_pages = rotation_report.skipped_pages
+        report.rotation_reason = rotation_report.reason
+        report.rotation_decisions = [
+            {**asdict(item), "changed": item.changed} for item in rotation_report.decisions
+        ]
 
     try:
         import pymupdf
@@ -236,8 +254,8 @@ def process_pdf_bytes(
         # Raster-Operationen gelten ausschließlich für echte Scan-Seiten.
         # Text-/Vektor-PDFs bleiben unangetastet. OCR erzeugt einen unsichtbaren
         # Text-Layer und verbessert dadurch Suche, Copy&Paste und Barrierefreiheit.
-        if deskew_scans or ocr_scans or improve_contrast:
-            from PIL import ImageOps
+        if deskew_scans or ocr_scans or improve_contrast or sharpen_scans:
+            from PIL import ImageOps, ImageFilter, ImageEnhance
             angles = []
             raster_flags = []
             for idx, info in enumerate(analyses):
@@ -250,7 +268,7 @@ def process_pdf_bytes(
                         angle = 0.0
                 info.skew_angle = angle
                 angles.append(angle)
-                raster_flags.append(is_scan and (abs(angle) >= 0.5 or ocr_scans or improve_contrast))
+                raster_flags.append(is_scan and (abs(angle) >= 0.5 or ocr_scans or improve_contrast or sharpen_scans))
 
             if any(raster_flags):
                 rebuilt = pymupdf.open()
@@ -259,11 +277,16 @@ def process_pdf_bytes(
                         rebuilt.insert_pdf(doc, from_page=idx, to_page=idx)
                         continue
                     page = doc[idx]
-                    pix = page.get_pixmap(dpi=200, colorspace=pymupdf.csRGB, alpha=False, annots=False)
+                    render_dpi = max(180, min(400, int(scan_dpi or 300)))
+                    pix = page.get_pixmap(dpi=render_dpi, colorspace=pymupdf.csRGB, alpha=False, annots=False)
                     image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
                     if improve_contrast:
-                        image = ImageOps.autocontrast(image, cutoff=1)
+                        image = ImageOps.autocontrast(image, cutoff=0.5)
+                        image = ImageEnhance.Contrast(image).enhance(1.08)
                         report.contrast_pages += 1
+                    if sharpen_scans:
+                        image = image.filter(ImageFilter.UnsharpMask(radius=1.2, percent=125, threshold=3))
+                        report.sharpened_pages += 1
                     angle = angles[idx]
                     if abs(angle) >= 0.5:
                         image = image.rotate(angle, resample=Image.Resampling.BICUBIC,
@@ -275,7 +298,7 @@ def process_pdf_bytes(
                     if ocr_scans:
                         try:
                             ocr_pix = pymupdf.Pixmap(png)
-                            ocr_pix.set_dpi(200, 200)
+                            ocr_pix.set_dpi(render_dpi, render_dpi)
                             one_page_pdf = ocr_pix.pdfocr_tobytes(
                                 language=(ocr_language or "deu+eng")[:80], compress=True
                             )
@@ -315,7 +338,7 @@ def process_pdf_bytes(
         report.changed = bool(
             report.rotated_pages or report.cropped_pages or
             report.removed_blank_pages or report.deskewed_pages or
-            report.ocr_pages or report.contrast_pages
+            report.ocr_pages or report.contrast_pages or report.sharpened_pages
         )
         if not report.changed:
             report.reason = "no_changes"

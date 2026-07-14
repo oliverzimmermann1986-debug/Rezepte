@@ -1,4 +1,21 @@
-# Admin-Zentrale – Rezeptliebe 1.2.0
+# Admin-Zentrale – Rezeptliebe 1.2.1
+
+## Zugang zum Admin Center
+
+- Im Browser direkt `/admin` öffnen.
+- Für die PDF-Verarbeitung direkt `/admin/pdf` öffnen.
+- Auf Mobilgeräten erscheint für Admins zusätzlich ein Admin-Symbol in der Kopfzeile.
+- Der Menüpunkt ist nur sichtbar, wenn der eingeloggte Benutzer in der Datenbank die Rolle `admin` besitzt.
+
+Rollen prüfen und korrigieren:
+
+```bash
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli user-list
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli user-role BENUTZERNAME admin
+```
+
+Danach abmelden und erneut anmelden.
+
 
 Der Admin-Reiter bündelt alle technischen und qualitätssichernden Werkzeuge. Er ist nur für Benutzer mit der Rolle `admin` sichtbar; die reguläre Rezeptsuche, Favoriten und Einkaufsliste bleiben davon getrennt.
 

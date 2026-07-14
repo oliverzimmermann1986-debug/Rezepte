@@ -77,3 +77,26 @@ Die erweiterte Stapelverarbeitung wird im Admin-Reiter gestartet. Der bestehende
 ```bash
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-auto-rotate
 ```
+
+## Verbesserungen in 1.2.1
+
+- OSD-Erkennung mit niedrigerer, praxisgerechter Mindestschwelle.
+- Fallback über einen lokalen Vierfach-OCR-Vergleich, wenn OSD bei kurzen oder bildlastigen Rezeptseiten keine Entscheidung trifft.
+- Alle Seiten eines PDFs können geprüft werden; die bisherige Standardgrenze von 12 Seiten wurde auf 100 erhöht.
+- Scan-Aufbereitung standardmäßig in 300 DPI.
+- Automatische Weißpunkt-/Kontrastkorrektur und vorsichtiges Nachschärfen.
+- Begradigung schiefer Scan-Seiten standardmäßig aktiv.
+- „Nur analysieren“ verwendet exakt dieselbe Verarbeitung wie „Aufbereiten“, schreibt aber keine Datei.
+- Der Ergebnisbericht zeigt Erkennungsmethode, alte und neue Rotation sowie unsichere Seiten.
+
+### Gesamten Bestand aufbereiten
+
+Im Admin Center: **PDF & Scan -> Bestand jetzt aufbereiten**. Die Rezept-ID bleibt leer.
+
+Alternativ per Konsole:
+
+```bash
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-optimize
+```
+
+Vor jeder Änderung wird das Original unter dem Datenverzeichnis in `pdf-originals` gesichert.

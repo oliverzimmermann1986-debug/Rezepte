@@ -16,8 +16,9 @@ function scrapperApp() {
       pdf: {
         running: false, result: null, recipe_id: '', process_all: true,
         auto_rotate: true, remove_blank_pages: true, auto_crop: true,
-        deskew_scans: false, ocr_scans: true, improve_contrast: false,
-        ocr_language: 'deu+eng', keep_original: true, limit: 50,
+        deskew_scans: true, ocr_scans: true, improve_contrast: true,
+        sharpen_scans: true, scan_dpi: 300,
+        ocr_language: 'deu+eng', keep_original: true, limit: 500,
       },
       pageEditor: { loading: false, saving: false, filename: '', pages: [], previewKey: Date.now() },
       maintenanceRuns: [],
@@ -226,11 +227,17 @@ function scrapperApp() {
       try {
         const r = await this.api('GET', '/api/session');
         this.session = { ...this.session, ...(r || {}), loaded: true };
-        if (this.page === 'admin' && !this.session.is_admin) this.navTo('recipes');
+        if (this.page === 'admin' && !this.session.is_admin) {
+          this.showToast('Admin Center: Dein Konto hat nur die Rolle '+(this.session.role || 'user'), 'err');
+          this.navTo('recipes');
+        }
       } catch (_) {
         this.session.loaded = true;
         this.session.is_admin = false;
-        if (this.page === 'admin') this.navTo('recipes');
+        if (this.page === 'admin') {
+          this.showToast('Admin Center konnte nicht freigegeben werden', 'err');
+          this.navTo('recipes');
+        }
       }
     },
 
@@ -402,6 +409,8 @@ function scrapperApp() {
           deskew_scans: !!p.deskew_scans,
           ocr_scans: !!p.ocr_scans,
           improve_contrast: !!p.improve_contrast,
+          sharpen_scans: !!p.sharpen_scans,
+          scan_dpi: Number(p.scan_dpi || 300),
           ocr_language: p.ocr_language || 'deu+eng',
           keep_original: !!p.keep_original,
         };
@@ -1316,14 +1325,17 @@ function scrapperApp() {
       if (cfg.pdf.auto_rotate === undefined) cfg.pdf.auto_rotate = true;
       if (cfg.pdf.use_tesseract_osd === undefined) cfg.pdf.use_tesseract_osd = true;
       if (cfg.pdf.min_text_chars === undefined) cfg.pdf.min_text_chars = 20;
-      if (cfg.pdf.text_dominance === undefined) cfg.pdf.text_dominance = 0.65;
-      if (cfg.pdf.osd_min_confidence === undefined) cfg.pdf.osd_min_confidence = 3.0;
-      if (cfg.pdf.max_osd_pages === undefined) cfg.pdf.max_osd_pages = 12;
+      if (cfg.pdf.text_dominance === undefined) cfg.pdf.text_dominance = 0.60;
+      if (cfg.pdf.osd_min_confidence === undefined) cfg.pdf.osd_min_confidence = 1.0;
+      if (cfg.pdf.max_osd_pages === undefined) cfg.pdf.max_osd_pages = 100;
+      if (cfg.pdf.use_ocr_vote === undefined) cfg.pdf.use_ocr_vote = true;
       if (cfg.pdf.remove_blank_pages === undefined) cfg.pdf.remove_blank_pages = true;
       if (cfg.pdf.auto_crop === undefined) cfg.pdf.auto_crop = true;
-      if (cfg.pdf.deskew_scans === undefined) cfg.pdf.deskew_scans = false;
+      if (cfg.pdf.deskew_scans === undefined) cfg.pdf.deskew_scans = true;
       if (cfg.pdf.ocr_scans === undefined) cfg.pdf.ocr_scans = true;
-      if (cfg.pdf.improve_contrast === undefined) cfg.pdf.improve_contrast = false;
+      if (cfg.pdf.improve_contrast === undefined) cfg.pdf.improve_contrast = true;
+      if (cfg.pdf.sharpen_scans === undefined) cfg.pdf.sharpen_scans = true;
+      if (cfg.pdf.scan_dpi === undefined) cfg.pdf.scan_dpi = 300;
       if (cfg.pdf.ocr_language === undefined) cfg.pdf.ocr_language = 'deu+eng';
       if (cfg.pdf.keep_original === undefined) cfg.pdf.keep_original = true;
       cfg.ytdlp ||= {};

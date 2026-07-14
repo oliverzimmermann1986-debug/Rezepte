@@ -168,6 +168,129 @@ def _osd_target_rotation(
         return None
 
 
+
+def _parse_tesseract_tsv(output: str) -> Tuple[float, int, int]:
+    """Bewertet Tesseract-TSV: Score, erkannte Zeichen, Wörter.
+
+    Die absolute Confidence ist zwischen Tesseract-Versionen nicht stabil. Für
+    die Orientierungswahl zählt deshalb primär der Vergleich derselben Seite in
+    vier Drehungen.
+    """
+    score = 0.0
+    chars = 0
+    words = 0
+    lines = (output or "").splitlines()
+    for line in lines[1:]:
+        cols = line.split("\t")
+        if len(cols) < 12:
+            continue
+        text = cols[11].strip()
+        clean = "".join(ch for ch in text if ch.isalnum())
+        # Einzelzeichen und OCR-Symbolsalat erzeugen bei seitlichen Seiten oft
+        # überraschend hohe Tesseract-Confidences. Für die Ausrichtung zählen
+        # deshalb nur wortähnliche Tokens ab zwei Zeichen; längere Wörter
+        # erhalten deutlich mehr Gewicht.
+        if len(clean) < 2:
+            continue
+        try:
+            conf = float(cols[10])
+        except (TypeError, ValueError):
+            conf = -1.0
+        if conf < 0:
+            continue
+        words += 1
+        chars += len(clean)
+        word_weight = min(len(clean), 18) ** 1.35
+        score += max(1.0, conf) * word_weight
+    score += chars * 1.2 + words * 5.0
+    return score, chars, words
+
+
+def _rotate_image_clockwise(image: Any, degrees: int) -> Any:
+    from PIL import Image
+    degrees %= 360
+    if degrees == 90:
+        return image.transpose(Image.Transpose.ROTATE_270)
+    if degrees == 180:
+        return image.transpose(Image.Transpose.ROTATE_180)
+    if degrees == 270:
+        return image.transpose(Image.Transpose.ROTATE_90)
+    return image
+
+
+def _ocr_vote_target_rotation(
+    page: Any,
+    *,
+    language: str = "deu+eng",
+    dpi: int = 180,
+    min_chars: int = 12,
+    score_margin: float = 1.10,
+    timeout: int = 25,
+) -> Optional[Tuple[int, float, int]]:
+    """Fallback für Scan-PDFs, bei denen OSD keine Entscheidung trifft.
+
+    Die Seite wird in vier Ausrichtungen lokal mit Tesseract gelesen. Die
+    Ausrichtung mit dem deutlich besten OCR-Score gewinnt. Das ist langsamer
+    als OSD, aber bei kurzen Rezeptseiten und Fotos mit Text erheblich robuster.
+    """
+    if not shutil.which("tesseract"):
+        return None
+    try:
+        import pymupdf
+        from PIL import Image, ImageOps, ImageFilter
+
+        pix = page.get_pixmap(
+            dpi=max(120, min(260, int(dpi))), colorspace=pymupdf.csGRAY,
+            alpha=False, annots=False,
+        )
+        image = Image.frombytes("L", (pix.width, pix.height), pix.samples)
+        image = ImageOps.autocontrast(image, cutoff=0.5)
+        image = image.filter(ImageFilter.UnsharpMask(radius=1.0, percent=110, threshold=3))
+        # Rechenzeit begrenzen, ohne kleine Schrift unlesbar zu machen.
+        image.thumbnail((2200, 2200), Image.Resampling.LANCZOS)
+
+        results = []
+        languages = [str(language or "deu+eng")[:80], "eng"]
+        for degrees in _CARDINALS:
+            candidate = _rotate_image_clockwise(image, degrees)
+            buf = __import__("io").BytesIO()
+            candidate.save(buf, format="PNG", optimize=True)
+            best_for_angle = (0.0, 0, 0)
+            for lang in languages:
+                cmd = ["tesseract", "stdin", "stdout"]
+                if lang:
+                    cmd.extend(["-l", lang])
+                cmd.extend(["--psm", "6", "tsv"])
+                proc = subprocess.run(
+                    cmd, input=buf.getvalue(), capture_output=True,
+                    timeout=max(8, int(timeout)), check=False,
+                )
+                text = (proc.stdout or b"").decode("utf-8", "replace")
+                parsed = _parse_tesseract_tsv(text)
+                if parsed[0] > best_for_angle[0]:
+                    best_for_angle = parsed
+                if parsed[1] >= min_chars:
+                    break
+            results.append((degrees, *best_for_angle))
+
+        ranked = sorted(results, key=lambda item: item[1], reverse=True)
+        if not ranked:
+            return None
+        best = ranked[0]
+        second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+        degrees, score, chars, _words = best
+        if chars < max(4, int(min_chars)) or score <= 0:
+            return None
+        if second_score > 0 and score < second_score * max(1.01, float(score_margin)):
+            return None
+        current = int(page.rotation or 0) % 360
+        confidence = score / max(second_score, 1.0)
+        return (current + int(degrees)) % 360, confidence, int(chars)
+    except (subprocess.TimeoutExpired, OSError, RuntimeError, ValueError) as exc:
+        logger.debug("Tesseract OCR-Vote fehlgeschlagen: %s", exc)
+        return None
+
+
 def normalize_pdf_bytes(
     pdf_bytes: bytes,
     *,
@@ -175,8 +298,13 @@ def normalize_pdf_bytes(
     use_tesseract_osd: bool = True,
     min_text_chars: int = 20,
     text_dominance: float = 0.65,
-    osd_min_confidence: float = 3.0,
-    max_osd_pages: int = 12,
+    osd_min_confidence: float = 1.0,
+    max_osd_pages: int = 100,
+    use_ocr_vote: bool = True,
+    ocr_language: str = "deu+eng",
+    ocr_vote_dpi: int = 180,
+    ocr_vote_min_chars: int = 12,
+    ocr_vote_margin: float = 1.10,
 ) -> Tuple[bytes, PdfRotationReport]:
     """Normalisiert die Seitenrotation eines PDFs und liefert Bytes + Report.
 
@@ -244,17 +372,46 @@ def normalize_pdf_bytes(
                     page,
                     min_confidence=osd_min_confidence,
                 )
-                if not osd:
+                if osd:
+                    new_rotation, confidence = osd
+                    decision = PageRotation(
+                        page=page_index + 1,
+                        old_rotation=old_rotation,
+                        new_rotation=int(new_rotation),
+                        method="tesseract-osd",
+                        confidence=round(float(confidence), 4),
+                        text_chars=0,
+                    )
+                elif use_ocr_vote:
+                    voted = _ocr_vote_target_rotation(
+                        page, language=ocr_language, dpi=ocr_vote_dpi,
+                        min_chars=ocr_vote_min_chars, score_margin=ocr_vote_margin,
+                    )
+                    if not voted:
+                        report.skipped_pages += 1
+                        continue
+                    new_rotation, confidence, chars = voted
+                    decision = PageRotation(
+                        page=page_index + 1, old_rotation=old_rotation,
+                        new_rotation=int(new_rotation), method="tesseract-ocr-vote",
+                        confidence=round(float(confidence), 4), text_chars=int(chars),
+                    )
+                else:
                     report.skipped_pages += 1
                     continue
-                new_rotation, confidence = osd
+            elif use_ocr_vote and page_index < max(0, int(max_osd_pages)):
+                voted = _ocr_vote_target_rotation(
+                    page, language=ocr_language, dpi=ocr_vote_dpi,
+                    min_chars=ocr_vote_min_chars, score_margin=ocr_vote_margin,
+                )
+                if not voted:
+                    report.skipped_pages += 1
+                    continue
+                new_rotation, confidence, chars = voted
                 decision = PageRotation(
-                    page=page_index + 1,
-                    old_rotation=old_rotation,
-                    new_rotation=int(new_rotation),
-                    method="tesseract-osd",
-                    confidence=round(float(confidence), 4),
-                    text_chars=0,
+                    page=page_index + 1, old_rotation=old_rotation,
+                    new_rotation=int(new_rotation), method="tesseract-ocr-vote",
+                    confidence=round(float(confidence), 4), text_chars=int(chars),
                 )
             else:
                 report.skipped_pages += 1

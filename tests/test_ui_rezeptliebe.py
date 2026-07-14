@@ -108,3 +108,14 @@ def test_mobile_admin_and_footer_have_reserved_space():
     assert "@media (max-width: 900px)" in css
     assert ".admin-two-col { grid-template-columns: 1fr; }" in css
     assert "var(--mobile-nav-height)" in css
+
+
+def test_admin_center_has_direct_mobile_entry_and_pdf_quality_controls():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert 'aria-label="Admin Center öffnen"' in html
+    assert 'Direktaufruf: <code>/admin</code>' in html
+    assert 'x-model="admin.pdf.sharpen_scans"' in html
+    assert 'x-model.number="admin.pdf.scan_dpi"' in html
+    assert "scan_dpi: 300" in js
+    assert "limit: 500" in js

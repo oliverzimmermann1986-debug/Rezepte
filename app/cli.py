@@ -295,9 +295,11 @@ def _cmd_pdf_auto_rotate(args: list) -> int:
         enabled=bool(pdf_cfg.get("auto_rotate", True)),
         use_tesseract_osd=bool(pdf_cfg.get("use_tesseract_osd", True)),
         min_text_chars=max(4, int(pdf_cfg.get("min_text_chars", 20) or 20)),
-        text_dominance=min(1.0, max(0.5, float(pdf_cfg.get("text_dominance", 0.65) or 0.65))),
-        osd_min_confidence=max(0.0, float(pdf_cfg.get("osd_min_confidence", 3.0) or 3.0)),
-        max_osd_pages=max(0, int(pdf_cfg.get("max_osd_pages", 12) or 12)),
+        text_dominance=min(1.0, max(0.5, float(pdf_cfg.get("text_dominance", 0.60) or 0.60))),
+        osd_min_confidence=max(0.0, float(pdf_cfg.get("osd_min_confidence", 1.0) or 1.0)),
+        max_osd_pages=max(0, int(pdf_cfg.get("max_osd_pages", 100) or 100)),
+        use_ocr_vote=bool(pdf_cfg.get("use_ocr_vote", True)),
+        ocr_language=str(pdf_cfg.get("ocr_language", "deu+eng") or "deu+eng"),
     )
     if result.get("error"):
         print(f"Fehler: {result['error']}", file=sys.stderr)
@@ -313,6 +315,86 @@ def _cmd_pdf_auto_rotate(args: list) -> int:
             print(f"  Fehler:   {item['path']} - {item.get('reason')}: {item.get('error') or ''}", file=sys.stderr)
     return 1 if result.get("errors") else 0
 
+
+def _cmd_user_list(args: list) -> int:
+    users = get_db().user_list()
+    if not users:
+        print("Keine Benutzer vorhanden.")
+        return 0
+    for user in users:
+        state = "deaktiviert" if user.get("disabled") else "aktiv"
+        print(f"{user.get('id'):>3}  {user.get('username'):<32}  {user.get('role'):<5}  {state}")
+    return 0
+
+
+def _cmd_user_role(args: list) -> int:
+    if len(args) != 2 or args[1] not in ("admin", "user"):
+        print("Usage: python -m app.cli user-role <USERNAME> <admin|user>", file=sys.stderr)
+        return 2
+    username, role = args
+    db = get_db()
+    user = db.user_get_by_name(username)
+    if not user:
+        print(f"Benutzer nicht gefunden: {username}", file=sys.stderr)
+        return 1
+    db.user_set_role(int(user["id"]), role)
+    if user.get("disabled"):
+        db.user_set_disabled(int(user["id"]), False)
+        print(f"✓ Benutzer '{username}' aktiviert und Rolle auf '{role}' gesetzt.")
+    else:
+        print(f"✓ Rolle von '{username}' auf '{role}' gesetzt.")
+    print("  Danach abmelden und erneut anmelden, damit die Oberfläche die Rolle neu lädt.")
+    return 0
+
+
+def _cmd_pdf_optimize(args: list) -> int:
+    """Aufbereiten aller vorhandenen PDFs mit den produktiven Qualitätswerten."""
+    from .core.pdf_processing import find_recipe_pdfs, process_pdf_path
+
+    cfg = get_config()
+    pdf_cfg = cfg.get("pdf", default={}) or {}
+    root = Path(args[0]) if args and args[0] else Path(
+        cfg.get("paths", "recipe_dir", default="/opt/scrapper/files/rezepte")
+    )
+    data_dir = Path(cfg.get("paths", "data_dir", default="/opt/scrapper/data"))
+    backup_root = data_dir / "pdf-originals"
+    paths = list(find_recipe_pdfs(root))
+    print(f"PDF-Aufbereitung: {len(paths)} Dateien unter {root}")
+    changed = errors = rotated = ocr = 0
+    for idx, path in enumerate(paths, 1):
+        report = process_pdf_path(
+            path, backup_root=backup_root,
+            keep_original=bool(pdf_cfg.get("keep_original", True)),
+            auto_rotate=bool(pdf_cfg.get("auto_rotate", True)),
+            use_tesseract_osd=bool(pdf_cfg.get("use_tesseract_osd", True)),
+            use_ocr_vote=bool(pdf_cfg.get("use_ocr_vote", True)),
+            remove_blank_pages=bool(pdf_cfg.get("remove_blank_pages", True)),
+            auto_crop=bool(pdf_cfg.get("auto_crop", True)),
+            deskew_scans=bool(pdf_cfg.get("deskew_scans", True)),
+            ocr_scans=bool(pdf_cfg.get("ocr_scans", True)),
+            improve_contrast=bool(pdf_cfg.get("improve_contrast", True)),
+            sharpen_scans=bool(pdf_cfg.get("sharpen_scans", True)),
+            scan_dpi=max(180, min(400, int(pdf_cfg.get("scan_dpi", 300) or 300))),
+            ocr_language=str(pdf_cfg.get("ocr_language", "deu+eng") or "deu+eng"),
+            min_text_chars=max(4, int(pdf_cfg.get("min_text_chars", 20) or 20)),
+            text_dominance=min(1.0, max(0.5, float(pdf_cfg.get("text_dominance", 0.60) or 0.60))),
+            osd_min_confidence=max(0.0, float(pdf_cfg.get("osd_min_confidence", 1.0) or 1.0)),
+            max_osd_pages=max(0, int(pdf_cfg.get("max_osd_pages", 100) or 100)),
+        )
+        if not report.ok:
+            errors += 1
+            print(f"[{idx}/{len(paths)}] FEHLER {path.name}: {report.reason} {report.error or ''}", file=sys.stderr)
+            continue
+        if report.changed:
+            changed += 1
+            rotated += report.rotated_pages
+            ocr += report.ocr_pages
+            print(f"[{idx}/{len(paths)}] geändert {path.name}: {report.rotated_pages} gedreht, {report.ocr_pages} OCR")
+        else:
+            print(f"[{idx}/{len(paths)}] unverändert {path.name}: {report.rotation_reason or report.reason or 'keine Änderung'}")
+    print(f"Fertig: {len(paths)} PDFs, {changed} geändert, {rotated} Seiten gedreht, {ocr} OCR-Seiten, {errors} Fehler")
+    return 1 if errors else 0
+
 def main() -> int:
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help", "help"):
@@ -325,7 +407,10 @@ def main() -> int:
             "  python -m app.cli db-vacuum           # Reclaim Disk-Speicher\n"
             "  python -m app.cli list-backups\n"
             "  python -m app.cli log-cleanup [DAYS]  # Default aus config (30)\n"
-            "  python -m app.cli pdf-auto-rotate [ROOT] # bestehende PDFs ausrichten",
+            "  python -m app.cli pdf-auto-rotate [ROOT] # nur vorhandene PDFs drehen\n"
+            "  python -m app.cli pdf-optimize [ROOT]    # drehen + Qualität + OCR\n"
+            "  python -m app.cli user-list\n"
+            "  python -m app.cli user-role USER admin  # Admin Center freischalten",
             file=sys.stderr,
         )
         return 1
@@ -346,6 +431,12 @@ def main() -> int:
         return _cmd_log_cleanup(args[1:])
     if cmd == "pdf-auto-rotate":
         return _cmd_pdf_auto_rotate(args[1:])
+    if cmd == "pdf-optimize":
+        return _cmd_pdf_optimize(args[1:])
+    if cmd == "user-list":
+        return _cmd_user_list(args[1:])
+    if cmd == "user-role":
+        return _cmd_user_role(args[1:])
     print(f"Unbekanntes Kommando: {cmd}", file=sys.stderr)
     return 1
 

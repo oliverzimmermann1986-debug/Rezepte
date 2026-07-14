@@ -451,3 +451,22 @@ pdf:
 Self-hosted Setup. Vor produktivem Einsatz: das Hardening-Checklist im `data/config.yaml` durchgehen, Initial-Passwort ändern, Cloudflare-Access (oder ein Äquivalent) davorstellen, regelmäßig `git pull` für Updates.
 
 Bei Fragen / Issues / PRs → GitHub.
+
+## Admin Center
+
+Direktaufruf: `/admin`, PDF-Werkzeuge: `/admin/pdf`. Der Menüpunkt wird nur für Benutzer mit Rolle `admin` angezeigt.
+
+```bash
+# Rollen anzeigen
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli user-list
+# Benutzer zum Admin machen
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli user-role BENUTZERNAME admin
+```
+
+## PDF-Bestand optimieren
+
+```bash
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-optimize
+```
+
+Der Lauf dreht falsch ausgerichtete Seiten, verbessert Scan-Lesbarkeit, erzeugt bei Bedarf OCR-Textlayer und sichert die Originale.

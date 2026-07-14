@@ -3453,3 +3453,40 @@ a { color: var(--accent-deep); }
   .pdf-page-grid { grid-template-columns: 1fr; }
   .pdf-page-preview-wrap { min-height: 260px; }
 }
+
+/* v1.2.1: sichtbarer Admin-Zugang und PDF-Laufdiagnose */
+.admin-access-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 11px 13px;
+  border: 1px solid #ead39c;
+  border-radius: 13px;
+  color: var(--fg-dim);
+  background: #fff9e8;
+  font-size: 12px;
+}
+.admin-access-note strong { color: #68450a; }
+.admin-access-note code { padding: 2px 6px; border-radius: 6px; background: #fff; }
+.pdf-run-hint { margin-top: 13px; }
+.admin-file-result small { color: #7b6846; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.mobile-appbar-actions { display: flex; align-items: center; gap: 6px; }
+.mobile-admin-button {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #78520a;
+  background: rgba(255,255,255,.62);
+  border: 1px solid rgba(205, 158, 48, .35);
+  border-radius: 999px;
+}
+.mobile-admin-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.mobile-admin-button.active { background: #ffd75b; border-color: #e7ae1d; box-shadow: 0 4px 12px rgba(170, 116, 0, .16); }
+@media (min-width: 901px) { .mobile-appbar-actions { display: none; } }
+@media (max-width: 700px) {
+  .admin-access-note { align-items: flex-start; flex-direction: column; gap: 4px; }
+}

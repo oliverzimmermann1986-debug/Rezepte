@@ -117,3 +117,41 @@ def get_config() -> ConfigStore:
             if _config is None:
                 _config = ConfigStore()
     return _config
+
+
+def migrate_pdf_quality_defaults() -> bool:
+    """Hebt ausschließlich die bekannten 1.1/1.2-Standardwerte an.
+
+    Eigene abweichende Werte bleiben unangetastet. Neue Optionen werden ergänzt,
+    damit bestehende Installationen nach einem Update die robustere Rotation und
+    das 300-DPI-Qualitätsprofil tatsächlich verwenden.
+    """
+    store = get_config()
+    pdf = store.get("pdf", default={}) or {}
+    changed = False
+
+    replacements = {
+        "text_dominance": (0.65, 0.60),
+        "osd_min_confidence": (3.0, 1.0),
+        "max_osd_pages": (12, 100),
+        "deskew_scans": (False, True),
+        "improve_contrast": (False, True),
+    }
+    for key, (old, new) in replacements.items():
+        if pdf.get(key) == old:
+            store.set("pdf", key, new)
+            changed = True
+
+    additions = {
+        "use_ocr_vote": True,
+        "sharpen_scans": True,
+        "scan_dpi": 300,
+    }
+    for key, value in additions.items():
+        if key not in pdf:
+            store.set("pdf", key, value)
+            changed = True
+
+    if changed:
+        store.save()
+    return changed

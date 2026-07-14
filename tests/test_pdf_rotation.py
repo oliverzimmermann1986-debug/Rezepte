@@ -107,3 +107,53 @@ def test_path_and_tree_rotation_are_atomic(tmp_path: Path):
     assert result["scanned"] == 1
     assert result["changed"] == 0
     assert result["unchanged"] == 1
+
+
+def test_tesseract_ocr_vote_parser_scores_real_words():
+    from app.core.pdf_rotation import _parse_tesseract_tsv
+    tsv = (
+        "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+        "5\t1\t1\t1\t1\t1\t0\t0\t100\t20\t91.0\tKartoffeln\n"
+        "5\t1\t1\t1\t1\t2\t0\t0\t100\t20\t88.0\tButter\n"
+    )
+    score, chars, words = _parse_tesseract_tsv(tsv)
+    assert score > 0
+    assert chars == len("KartoffelnButter")
+    assert words == 2
+
+
+def test_ocr_vote_fallback_rotates_scan_when_osd_is_uncertain(monkeypatch):
+    import io
+    import shutil
+    import pytest
+    from PIL import Image, ImageDraw, ImageFont
+    import app.core.pdf_rotation as rotation
+
+    if not shutil.which("tesseract"):
+        pytest.skip("tesseract nicht installiert")
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    if not Path(font_path).exists():
+        pytest.skip("Testfont fehlt")
+
+    image = Image.new("RGB", (900, 1300), "white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.truetype(font_path, 36)
+    for idx in range(10):
+        draw.text((70, 70 + idx * 90),
+                  "Rezept Kartoffeln Butter Sahne Salz Zubereitung",
+                  fill="black", font=font)
+    sideways = image.transpose(Image.Transpose.ROTATE_270)
+    buf = io.BytesIO(); sideways.save(buf, format="PNG")
+    doc = pymupdf.open(); page = doc.new_page(width=595, height=842)
+    page.insert_image(page.rect, stream=buf.getvalue())
+    source = doc.tobytes(); doc.close()
+
+    monkeypatch.setattr(rotation, "_osd_target_rotation", lambda *a, **k: None)
+    output, report = rotation.normalize_pdf_bytes(
+        source, use_tesseract_osd=True, use_ocr_vote=True,
+        ocr_language="deu+eng", ocr_vote_dpi=160, ocr_vote_min_chars=10,
+    )
+    assert report.changed is True
+    assert report.decisions[0].method == "tesseract-ocr-vote"
+    assert report.decisions[0].new_rotation == 270
+    assert _page_rotation(output) == 270
