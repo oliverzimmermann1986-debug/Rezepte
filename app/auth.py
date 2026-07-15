@@ -83,8 +83,10 @@ def check_credentials(username: str, password: str) -> bool:
 
 
 def migrate_users_to_db() -> None:
-    """Übernimmt den config-web-User als initialer admin in die users-Tabelle.
-    Idempotent: läuft nur wenn die users-Tabelle leer ist."""
+    """Übernimmt den config-web-User als initialen Benutzer in die users-Tabelle.
+    Idempotent: läuft nur wenn die users-Tabelle leer ist. Rollen werden nur
+    noch aus Gründen der Datenbank-Kompatibilität gespeichert und nicht für
+    Berechtigungen ausgewertet."""
     from .db import get_db
     db = get_db()
     with db.conn() as c:
@@ -101,8 +103,9 @@ def migrate_users_to_db() -> None:
             "Anlegen funktionieren."
         )
         return
-    db.user_create(username, pw_hash, role="admin")
-    logger.info(f"Initialer admin '{username}' aus Config in users-DB migriert.")
+    db.user_create(username, pw_hash, role="user")
+    logger.info(f"Initialer Benutzer '{username}' aus Config in users-DB migriert.")
+
 
 
 # -------------------- Startup-Migration --------------------
@@ -206,10 +209,15 @@ async def require_auth(request: Request) -> None:
 
 
 async def require_admin(request: Request) -> dict:
-    """FastAPI-Dependency für admin-only Endpoints (z.B. /api/users).
-    Returnt das User-Dict (für Logging) oder raised 401/403."""
+    """Kompatibilitäts-Dependency für frühere Admin-Endpunkte.
+
+    Seit v1.2.2 gibt es keine Admin-Rollen mehr: Jeder aktive, angemeldete
+    Benutzer hat vollständigen Zugriff. Der Funktionsname bleibt nur erhalten,
+    damit bestehende Router und Erweiterungen kompatibel bleiben.
+    """
     if auth_disabled():
-        return {"username": "local", "role": "admin", "disabled": False}
+        return {"username": "local", "disabled": False, "full_access": True}
+
     token = request.cookies.get(SESSION_COOKIE, "")
     username = session_user(token)
     if not username:
@@ -217,17 +225,17 @@ async def require_admin(request: Request) -> dict:
 
     from .db import get_db
     user = get_db().user_get_by_name(username)
-    if user and not user.get("disabled") and user.get("role") == "admin":
-        return user
+    if user:
+        if user.get("disabled"):
+            raise HTTPException(403, "Benutzerkonto ist deaktiviert")
+        return {**user, "full_access": True}
 
-    # Legacy-Compat: wenn der eingeloggte User dem config-web-user entspricht
-    # UND die DB noch keinen User hat (= migrate_users_to_db lief nicht oder
-    # config-User wurde gelöscht), behandeln wir ihn als admin damit die
-    # Settings-Seite nicht aussperrt.
-    if not user:
-        cfg = get_config()
-        config_user = str(cfg.get("web", "username", default="admin"))
-        if username == config_user:
-            return {"username": username, "role": "admin", "legacy_config_user": True}
+    # Legacy-Fallback für Installationen, die noch ausschließlich den
+    # config.web-Benutzer verwenden.
+    cfg = get_config()
+    config_user = str(cfg.get("web", "username", default="admin"))
+    if username == config_user:
+        return {"username": username, "disabled": False,
+                "legacy_config_user": True, "full_access": True}
 
-    raise HTTPException(403, "Admin-Rolle benötigt")
+    raise HTTPException(401, "Authentication required")

@@ -119,3 +119,28 @@ def test_admin_center_has_direct_mobile_entry_and_pdf_quality_controls():
     assert 'x-model.number="admin.pdf.scan_dpi"' in html
     assert "scan_dpi: 300" in js
     assert "limit: 500" in js
+
+
+def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
+    main_py = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    sw = (STATIC / "sw.js").read_text(encoding="utf-8")
+    assert '@app.get("/admin", response_class=HTMLResponse)' in main_py
+    assert 'initial_page="admin"' in main_py
+    assert 'initial_admin_tab="pdf"' in main_py
+    assert "document.body?.dataset?.initialPage" in js
+    assert "window.location.pathname.startsWith('/admin')" in js
+    assert "rezeptliebe-v1.2.2" in sw
+    assert "fetch(event.request, { cache: 'no-store' })" in sw
+
+
+def test_admin_is_visible_for_every_authenticated_user():
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    users_api = (ROOT / "app" / "routes" / "api_users.py").read_text(encoding="utf-8")
+    assert 'x-show="session.is_admin"' not in html
+    assert "Admin-Rechte erforderlich" not in js
+    assert "setUserRole" not in js
+    assert "<th>Rolle</th>" not in html
+    assert "role: Optional[str]" not in users_api
+    assert "Alle angemeldeten Benutzer haben Vollzugriff" in html

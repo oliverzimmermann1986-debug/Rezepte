@@ -323,28 +323,9 @@ def _cmd_user_list(args: list) -> int:
         return 0
     for user in users:
         state = "deaktiviert" if user.get("disabled") else "aktiv"
-        print(f"{user.get('id'):>3}  {user.get('username'):<32}  {user.get('role'):<5}  {state}")
+        print(f"{user.get('id'):>3}  {user.get('username'):<32}  {state}")
     return 0
 
-
-def _cmd_user_role(args: list) -> int:
-    if len(args) != 2 or args[1] not in ("admin", "user"):
-        print("Usage: python -m app.cli user-role <USERNAME> <admin|user>", file=sys.stderr)
-        return 2
-    username, role = args
-    db = get_db()
-    user = db.user_get_by_name(username)
-    if not user:
-        print(f"Benutzer nicht gefunden: {username}", file=sys.stderr)
-        return 1
-    db.user_set_role(int(user["id"]), role)
-    if user.get("disabled"):
-        db.user_set_disabled(int(user["id"]), False)
-        print(f"✓ Benutzer '{username}' aktiviert und Rolle auf '{role}' gesetzt.")
-    else:
-        print(f"✓ Rolle von '{username}' auf '{role}' gesetzt.")
-    print("  Danach abmelden und erneut anmelden, damit die Oberfläche die Rolle neu lädt.")
-    return 0
 
 
 def _cmd_pdf_optimize(args: list) -> int:
@@ -409,8 +390,7 @@ def main() -> int:
             "  python -m app.cli log-cleanup [DAYS]  # Default aus config (30)\n"
             "  python -m app.cli pdf-auto-rotate [ROOT] # nur vorhandene PDFs drehen\n"
             "  python -m app.cli pdf-optimize [ROOT]    # drehen + Qualität + OCR\n"
-            "  python -m app.cli user-list\n"
-            "  python -m app.cli user-role USER admin  # Admin Center freischalten",
+            "  python -m app.cli user-list",
             file=sys.stderr,
         )
         return 1
@@ -435,8 +415,6 @@ def main() -> int:
         return _cmd_pdf_optimize(args[1:])
     if cmd == "user-list":
         return _cmd_user_list(args[1:])
-    if cmd == "user-role":
-        return _cmd_user_role(args[1:])
     print(f"Unbekanntes Kommando: {cmd}", file=sys.stderr)
     return 1
 

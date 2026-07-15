@@ -1,11 +1,11 @@
 // Service Worker für die Rezeptliebe-PWA
 // Strategy:
-// - cache-first für /static/* (CSS, JS, Alpine)
+// - network-first für /static/* (CSS, JS, Alpine), damit Updates sofort sichtbar sind
 // - cache-first stale-while-revalidate für /api/recipes/{id}/thumb
 //   (Bilder ändern sich selten — Liste lädt instant aus dem Cache)
 // - network-first für alles andere
 // - Offline: Fallback auf cached '/'
-const CACHE_NAME = 'rezeptliebe-v1.1';
+const CACHE_NAME = 'rezeptliebe-v1.2.2-open-admin';
 const THUMB_CACHE = 'rezeptliebe-thumbs-v1';
 const DETAIL_CACHE = 'rezeptliebe-detail-v1';   // /api/recipes/{id} responses
 const VIDEO_CACHE = 'rezeptliebe-videos-v1';    // /api/recipes/{id}/video
@@ -124,25 +124,25 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.startsWith('/api/') || url.pathname === '/login' || url.pathname === '/logout') {
     return; // default browser handling
   }
-  // Static: cache-first
+  // App-Shell-Dateien: network-first. Ein altes cache-first app.js konnte
+  // neue Navigation (insbesondere /admin) dauerhaft unsichtbar machen.
   if (url.pathname.startsWith('/static/')) {
-    event.respondWith(
-      caches.match(event.request).then((cached) =>
-        cached || fetch(event.request).then((resp) => {
-          if (resp.ok) {
-            const clone = resp.clone();
-            caches.open(CACHE_NAME).then(c => c.put(event.request, clone));
-          }
-          return resp;
-        })
-      )
-    );
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE_NAME);
+      try {
+        const resp = await fetch(event.request, { cache: 'no-store' });
+        if (resp.ok) await cache.put(event.request, resp.clone());
+        return resp;
+      } catch (_) {
+        return (await cache.match(event.request)) || new Response('', {status: 503});
+      }
+    })());
     return;
   }
   // Navigation: network-first
   if (event.request.mode === 'navigate') {
     event.respondWith(
-      fetch(event.request).catch(() => caches.match('/'))
+      fetch(event.request, { cache: 'no-store' }).catch(async () => (await caches.match(event.request)) || caches.match('/'))
     );
   }
 });

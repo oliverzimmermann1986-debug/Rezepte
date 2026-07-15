@@ -313,3 +313,52 @@ def test_admin_pdf_dry_run_detects_rotation_without_writing(client, test_db: Dat
         assert pdf_path.read_bytes() == original
     finally:
         app.dependency_overrides.pop(require_admin, None)
+
+
+def test_every_active_user_has_admin_compat_access(test_db: Database, monkeypatch):
+    import app.auth as auth
+
+    test_db.user_create("mitglied", "not-used", role="user")
+    monkeypatch.setattr(auth, "session_user", lambda token: "mitglied")
+
+    class Request:
+        cookies = {auth.SESSION_COOKIE: "valid"}
+
+    import asyncio
+    result = asyncio.run(auth.require_admin(Request()))
+    assert result["username"] == "mitglied"
+    assert result["full_access"] is True
+
+
+def test_direct_admin_routes_render_requested_start_page(client, monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(main, "auth_disabled", lambda: True)
+    admin = client.get("/admin")
+    assert admin.status_code == 200
+    assert 'data-initial-page="admin"' in admin.text
+    assert 'data-initial-admin-tab="import"' in admin.text
+    assert admin.headers.get("cache-control") == "no-store"
+
+    pdf = client.get("/admin/pdf")
+    assert pdf.status_code == 200
+    assert 'data-initial-page="admin"' in pdf.text
+    assert 'data-initial-admin-tab="pdf"' in pdf.text
+
+
+def test_user_list_hides_legacy_role_and_self_disable_is_blocked(client, test_db: Database):
+    from app.main import app
+
+    user_id = test_db.user_create("mitglied", "not-used", role="admin")
+    app.dependency_overrides[require_admin] = lambda: {"username": "mitglied", "full_access": True}
+    try:
+        listed = client.get("/api/users")
+        assert listed.status_code == 200
+        item = next(item for item in listed.json()["users"] if item["id"] == user_id)
+        assert "role" not in item
+
+        disabled = client.patch(f"/api/users/{user_id}", json={"disabled": True})
+        assert disabled.status_code == 400
+        assert "eigenes Konto" in disabled.json()["detail"]
+    finally:
+        app.dependency_overrides.pop(require_admin, None)

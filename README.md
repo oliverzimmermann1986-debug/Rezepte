@@ -89,7 +89,7 @@ Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Butto
 
 ## Admin-Zentrale
 
-Der Reiter **Admin** ist nur für Administratoren sichtbar. Er bündelt bewusst alle technischen und qualitätssichernden Funktionen, damit die normale Rezeptansicht übersichtlich bleibt.
+Der Reiter **Admin** ist für alle angemeldeten Benutzer sichtbar. Er bündelt bewusst alle technischen und qualitätssichernden Funktionen, damit die normale Rezeptansicht übersichtlich bleibt.
 
 - **Importzentrale:** offene Prüfungen, fehlgeschlagene Downloads, laufende Jobs und letzte Importe
 - **Qualität:** bestehende KI-Prüfungen, Duplikate und Qualitätsfunde
@@ -454,13 +454,11 @@ Bei Fragen / Issues / PRs → GitHub.
 
 ## Admin Center
 
-Direktaufruf: `/admin`, PDF-Werkzeuge: `/admin/pdf`. Der Menüpunkt wird nur für Benutzer mit Rolle `admin` angezeigt.
+Direktaufruf: `/admin`, PDF-Werkzeuge: `/admin/pdf`. Der Menüpunkt ist für jeden aktiven, angemeldeten Benutzer sichtbar. Es gibt keine Admin-Rollen mehr; alle Konten haben denselben Vollzugriff.
 
 ```bash
-# Rollen anzeigen
+# Benutzer und Aktivstatus anzeigen
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli user-list
-# Benutzer zum Admin machen
-sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli user-role BENUTZERNAME admin
 ```
 
 ## PDF-Bestand optimieren

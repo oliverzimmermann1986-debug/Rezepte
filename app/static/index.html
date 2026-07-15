@@ -19,8 +19,8 @@
     // Service Worker registrieren — non-blocking
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js', { scope: '/' })
-          .then(reg => console.log('SW registered:', reg.scope))
+        navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' })
+          .then(reg => { reg.update(); console.log('SW registered:', reg.scope); })
           .catch(err => console.warn('SW failed:', err));
       });
     }
@@ -48,7 +48,7 @@
       <span class="mobile-page-title" x-text="pageLabel()"></span>
     </div>
     <div class="mobile-appbar-actions">
-      <button type="button" class="mobile-admin-button" x-show="session.is_admin"
+      <button type="button" class="mobile-admin-button"
               @click="navTo('admin')" :class="page==='admin' && 'active'"
               aria-label="Admin Center öffnen" title="Admin Center">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/><circle cx="18" cy="17" r="3"/></svg>
@@ -80,7 +80,7 @@
       <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h2l2.4 11.2a2 2 0 0 0 2 1.6h7.8a2 2 0 0 0 2-1.6L21 7H6"/><circle cx="10" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg></span><span class="nav-label">Einkaufsliste</span>
       <span class="badge" x-show="cart.items.length > 0" x-text="cart.items.length"></span>
     </button>
-    <button type="button" class="nav-item nav-primary" x-show="session.is_admin"
+    <button type="button" class="nav-item nav-primary"
             :class="page==='admin' && 'active'" @click="navTo('admin')" title="Administration">
       <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/><circle cx="18" cy="17" r="3"/></svg></span>
       <span class="nav-label">Admin</span>
@@ -90,7 +90,7 @@
     <div class="foot">
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
-      <div class="sidebar-meta"><span>v1.2.1</span><a href="/logout">Abmelden</a></div>
+      <div class="sidebar-meta"><span>v1.2.2</span><a href="/logout">Abmelden</a></div>
     </div>
   </aside>
 
@@ -108,7 +108,7 @@
 
       <div class="admin-access-note">
         <strong>Angemeldet als <span x-text="session.username || 'unbekannt'"></span></strong>
-        <span>Rolle: <b x-text="session.role || 'user'"></b> · Direktaufruf: <code>/admin</code></span>
+        <span>Alle angemeldeten Benutzer haben Vollzugriff · Direktaufruf: <code>/admin</code></span>
       </div>
 
       <div class="admin-overview-grid" x-show="admin.overview">
@@ -435,26 +435,19 @@
             </div>
             <div class="body">
               <div class="muted" style="margin-bottom: 12px; font-size: 13px;">
-                Multi-User-Login. Mindestens 1 aktiver Admin muss bleiben (Lockout-Schutz).
-                Selbst-Löschen blockiert.
+                Multi-User-Login mit identischen Rechten für alle aktiven Konten.
+                Benutzerkonten steuern nur Anmeldung, Passwort und Aktivstatus. Selbst-Löschen bleibt blockiert.
               </div>
 
               <table class="master-table" x-show="users.list.length > 0">
                 <thead>
-                  <tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>Letzter Login</th><th></th></tr>
+                  <tr><th>Benutzer</th><th>Status</th><th>Letzter Login</th><th></th></tr>
                 </thead>
                 <tbody>
                   <template x-for="u in users.list" :key="u.id">
                     <tr :class="u.disabled && 'unused'">
                       <td>
                         <strong x-text="u.username"></strong>
-                      </td>
-                      <td>
-                        <select :value="u.role" @change="setUserRole(u, $event.target.value)"
-                                class="master-search" style="width: auto; padding: 4px 8px;">
-                          <option value="user">User</option>
-                          <option value="admin">Admin</option>
-                        </select>
                       </td>
                       <td>
                         <label style="font-size:12px;">
@@ -489,13 +482,6 @@
                   <div class="field">
                     <label>Passwort</label>
                     <input type="password" x-model="users.addForm.password" placeholder="≥ 8 Zeichen">
-                  </div>
-                  <div class="field" style="max-width: 140px;">
-                    <label>Rolle</label>
-                    <select x-model="users.addForm.role">
-                      <option value="user">User</option>
-                      <option value="admin">Admin</option>
-                    </select>
                   </div>
                 </div>
                 <div style="display:flex; gap:8px; margin-top: 10px; justify-content: flex-end;">
@@ -2654,7 +2640,7 @@
                  style="display:inline-flex; align-items:center; gap:6px; min-height:38px; margin-bottom:8px;">
                 📄 PDF öffnen
               </a>
-              <button x-show="session.is_admin" type="button" class="btn btn-secondary btn-sm"
+              <button type="button" class="btn btn-secondary btn-sm"
                       @click="openRecipeVersions()"
                       style="display:inline-flex; align-items:center; gap:6px; min-height:38px; margin:0 0 8px 6px;">
                 ↶ Versionen

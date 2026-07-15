@@ -144,14 +144,15 @@ CREATE TABLE IF NOT EXISTS shopping_cart (
 CREATE INDEX IF NOT EXISTS idx_cart_canonical ON shopping_cart(canonical_name, unit);
 CREATE INDEX IF NOT EXISTS idx_cart_added     ON shopping_cart(added_at DESC);
 
--- users: Multi-User-Auth. Bcrypt-Hashes in password_hash, role steuert
--- Zugriff auf /api/users (nur admin). disabled=1 → kein Login mehr,
+-- users: Multi-User-Auth. Bcrypt-Hashes in password_hash. Die role-Spalte
+-- bleibt nur für Abwärtskompatibilität; Berechtigungen werden nicht danach
+-- unterschieden. disabled=1 → kein Login mehr,
 -- Datensatz bleibt für Audit-Trail.
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'user',           -- 'admin' | 'user'
+  role TEXT NOT NULL DEFAULT 'user',           -- Legacy, nicht mehr ausgewertet
   disabled INTEGER NOT NULL DEFAULT 0,
   created_at REAL NOT NULL,
   last_login_at REAL                           -- NULL bis 1. Login
@@ -1605,7 +1606,7 @@ class Database:
         """Liste aller User für die Settings-UI. OHNE password_hash."""
         with self.conn() as c:
             rows = c.execute(
-                "SELECT id, username, role, disabled, created_at, last_login_at "
+                "SELECT id, username, disabled, created_at, last_login_at "
                 "FROM users ORDER BY username"
             ).fetchall()
             return [dict(r) for r in rows]
@@ -1628,6 +1629,7 @@ class Database:
             )
 
     def user_set_role(self, user_id: int, role: str) -> None:
+        """Legacy-Kompatibilität; Rollen werden nicht mehr ausgewertet."""
         with self.conn() as c:
             c.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
 

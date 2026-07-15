@@ -29,14 +29,17 @@ def _username(request: Request) -> str:
 
 @session_router.get("")
 def current_session(request: Request) -> Dict[str, Any]:
+    """Sitzungsdaten für die Oberfläche.
+
+    Alle aktiven, angemeldeten Benutzer besitzen denselben Vollzugriff.
+    ``is_admin`` bleibt als Frontend-Kompatibilitätsfeld immer ``True``.
+    """
     username = _username(request)
-    if auth_disabled():
-        return {"username": username, "role": "admin", "is_admin": True}
-    user = get_db().user_get_by_name(username) or {"username": username, "role": "user"}
+    user = None if auth_disabled() else get_db().user_get_by_name(username)
     return {
-        "username": user.get("username") or username,
-        "role": user.get("role") or "user",
-        "is_admin": user.get("role") == "admin" and not bool(user.get("disabled")),
+        "username": (user or {}).get("username") or username,
+        "is_admin": True,
+        "full_access": True,
     }
 
 

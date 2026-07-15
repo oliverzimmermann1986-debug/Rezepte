@@ -2,7 +2,7 @@
 function scrapperApp() {
   return {
     page: 'recipes',
-    session: { username: '', role: 'user', is_admin: false, loaded: false },
+    session: { username: '', is_admin: true, full_access: true, loaded: false },
     admin: {
       tab: 'import',
       overview: null,
@@ -24,6 +24,7 @@ function scrapperApp() {
       maintenanceRuns: [],
       maintenanceBusy: '',
       maintenanceResult: null,
+      accessDenied: false,
     },
 
     // Zentrale Navigations-Helper — page-switch plus die zugehörigen
@@ -50,9 +51,10 @@ function scrapperApp() {
       }
 
       if (updateUrl && window.history?.replaceState) {
-        const url = new URL(window.location.href);
-        url.searchParams.set('tab', targetPage);
-        window.history.replaceState({}, '', url);
+        const target = targetPage === 'admin'
+          ? `/admin${this.admin.tab === 'pdf' ? '/pdf' : ''}`
+          : `/?tab=${encodeURIComponent(targetPage)}`;
+        window.history.replaceState({}, '', target);
       }
     },
     pageLabel() {
@@ -170,7 +172,7 @@ function scrapperApp() {
       loading: false,
       showAdd: false,
       creating: false,
-      addForm: { username: '', password: '', role: 'user' },
+      addForm: { username: '', password: '' },
     },
     knownIngredients: [],   // distinct Zutaten-Namen für Edit-Autocomplete
     recipeDetail: {
@@ -195,11 +197,16 @@ function scrapperApp() {
     timers: {},
     _audioCtx: null,
     init() {
-      const tab = new URLSearchParams(window.location.search).get('tab');
-      const validTab = ['recipes','favorites','cart','admin'].includes(tab) ? tab : 'recipes';
+      const params = new URLSearchParams(window.location.search);
+      const routePage = document.body?.dataset?.initialPage ||
+        (window.location.pathname.startsWith('/admin') ? 'admin' : '');
+      const requestedPage = routePage || params.get('tab');
+      const validTab = ['recipes','favorites','cart','admin'].includes(requestedPage) ? requestedPage : 'recipes';
       this.page = validTab;
       if (validTab === 'admin') {
-        const requestedAdmin = new URLSearchParams(window.location.search).get('admin');
+        const routeAdminTab = document.body?.dataset?.initialAdminTab ||
+          (window.location.pathname === '/admin/pdf' ? 'pdf' : '');
+        const requestedAdmin = routeAdminTab || params.get('admin');
         if (requestedAdmin) this.admin.tab = requestedAdmin;
       }
 
@@ -217,7 +224,13 @@ function scrapperApp() {
         else this._resumeBackgroundWork();
       });
       window.addEventListener('popstate', () => {
-        const next = new URLSearchParams(window.location.search).get('tab') || 'recipes';
+        const params = new URLSearchParams(window.location.search);
+        const next = window.location.pathname.startsWith('/admin')
+          ? 'admin' : (params.get('tab') || 'recipes');
+        if (next === 'admin') {
+          const section = window.location.pathname === '/admin/pdf' ? 'pdf' : params.get('section');
+          if (section) this.admin.tab = section;
+        }
         this.navTo(next, { updateUrl: false });
       });
       this.$nextTick(() => this.initPullToRefresh());
@@ -226,34 +239,21 @@ function scrapperApp() {
     async loadSession() {
       try {
         const r = await this.api('GET', '/api/session');
-        this.session = { ...this.session, ...(r || {}), loaded: true };
-        if (this.page === 'admin' && !this.session.is_admin) {
-          this.showToast('Admin Center: Dein Konto hat nur die Rolle '+(this.session.role || 'user'), 'err');
-          this.navTo('recipes');
-        }
+        this.session = { ...this.session, ...(r || {}), is_admin: true, full_access: true, loaded: true };
+        this.admin.accessDenied = false;
       } catch (_) {
-        this.session.loaded = true;
-        this.session.is_admin = false;
-        if (this.page === 'admin') {
-          this.showToast('Admin Center konnte nicht freigegeben werden', 'err');
-          this.navTo('recipes');
-        }
+        this.session = { ...this.session, is_admin: true, full_access: true, loaded: true };
+        if (this.page === 'admin') this.showToast('Sitzung konnte nicht geladen werden', 'err');
       }
     },
 
     async selectAdminTab(tab, { updateUrl = true } = {}) {
-      if (!this.session.is_admin && this.session.loaded) {
-        this.showToast('Admin-Rechte erforderlich', 'err');
-        return;
-      }
       const allowed = new Set(['import','quality','versions','pdf','search','maintenance','master','settings','trash']);
       this.admin.tab = allowed.has(tab) ? tab : 'import';
       this.page = 'admin';
       if (updateUrl && window.history?.replaceState) {
-        const url = new URL(window.location.href);
-        url.searchParams.set('tab', 'admin');
-        url.searchParams.set('admin', this.admin.tab);
-        window.history.replaceState({}, '', url);
+        const target = this.admin.tab === 'pdf' ? '/admin/pdf' : `/admin?section=${encodeURIComponent(this.admin.tab)}`;
+        window.history.replaceState({}, '', target);
       }
       this.loadAdminOverview();
       switch (this.admin.tab) {
@@ -271,7 +271,6 @@ function scrapperApp() {
     },
 
     async loadAdminOverview() {
-      if (!this.session.is_admin && this.session.loaded) return;
       try { this.admin.overview = await this.api('GET', '/api/admin/overview'); }
       catch (_) { /* nav remains usable */ }
     },
@@ -1234,7 +1233,7 @@ function scrapperApp() {
 
     // ------------- Config -------------
     // ════════════════════════════════════════════════════════════════════
-    // Benutzer-Verwaltung (Multi-User-Auth, admin-only)
+    // Benutzer-Verwaltung (alle aktiven Konten mit Vollzugriff)
     // ════════════════════════════════════════════════════════════════════
     async loadUsers() {
       this.users.loading = true;
@@ -1257,12 +1256,11 @@ function scrapperApp() {
         const r = await this.api('POST', '/api/users', {
           username: f.username.trim(),
           password: f.password,
-          role: f.role,
         });
         if (r && r.ok) {
           this.showToast(`✓ Benutzer '${r.username}' angelegt`);
           this.users.showAdd = false;
-          this.users.addForm = { username: '', password: '', role: 'user' };
+          this.users.addForm = { username: '', password: '' };
           await this.loadUsers();
         }
       } finally {
@@ -1278,18 +1276,6 @@ function scrapperApp() {
       if (r && r.ok) this.showToast('✓ Passwort geändert');
     },
 
-    async setUserRole(u, newRole) {
-      if (u.role === newRole) return;
-      const r = await this.api('PATCH', `/api/users/${u.id}`, { role: newRole });
-      if (r && r.ok) {
-        this.showToast(`✓ Rolle: ${newRole}`);
-        await this.loadUsers();
-      } else {
-        // Bei Fehler (z.B. letzter Admin) Liste neu laden — Select wieder
-        // auf alten Wert zurück
-        await this.loadUsers();
-      }
-    },
 
     async setUserDisabled(u, disabled) {
       const r = await this.api('PATCH', `/api/users/${u.id}`, { disabled });

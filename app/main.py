@@ -83,7 +83,7 @@ _stale = _db.reset_stale_running()
 if _stale:
     logger.warning(f"{_stale} Job(s) waren als 'running' markiert - auf 'error' gesetzt (Crash/Restart-Recovery)")
 
-# User-Migration: config.web.{username, password} → users-Tabelle (initialer admin).
+# User-Migration: config.web.{username, password} → users-Tabelle (initialer Benutzer).
 # Idempotent — läuft nur wenn users-Tabelle leer ist.
 migrate_users_to_db()
 
@@ -211,7 +211,7 @@ async def _lifespan(app):
 _enable_docs = os.getenv("SCRAPPER_ENABLE_DOCS", "0") == "1"
 app = FastAPI(
     title="Rezeptliebe",
-    version="1.2.1",
+    version="1.2.2",
     docs_url="/api/docs" if _enable_docs else None,
     redoc_url=None,
     openapi_url="/api/openapi.json" if _enable_docs else None,
@@ -400,32 +400,40 @@ def _static_version() -> str:
         return "0"
 
 
-@app.get("/admin")
+def _render_spa(request: Request, *, initial_page: str = "recipes",
+                initial_admin_tab: str = "import"):
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if not auth_disabled() and (not token or not verify_session(token)):
+        next_path = request.url.path or "/"
+        return RedirectResponse(url=f"/login?next={next_path}", status_code=303)
+
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace("{VERSION}", _static_version())
+    # Kein Inline-Bootstrap und keine Query-Abhängigkeit: die echte Route setzt
+    # den Startzustand über data-Attribute. Das funktioniert auch bei PWA-Start,
+    # Browser-Reload und direktem Aufruf vom Handy.
+    body_attrs = (
+        f'<body data-initial-page="{initial_page}" '
+        f'data-initial-admin-tab="{initial_admin_tab}">'
+    )
+    html = html.replace("<body>", body_attrs, 1)
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/admin", response_class=HTMLResponse)
 def admin_shortcut(request: Request):
-    """Merkbarer Einstieg in das SPA-Admin-Center."""
-    token = request.cookies.get(SESSION_COOKIE, "")
-    if not auth_disabled() and (not token or not verify_session(token)):
-        return RedirectResponse(url="/login?next=/admin", status_code=303)
-    return RedirectResponse(url="/?tab=admin", status_code=303)
+    """Echte Admin-Einstiegsseite; kein Redirect und keine Query-Navigation."""
+    return _render_spa(request, initial_page="admin", initial_admin_tab="import")
 
 
-@app.get("/admin/pdf")
+@app.get("/admin/pdf", response_class=HTMLResponse)
 def admin_pdf_shortcut(request: Request):
-    token = request.cookies.get(SESSION_COOKIE, "")
-    if not auth_disabled() and (not token or not verify_session(token)):
-        return RedirectResponse(url="/login?next=/admin/pdf", status_code=303)
-    return RedirectResponse(url="/?tab=admin&admin=pdf", status_code=303)
+    return _render_spa(request, initial_page="admin", initial_admin_tab="pdf")
 
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
-    token = request.cookies.get(SESSION_COOKIE, "")
-    if not auth_disabled() and (not token or not verify_session(token)):
-        return RedirectResponse(url="/login", status_code=303)
-    # index.html mit {VERSION}-Token rendern — kein Jinja, simple String-replace
-    # reicht für genau einen Platzhalter.
-    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    return HTMLResponse(html.replace("{VERSION}", _static_version()))
+    return _render_spa(request)
 
 
 # -------- Exception-Handler --------
