@@ -5,7 +5,7 @@
 //   (Bilder ändern sich selten — Liste lädt instant aus dem Cache)
 // - network-first für alles andere
 // - Offline: Fallback auf cached '/'
-const CACHE_NAME = 'rezeptliebe-v1.2.3-pdf-job-fix';
+const CACHE_NAME = 'rezeptliebe-v1.2.4-pdf-route-fix';
 const THUMB_CACHE = 'rezeptliebe-thumbs-v1';
 const DETAIL_CACHE = 'rezeptliebe-detail-v1';   // /api/recipes/{id} responses
 const VIDEO_CACHE = 'rezeptliebe-videos-v1';    // /api/recipes/{id}/video

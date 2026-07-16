@@ -207,11 +207,14 @@ async def _lifespan(app):
 
 
 # -------- FastAPI --------
+APP_VERSION = "1.2.4"
+APP_CAPABILITIES = ["admin-center", "pdf-processing", "pdf-background-jobs", "pdf-preflight"]
+
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).
 _enable_docs = os.getenv("SCRAPPER_ENABLE_DOCS", "0") == "1"
 app = FastAPI(
     title="Rezeptliebe",
-    version="1.2.3",
+    version=APP_VERSION,
     docs_url="/api/docs" if _enable_docs else None,
     redoc_url=None,
     openapi_url="/api/openapi.json" if _enable_docs else None,
@@ -450,10 +453,17 @@ def healthz():
     try:
         with get_db().conn() as c:
             c.execute("SELECT 1").fetchone()
-        return {"ok": True}
+        return {"ok": True, "version": APP_VERSION, "capabilities": APP_CAPABILITIES}
     except Exception as e:
         logger.error(f"healthz failed: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+
+
+@app.get("/api/system/info")
+def system_info():
+    """Nicht-sensible Build-Information für Update- und UI-Kompatibilitätschecks."""
+    return {"name": "Rezeptliebe", "version": APP_VERSION,
+            "capabilities": APP_CAPABILITIES}
 
 
 @app.get("/healthz/deep")

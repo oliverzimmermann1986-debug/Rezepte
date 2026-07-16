@@ -476,3 +476,16 @@ sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-doctor
 ```
 
 PDF-Bestandsläufe aus dem Admin Center werden ab v1.2.3 im Hintergrund verarbeitet und zeigen ihren Fortschritt im Browser an.
+
+### Lokales ZIP-Update ohne Versionsmischung
+
+Ein entpacktes Release nicht über `proxmox/install.sh` aktualisieren, da dieses für
+eine Git-Installation gedacht ist. Für ZIP-Releases verwenden:
+
+```bash
+cd /pfad/zum/entpackten/Release
+sudo bash proxmox/update-local.sh
+```
+
+Das Skript überträgt Backend und Frontend gemeinsam, bewahrt alle Laufzeitdaten,
+startet `scrapper-web` neu und verifiziert anschließend Version und PDF-Routen.

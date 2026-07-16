@@ -130,7 +130,7 @@ def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
     assert 'initial_admin_tab="pdf"' in main_py
     assert "document.body?.dataset?.initialPage" in js
     assert "window.location.pathname.startsWith('/admin')" in js
-    assert "rezeptliebe-v1.2.3" in sw
+    assert "rezeptliebe-v1.2.4" in sw
     assert "fetch(event.request, { cache: 'no-store' })" in sw
 
 
@@ -154,7 +154,7 @@ def test_pdf_admin_uses_background_jobs_and_preflight():
 
     assert "/api/admin/pdf/preflight" in js
     assert "/api/admin/pdf/jobs/active" in js
-    assert "background: true" in js
+    assert "background: !this.admin.pdf.legacyMode" in js
     assert "PDF-Lauf gestartet" in js
     assert "pdf-progress-track" in html
     assert "Systemprüfung" in html

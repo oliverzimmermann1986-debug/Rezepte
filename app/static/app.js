@@ -3,6 +3,7 @@ function scrapperApp() {
   return {
     page: 'recipes',
     session: { username: '', is_admin: true, full_access: true, loaded: false },
+    systemInfo: { version: '', capabilities: [], loaded: false, backendOutdated: false },
     admin: {
       tab: 'import',
       overview: null,
@@ -15,7 +16,7 @@ function scrapperApp() {
       synonymForm: { term: '', synonymsText: '' },
       pdf: {
         running: false, result: null, recipe_id: '', process_all: true,
-        jobId: null, preflight: null, pollTimer: null,
+        jobId: null, preflight: null, pollTimer: null, legacyMode: false,
         auto_rotate: true, remove_blank_pages: true, auto_crop: true,
         deskew_scans: true, ocr_scans: true, improve_contrast: true,
         sharpen_scans: true, scan_dpi: 300,
@@ -211,6 +212,7 @@ function scrapperApp() {
         if (requestedAdmin) this.admin.tab = requestedAdmin;
       }
 
+      this.loadSystemInfo();
       this.loadSession();
       this.loadRecentJobs();
       this.loadStats();
@@ -235,6 +237,18 @@ function scrapperApp() {
         this.navTo(next, { updateUrl: false });
       });
       this.$nextTick(() => this.initPullToRefresh());
+    },
+
+    async loadSystemInfo() {
+      try {
+        const info = await this.api('GET', '/api/system/info', undefined, { silent: true });
+        this.systemInfo = { ...(info || {}), loaded: true, backendOutdated: false };
+      } catch (e) {
+        // Ein 404 bedeutet fast immer: neue statische Dateien, aber alter, noch
+        // nicht neu gestarteter Python-Prozess. Das wird im PDF-Reiter konkret
+        // behandelt und blockiert die normale Rezeptnutzung nicht.
+        this.systemInfo = { version: '', capabilities: [], loaded: true, backendOutdated: e?.status === 404 };
+      }
     },
 
     async loadSession() {
@@ -394,10 +408,11 @@ function scrapperApp() {
     },
 
     async loadPdfPreflight() {
+      this.admin.pdf.legacyMode = false;
       try {
-        this.admin.pdf.preflight = await this.api('GET', '/api/admin/pdf/preflight');
+        this.admin.pdf.preflight = await this.api('GET', '/api/admin/pdf/preflight', undefined, { silent: true });
         if (!this.admin.pdf.running) {
-          const active = await this.api('GET', '/api/admin/pdf/jobs/active');
+          const active = await this.api('GET', '/api/admin/pdf/jobs/active', undefined, { silent: true });
           if (active?.active && active?.job?.id) {
             this.admin.pdf.running = true;
             this.admin.pdf.jobId = Number(active.job.id);
@@ -406,6 +421,18 @@ function scrapperApp() {
           }
         }
       } catch (e) {
+        if (e?.status === 404) {
+          // Kompatibilität bei Mischständen: StaticFiles liest bereits das neue
+          // app.js von Disk, der laufende Uvicorn-Prozess hat aber noch die alten
+          // Router importiert. Der alte synchrone PDF-Endpunkt bleibt nutzbar.
+          this.admin.pdf.legacyMode = true;
+          this.systemInfo.backendOutdated = true;
+          this.admin.pdf.preflight = {
+            ok: true, legacy: true, issues: [],
+            warnings: [{ code: 'backend_restart_required', message: 'Backend ist noch nicht neu gestartet. PDF läuft vorübergehend im alten Synchronmodus; bitte scrapper-web neu starten.' }],
+          };
+          return;
+        }
         this.admin.pdf.preflight = { ok: false, issues: [{ message: e?.message || 'Systemprüfung nicht verfügbar' }], warnings: [] };
       }
     },
@@ -454,7 +481,7 @@ function scrapperApp() {
           recipe_id: p.recipe_id ? Number(p.recipe_id) : null,
           process_all: !p.recipe_id && p.process_all,
           dry_run: dryRun,
-          background: true,
+          background: !this.admin.pdf.legacyMode,
           limit: Number(p.limit || 50),
           auto_rotate: !!p.auto_rotate,
           remove_blank_pages: !!p.remove_blank_pages,
@@ -467,7 +494,15 @@ function scrapperApp() {
           ocr_language: p.ocr_language || 'deu+eng',
           keep_original: !!p.keep_original,
         };
-        const accepted = await this.api('POST', '/api/admin/pdf/process', payload);
+        let accepted;
+        try {
+          accepted = await this.api('POST', '/api/admin/pdf/process', payload, { silent: true });
+        } catch (e) {
+          if (e?.status === 404) {
+            throw new Error('PDF-Backend fehlt. Bitte den Dienst scrapper-web neu starten oder das lokale Update vollständig einspielen.');
+          }
+          throw e;
+        }
         if (accepted?.accepted && accepted?.run_id) {
           this.admin.pdf.jobId = Number(accepted.run_id);
           this.admin.pdf.result = { ...(accepted.result || {}), run_id: accepted.run_id };
@@ -563,7 +598,7 @@ function scrapperApp() {
     },
 
     // ------------- Helpers -------------
-    async api(method, url, body) {
+    async api(method, url, body, options = {}) {
       const opts = { method, headers: {'Content-Type': 'application/json'} };
       if (body !== undefined) opts.body = JSON.stringify(body);
       const r = await fetch(url, opts);
@@ -571,8 +606,12 @@ function scrapperApp() {
       if (!r.ok) {
         let detail = `${r.status}`;
         try { const j = await r.json(); detail = j.detail || detail; } catch(e){}
-        this.showToast(`Fehler: ${detail}`, 'error');
-        throw new Error(detail);
+        if (!options.silent) this.showToast(`Fehler: ${detail}`, 'error');
+        const error = new Error(detail);
+        error.status = r.status;
+        error.detail = detail;
+        error.url = url;
+        throw error;
       }
       return r.status === 204 ? null : await r.json();
     },

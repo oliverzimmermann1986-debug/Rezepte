@@ -42,3 +42,25 @@ systemctl restart scrapper-web
 ```
 
 Danach die installierte PWA einmal vollständig schließen und neu öffnen.
+
+## `Not Found` im PDF-Reiter (v1.2.4)
+
+Ein 404 bei `/api/admin/pdf/preflight` bedeutet, dass die neuen statischen Dateien
+bereits auf Disk liegen, der laufende Uvicorn-Prozess aber noch die alten Router im
+Speicher hat. Ein einfacher Neustart behebt den Zustand meist sofort:
+
+```bash
+systemctl restart scrapper-web
+```
+
+Für lokal entpackte ZIP-Releases sollte das Update künftig ausschließlich mit dem
+mitgelieferten Updater erfolgen:
+
+```bash
+cd /pfad/zum/entpackten/Release
+sudo bash proxmox/update-local.sh
+```
+
+Der Updater führt bewusst kein `git pull` aus, bewahrt `data/`, `files/`, `logs/`,
+`temp/` und `venv/` und prüft nach dem Neustart sowohl die gemeldete Version als auch
+die PDF-API.
