@@ -130,7 +130,7 @@ def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
     assert 'initial_admin_tab="pdf"' in main_py
     assert "document.body?.dataset?.initialPage" in js
     assert "window.location.pathname.startsWith('/admin')" in js
-    assert "rezeptliebe-v1.2.2" in sw
+    assert "rezeptliebe-v1.2.3" in sw
     assert "fetch(event.request, { cache: 'no-store' })" in sw
 
 
@@ -144,3 +144,18 @@ def test_admin_is_visible_for_every_authenticated_user():
     assert "<th>Rolle</th>" not in html
     assert "role: Optional[str]" not in users_api
     assert "Alle angemeldeten Benutzer haben Vollzugriff" in html
+
+
+def test_pdf_admin_uses_background_jobs_and_preflight():
+    from pathlib import Path
+    html = Path("app/static/index.html").read_text(encoding="utf-8")
+    js = Path("app/static/app.js").read_text(encoding="utf-8")
+    css = Path("app/static/rezeptliebe.css").read_text(encoding="utf-8")
+
+    assert "/api/admin/pdf/preflight" in js
+    assert "/api/admin/pdf/jobs/active" in js
+    assert "background: true" in js
+    assert "PDF-Lauf gestartet" in js
+    assert "pdf-progress-track" in html
+    assert "Systemprüfung" in html
+    assert ".pdf-progress-value" in css

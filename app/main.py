@@ -211,7 +211,7 @@ async def _lifespan(app):
 _enable_docs = os.getenv("SCRAPPER_ENABLE_DOCS", "0") == "1"
 app = FastAPI(
     title="Rezeptliebe",
-    version="1.2.2",
+    version="1.2.3",
     docs_url="/api/docs" if _enable_docs else None,
     redoc_url=None,
     openapi_url="/api/openapi.json" if _enable_docs else None,

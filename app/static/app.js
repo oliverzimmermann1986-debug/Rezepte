@@ -15,6 +15,7 @@ function scrapperApp() {
       synonymForm: { term: '', synonymsText: '' },
       pdf: {
         running: false, result: null, recipe_id: '', process_all: true,
+        jobId: null, preflight: null, pollTimer: null,
         auto_rotate: true, remove_blank_pages: true, auto_crop: true,
         deskew_scans: true, ocr_scans: true, improve_contrast: true,
         sharpen_scans: true, scan_dpi: 300,
@@ -261,7 +262,7 @@ function scrapperApp() {
           this.loadAdminImport(); this.loadPending(); this.loadFailedDownloads(); this.loadJobs(); break;
         case 'quality': this.loadAudit(); break;
         case 'versions': this.loadAdminVersions(); break;
-        case 'pdf': if (!this.config?.pdf) this.loadConfig(); break;
+        case 'pdf': if (!this.config?.pdf) this.loadConfig(); this.loadPdfPreflight(); break;
         case 'search': this.loadAdminSynonyms(); break;
         case 'maintenance': this.loadMaintenanceRuns(); break;
         case 'master': this.loadMaster(); break;
@@ -392,15 +393,68 @@ function scrapperApp() {
       finally { this.admin.pageEditor.saving = false; }
     },
 
+    async loadPdfPreflight() {
+      try {
+        this.admin.pdf.preflight = await this.api('GET', '/api/admin/pdf/preflight');
+        if (!this.admin.pdf.running) {
+          const active = await this.api('GET', '/api/admin/pdf/jobs/active');
+          if (active?.active && active?.job?.id) {
+            this.admin.pdf.running = true;
+            this.admin.pdf.jobId = Number(active.job.id);
+            this.admin.pdf.result = { ...(active.job.result || {}), run_id: active.job.id };
+            this.pollAdminPdfJob(this.admin.pdf.jobId);
+          }
+        }
+      } catch (e) {
+        this.admin.pdf.preflight = { ok: false, issues: [{ message: e?.message || 'Systemprüfung nicht verfügbar' }], warnings: [] };
+      }
+    },
+
+    async pollAdminPdfJob(runId) {
+      if (!runId || this.admin.pdf.jobId !== runId) return;
+      try {
+        const job = await this.api('GET', `/api/admin/pdf/jobs/${runId}`);
+        this.admin.pdf.result = { ...(job?.result || {}), run_id: runId, job_status: job?.status };
+        if (job?.status === 'running') {
+          this.admin.pdf.pollTimer = setTimeout(() => this.pollAdminPdfJob(runId), 1500);
+          return;
+        }
+        this.admin.pdf.running = false;
+        this.admin.pdf.jobId = null;
+        const errors = Number(job?.result?.errors || 0);
+        if (job?.status === 'ok' && errors === 0) {
+          this.showToast(job?.kind === 'pdf_dry_run' ? 'PDF-Analyse abgeschlossen' : 'PDF-Aufbereitung abgeschlossen');
+        } else {
+          const first = (job?.result?.files || []).find(f => f.error)?.error || job?.result?.error || `${errors} Datei(en) fehlgeschlagen`;
+          this.showToast(`PDF-Lauf beendet: ${first}`, 'err');
+        }
+        await this.loadMaintenanceRuns();
+        await this.loadAdminOverview();
+        if (typeof this.loadRecipes === 'function') await this.loadRecipes();
+      } catch (e) {
+        this.admin.pdf.running = false;
+        this.admin.pdf.jobId = null;
+        this.showToast(`PDF-Status konnte nicht geladen werden: ${e?.message || 'unbekannter Fehler'}`, 'err');
+      }
+    },
+
     async runAdminPdf(dryRun = true) {
+      if (this.admin.pdf.running) return;
       this.admin.pdf.running = true;
       this.admin.pdf.result = null;
+      clearTimeout(this.admin.pdf.pollTimer);
       try {
+        await this.loadPdfPreflight();
+        const pf = this.admin.pdf.preflight;
+        if (pf && pf.ok === false) {
+          throw new Error((pf.issues || []).map(v => v.message).join('; ') || 'PDF-Systemprüfung fehlgeschlagen');
+        }
         const p = this.admin.pdf;
         const payload = {
           recipe_id: p.recipe_id ? Number(p.recipe_id) : null,
           process_all: !p.recipe_id && p.process_all,
           dry_run: dryRun,
+          background: true,
           limit: Number(p.limit || 50),
           auto_rotate: !!p.auto_rotate,
           remove_blank_pages: !!p.remove_blank_pages,
@@ -413,10 +467,24 @@ function scrapperApp() {
           ocr_language: p.ocr_language || 'deu+eng',
           keep_original: !!p.keep_original,
         };
-        this.admin.pdf.result = await this.api('POST', '/api/admin/pdf/process', payload);
-        this.showToast(dryRun ? 'PDF-Analyse abgeschlossen' : 'PDF-Aufbereitung abgeschlossen');
-      } catch (_) { this.showToast('PDF-Verarbeitung fehlgeschlagen', 'err'); }
-      finally { this.admin.pdf.running = false; }
+        const accepted = await this.api('POST', '/api/admin/pdf/process', payload);
+        if (accepted?.accepted && accepted?.run_id) {
+          this.admin.pdf.jobId = Number(accepted.run_id);
+          this.admin.pdf.result = { ...(accepted.result || {}), run_id: accepted.run_id };
+          this.showToast('PDF-Lauf gestartet – er läuft auch bei geschlossenem Tab weiter');
+          this.pollAdminPdfJob(this.admin.pdf.jobId);
+          return;
+        }
+        // Kompatibilität zu älteren Serverständen / synchronen Einzeltests.
+        this.admin.pdf.result = accepted;
+        this.admin.pdf.running = false;
+        const errors = Number(accepted?.errors || 0);
+        this.showToast(errors ? `PDF-Lauf mit ${errors} Fehler(n) beendet` : (dryRun ? 'PDF-Analyse abgeschlossen' : 'PDF-Aufbereitung abgeschlossen'), errors ? 'err' : 'ok');
+      } catch (e) {
+        this.admin.pdf.running = false;
+        this.admin.pdf.jobId = null;
+        this.showToast(`PDF-Verarbeitung: ${e?.message || 'unbekannter Fehler'}`, 'err');
+      }
     },
 
     async runMaintenance(kind) {

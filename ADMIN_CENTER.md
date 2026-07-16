@@ -74,3 +74,14 @@ Die neuen Funktionen liegen bewusst nicht im bisherigen Monolithen:
 - `app/db.py` – atomare Snapshots, Migrationen und Wartungsprotokolle
 
 Diese Trennung reduziert Seiteneffekte und macht die kritischen Funktionen separat testbar.
+
+## PDF-Lauf schlägt fehl
+
+Seit v1.2.3 zeigt der PDF-Reiter vor dem Start eine Systemprüfung und anschließend den konkreten Fehler je Datei. Bestandsläufe laufen im Hintergrund und überstehen einen geschlossenen Browser-Tab oder einen Proxy-Timeout.
+
+Diagnose im Container:
+
+```bash
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-doctor
+journalctl -u scrapper-web -n 200 --no-pager
+```

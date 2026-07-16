@@ -100,3 +100,29 @@ sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-optimize
 ```
 
 Vor jeder Änderung wird das Original unter dem Datenverzeichnis in `pdf-originals` gesichert.
+
+## Hintergrundläufe und Fehlerdiagnose (v1.2.3)
+
+Bestandsläufe werden vom Web-UI als Hintergrundjob gestartet. Ein Reverse-Proxy-, Cloudflare- oder Browser-Timeout beendet den PDF-Worker nicht. Beim erneuten Öffnen von **Admin → PDF & Scan** verbindet sich die Oberfläche wieder mit dem aktiven Lauf.
+
+Vor jedem Lauf erscheint eine Systemprüfung für:
+
+- PyMuPDF und Pillow
+- Tesseract sowie installierte OCR-Sprachen
+- Lesbarkeit und Schreibbarkeit des Rezeptverzeichnisses
+- Schreibbarkeit des Original-Backupverzeichnisses
+- freien Speicherplatz
+
+Auf dem Server kann dieselbe Prüfung ausgeführt werden:
+
+```bash
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-doctor
+```
+
+Ausführliche Servermeldungen:
+
+```bash
+journalctl -u scrapper-web -n 200 --no-pager
+```
+
+Sehr große Seiten werden automatisch mit einer reduzierten, aber weiterhin OCR-tauglichen DPI gerendert. Dadurch werden Speicherabbrüche bei A2-/A1-Scans vermieden.

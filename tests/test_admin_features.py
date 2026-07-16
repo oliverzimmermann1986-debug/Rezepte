@@ -362,3 +362,73 @@ def test_user_list_hides_legacy_role_and_self_disable_is_blocked(client, test_db
         assert "eigenes Konto" in disabled.json()["detail"]
     finally:
         app.dependency_overrides.pop(require_admin, None)
+
+
+def test_pdf_background_job_persists_result(client, test_db: Database, tmp_path: Path, monkeypatch):
+    from app.main import app
+    import app.routes.api_admin as admin_api
+
+    root = tmp_path / "recipes"; folder = root / "Background"; folder.mkdir(parents=True)
+    pdf_path = folder / "recipe.pdf"
+    doc = pymupdf.open(); page = doc.new_page(width=600, height=800)
+    page.insert_text((160, 700), "Zutaten Kartoffeln Butter Sahne Salz Rezept Anleitung " * 4,
+                     fontsize=12, rotate=90)
+    pdf_path.write_bytes(doc.tobytes()); doc.close()
+    recipe_id = test_db.recipe_upsert(
+        url="https://example.test/background", name="Background", type="Hauptgericht",
+        category="Test", folder_path=str(folder), description="Test",
+        thumb_filename=None, video_filename=None, source_added_at=1.0,
+    )
+
+    class FakeConfig:
+        def get(self, section, key=None, default=None):
+            values = {
+                ("paths", "recipe_dir"): str(root),
+                ("paths", "data_dir"): str(tmp_path / "data"),
+                ("pdf", None): {"use_tesseract_osd": False, "use_ocr_vote": False},
+            }
+            return values.get((section, key), default)
+
+    class ImmediateExecutor:
+        def submit(self, fn, *args, **kwargs):
+            fn(*args, **kwargs)
+            return object()
+
+    monkeypatch.setattr(admin_api, "get_config", lambda: FakeConfig())
+    monkeypatch.setattr(admin_api, "_PDF_EXECUTOR", ImmediateExecutor())
+    monkeypatch.setattr(admin_api, "_PDF_ACTIVE_RUN_ID", None)
+    monkeypatch.setattr(admin_api, "_pdf_preflight", lambda **_kwargs: {
+        "ok": True, "issues": [], "warnings": [], "recipe_root": str(root),
+        "backup_root": str(tmp_path / "data" / "pdf-originals"),
+        "tesseract": None, "tesseract_languages": [], "free_bytes": None,
+    })
+    app.dependency_overrides[require_admin] = lambda: None
+    try:
+        response = client.post("/api/admin/pdf/process", json={
+            "recipe_id": recipe_id, "dry_run": True, "background": True,
+            "auto_rotate": True, "remove_blank_pages": False, "auto_crop": False,
+            "deskew_scans": False, "ocr_scans": False,
+            "improve_contrast": False, "sharpen_scans": False,
+        })
+        assert response.status_code == 202, response.text
+        accepted = response.json()
+        assert accepted["accepted"] is True
+        status = client.get(f"/api/admin/pdf/jobs/{accepted['run_id']}")
+        assert status.status_code == 200, status.text
+        job = status.json()
+        assert job["status"] == "ok"
+        assert job["result"]["processed"] == 1
+        assert job["result"]["changed"] == 1
+    finally:
+        app.dependency_overrides.pop(require_admin, None)
+
+
+def test_safe_pdf_render_dpi_limits_huge_pages():
+    from app.core.pdf_processing import _safe_render_dpi
+
+    doc = pymupdf.open(); page = doc.new_page(width=2384, height=3370)  # ungefähr A1
+    try:
+        assert _safe_render_dpi(page, 400) < 400
+        assert _safe_render_dpi(page, 400) >= 150
+    finally:
+        doc.close()

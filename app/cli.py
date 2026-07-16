@@ -376,6 +376,16 @@ def _cmd_pdf_optimize(args: list) -> int:
     print(f"Fertig: {len(paths)} PDFs, {changed} geändert, {rotated} Seiten gedreht, {ocr} OCR-Seiten, {errors} Fehler")
     return 1 if errors else 0
 
+
+def _cmd_pdf_doctor(args: list) -> int:
+    """Prüft die PDF-Laufzeitumgebung mit denselben Checks wie das Admin-Center."""
+    import json
+    from .routes.api_admin import _pdf_preflight
+
+    result = _pdf_preflight()
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0 if result.get("ok") else 1
+
 def main() -> int:
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help", "help"):
@@ -390,6 +400,7 @@ def main() -> int:
             "  python -m app.cli log-cleanup [DAYS]  # Default aus config (30)\n"
             "  python -m app.cli pdf-auto-rotate [ROOT] # nur vorhandene PDFs drehen\n"
             "  python -m app.cli pdf-optimize [ROOT]    # drehen + Qualität + OCR\n"
+            "  python -m app.cli pdf-doctor            # Abhängigkeiten/Rechte prüfen\n"
             "  python -m app.cli user-list",
             file=sys.stderr,
         )
@@ -413,6 +424,8 @@ def main() -> int:
         return _cmd_pdf_auto_rotate(args[1:])
     if cmd == "pdf-optimize":
         return _cmd_pdf_optimize(args[1:])
+    if cmd == "pdf-doctor":
+        return _cmd_pdf_doctor(args[1:])
     if cmd == "user-list":
         return _cmd_user_list(args[1:])
     print(f"Unbekanntes Kommando: {cmd}", file=sys.stderr)

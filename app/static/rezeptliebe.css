@@ -3490,3 +3490,38 @@ a { color: var(--accent-deep); }
 @media (max-width: 700px) {
   .admin-access-note { align-items: flex-start; flex-direction: column; gap: 4px; }
 }
+
+/* PDF-Admin: klare Systemdiagnose und langlebige Hintergrundläufe */
+.pdf-preflight { display: grid; gap: 6px; }
+.status-error,
+.status-warning {
+  margin-top: 6px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  font-size: .9rem;
+  line-height: 1.35;
+}
+.status-error {
+  background: #fff0ec;
+  border: 1px solid #e9a898;
+  color: #7c2f22;
+}
+.status-warning {
+  background: #fff8d9;
+  border: 1px solid #e9cf72;
+  color: #6c5710;
+}
+.pdf-progress-track {
+  height: 10px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(104, 82, 20, .12);
+}
+.pdf-progress-value {
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: var(--accent, #e5bd4f);
+  transition: width .25s ease;
+}

@@ -90,7 +90,7 @@
     <div class="foot">
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
-      <div class="sidebar-meta"><span>v1.2.2</span><a href="/logout">Abmelden</a></div>
+      <div class="sidebar-meta"><span>v1.2.3</span><a href="/logout">Abmelden</a></div>
     </div>
   </aside>
 
@@ -1097,7 +1097,13 @@
           <div class="field"><label>Scan-Qualität</label><select x-model.number="admin.pdf.scan_dpi"><option :value="240">Gut · 240 DPI</option><option :value="300">Hoch · 300 DPI</option><option :value="400">Maximum · 400 DPI</option></select><div class="hint">300 DPI ist der empfohlene Kompromiss aus Lesbarkeit, Dateigröße und Geschwindigkeit.</div></div>
           <div class="field" x-show="admin.pdf.ocr_scans"><label>OCR-Sprachen</label><input x-model="admin.pdf.ocr_language" placeholder="deu+eng"><div class="hint">Tesseract-Sprachcodes, z. B. deu+eng.</div></div>
           <label class="check-row"><input type="checkbox" x-model="admin.pdf.keep_original"> Original immer sichern</label>
-          <div class="admin-info-card pdf-run-hint">„Nur analysieren“ führt dieselbe Erkennung aus, speichert aber nichts. „Aufbereiten“ korrigiert die Dateien und sichert vorher jedes Original.</div>
+          <div class="admin-info-card pdf-preflight" x-show="admin.pdf.preflight">
+            <strong x-text="admin.pdf.preflight?.ok ? 'Systemprüfung bereit' : 'Systemprüfung mit Fehlern'"></strong>
+            <div class="muted" x-text="admin.pdf.preflight?.recipe_root ? 'Rezeptpfad: '+admin.pdf.preflight.recipe_root : ''"></div>
+            <template x-for="issue in (admin.pdf.preflight?.issues || [])" :key="issue.code"><div class="status-error" x-text="issue.message"></div></template>
+            <template x-for="warning in (admin.pdf.preflight?.warnings || [])" :key="warning.code"><div class="status-warning" x-text="warning.message"></div></template>
+          </div>
+          <div class="admin-info-card pdf-run-hint">„Nur analysieren“ führt dieselbe Erkennung aus, speichert aber nichts. Bestandsläufe laufen im Hintergrund weiter, auch wenn der Browser oder Reverse-Proxy die Verbindung trennt.</div>
           <div class="flex admin-action-row">
             <button class="btn" @click="runAdminPdf(true)" :disabled="admin.pdf.running">🔎 Bestand analysieren</button>
             <button class="btn btn-primary" @click="runAdminPdf(false)" :disabled="admin.pdf.running">✨ Bestand jetzt aufbereiten</button>
@@ -1106,14 +1112,21 @@
         <div class="card admin-result-card">
           <h3>Ergebnis</h3>
           <div class="empty" x-show="!admin.pdf.result && !admin.pdf.running">Noch kein Lauf gestartet.</div>
-          <div class="empty" x-show="admin.pdf.running">PDFs werden geprüft…</div>
+          <div class="empty" x-show="admin.pdf.running && !admin.pdf.result">PDF-Lauf wird gestartet…</div>
           <template x-if="admin.pdf.result">
             <div>
               <div class="admin-result-summary">
-                <span><strong x-text="admin.pdf.result.scanned || 0"></strong> geprüft</span>
+                <span><strong x-text="admin.pdf.result.processed ?? admin.pdf.result.scanned ?? 0"></strong>/<span x-text="admin.pdf.result.scanned || 0"></span> verarbeitet</span>
                 <span><strong x-text="admin.pdf.result.changed || 0"></strong> geändert</span>
                 <span><strong x-text="admin.pdf.result.errors || 0"></strong> Fehler</span>
+                <span><strong x-text="admin.pdf.result.warnings || 0"></strong> Warnungen</span>
               </div>
+              <div class="admin-info-card" x-show="admin.pdf.running">
+                <strong>Hintergrundlauf aktiv</strong>
+                <div class="muted" x-text="admin.pdf.result.current_file ? admin.pdf.result.current_file.split('/').pop() : 'Nächste Datei wird vorbereitet…'"></div>
+                <div class="pdf-progress-track"><div class="pdf-progress-value" :style="'width:'+Math.min(100, Math.round(100*(admin.pdf.result.processed||0)/Math.max(1,admin.pdf.result.scanned||1)))+'%'"></div></div>
+              </div>
+              <div class="status-error" x-show="admin.pdf.result.error" x-text="admin.pdf.result.error"></div>
               <div class="admin-file-results">
                 <template x-for="f in (admin.pdf.result.files || []).slice(0,50)" :key="f.path">
                   <div class="admin-file-result">

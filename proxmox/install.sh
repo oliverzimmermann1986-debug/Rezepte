@@ -72,8 +72,10 @@ if [[ ! -f "$APP_DIR/data/config.yaml" ]]; then
   echo "📝 Erstelle Default-Config mit zufälligem Passwort + Secret..."
   cp "$APP_DIR/config/config.example.yaml" "$APP_DIR/data/config.yaml"
 
-  GEN_PASS=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 20)
-  GEN_SECRET=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 48)
+  # Keine tr|head-Pipeline unter pipefail: head beendet tr per SIGPIPE und
+  # konnte dadurch Neuinstallationen mit Exit 141 abbrechen.
+  GEN_PASS=$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')
+  GEN_SECRET=$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')
 
   # Default-Platzhalter durch zufällige Werte ersetzen (sed -i, sauber escaped)
   sed -i "s|password: changeme|password: ${GEN_PASS}|" "$APP_DIR/data/config.yaml"

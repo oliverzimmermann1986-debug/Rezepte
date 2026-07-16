@@ -468,3 +468,11 @@ sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-optimize
 ```
 
 Der Lauf dreht falsch ausgerichtete Seiten, verbessert Scan-Lesbarkeit, erzeugt bei Bedarf OCR-Textlayer und sichert die Originale.
+
+### PDF-Diagnose
+
+```bash
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-doctor
+```
+
+PDF-Bestandsläufe aus dem Admin Center werden ab v1.2.3 im Hintergrund verarbeitet und zeigen ihren Fortschritt im Browser an.

@@ -2058,6 +2058,19 @@ class Database:
             )
             return int(cur.lastrowid)
 
+    def maintenance_progress(self, run_id: int, result: Dict[str, Any]) -> None:
+        """Persistiert Zwischenstände langer Wartungsläufe.
+
+        ``status`` bleibt bewusst ``running``. Dadurch kann das Frontend einen
+        PDF-Lauf nach einem Proxy-Timeout, Tab-Wechsel oder Handy-Sperren weiter
+        verfolgen, ohne den eigentlichen Worker abzubrechen.
+        """
+        with self.conn() as c:
+            c.execute(
+                "UPDATE maintenance_runs SET result_json=? WHERE id=? AND status='running'",
+                (json.dumps(result, ensure_ascii=False, default=str), run_id),
+            )
+
     def maintenance_finish(self, run_id: int, *, ok: bool, result: Dict[str, Any]) -> None:
         with self.conn() as c:
             c.execute(
@@ -2065,6 +2078,20 @@ class Database:
                 (time.time(), "ok" if ok else "error",
                  json.dumps(result, ensure_ascii=False, default=str), run_id),
             )
+
+    def maintenance_get(self, run_id: int) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT * FROM maintenance_runs WHERE id=?", (int(run_id),)
+            ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        try:
+            item["result"] = json.loads(item.pop("result_json") or "{}")
+        except Exception:
+            item["result"] = {}
+        return item
 
     def maintenance_list(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self.conn() as c:

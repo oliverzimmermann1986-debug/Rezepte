@@ -1,8 +1,13 @@
 """Zentraler Admin-Bereich: Import, Versionen, PDF, Suche und Wartung."""
 from __future__ import annotations
 
+import logging
+import os
 import shutil
+import subprocess
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -17,8 +22,17 @@ from ..core.pdf_processing import (
 from ..core.safety import atomic_write_bytes
 from ..db import get_db
 
+logger = logging.getLogger(__name__)
+
 session_router = APIRouter(prefix="/api/session", tags=["session"], dependencies=[Depends(require_auth)])
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
+
+# PDF-Bestandsläufe dürfen nicht an einem HTTP-/Reverse-Proxy-Timeout hängen.
+# Ein einzelner Worker hält Speicher- und CPU-Verbrauch kontrollierbar; Fortschritt
+# und Ergebnis werden in maintenance_runs persistiert.
+_PDF_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdf-admin")
+_PDF_JOB_LOCK = threading.Lock()
+_PDF_ACTIVE_RUN_ID: Optional[int] = None
 
 
 def _username(request: Request) -> str:
@@ -200,6 +214,7 @@ class PdfBatchPayload(BaseModel):
     scan_dpi: int = Field(300, ge=180, le=400)
     ocr_language: str = Field("deu+eng", min_length=3, max_length=80)
     keep_original: bool = True
+    background: bool = False
 
 
 def _pdf_targets(payload: PdfBatchPayload) -> List[Path]:
@@ -218,26 +233,150 @@ def _pdf_targets(payload: PdfBatchPayload) -> List[Path]:
     return list(find_recipe_pdfs(root))[:payload.limit]
 
 
-@router.post("/pdf/process")
-def process_pdfs(payload: PdfBatchPayload, request: Request) -> Dict[str, Any]:
-    db = get_db(); cfg = get_config(); actor = _username(request)
-    targets = _pdf_targets(payload)
-    run_id = db.maintenance_start("pdf_dry_run" if payload.dry_run else "pdf_process", actor)
+def _tesseract_languages() -> List[str]:
+    if not shutil.which("tesseract"):
+        return []
+    try:
+        proc = subprocess.run(
+            ["tesseract", "--list-langs"], capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+        lines = (proc.stdout or "").splitlines()[1:]
+        return sorted({line.strip() for line in lines if line.strip()})
+    except Exception:
+        return []
+
+
+def _pdf_preflight(*, require_backup: bool = False, require_recipe_write: bool = False,
+                   ocr_language: str = "deu+eng") -> Dict[str, Any]:
+    cfg = get_config()
+    root = Path(cfg.get("paths", "recipe_dir", default="/mnt/rezepte"))
+    data_dir = Path(cfg.get("paths", "data_dir", default="/opt/scrapper/data"))
+    backup_root = data_dir / "pdf-originals"
+    issues: List[Dict[str, str]] = []
+    warnings: List[Dict[str, str]] = []
+
+    try:
+        import pymupdf  # noqa: F401
+    except Exception as exc:
+        issues.append({"code": "pymupdf_missing", "message": f"PyMuPDF fehlt: {exc}"})
+    try:
+        from PIL import Image  # noqa: F401
+    except Exception as exc:
+        issues.append({"code": "pillow_missing", "message": f"Pillow fehlt: {exc}"})
+
+    tesseract = shutil.which("tesseract")
+    languages = _tesseract_languages()
+    if not tesseract:
+        warnings.append({
+            "code": "tesseract_missing",
+            "message": "Tesseract fehlt. Drehen über Text-Layer funktioniert, Scan-OCR und OCR-Voting werden übersprungen.",
+        })
+    else:
+        requested_languages = {part.strip() for part in str(ocr_language or "").split("+") if part.strip()}
+        requested_languages.add("osd")
+        for lang in sorted(requested_languages):
+            if lang not in languages:
+                warnings.append({
+                    "code": f"tesseract_lang_{lang}_missing",
+                    "message": f"Tesseract-Sprachpaket '{lang}' fehlt. Betroffene OCR-Funktionen werden übersprungen.",
+                })
+
+    if not root.exists():
+        issues.append({"code": "recipe_root_missing", "message": f"Rezeptverzeichnis existiert nicht: {root}"})
+    elif not root.is_dir():
+        issues.append({"code": "recipe_root_not_dir", "message": f"Rezeptpfad ist kein Verzeichnis: {root}"})
+    elif not os.access(root, os.R_OK | os.X_OK):
+        issues.append({"code": "recipe_root_unreadable", "message": f"Rezeptverzeichnis ist nicht lesbar: {root}"})
+    elif not os.access(root, os.W_OK):
+        target = issues if require_recipe_write else warnings
+        target.append({
+            "code": "recipe_root_read_only",
+            "message": f"Rezeptstamm ist nicht beschreibbar. Analyse funktioniert, Aufbereitung kann scheitern: {root}",
+        })
+
+    try:
+        backup_root.mkdir(parents=True, exist_ok=True)
+        probe = backup_root / f".write-test-{os.getpid()}-{time.time_ns()}"
+        probe.write_bytes(b"ok")
+        probe.unlink(missing_ok=True)
+    except Exception as exc:
+        target = issues if require_backup else warnings
+        target.append({
+            "code": "backup_unwritable",
+            "message": f"Original-Backupverzeichnis ist nicht beschreibbar ({backup_root}): {exc}",
+        })
+
+    free_bytes = None
+    try:
+        free_bytes = shutil.disk_usage(root if root.exists() else data_dir).free
+        if free_bytes < 512 * 1024 * 1024:
+            warnings.append({
+                "code": "low_disk_space",
+                "message": f"Wenig freier Speicher: {free_bytes // (1024 * 1024)} MiB.",
+            })
+    except Exception:
+        pass
+
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "warnings": warnings,
+        "recipe_root": str(root),
+        "backup_root": str(backup_root),
+        "tesseract": tesseract,
+        "tesseract_languages": languages,
+        "free_bytes": free_bytes,
+    }
+
+
+@router.get("/pdf/preflight")
+def pdf_preflight() -> Dict[str, Any]:
+    return _pdf_preflight()
+
+
+def _pdf_result_base(payload: PdfBatchPayload, targets: List[Path]) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "dry_run": payload.dry_run,
+        "status": "running",
+        "scanned": len(targets),
+        "processed": 0,
+        "changed": 0,
+        "errors": 0,
+        "warnings": 0,
+        "current_file": None,
+        "files": [],
+    }
+
+
+def _process_pdf_targets(
+    payload: PdfBatchPayload,
+    targets: List[Path],
+    *,
+    run_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    db = get_db(); cfg = get_config()
     pdf_cfg = cfg.get("pdf", default={}) or {}
     backup_root = Path(cfg.get("paths", "data_dir", default="/opt/scrapper/data")) / "pdf-originals"
-    files = []
-    changed = errors = 0
-    for path in targets:
+    result = _pdf_result_base(payload, targets)
+
+    for index, path in enumerate(targets, start=1):
+        result["current_file"] = str(path)
+        if run_id is not None:
+            db.maintenance_progress(run_id, result)
         try:
             kwargs = dict(
                 auto_rotate=payload.auto_rotate,
                 use_tesseract_osd=bool(pdf_cfg.get("use_tesseract_osd", True)),
                 use_ocr_vote=bool(pdf_cfg.get("use_ocr_vote", True)),
                 remove_blank_pages=payload.remove_blank_pages,
-                auto_crop=payload.auto_crop, deskew_scans=payload.deskew_scans,
+                auto_crop=payload.auto_crop,
+                deskew_scans=payload.deskew_scans,
                 ocr_scans=payload.ocr_scans,
                 improve_contrast=payload.improve_contrast,
-                sharpen_scans=payload.sharpen_scans, scan_dpi=payload.scan_dpi,
+                sharpen_scans=payload.sharpen_scans,
+                scan_dpi=payload.scan_dpi,
                 ocr_language=payload.ocr_language,
                 min_text_chars=int(pdf_cfg.get("min_text_chars", 20) or 20),
                 text_dominance=float(pdf_cfg.get("text_dominance", 0.60) or 0.60),
@@ -248,19 +387,121 @@ def process_pdfs(payload: PdfBatchPayload, request: Request) -> Dict[str, Any]:
                 _preview, report = process_pdf_bytes(path.read_bytes(), **kwargs)
             else:
                 report = process_pdf_path(
-                    path, backup_root=backup_root, keep_original=payload.keep_original,
-                    **kwargs,
+                    path, backup_root=backup_root,
+                    keep_original=payload.keep_original, **kwargs,
                 )
             data = report.as_dict(); data["path"] = str(path)
-            files.append(data)
-            if report.changed: changed += 1
-            if not report.ok: errors += 1
+            result["files"].append(data)
+            if report.changed:
+                result["changed"] += 1
+            if not report.ok:
+                result["errors"] += 1
+            result["warnings"] += len(report.warnings or [])
         except Exception as exc:
-            errors += 1; files.append({"path": str(path), "ok": False, "error": str(exc)})
-    result = {"ok": errors == 0, "dry_run": payload.dry_run, "scanned": len(targets),
-              "changed": changed, "errors": errors, "files": files}
-    db.maintenance_finish(run_id, ok=result["ok"], result=result)
+            logger.exception("PDF-Datei konnte nicht verarbeitet werden: %s", path)
+            result["errors"] += 1
+            result["files"].append({
+                "path": str(path), "ok": False,
+                "reason": "unhandled_error", "error": str(exc),
+            })
+        result["processed"] = index
+        # Die Detailhistorie kann bei großen Beständen sehr groß werden. Für den
+        # Live-Fortschritt reichen die letzten 100 Dateien; im finalen Ergebnis
+        # bleibt die Liste ebenfalls begrenzt, damit SQLite/UI stabil bleiben.
+        if len(result["files"]) > 100:
+            result["files"] = result["files"][-100:]
+        if run_id is not None:
+            db.maintenance_progress(run_id, result)
+
+    result["current_file"] = None
+    result["status"] = "ok" if result["errors"] == 0 else "error"
+    result["ok"] = result["errors"] == 0
     return result
+
+
+def _run_pdf_background(payload_data: Dict[str, Any], targets: List[Path], run_id: int) -> None:
+    global _PDF_ACTIVE_RUN_ID
+    db = get_db()
+    try:
+        payload = PdfBatchPayload.model_validate(payload_data)
+        result = _process_pdf_targets(payload, targets, run_id=run_id)
+        db.maintenance_finish(run_id, ok=result["ok"], result=result)
+    except Exception as exc:
+        logger.exception("PDF-Hintergrundlauf #%s abgebrochen", run_id)
+        result = {
+            "ok": False, "status": "error", "processed": 0,
+            "scanned": len(targets), "changed": 0, "errors": 1,
+            "current_file": None, "files": [], "error": str(exc),
+        }
+        db.maintenance_finish(run_id, ok=False, result=result)
+    finally:
+        with _PDF_JOB_LOCK:
+            if _PDF_ACTIVE_RUN_ID == run_id:
+                _PDF_ACTIVE_RUN_ID = None
+
+
+@router.post("/pdf/process")
+def process_pdfs(payload: PdfBatchPayload, request: Request, response: Response) -> Dict[str, Any]:
+    global _PDF_ACTIVE_RUN_ID
+    db = get_db(); actor = _username(request)
+    preflight = _pdf_preflight(
+        require_backup=bool(not payload.dry_run and payload.keep_original),
+        require_recipe_write=bool(not payload.dry_run),
+        ocr_language=payload.ocr_language,
+    )
+    if not preflight["ok"]:
+        message = "; ".join(item["message"] for item in preflight["issues"])
+        raise HTTPException(409, message or "PDF-Systemprüfung fehlgeschlagen")
+
+    targets = _pdf_targets(payload)
+    if not targets:
+        raise HTTPException(404, "Keine PDF-Dateien im gewählten Umfang gefunden")
+
+    if not payload.background:
+        run_id = db.maintenance_start("pdf_dry_run" if payload.dry_run else "pdf_process", actor)
+        result = _process_pdf_targets(payload, targets)
+        result["preflight"] = preflight
+        db.maintenance_finish(run_id, ok=result["ok"], result=result)
+        return result
+
+    with _PDF_JOB_LOCK:
+        if _PDF_ACTIVE_RUN_ID is not None:
+            active = db.maintenance_get(_PDF_ACTIVE_RUN_ID)
+            if active and active.get("status") == "running":
+                raise HTTPException(409, f"PDF-Lauf #{_PDF_ACTIVE_RUN_ID} läuft bereits")
+            _PDF_ACTIVE_RUN_ID = None
+        run_id = db.maintenance_start("pdf_dry_run" if payload.dry_run else "pdf_process", actor)
+        _PDF_ACTIVE_RUN_ID = run_id
+
+    initial = _pdf_result_base(payload, targets)
+    initial["preflight"] = preflight
+    db.maintenance_progress(run_id, initial)
+    _PDF_EXECUTOR.submit(_run_pdf_background, payload.model_dump(), targets, run_id)
+    response.status_code = 202
+    return {
+        "ok": True, "accepted": True, "run_id": run_id,
+        "status": "running", "scanned": len(targets), "result": initial,
+    }
+
+
+@router.get("/pdf/jobs/active")
+def active_pdf_job() -> Dict[str, Any]:
+    with _PDF_JOB_LOCK:
+        run_id = _PDF_ACTIVE_RUN_ID
+    if run_id is None:
+        return {"active": False}
+    item = get_db().maintenance_get(run_id)
+    if not item or item.get("status") != "running":
+        return {"active": False}
+    return {"active": True, "job": item}
+
+
+@router.get("/pdf/jobs/{run_id}")
+def pdf_job_status(run_id: int) -> Dict[str, Any]:
+    item = get_db().maintenance_get(run_id)
+    if not item or item.get("kind") not in {"pdf_dry_run", "pdf_process"}:
+        raise HTTPException(404, "PDF-Lauf nicht gefunden")
+    return item
 
 
 def _recipe_pdf(recipe_id: int) -> tuple[Dict[str, Any], Path]:

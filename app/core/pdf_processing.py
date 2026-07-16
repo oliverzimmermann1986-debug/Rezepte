@@ -68,6 +68,26 @@ def _render_gray(page: Any, dpi: int = 96):
     return Image.frombytes("L", (pix.width, pix.height), pix.samples)
 
 
+def _safe_render_dpi(page: Any, requested_dpi: int, *, max_pixels: int = 24_000_000) -> int:
+    """Begrenzt den Speicherbedarf ungewöhnlich großer PDF-Seiten.
+
+    24 Mio. RGB-Pixel benötigen grob 72 MiB nur für das Rohbild. Ohne diese
+    Begrenzung können A2/A1-Scans bei 300–400 DPI den Webdienst vom OOM-Killer
+    beenden, was im Browser nur als „PDF-Verarbeitung fehlgeschlagen“ erscheint.
+    """
+    dpi = max(180, min(400, int(requested_dpi or 300)))
+    try:
+        width_in = max(0.1, float(page.rect.width) / 72.0)
+        height_in = max(0.1, float(page.rect.height) / 72.0)
+        estimated = width_in * height_in * dpi * dpi
+        if estimated <= max_pixels:
+            return dpi
+        scale = (max_pixels / estimated) ** 0.5
+        return max(150, int(dpi * scale))
+    except Exception:
+        return dpi
+
+
 def _content_bbox(image, threshold: int = 245):
     # Schwarz = Inhalt, Weiß = Hintergrund; getbbox liefert Content-Rechteck.
     mask = image.point(lambda p: 255 if p < threshold else 0)
@@ -277,7 +297,12 @@ def process_pdf_bytes(
                         rebuilt.insert_pdf(doc, from_page=idx, to_page=idx)
                         continue
                     page = doc[idx]
-                    render_dpi = max(180, min(400, int(scan_dpi or 300)))
+                    requested_dpi = max(180, min(400, int(scan_dpi or 300)))
+                    render_dpi = _safe_render_dpi(page, requested_dpi)
+                    if render_dpi < requested_dpi:
+                        report.warnings.append(
+                            f"Seite {idx + 1}: DPI aus Speicherschutz von {requested_dpi} auf {render_dpi} reduziert"
+                        )
                     pix = page.get_pixmap(dpi=render_dpi, colorspace=pymupdf.csRGB, alpha=False, annots=False)
                     image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
                     if improve_contrast:
