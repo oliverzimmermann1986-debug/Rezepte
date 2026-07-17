@@ -380,7 +380,7 @@
             <div style="display:flex; gap:8px; align-items:center;">
               <button class="btn btn-ghost" @click="loadJobLog(currentLogJob)" title="Neu laden">↻</button>
               <button class="btn btn-ghost" @click="copyLog()" title="In Zwischenablage kopieren">⎘ Kopieren</button>
-              <button class="btn btn-ghost" @click="currentLog = ''">✗ Schließen</button>
+              <button class="btn btn-ghost" @click="currentLog = ''" data-dialog-close aria-label="Log schließen">✗ Schließen</button>
             </div>
           </div>
           <div class="modal-body" style="padding: 0;">
@@ -1242,7 +1242,7 @@
         <div class="recipes-hero-subtitle" x-text="page === 'favorites' ? 'Deine gespeicherten Lieblingsrezepte.' : 'Entdecke und finde deine Lieblingsrezepte.'"></div>
         <div class="recipes-searchbar">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11l2 2 4-4"/></svg>
-          <input type="search" x-model.debounce.300ms="recipes.filters.search" @input="recipes.filters.offset=0; loadRecipes()" placeholder="Suche, z. B. Pasta ohne Zwiebel oder Hack -scharf …" aria-label="Rezepte durchsuchen">
+          <input type="search" x-model="recipes.filters.search" @input.debounce.350ms="recipes.filters.offset=0; loadRecipes()" placeholder="Suche, z. B. Pasta ohne Zwiebel oder Hack -scharf …" aria-label="Rezepte durchsuchen">
           <button type="button" class="btn btn-primary" @click="recipes.filters.offset=0; loadRecipes()" aria-label="Suche ausführen">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11l2 2 4-4"/></svg><span class="search-label">Suche</span>
           </button>
@@ -1401,7 +1401,15 @@
           </div>
 
           <button class="btn btn-secondary" @click="resetFilters()" style="width: 100%; margin-top: 12px;">Filter zurücksetzen</button>
-          <button class="btn btn-secondary" @click="syncRecipes()" style="width: 100%; margin-top: 6px;" title="Filesystem neu scannen">↻ Bibliothek neu einlesen</button>
+          <button class="btn btn-secondary" @click="syncRecipes()" :disabled="recipes.sync.running" style="width: 100%; margin-top: 6px;" title="Filesystem im Hintergrund neu scannen">
+            <span x-show="!recipes.sync.running">↻ Bibliothek neu einlesen</span>
+            <span x-show="recipes.sync.running">↻ Synchronisierung läuft…</span>
+          </button>
+          <div class="sync-status" x-show="recipes.sync.running || recipes.sync.last_success_at || recipes.sync.error" aria-live="polite">
+            <span x-show="recipes.sync.running">Die aktuelle Rezeptliste bleibt währenddessen benutzbar.</span>
+            <span x-show="!recipes.sync.running && recipes.sync.result" x-text="syncResultLabel()"></span>
+            <span class="error" x-show="recipes.sync.error" x-text="recipes.sync.error"></span>
+          </div>
         </aside>
 
         <!-- Grid -->
@@ -1423,7 +1431,21 @@
             </div>
           </div>
 
-          <div class="recipes-grid">
+          <div class="recipes-grid" :aria-busy="recipes.loading ? 'true' : 'false'">
+            <template x-if="recipes.loading && recipes.items.length === 0">
+              <div class="recipe-skeletons" aria-label="Rezepte werden geladen">
+                <template x-for="n in [1,2,3,4,5,6]" :key="n">
+                  <div class="recipe-card recipe-skeleton" aria-hidden="true">
+                    <div class="recipe-thumb skeleton-block"></div>
+                    <div class="recipe-meta">
+                      <div class="skeleton-line skeleton-title"></div>
+                      <div class="skeleton-line"></div>
+                      <div class="skeleton-line skeleton-short"></div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
             <template x-for="r in recipes.items" :key="r.id">
               <div class="recipe-card"
                    @click="openRecipe(r.id)"
@@ -1477,11 +1499,11 @@
           <div x-show="recipes.items.length > 0" x-ref="scrollSentinel"
                x-init="$nextTick(() => initScrollObserver())"
                style="text-align: center; padding: 24px 0; color: var(--fg-mute); font-size: 12px;">
-            <div x-show="recipes.loading">… wird geladen</div>
-            <div x-show="!recipes.loading && recipes.items.length < recipes.total">
+            <div x-show="recipes.loading || recipes.loadingMore">… wird geladen</div>
+            <div x-show="!recipes.loading && !recipes.loadingMore && recipes.items.length < recipes.total">
               Scrolle weiter — <span x-text="recipes.items.length"></span> von <span x-text="recipes.total"></span> geladen
             </div>
-            <div x-show="!recipes.loading && recipes.items.length >= recipes.total && recipes.total > 0">
+            <div x-show="!recipes.loading && !recipes.loadingMore && recipes.items.length >= recipes.total && recipes.total > 0">
               ✓ Alle <span x-text="recipes.total"></span> Rezepte geladen
             </div>
           </div>
@@ -2469,7 +2491,7 @@
     <div class="modal modal-wide fs-compare-modal">
       <div class="modal-head">
         <h3>🔍 FS-Konflikt-Vergleich</h3>
-        <button class="btn-icon" @click="fsCompare.show = false">✕</button>
+        <button class="btn-icon" @click="fsCompare.show = false" data-dialog-close aria-label="Vergleich schließen">✕</button>
       </div>
       <div class="modal-body fs-compare-body">
         <!-- Links: in-DB-Rezept -->
@@ -2608,7 +2630,8 @@
           <button class="btn-icon" @click="deleteRecipeFromDetail()"
                   title="Rezept + Files löschen"
                   style="color: var(--err);">🗑</button>
-          <button class="btn-icon" @click="closeRecipeDetail()">✕</button>
+          <button class="btn-icon" data-dialog-close @click="closeRecipeDetail()"
+                  aria-label="Rezeptdetails schließen">✕</button>
         </div>
       </div>
 
@@ -3001,14 +3024,14 @@
   </div>
 
   <!-- Toast -->
-  <div class="toast" :class="toast.type" x-show="toast.show" x-text="toast.message"></div>
+  <div class="toast" :class="toast.type" x-show="toast.show" x-text="toast.message" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <!-- Verzeichnis-Browser Modal -->
   <div x-cloak x-show="browser.show" class="modal-backdrop" @click.self="browserCancel()">
     <div class="modal modal-wide" @click.stop>
       <div class="modal-head">
         <h3 x-text="browser.title"></h3>
-        <button class="btn btn-ghost" @click="browserCancel()">✗</button>
+        <button class="btn btn-ghost" @click="browserCancel()" data-dialog-close aria-label="Verzeichnisbrowser schließen">✗</button>
       </div>
       <div class="modal-body">
         <!-- Aktueller Pfad + nav -->
@@ -3049,6 +3072,7 @@
   </div>
 
 </div>
+<script src="/static/runtime.js?v={VERSION}"></script>
 <script src="/static/app.js?v={VERSION}"></script>
 </body>
 </html>

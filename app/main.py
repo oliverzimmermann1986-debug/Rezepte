@@ -71,30 +71,32 @@ _stream_handler.setFormatter(logging.Formatter(
 logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 logger = logging.getLogger(__name__)
 
-# -------- Security-Migration (Erststart) --------
-# Hasht Klartext-Pwd, generiert Secret, blockt admin/changeme.
-migrate_security()
-if migrate_pdf_quality_defaults():
-    logger.info("PDF-Qualitätsprofil auf v1.2.1 migriert")
+# -------- Startup-Initialisierung --------
+# Absichtlich NICHT beim Modulimport: Imports bleiben dadurch nebenwirkungsarm,
+# CLI/Tests können das App-Modul laden ohne sofort Migrationen/Cleanup auszulösen.
+_db = None
 
-# DB initialisieren + Stale-Running-Jobs vom letzten Crash/Restart aufräumen
-_db = get_db()
-_stale = _db.reset_stale_running()
-if _stale:
-    logger.warning(f"{_stale} Job(s) waren als 'running' markiert - auf 'error' gesetzt (Crash/Restart-Recovery)")
 
-# User-Migration: config.web.{username, password} → users-Tabelle (initialer Benutzer).
-# Idempotent — läuft nur wenn users-Tabelle leer ist.
-migrate_users_to_db()
+def _initialize_runtime_state():
+    global _db
+    migrate_security()
+    if migrate_pdf_quality_defaults():
+        logger.info("PDF-Qualitätsprofil auf v1.2.1 migriert")
 
-# DB-Hygiene: alte Jobs raus, uralte Pending-Items automatisch skippen.
-# Idempotent + günstig - läuft bei jedem Restart einmal.
-_jobs_purged = _db.cleanup_old_jobs(days=90)
-if _jobs_purged:
-    logger.info(f"DB-Cleanup: {_jobs_purged} Job-Einträge älter 90 Tage gelöscht")
-_pending_skipped = _db.auto_skip_old_pending(days=30)
-if _pending_skipped:
-    logger.info(f"DB-Cleanup: {_pending_skipped} Pending-Items älter 30 Tage auf 'auto_skipped'")
+    _db = get_db()
+    stale = _db.reset_stale_running()
+    if stale:
+        logger.warning("%s Job(s) nach Crash/Restart auf 'error' gesetzt", stale)
+    migrate_users_to_db()
+
+    jobs_purged = _db.cleanup_old_jobs(days=90)
+    if jobs_purged:
+        logger.info("DB-Cleanup: %s alte Job-Einträge gelöscht", jobs_purged)
+    pending_skipped = _db.auto_skip_old_pending(days=30)
+    if pending_skipped:
+        logger.info("DB-Cleanup: %s alte Pending-Items übersprungen", pending_skipped)
+    return _db
+
 
 def _sd_notify(state: str) -> None:
     """Sendet eine Statusnachricht an systemd, wenn unter Type=notify gestartet.
@@ -146,7 +148,8 @@ def _start_trash_cleanup_thread():
 def _purge_old_trash_items(days: int = 30):
     """Endgültig löschen aller Trash-Items deren deleted_at > days Tage her ist."""
     from .recipes.manage import safe_delete_recipe
-    items = _db.recipe_list_trash_expired(days=days)
+    db = _db or get_db()
+    items = db.recipe_list_trash_expired(days=days)
     if not items:
         return
     logger.info(f"trash-cleanup: {len(items)} items >{days}d found")
@@ -155,13 +158,14 @@ def _purge_old_trash_items(days: int = 30):
             # delete_files=True nur wenn die Files noch da sind (files_deleted=0).
             # Falls files_deleted=1, nur DB-Eintrag noch.
             delete_files = not it.get("files_deleted")
-            safe_delete_recipe(_db, it["id"], delete_files=delete_files, hard=True)
+            safe_delete_recipe(db, it["id"], delete_files=delete_files, hard=True)
         except Exception as e:
             logger.warning(f"trash-purge #{it['id']} '{it.get('name')}' fail: {e}")
 
 
 @asynccontextmanager
 async def _lifespan(app):
+    db = _initialize_runtime_state()
     # READY=1 sobald der App-Startup durch ist (DB-Pings, Routes registriert).
     # systemd wartet dann auf dieses Signal bevor 'systemctl start' returnt -
     # damit ist ein 'restart' ohne 502-Lücke am Reverse-Proxy möglich.
@@ -170,10 +174,20 @@ async def _lifespan(app):
     # Trash-Cleanup-Background-Thread starten: einmal pro Tag prüft er ob
     # Rezepte im Papierkorb älter als 30 Tage sind und purged sie endgültig.
     _start_trash_cleanup_thread()
+    from .jobs.task_queue import start_worker
+    from .recipes.sync_manager import request_sync
+    start_worker()
+    # Ein potenziell langsamer HDD/NAS-Scan wird beim Start nur eingeplant,
+    # niemals innerhalb eines Rezeptlisten-Requests ausgeführt.
+    request_sync(reason="app-start", min_interval=300.0, db=db)
     try:
         yield
     finally:
         _sd_notify("STOPPING=1")
+        from .jobs.task_queue import stop_worker
+        from .recipes.sync_manager import wait_for_sync
+        stop_worker()
+        wait_for_sync(timeout=10.0)
         # Sauberes Shutdown: Worker-Thread stoppen damit keine FTS-Transaktion
         # mitten im Schreiben abreißt (SQLite-Korruption-Risiko bei SIGKILL).
         # Wir warten max 25s — systemd-Default TimeoutStopSec ist 90s, lässt
@@ -196,7 +210,7 @@ async def _lifespan(app):
             # -wal-Datei nicht beim nächsten Start gross ist. Beide günstig
             # (~ms) und ohne Risiko bei WAL-Mode.
             try:
-                with _db.conn() as c:
+                with db.conn() as c:
                     c.execute("PRAGMA optimize")
                     c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 logger.info("DB: optimize + wal_checkpoint(TRUNCATE) ok")
@@ -390,6 +404,7 @@ def _static_version() -> str:
         m = max(
             int((STATIC_DIR / "app.js").stat().st_mtime),
             int((STATIC_DIR / "rezepte.css").stat().st_mtime),
+            int((STATIC_DIR / "runtime.js").stat().st_mtime),
         )
         return str(m)
     except Exception:

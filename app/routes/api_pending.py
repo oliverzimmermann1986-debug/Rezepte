@@ -103,32 +103,6 @@ def resolve(body: ResolveBody):
     return get_scraper_job().resolve_pending(body.url, decision)
 
 
-class BulkSkipRequest(BaseModel):
-    urls: List[str]
-
-
-@router.post("/bulk-skip")
-def bulk_skip(body: BulkSkipRequest) -> Dict[str, Any]:
-    """Markiert mehrere Pending-Items in einem Rutsch als 'skipped'.
-    Spart Klicks wenn man z.B. zehn Karnevals-Videos auf einmal abräumen will."""
-    if not body.urls:
-        return {"ok": True, "skipped": 0}
-    db = get_db()
-    job = get_scraper_job()
-    skipped = 0
-    errors = []
-    for url in body.urls:
-        try:
-            r = job.resolve_pending(url, {"action": "skip"})
-            if r.get("ok"):
-                skipped += 1
-            else:
-                errors.append({"url": url, "error": r.get("error")})
-        except Exception as e:
-            errors.append({"url": url, "error": str(e)})
-    return {"ok": True, "skipped": skipped, "errors": errors}
-
-
 class ReanalyzeRequest(BaseModel):
     url: str
 

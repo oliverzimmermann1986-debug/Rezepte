@@ -24,9 +24,12 @@ import sqlite3
 import sys
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from ..db import Database
 
 # Schwelle für Ähnlichkeits-Cluster. 0.85 = "Bolognese"↔"Bolognase" matched,
 # "Pasta"↔"Pizza" matched NICHT. Tuned auf False-Positives-min.

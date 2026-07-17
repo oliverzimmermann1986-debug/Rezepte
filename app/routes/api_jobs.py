@@ -139,6 +139,19 @@ def cleanup_failed_jobs():
     return {"ok": True, "deleted": deleted}
 
 
+@router.get("/tasks/list")
+def list_background_tasks(limit: int = 50):
+    return get_db().background_task_list(limit=limit)
+
+
+@router.get("/tasks/{task_id}")
+def background_task_detail(task_id: int):
+    task = get_db().background_task_get(task_id)
+    if not task:
+        raise HTTPException(404, "Task nicht gefunden")
+    return task
+
+
 @router.get("/{job_id}")
 def job_detail(job_id: int):
     j = get_db().job_get(job_id)
