@@ -13,7 +13,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
 
@@ -58,6 +58,23 @@ CREATE TABLE IF NOT EXISTS download_failures (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_kind ON jobs(kind, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, kind);
+
+-- Persistente Queue für kurze, vom Web ausgelöste Hintergrundaufgaben.
+-- Anders als lose Daemon-Threads überlebt ein queued Task einen Neustart.
+CREATE TABLE IF NOT EXISTS background_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'queued', -- queued|running|ok|error
+  created_at REAL NOT NULL,
+  started_at REAL,
+  ended_at REAL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  result_json TEXT,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_background_tasks_queue
+  ON background_tasks(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_pending_status ON pending(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_history_processed ON history(processed_at DESC);
 
@@ -819,6 +836,106 @@ class Database:
             )
             return cur.rowcount or 0
 
+    # ---------------- Persistente Background-Tasks ----------------
+    def background_task_enqueue(self, kind: str, payload: Dict[str, Any]) -> int:
+        with self.conn() as c:
+            cur = c.execute(
+                "INSERT INTO background_tasks(kind, payload_json, status, created_at) "
+                "VALUES (?, ?, 'queued', ?)",
+                (kind, json.dumps(payload, ensure_ascii=False), time.time()),
+            )
+            return int(cur.lastrowid)
+
+    def background_task_claim_next(self) -> Optional[Dict[str, Any]]:
+        """Claimt atomar den ältesten queued Task für genau einen Worker."""
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute(
+                "SELECT * FROM background_tasks WHERE status='queued' "
+                "ORDER BY created_at, id LIMIT 1"
+            ).fetchone()
+            if not row:
+                return None
+            now = time.time()
+            updated = c.execute(
+                "UPDATE background_tasks SET status='running', started_at=?, attempts=attempts+1 "
+                "WHERE id=? AND status='queued'",
+                (now, row["id"]),
+            ).rowcount
+            if not updated:
+                return None
+            task = dict(row)
+            task["status"] = "running"
+            task["started_at"] = now
+            task["attempts"] = int(task.get("attempts") or 0) + 1
+        try:
+            task["payload"] = json.loads(task.pop("payload_json") or "{}")
+        except Exception:
+            task["payload"] = {}
+        return task
+
+    def background_task_finish(
+        self, task_id: int, *, ok: bool, result: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE background_tasks SET status=?, ended_at=?, result_json=?, error=? WHERE id=?",
+                (
+                    "ok" if ok else "error",
+                    time.time(),
+                    json.dumps(result or {}, ensure_ascii=False, default=str),
+                    error,
+                    int(task_id),
+                ),
+            )
+
+    def background_task_get(self, task_id: int) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute("SELECT * FROM background_tasks WHERE id=?", (int(task_id),)).fetchone()
+        if not row:
+            return None
+        task = dict(row)
+        for source, target in (("payload_json", "payload"), ("result_json", "result")):
+            try:
+                task[target] = json.loads(task.pop(source) or "{}")
+            except Exception:
+                task[target] = {}
+        return task
+
+    def background_task_list(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM background_tasks ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(200, int(limit))),),
+            ).fetchall()
+        return [self._decode_background_task(dict(row)) for row in rows]
+
+    @staticmethod
+    def _decode_background_task(task: Dict[str, Any]) -> Dict[str, Any]:
+        for source, target in (("payload_json", "payload"), ("result_json", "result")):
+            try:
+                task[target] = json.loads(task.pop(source) or "{}")
+            except Exception:
+                task[target] = {}
+        return task
+
+    def background_tasks_recover(self, *, max_attempts: int = 3) -> int:
+        """Nach Neustart laufende Tasks erneut einreihen; Endlosschleifen begrenzen."""
+        with self.conn() as c:
+            retry = c.execute(
+                "UPDATE background_tasks SET status='queued', started_at=NULL, error=NULL "
+                "WHERE status='running' AND attempts < ?",
+                (max_attempts,),
+            ).rowcount or 0
+            c.execute(
+                "UPDATE background_tasks SET status='error', ended_at=?, "
+                "error=COALESCE(error, 'Zu viele Neustartversuche') "
+                "WHERE status='running' AND attempts >= ?",
+                (time.time(), max_attempts),
+            )
+        return int(retry)
+
     def deleted_history_add(self, entry: Dict[str, Any], *, quarantine_path: str = "",
                             reason: str = "manual_delete", metadata: Optional[Dict[str, Any]] = None) -> int:
         """Audit-Log für Soft-Deletes. Der eigentliche Ordner wird in Quarantäne
@@ -1123,60 +1240,42 @@ class Database:
         limit: int = 200,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """Filter-fähige Rezept-Liste. Alle Filter sind AND-verknüpft.
-        - tag_ids: Rezept muss ALLE genannten Tags haben.
-        - ingredient_canonical: Rezept muss ALLE genannten Zutaten haben.
-        - search: matcht in name OR description (LIKE).
-        - ingredients_status: filtert auf KI-Extraktionsstatus (ok|pending|error|skipped).
-        - verified: True = nur user_verified=1, False = nur =0, None = beide.
-        - include_deleted=False: Default. Filtert deleted_at IS NULL (nur aktive).
-        - only_deleted=True: Papierkorb-View, deleted_at IS NOT NULL."""
-        params: List[Any] = []
-        where: List[str] = []
-        if type:
-            where.append("r.type = ?"); params.append(type)
-        if category:
-            where.append("r.category = ?"); params.append(category)
-        if folder_prefix:
-            where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
-        if search:
-            self._append_smart_search(where, params, search)
-        if tag_ids:
-            for tid in tag_ids:
-                where.append(
-                    "EXISTS (SELECT 1 FROM recipe_tags rt WHERE rt.recipe_id=r.id AND rt.tag_id=?)"
-                )
-                params.append(tid)
-        # Ingredient-AND: für jede Zutat eine EXISTS-Subquery
-        if ingredient_canonical:
-            for ing in ingredient_canonical:
-                where.append(
-                    "EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id AND ri.canonical_name=?)"
-                )
-                params.append(ing)
-        if ingredients_status:
-            where.append("r.ingredients_status = ?"); params.append(ingredients_status)
-        if verified is not None:
-            where.append("COALESCE(r.user_verified, 0) = ?")
-            params.append(1 if verified else 0)
-        if favorite_only:
-            where.append("r.is_favorite = 1")
-        if min_rating > 0:
-            where.append("r.rating >= ?"); params.append(min_rating)
-        if only_deleted:
-            where.append("r.deleted_at IS NOT NULL")
-        elif not include_deleted:
-            where.append("r.deleted_at IS NULL")
-        order_col = "r.deleted_at DESC" if only_deleted else "COALESCE(r.source_added_at, r.indexed_at) DESC"
-        sql = (
-            "SELECT r.* FROM recipes r"
-            + (" WHERE " + " AND ".join(where) if where else "")
-            + f" ORDER BY {order_col}"
-            + " LIMIT ? OFFSET ?"
+        """Filterfähige Rezeptliste mit SQL-seitiger Suchrelevanz."""
+        from .recipes.query_builder import build_recipe_filters, search_rank_sql
+        where_sql, where_params = build_recipe_filters(self,
+            type=type,
+            category=category,
+            folder_prefix=folder_prefix,
+            tag_ids=tag_ids,
+            ingredient_canonical=ingredient_canonical,
+            search=search,
+            ingredients_status=ingredients_status,
+            verified=verified,
+            favorite_only=favorite_only,
+            min_rating=min_rating,
+            include_deleted=include_deleted,
+            only_deleted=only_deleted,
         )
-        params.append(limit); params.append(offset)
+        select_sql = "SELECT r.*"
+        params: List[Any] = []
+        if search:
+            rank_sql, rank_params = search_rank_sql(self, search)
+            select_sql += f", {rank_sql} AS _search_score"
+            params.extend(rank_params)
+            order_sql = "_search_score DESC, COALESCE(r.source_added_at, r.indexed_at) DESC"
+        else:
+            order_sql = (
+                "r.deleted_at DESC" if only_deleted
+                else "COALESCE(r.source_added_at, r.indexed_at) DESC"
+            )
+        params.extend(where_params)
+        params.extend([limit, offset])
+        sql = f"{select_sql} FROM recipes r{where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
         with self.conn() as c:
-            return [dict(r) for r in c.execute(sql, params).fetchall()]
+            rows = [dict(row) for row in c.execute(sql, params).fetchall()]
+        for row in rows:
+            row.pop("_search_score", None)
+        return rows
 
     def recipe_count(
         self,
@@ -1194,45 +1293,25 @@ class Database:
         include_deleted: bool = False,
         only_deleted: bool = False,
     ) -> int:
-        """Gleiche Filter wie recipe_list, liefert nur den Count."""
-        params: List[Any] = []
-        where: List[str] = []
-        if type:
-            where.append("r.type = ?"); params.append(type)
-        if category:
-            where.append("r.category = ?"); params.append(category)
-        if folder_prefix:
-            where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
-        if search:
-            self._append_smart_search(where, params, search)
-        if tag_ids:
-            for tid in tag_ids:
-                where.append(
-                    "EXISTS (SELECT 1 FROM recipe_tags rt WHERE rt.recipe_id=r.id AND rt.tag_id=?)"
-                )
-                params.append(tid)
-        if ingredient_canonical:
-            for ing in ingredient_canonical:
-                where.append(
-                    "EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id AND ri.canonical_name=?)"
-                )
-                params.append(ing)
-        if ingredients_status:
-            where.append("r.ingredients_status = ?"); params.append(ingredients_status)
-        if verified is not None:
-            where.append("COALESCE(r.user_verified, 0) = ?")
-            params.append(1 if verified else 0)
-        if favorite_only:
-            where.append("r.is_favorite = 1")
-        if min_rating > 0:
-            where.append("r.rating >= ?"); params.append(min_rating)
-        if only_deleted:
-            where.append("r.deleted_at IS NOT NULL")
-        elif not include_deleted:
-            where.append("r.deleted_at IS NULL")
-        sql = "SELECT COUNT(*) AS n FROM recipes r" + (" WHERE " + " AND ".join(where) if where else "")
+        """Gleiche Filter wie ``recipe_list``; liefert nur die Trefferzahl."""
+        from .recipes.query_builder import build_recipe_filters
+        where_sql, params = build_recipe_filters(self,
+            type=type,
+            category=category,
+            folder_prefix=folder_prefix,
+            tag_ids=tag_ids,
+            ingredient_canonical=ingredient_canonical,
+            search=search,
+            ingredients_status=ingredients_status,
+            verified=verified,
+            favorite_only=favorite_only,
+            min_rating=min_rating,
+            include_deleted=include_deleted,
+            only_deleted=only_deleted,
+        )
         with self.conn() as c:
-            return int(c.execute(sql, params).fetchone()["n"])
+            row = c.execute(f"SELECT COUNT(*) AS n FROM recipes r{where_sql}", params).fetchone()
+        return int(row["n"])
 
     def recipes_pending_extraction(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Alle pending Rezepte für den Worker. KEIN description-Filter hier —

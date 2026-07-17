@@ -3536,3 +3536,41 @@ a { color: var(--accent-deep); }
 }
 .admin-subsection h3 { margin: 0 0 10px; font-size: 1rem; color: #65460d; }
 .admin-subsection .hint { margin-top: 8px; line-height: 1.45; }
+
+/* Performance-/A11y-Ergänzungen: Ladezustände und asynchroner Bibliotheks-Sync */
+.sync-status {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-mute);
+}
+.sync-status .error { color: var(--danger, #a82828); }
+.recipe-skeletons { display: contents; }
+.recipe-skeleton { pointer-events: none; }
+.skeleton-block,
+.skeleton-line {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+}
+.skeleton-line {
+  height: 12px;
+  margin-top: 10px;
+  border-radius: 999px;
+}
+.skeleton-title { width: 72%; height: 18px; }
+.skeleton-short { width: 48%; }
+.skeleton-block::after,
+.skeleton-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent);
+  animation: recipe-skeleton-sweep 1.25s infinite;
+}
+@keyframes recipe-skeleton-sweep { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block::after, .skeleton-line::after { animation: none; }
+}
+.modal:focus { outline: none; }

@@ -46,10 +46,13 @@ function scrapperApp() {
         this.recipes.filters.favorite_only = false;
       }
 
+      if (targetPage === 'admin') this._startAdminRuntime();
+      else this._stopAdminRuntime();
+
       switch (targetPage) {
         case 'admin':     this.selectAdminTab(this.admin.tab || 'import', { updateUrl: false }); break;
         case 'recipes':
-        case 'favorites': this.recipes.filters.offset = 0; this.loadRecipes(); this.loadFacets(); break;
+        case 'favorites': this.recipes.filters.offset = 0; this.loadRecipes(); break;
         case 'cart':      this.loadCart(); if (!this.config?.einkauf) this.loadConfig(); break;
       }
 
@@ -97,7 +100,7 @@ function scrapperApp() {
 
     // ── Recipe-Browser + Einkaufskorb (feat/recipe-browser-and-cart) ─────
     recipes: {
-      items: [], total: 0, loading: false,
+      items: [], total: 0, loading: false, loadingMore: false,
       filters: { search: '', type: '', category: '', tag_ids: [], ingredients: [], ingredients_status: '', verified: '', favorite_only: false, min_rating: 0, limit: 60, offset: 0 },
       searchMeta: { corrected: false, original: '', query: '', suggestion: '' },
       filterDrawerOpen: false,  // nur auf Mobile sichtbar: Filter als Drawer statt Sidebar
@@ -106,6 +109,8 @@ function scrapperApp() {
       facets: { types: [], categories: [], tags: [], ingredients: [] },
       extractionRunning: false, extractionPending: 0,
       extractionStats: {}, _pollTimer: null,
+      sync: { running: false, queued: false, result: null, error: null, last_success_at: null },
+      _listController: null, _moreController: null, _facetsController: null, _loadSequence: 0,
     },
     cart: {
       items: [],
@@ -215,14 +220,8 @@ function scrapperApp() {
 
       this.loadSystemInfo();
       this.loadSession();
-      this.loadRecentJobs();
-      this.loadStats();
-      this.loadHddStatus();
       this.navTo(this.page, { updateUrl: false });
-      this._jobsTimer = setInterval(() => this.loadRecentJobs(), 15000);
-      this._statsTimer = setInterval(() => this.loadStats(), 60000);
-      this._hddTimer = setInterval(() => this.loadHddStatus(), 30000);
-      this._startEventStream();
+      this.$nextTick(() => window.RezepteRuntime?.initAccessibleDialogs());
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) this._pauseBackgroundWork();
         else this._resumeBackgroundWork();
@@ -571,40 +570,90 @@ function scrapperApp() {
       }
     },
     _startPollingFallback() {
-      this.refreshStatus();
-      this.refreshProgress();
-      this._statusTimer = setInterval(() => this.refreshStatus(), 4000);
-      this._progressTimer = setInterval(() => this.refreshProgress(), 3000);
+      if (this.page !== 'admin' || document.hidden) return;
+      if (!this._statusPoller) {
+        this._statusPoller = window.RezepteRuntime.createPoller(
+          async () => { const before = JSON.stringify(this.status); await this.refreshStatus(); return before !== JSON.stringify(this.status); },
+          { minDelay: 3000, maxDelay: 20000, isActive: () => this.page === 'admin' && !document.hidden }
+        );
+      }
+      if (!this._progressPoller) {
+        this._progressPoller = window.RezepteRuntime.createPoller(
+          async () => { const before = JSON.stringify(this.scraperProgress); await this.refreshProgress(); return before !== JSON.stringify(this.scraperProgress); },
+          { minDelay: 2500, maxDelay: 15000, isActive: () => this.page === 'admin' && !document.hidden }
+        );
+      }
+      this._statusPoller.start();
+      this._progressPoller.start();
     },
 
-    // App im Hintergrund (PWA minimiert / Tab inaktiv): alles Periodische
-    // stoppen — iOS drosselt Timer ohnehin, aber SSE hält sonst die
-    // Verbindung + Funkmodul wach.
+    _adminRuntimeActive: false,
+    _startAdminRuntime() {
+      if (this._adminRuntimeActive || document.hidden || this.page !== 'admin') return;
+      this._adminRuntimeActive = true;
+      this.loadRecentJobs();
+      this.loadStats();
+      this.loadHddStatus();
+      if (!this._jobsPoller) {
+        this._jobsPoller = window.RezepteRuntime.createPoller(
+          () => this.loadRecentJobs(),
+          { minDelay: 15000, maxDelay: 60000, isActive: () => this.page === 'admin' && !document.hidden }
+        );
+        this._statsPoller = window.RezepteRuntime.createPoller(
+          () => this.loadStats(),
+          { minDelay: 60000, maxDelay: 180000, isActive: () => this.page === 'admin' && !document.hidden }
+        );
+        this._hddPoller = window.RezepteRuntime.createPoller(
+          () => this.loadHddStatus(),
+          { minDelay: 30000, maxDelay: 120000, isActive: () => this.page === 'admin' && !document.hidden }
+        );
+      }
+      this._jobsPoller.start({ immediate: false });
+      this._statsPoller.start({ immediate: false });
+      this._hddPoller.start({ immediate: false });
+      this._startEventStream();
+    },
+    _stopAdminRuntime() {
+      this._adminRuntimeActive = false;
+      for (const p of ['_jobsPoller','_statsPoller','_hddPoller','_statusPoller','_progressPoller']) {
+        this[p]?.stop();
+      }
+      if (this._eventSource) { this._eventSource.close(); this._eventSource = null; }
+    },
+
+    // App im Hintergrund (PWA minimiert / Tab inaktiv): Netzwerkaktivität
+    // pausieren. Beim Zurückkehren startet nur der aktuell sichtbare Bereich.
     _bgPaused: false,
     _pauseBackgroundWork() {
       if (this._bgPaused) return;
       this._bgPaused = true;
-      for (const t of ['_jobsTimer', '_statsTimer', '_hddTimer', '_statusTimer', '_progressTimer']) {
-        if (this[t]) { clearInterval(this[t]); this[t] = null; }
-      }
-      if (this._eventSource) { this._eventSource.close(); this._eventSource = null; }
+      this._stopAdminRuntime();
+      this.recipes._listController?.abort();
+      this.recipes._facetsController?.abort();
     },
     _resumeBackgroundWork() {
       if (!this._bgPaused) return;
       this._bgPaused = false;
-      // Sofort frische Daten, dann Timer + SSE wie beim Init
-      this.loadRecentJobs(); this.loadStats(); this.loadHddStatus();
-      this._jobsTimer = setInterval(() => this.loadRecentJobs(), 15000);
-      this._statsTimer = setInterval(() => this.loadStats(), 60000);
-      this._hddTimer = setInterval(() => this.loadHddStatus(), 30000);
-      this._startEventStream();
+      if (this.page === 'admin') this._startAdminRuntime();
+      if (this.page === 'recipes' || this.page === 'favorites') {
+        this.loadRecipes();
+        if (this.recipes.sync.running) this._scheduleSyncPoll();
+        if (this.recipes.extractionRunning) this._scheduleExtractionPoll();
+      }
     },
 
     // ------------- Helpers -------------
     async api(method, url, body, options = {}) {
       const opts = { method, headers: {'Content-Type': 'application/json'} };
       if (body !== undefined) opts.body = JSON.stringify(body);
-      const r = await fetch(url, opts);
+      if (options.signal) opts.signal = options.signal;
+      let r;
+      try {
+        r = await fetch(url, opts);
+      } catch (error) {
+        if (error?.name === 'AbortError') return null;
+        throw error;
+      }
       if (r.status === 401) { window.location = '/login'; return null; }
       if (!r.ok) {
         let detail = `${r.status}`;
@@ -2071,30 +2120,44 @@ function scrapperApp() {
 
     // ── Recipe-Liste + Facets ─────────────────────────────────────────
     async loadRecipes() {
-      // Bei normalem loadRecipes-Aufruf: offset zurücksetzen → wir starten
-      // immer beim Anfang. Infinite-Scroll nutzt loadMoreRecipes(), das
-      // den offset on-the-fly berechnet ohne filters.offset zu mutieren.
+      // Alte Filter-/Suchanfrage abbrechen: langsame Antworten dürfen keinen
+      // neueren UI-Zustand überschreiben.
+      this.recipes._listController?.abort();
+      this.recipes._moreController?.abort();
+      this.recipes.loadingMore = false;
+      const controller = new AbortController();
+      this.recipes._listController = controller;
+      const sequence = ++this.recipes._loadSequence;
       this.recipes.filters.offset = 0;
       this.recipes.loading = true;
       try {
-        const r = await this.api('GET', '/api/recipes?' + this._buildRecipeQuery());
-        if (!r) return;
+        const r = await this.api(
+          'GET', '/api/recipes?' + this._buildRecipeQuery(), undefined,
+          { signal: controller.signal }
+        );
+        if (!r || sequence !== this.recipes._loadSequence) return;
         this.recipes.items = r.items || [];
         this.recipes.total = r.total || 0;
         this.recipes.searchMeta = r.search_meta || { corrected: false, original: '', query: '', suggestion: '' };
         this.recipes.extractionRunning = !!r.extraction_running;
-        this._scheduleExtractionPoll();
-        this.loadFacets();   // Facetten-Counts an aktuelle Filter anpassen
+        if (r.sync) this.recipes.sync = { ...this.recipes.sync, ...r.sync };
+        if (this.recipes.sync.running) this._scheduleSyncPoll();
+        if (this.recipes.extractionRunning) this._scheduleExtractionPoll();
+        this.loadFacets();
       } finally {
-        this.recipes.loading = false;
+        if (sequence === this.recipes._loadSequence) this.recipes.loading = false;
       }
     },
 
     async loadFacets() {
-      // Filter mitschicken → cross-gefilterte Counts. limit/offset ignoriert die Route.
-      const r = await this.api('GET', '/api/recipes/facets?' + this._buildRecipeQuery());
-      if (!r) return;
-      this.recipes.facets = r;
+      this.recipes._facetsController?.abort();
+      const controller = new AbortController();
+      this.recipes._facetsController = controller;
+      const r = await this.api(
+        'GET', '/api/recipes/facets?' + this._buildRecipeQuery(), undefined,
+        { signal: controller.signal, silent: true }
+      );
+      if (r) this.recipes.facets = r;
     },
 
     applySearchSuggestion() {
@@ -2182,41 +2245,67 @@ function scrapperApp() {
     },
 
     async syncRecipes() {
-      this.showToast('Synchronisiere…');
       const r = await this.api('POST', '/api/recipes/sync');
       if (!r) return;
-      this.showToast(`✓ ${r.scanned || 0} gescannt, ${r.added || 0} neu`);
-      await this.loadRecipes();
-      await this.loadFacets();
+      this.recipes.sync = { ...this.recipes.sync, ...r, running: !!r.running };
+      this.showToast(r.already_running ? 'Synchronisierung läuft bereits' : 'Synchronisierung gestartet');
+      this._scheduleSyncPoll();
+    },
+    syncResultLabel() {
+      const r = this.recipes.sync?.result;
+      if (!r) return '';
+      return `Zuletzt: ${r.scanned || 0} geprüft · ${r.added || 0} neu · ${r.updated || 0} aktualisiert`;
+    },
+    _scheduleSyncPoll() {
+      if (!this._syncPoller) {
+        this._syncPoller = window.RezepteRuntime.createPoller(async () => {
+          if (document.hidden) return false;
+          const previousRun = this.recipes.sync?.run_id;
+          const wasRunning = !!this.recipes.sync?.running;
+          const state = await this.api('GET', '/api/recipes/sync/status', undefined, { silent: true });
+          if (!state) return false;
+          this.recipes.sync = { ...this.recipes.sync, ...state };
+          if (wasRunning && !state.running) {
+            this._syncPoller.stop();
+            if (state.error) this.showToast('Synchronisierung fehlgeschlagen', 'err');
+            else this.showToast(this.syncResultLabel() || 'Synchronisierung abgeschlossen');
+            await this.loadRecipes();
+            return true;
+          }
+          return previousRun !== state.run_id || wasRunning !== !!state.running;
+        }, {
+          minDelay: 1000,
+          maxDelay: 5000,
+          isActive: () => !document.hidden && !!this.recipes.sync?.running,
+        });
+      }
+      this._syncPoller.start();
     },
 
     // ── Extraction-Polling ────────────────────────────────────────────
     _scheduleExtractionPoll() {
-      // Idempotent: einen Timer für die Background-Extraction-Status-Updates
-      if (this.recipes._pollTimer) return;
-      const tick = async () => {
-        try {
-          const s = await this.api('GET', '/api/recipes/extraction/status');
-          if (!s) return;
+      if (!this.recipes.extractionRunning) return;
+      if (!this._extractionPoller) {
+        this._extractionPoller = window.RezepteRuntime.createPoller(async () => {
+          const s = await this.api('GET', '/api/recipes/extraction/status', undefined, { silent: true });
+          if (!s) return false;
           const wasRunning = this.recipes.extractionRunning;
+          const oldPending = this.recipes.extractionPending;
           this.recipes.extractionRunning = !!s.running;
           this.recipes.extractionStats = s.stats || {};
           this.recipes.extractionPending = s.stats?.pending || 0;
           if (!s.running) {
-            // Worker fertig — Liste + Facets nachladen damit Zutaten-Filter
-            // jetzt belegt ist, und Polling stoppen
-            clearInterval(this.recipes._pollTimer);
-            this.recipes._pollTimer = null;
-            if (wasRunning && this.page === 'recipes') {
-              this.loadRecipes();
-              this.loadFacets();
-            }
+            this._extractionPoller.stop();
+            if (wasRunning && (this.page === 'recipes' || this.page === 'favorites')) this.loadRecipes();
           }
-        } catch(e) {}
-      };
-      tick();  // sofort einmal
-      if (this.recipes._pollTimer) clearInterval(this.recipes._pollTimer);
-      this.recipes._pollTimer = setInterval(tick, 5000);
+          return oldPending !== this.recipes.extractionPending || wasRunning !== !!s.running;
+        }, {
+          minDelay: 3000,
+          maxDelay: 15000,
+          isActive: () => !document.hidden && !!this.recipes.extractionRunning,
+        });
+      }
+      this._extractionPoller.start();
     },
 
     // ── Detail-Modal ──────────────────────────────────────────────────
@@ -3086,18 +3175,29 @@ function scrapperApp() {
 
     // ─── Infinite-Scroll: lade nächste Seite an aktuelle items ─────────
     async loadMoreRecipes() {
-      if (this.recipes.loading || this.recipes.items.length >= this.recipes.total) return;
-      this.recipes.loading = true;
+      if (this.recipes.loading || this.recipes.loadingMore || this.recipes.items.length >= this.recipes.total) return;
+      this.recipes._moreController?.abort();
+      const controller = new AbortController();
+      this.recipes._moreController = controller;
+      const sequence = this.recipes._loadSequence;
+      const nextOffset = this.recipes.items.length;
+      this.recipes.loadingMore = true;
       try {
-        const nextOffset = this.recipes.items.length;
         const query = this._buildRecipeQuery().replace(/offset=\d+/, 'offset=' + nextOffset);
-        const r = await this.api('GET', '/api/recipes?' + query);
-        if (r?.items) {
-          this.recipes.items.push(...r.items);
+        const r = await this.api(
+          'GET', '/api/recipes?' + query, undefined,
+          { signal: controller.signal, silent: true }
+        );
+        if (r?.items && sequence === this.recipes._loadSequence && !controller.signal.aborted) {
+          const existingIds = new Set(this.recipes.items.map(item => item.id));
+          this.recipes.items.push(...r.items.filter(item => !existingIds.has(item.id)));
           this.recipes.total = r.total;
         }
       } finally {
-        this.recipes.loading = false;
+        if (this.recipes._moreController === controller) {
+          this.recipes.loadingMore = false;
+          this.recipes._moreController = null;
+        }
       }
     },
 

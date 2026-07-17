@@ -37,6 +37,7 @@ from ..config_store import get_config
 from ..db import Database, get_db
 from .canonical import canonical_name as _canonical
 from .units import normalize_unit
+from .image_cache import ensure_thumbnail
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,16 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
     # PDF-Rezepte ohne Bild: Seite 1 nach thumb.jpg rendern (einmalig).
     if thumb is None:
         thumb = _pdf_thumb(folder)
+
+    # Kartenbilder im ohnehin asynchronen FS-Sync vorberechnen. Der Webrequest
+    # muss dadurch beim ersten Scrollen keinen Bildprozess mehr starten.
+    if thumb:
+        try:
+            source_thumb = folder / thumb
+            ensure_thumbnail(source_thumb, 400)
+            ensure_thumbnail(source_thumb, 800)
+        except Exception as e:
+            logger.debug("Thumbnail-Prewarm für %s fehlgeschlagen: %s", folder.name, e)
 
     existed = db.recipe_get_by_folder(str(folder))
     db.recipe_upsert(

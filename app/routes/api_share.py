@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import secrets
-import threading
 import time
 from typing import Optional
 
@@ -30,6 +29,7 @@ from ..auth import require_auth
 from ..config_store import get_config
 from ..jobs import scraper as scraper_job
 from ..jobs.locks import file_lock_or_none
+from ..jobs.task_queue import enqueue
 
 logger = logging.getLogger(__name__)
 
@@ -62,24 +62,21 @@ class ShareIn(BaseModel):
     token: Optional[str] = None   # Alternative zum X-Share-Token-Header
 
 
-def _ingest_async(url: str, content_type: str) -> None:
-    """Hintergrund-Thread: EINE URL durch die Pipeline. file_lock_or_none
-    serialisiert gegen einen laufenden Scraper-Lauf (yt-dlp/DB-Races). Wartet
-    bis zu 90s auf den Lock statt die URL zu verwerfen."""
+def run_share_ingest_task(payload: dict) -> dict:
+    """Queue-Handler: eine URL durch die normale Pipeline verarbeiten."""
+    url = str(payload.get("url") or "")
+    content_type = str(payload.get("type") or "recipe")
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
         with file_lock_or_none("scraper") as flock:
             if flock is not None:
-                try:
-                    res = scraper_job.get_scraper_job().process_url(
-                        {"url": url, "type": content_type}
-                    )
-                    logger.info("Share-Intake %s → %s", url, res.get("status"))
-                except Exception:
-                    logger.exception("Share-Intake fehlgeschlagen: %s", url)
-                return
+                result = scraper_job.get_scraper_job().process_url(
+                    {"url": url, "type": content_type}
+                )
+                logger.info("Share-Intake %s → %s", url, result.get("status"))
+                return {"ok": result.get("status") != "error", "url": url, **result}
         time.sleep(2)
-    logger.error("Share-Intake: Scraper 90s belegt — URL verworfen: %s", url)
+    return {"ok": False, "url": url, "error": "Scraper länger als 90s belegt"}
 
 
 @router.post("")
@@ -92,8 +89,8 @@ def share_intake(payload: ShareIn,
     if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "Keine gültige URL")
     ctype = payload.type if payload.type in ("recipe", "wedding") else "recipe"
-    threading.Thread(target=_ingest_async, args=(url, ctype), daemon=True).start()
-    return {"ok": True, "queued": url}
+    task_id = enqueue("share_ingest", {"url": url, "type": ctype})
+    return {"ok": True, "accepted": True, "task_id": task_id, "queued": url}
 
 
 @info_router.get("/token")

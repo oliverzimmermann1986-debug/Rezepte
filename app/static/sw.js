@@ -13,6 +13,7 @@ const STATIC_CACHE_URLS = [
   '/',
   '/static/rezepte.css',
   '/static/app.js',
+  '/static/runtime.js',
   '/static/alpine.min.js',
   '/manifest.json',
 ];

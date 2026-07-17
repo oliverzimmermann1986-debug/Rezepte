@@ -4,6 +4,10 @@ __pycache__/
 *.egg-info/
 venv/
 .venv/
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
 
 # Runtime
 data/*.db

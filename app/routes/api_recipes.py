@@ -29,19 +29,21 @@ from pydantic import BaseModel, Field
 
 from ..auth import require_auth
 from ..core.analyzer import build_analyzer
+from ..core.ttl_cache import TTLCache
 from ..config_store import get_config
 from ..db import get_db
 from pathlib import Path
 from ..recipes.canonical import canonical_name as _canonical
-from ..recipes.search import parse_search_query, score_recipe, suggest_query
+from ..recipes.search import suggest_query
 
 logger = logging.getLogger(__name__)
 from ..recipes.indexer import (
     ensure_extraction_running,
     is_extraction_running,
-    sync_filesystem,
 )
 from ..recipes.units import normalize_unit
+from ..recipes.sync_manager import request_sync, sync_status
+from ..recipes.image_cache import ensure_thumbnail, invalidate_thumbnail_cache, normalize_image
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"], dependencies=[Depends(require_auth)])
 
@@ -70,11 +72,7 @@ def _version_before(recipe_id: int, request: Request, reason: str, source: str =
         raise HTTPException(404, "Rezept nicht gefunden")
     return int(version_id)
 
-# Auto-Sync-Drossel: FS→DB-Scan höchstens alle _SYNC_THROTTLE_S Sekunden,
-# damit vom Scraper neu abgelegte Rezepte ohne manuellen Sync erscheinen,
-# ohne bei jedem Filter-Klick das ganze Filesystem zu scannen.
-_SYNC_THROTTLE_S = 30.0
-_last_sync_ts = 0.0
+_FACET_CACHE = TTLCache(ttl_seconds=5.0, max_entries=128)
 
 
 # ── Listing ─────────────────────────────────────────────────────────────
@@ -100,14 +98,6 @@ def list_recipes(
 ):
     """Hauptlisten-Endpoint. Lazy-Sync + lazy-Extraction Trigger."""
     db = get_db()
-
-    # Auto-Sync: bei leerem Index sofort, sonst gedrosselt (siehe _SYNC_THROTTLE_S),
-    # damit vom Scraper neu abgelegte Rezept-Ordner ohne manuellen Sync auftauchen.
-    global _last_sync_ts
-    _now = time.monotonic()
-    if db.recipe_count() == 0 or (_now - _last_sync_ts) > _SYNC_THROTTLE_S:
-        sync_filesystem(db)
-        _last_sync_ts = _now
 
     # Lazy-Background-Extraction starten (no-op wenn nichts pending)
     ensure_extraction_running()
@@ -167,14 +157,6 @@ def list_recipes(
                 search_meta["suggestion"] = effective_search
                 search_meta["corrections"] = suggestion.corrections
 
-    if effective_search and items:
-        plan = parse_search_query(effective_search, db.search_synonyms_map())
-        ingredient_map = db.recipe_ingredients_for_ids([int(item["id"]) for item in items])
-        items.sort(
-            key=lambda item: score_recipe(item, ingredient_map.get(int(item["id"]), []), plan),
-            reverse=True,
-        )
-
     # Pro Item nur die wichtigsten Felder + ingredients_count
     out = []
     for r in items:
@@ -195,7 +177,7 @@ def list_recipes(
             "description": ((r.get("description") or "").strip()[:220]),
         })
     return {"total": total, "items": out, "extraction_running": is_extraction_running(),
-            "search_meta": search_meta}
+            "search_meta": search_meta, "sync": sync_status()}
 
 
 @router.get("/facets")
@@ -214,25 +196,38 @@ def facets(
        jede Option zeigt die Treffer unter den übrigen aktiven Filtern, sodass
        die Zahlen beim Setzen eines Filters in den anderen Feldern schrumpfen.
        Types/Categories bleiben die volle Distinct-Liste (keine Counts in der UI)."""
+    cache_key = (
+        type or "", category or "", tuple(sorted(tag_id or [])),
+        tuple(sorted(ingredient or [])), search or "", ingredients_status or "",
+        verified, bool(favorite_only), int(min_rating),
+    )
+    cached = _FACET_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     db = get_db()
     with db.conn() as c:
         types = [r[0] for r in c.execute(
-            "SELECT DISTINCT type FROM recipes WHERE type IS NOT NULL AND type != '' ORDER BY type"
+            "SELECT DISTINCT type FROM recipes WHERE deleted_at IS NULL "
+            "AND type IS NOT NULL AND type != '' ORDER BY type"
         ).fetchall()]
         cats = [r[0] for r in c.execute(
-            "SELECT DISTINCT category FROM recipes WHERE category IS NOT NULL AND category != '' ORDER BY category"
+            "SELECT DISTINCT category FROM recipes WHERE deleted_at IS NULL "
+            "AND category IS NOT NULL AND category != '' ORDER BY category"
         ).fetchall()]
     flt = dict(
         type=type, category=category, tag_ids=tag_id, ingredient_canonical=ingredient,
         search=search, ingredients_status=ingredients_status, verified=verified,
         favorite_only=favorite_only, min_rating=min_rating,
     )
-    return {
+    result = {
         "types": types,
         "categories": cats,
         "tags": db.tag_facets(**flt),
-        "ingredients": db.ingredient_facets(**flt)[:50],  # Top 50 für Sidebar
+        "ingredients": db.ingredient_facets(**flt)[:50],
     }
+    _FACET_CACHE.set(cache_key, result)
+    return result
 
 
 # ── Detail ──────────────────────────────────────────────────────────────
@@ -395,10 +390,16 @@ def update_servings(recipe_id: int, payload: ServingsUpdate, request: Request):
 
 # ── Sync + Extraction ──────────────────────────────────────────────────
 
-@router.post("/sync")
+@router.post("/sync", status_code=202)
 def post_sync():
-    """Manueller FS→DB-Resync via Frontend-Button."""
-    return sync_filesystem(get_db())
+    """Plant einen manuellen FS→DB-Resync ein und kehrt sofort zurück."""
+    return request_sync(reason="manual", force=True, db=get_db())
+
+
+@router.get("/sync/status")
+def get_sync_status():
+    """Fortschritt/Ergebnis des aktuellen oder letzten FS-Syncs."""
+    return sync_status()
 
 
 @router.get("/extraction/status")
@@ -567,10 +568,9 @@ def rescrape_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
 
 @router.post("/{recipe_id}/upload-thumbnail")
 async def upload_thumbnail(recipe_id: int, file: UploadFile = File(...)) -> Dict[str, Any]:
-    """Lädt ein Bild als Thumbnail für ein Rezept hoch.
-    Akzeptiert JPEG/PNG/WebP, max 10MB. Speichert als thumb.<ext> im
-    folder_path, setzt thumb_filename in DB. Existing thumbs werden ersetzt."""
-    import shutil as _sh
+    """Lädt ein Bild ein, normalisiert es und tauscht das alte Thumbnail atomar."""
+    import tempfile
+
     db = get_db()
     rec = db.recipe_get(recipe_id)
     if not rec:
@@ -579,57 +579,52 @@ async def upload_thumbnail(recipe_id: int, file: UploadFile = File(...)) -> Dict
     if not folder or not Path(folder).exists():
         raise HTTPException(400, f"Folder fehlt: {folder}")
 
-    # Content-type / Extension prüfen
-    ct = (file.content_type or "").lower()
-    ext_map = {"image/jpeg": ".jpg", "image/jpg": ".jpg",
-               "image/png": ".png", "image/webp": ".webp"}
-    ext = ext_map.get(ct)
-    if not ext:
-        # Fallback: Filename-Extension
-        if file.filename:
-            fext = Path(file.filename).suffix.lower()
-            if fext in (".jpg", ".jpeg", ".png", ".webp"):
-                ext = ".jpg" if fext == ".jpeg" else fext
-        if not ext:
-            raise HTTPException(400, f"Unsupported type: {ct}. Erlaubt: JPEG, PNG, WebP")
-
     folder_p = Path(folder)
-    # Existing thumbs entfernen (alle Varianten thumb.jpg/png/webp)
-    for old in folder_p.glob("thumb.*"):
-        if old.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
-            try:
-                old.unlink()
-            except OSError:
-                pass
-
-    target = folder_p / f"thumb{ext}"
+    max_size = 10 * 1024 * 1024
     size = 0
-    MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+    temp_path: Optional[Path] = None
     try:
-        with open(target, "wb") as out:
+        with tempfile.NamedTemporaryFile(prefix="recipe-upload-", suffix=".img", delete=False) as tmp:
+            temp_path = Path(tmp.name)
             while True:
                 chunk = await file.read(64 * 1024)
                 if not chunk:
                     break
                 size += len(chunk)
-                if size > MAX_SIZE:
-                    out.close()
-                    target.unlink()
-                    raise HTTPException(400, f"File zu groß (max {MAX_SIZE} bytes)")
-                out.write(chunk)
-    except HTTPException:
-        raise
-    except Exception as e:
-        if target.exists():
-            try: target.unlink()
-            except OSError: pass
-        raise HTTPException(500, f"Upload fehlgeschlagen: {e}")
+                if size > max_size:
+                    raise HTTPException(400, "Datei zu groß (max. 10 MB)")
+                tmp.write(chunk)
+        if size == 0:
+            raise HTTPException(400, "Leere Datei")
 
-    with db.conn() as c:
-        c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?",
-                  (target.name, recipe_id))
-    logger.info(f"thumbnail upload #{recipe_id} '{rec.get('name')}' → {target.name} ({size} B)")
-    return {"ok": True, "thumbnail": target.name, "size_bytes": size}
+        target = folder_p / "thumb.jpg"
+        try:
+            normalize_image(temp_path, target)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(400, f"Bild konnte nicht gelesen werden: {exc}") from exc
+
+        # Erst nach erfolgreichem atomaren Austausch alte Varianten entfernen.
+        for old in folder_p.glob("thumb.*"):
+            if old != target and old.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+        invalidate_thumbnail_cache(folder_p)
+        ensure_thumbnail(target, 400)
+        ensure_thumbnail(target, 800)
+        with db.conn() as c:
+            c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?", (target.name, recipe_id))
+        logger.info("thumbnail upload #%s '%s' → %s (%s B)", recipe_id, rec.get("name"), target.name, size)
+        return {"ok": True, "thumbnail": target.name, "size_bytes": size}
+    finally:
+        if temp_path:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 @router.post("/{recipe_id}/extract-frame")
@@ -927,7 +922,6 @@ def trash_list(limit: int = Query(200, ge=1, le=500),
     items = db.recipe_list(only_deleted=True, limit=limit, offset=offset)
     total = db.recipe_count_trash()
     # Für jedes Item: Anzahl Tage im Papierkorb + days_until_purge
-    import time
     now = time.time()
     for it in items:
         if it.get("deleted_at"):
@@ -1094,32 +1088,12 @@ def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
 
     serve = src
     if w:
-        # Cache-Path: IMMER als .jpg cachen — kompatibler als webp/png falls
-        # ffmpeg ohne libwebp kompiliert ist. JPEG-Quality 3 ist visually
-        # lossless für Thumbnails.
-        cache_name = f"thumb-w{w}.jpg"
-        cache = src.parent / cache_name
-        # Cache hit nur wenn er existiert UND neuer als Original ist
-        if cache.exists() and cache.stat().st_mtime >= src.stat().st_mtime:
-            serve = cache
-        else:
-            # ffmpeg-resize: -2 = Höhe automatisch (gerade Zahl), Quality 3.
-            # -pix_fmt yuvj420p sorgt für maximale JPEG-Kompatibilität.
-            try:
-                _sp.run(
-                    ["ffmpeg", "-y", "-loglevel", "error",
-                     "-i", str(src),
-                     "-vf", f"scale={w}:-2",
-                     "-pix_fmt", "yuvj420p",
-                     "-q:v", "3",
-                     str(cache)],
-                    check=True, timeout=10,
-                )
-                serve = cache
-            except (_sp.CalledProcessError, _sp.TimeoutExpired, FileNotFoundError) as e:
-                # Fallback: Original ausliefern wenn Resize fehlschlägt
-                logger.warning(f"thumb resize w={w} fail für #{recipe_id}: {e}")
-                serve = src
+        try:
+            serve = ensure_thumbnail(src, w)
+        except Exception as e:
+            # Fallback: Original ausliefern wenn Pillow das Format nicht lesen kann.
+            logger.warning(f"thumb resize w={w} fail für #{recipe_id}: {e}")
+            serve = src
 
     mtime = src.stat().st_mtime  # ETag immer auf SOURCE-mtime, nicht Cache
     return FileResponse(
