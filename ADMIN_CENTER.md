@@ -1,4 +1,4 @@
-# Admin-Zentrale – Rezeptliebe 1.2.2
+# Admin-Zentrale – Rezepte 1.2.2
 
 ## Zugang zum Admin Center
 
@@ -16,7 +16,7 @@ Die Importzentrale verdichtet Pending-Einträge, fehlgeschlagene Downloads, lauf
 
 ## Rezeptversionen und Rückgängig
 
-Vor inhaltlichen Änderungen speichert Rezeptliebe einen vollständigen Snapshot der strukturierten Rezeptdaten:
+Vor inhaltlichen Änderungen speichert Rezepte einen vollständigen Snapshot der strukturierten Rezeptdaten:
 
 - Name, Typ, Kategorie und Beschreibung
 - Portionen und Nährwerte
@@ -85,3 +85,7 @@ Diagnose im Container:
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli pdf-doctor
 journalctl -u scrapper-web -n 200 --no-pager
 ```
+
+## PDF-Rezeptdaten auslesen (v1.2.5)
+
+Im Bereich **PDF & Scan** kann neben der Bildverbesserung auch die strukturierte Rezeptauswertung aktiviert werden. Der Lauf liest Zutaten, Mengen, Einheiten, Schritte, Portionen und Tags aus neuen oder bestehenden PDF-Dateien. Bereits gepflegte Daten werden standardmäßig geschützt; ein bewusstes Überschreiben legt vorher eine Rezeptversion an.

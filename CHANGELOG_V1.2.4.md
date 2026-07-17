@@ -1,4 +1,4 @@
-# Rezeptliebe v1.2.4
+# Rezepte v1.2.4
 
 ## PDF-Route und Update-Sicherheit
 

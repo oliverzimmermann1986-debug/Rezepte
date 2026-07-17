@@ -17,7 +17,7 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 if [[ ! -f "$SOURCE_DIR/app/main.py" || ! -f "$SOURCE_DIR/requirements.txt" ]]; then
-  echo "Fehler: Das Skript muss aus einem vollständig entpackten Rezeptliebe-Release stammen." >&2
+  echo "Fehler: Das Skript muss aus einem vollständig entpackten Rezepte-Release stammen." >&2
   exit 1
 fi
 if ! id "$APP_USER" >/dev/null 2>&1; then
@@ -98,22 +98,22 @@ systemctl restart scrapper-web.service
 systemctl restart scrapper-job.timer
 
 for _ in {1..30}; do
-  if curl -fsS http://127.0.0.1:8000/healthz > /tmp/rezeptliebe-health.json 2>/dev/null; then
+  if curl -fsS http://127.0.0.1:8000/healthz > /tmp/rezepte-health.json 2>/dev/null; then
     break
   fi
   sleep 1
 done
 
-if ! grep -q '"version":"1.2.4"' /tmp/rezeptliebe-health.json 2>/dev/null && \
-   ! grep -q '"version": "1.2.4"' /tmp/rezeptliebe-health.json 2>/dev/null; then
-  echo "Fehler: Dienst läuft, meldet aber nicht Version 1.2.4." >&2
+if ! grep -q '"version":"1.2.5"' /tmp/rezepte-health.json 2>/dev/null && \
+   ! grep -q '"version": "1.2.5"' /tmp/rezepte-health.json 2>/dev/null; then
+  echo "Fehler: Dienst läuft, meldet aber nicht Version 1.2.5." >&2
   journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
   false
 fi
 
 # PDF-Route muss nach dem Neustart existieren. Ohne Cookie ist 401 korrekt;
 # nur 404 würde erneut einen gemischten Versionsstand beweisen.
-PDF_STATUS="$(curl -sS -o /tmp/rezeptliebe-pdf-route.json -w '%{http_code}' \
+PDF_STATUS="$(curl -sS -o /tmp/rezepte-pdf-route.json -w '%{http_code}' \
   http://127.0.0.1:8000/api/admin/pdf/preflight || true)"
 if [[ "$PDF_STATUS" == "404" || "$PDF_STATUS" == "000" ]]; then
   echo "Fehler: PDF-API wurde nach dem Update nicht registriert (HTTP $PDF_STATUS)." >&2
@@ -122,6 +122,6 @@ if [[ "$PDF_STATUS" == "404" || "$PDF_STATUS" == "000" ]]; then
 fi
 
 trap - ERR
-echo "Update erfolgreich. Backend und Frontend laufen gemeinsam auf Version 1.2.4."
-echo "Gesundheit: $(cat /tmp/rezeptliebe-health.json)"
+echo "Update erfolgreich. Backend und Frontend laufen gemeinsam auf Version 1.2.5."
+echo "Gesundheit: $(cat /tmp/rezepte-health.json)"
 echo "PDF-Route: HTTP $PDF_STATUS (200 oder 401 sind korrekt)"

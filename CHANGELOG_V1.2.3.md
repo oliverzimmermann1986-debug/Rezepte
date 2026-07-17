@@ -1,4 +1,4 @@
-# Rezeptliebe v1.2.3
+# Rezepte v1.2.3
 
 ## PDF-Verarbeitung stabilisiert
 

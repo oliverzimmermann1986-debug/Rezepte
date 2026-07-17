@@ -126,3 +126,7 @@ journalctl -u scrapper-web -n 200 --no-pager
 ```
 
 Sehr große Seiten werden automatisch mit einer reduzierten, aber weiterhin OCR-tauglichen DPI gerendert. Dadurch werden Speicherabbrüche bei A2-/A1-Scans vermieden.
+
+## Zutaten, Schritte und Portionen (v1.2.5)
+
+Die PDF-Pipeline kann den erzeugten beziehungsweise vorhandenen Textlayer direkt in strukturierte Rezeptdaten überführen. Ein lokaler Parser erkennt klassische Zutatenlisten. Der konfigurierte OpenAI-Analyzer ergänzt komplexe Layouts, Zubereitungsschritte, Portionen und Tags. Im Admin-Bestandslauf ist die Funktion separat aktivierbar; vorhandene manuelle Daten werden ohne aktivierte Überschreiboption nicht ersetzt.

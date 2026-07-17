@@ -1,4 +1,4 @@
-# Rezeptliebe v1.2.2
+# Rezepte v1.2.2
 
 ## Admin Center für alle Benutzer
 

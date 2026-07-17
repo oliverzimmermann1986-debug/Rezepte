@@ -1,4 +1,4 @@
-# Übernahmebericht – Rezeptliebe UI
+# Übernahmebericht – Rezepte UI
 
 ## Ziel
 
@@ -18,7 +18,7 @@ Das bestätigte Butter-Yellow-/Mobile-First-Design wurde in das richtige `Rezept
 
 - Rezeptbibliothek ist die Startseite.
 - Favoriten und Einkaufsliste sind Hauptnavigation.
-- Ein einheitliches Stylesheet: `app/static/rezeptliebe.css`.
+- Ein einheitliches Stylesheet: `app/static/rezepte.css`.
 - Alte Theme-Umschaltung und das alte `style.css` wurden entfernt.
 - Desktop: feste warme Sidebar und dreispaltige Rezeptkarten.
 - Mobile: kompakte Rezeptkarten, App-Bar und feste Bottom-Navigation.

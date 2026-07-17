@@ -21,6 +21,7 @@ function scrapperApp() {
         deskew_scans: true, ocr_scans: true, improve_contrast: true,
         sharpen_scans: true, scan_dpi: 300,
         ocr_language: 'deu+eng', keep_original: true, limit: 500,
+        extract_recipe_data: true, overwrite_recipe_data: false,
       },
       pageEditor: { loading: false, saving: false, filename: '', pages: [], previewKey: Date.now() },
       maintenanceRuns: [],
@@ -493,6 +494,8 @@ function scrapperApp() {
           scan_dpi: Number(p.scan_dpi || 300),
           ocr_language: p.ocr_language || 'deu+eng',
           keep_original: !!p.keep_original,
+          extract_recipe_data: !!p.extract_recipe_data,
+          overwrite_recipe_data: !!p.overwrite_recipe_data,
         };
         let accepted;
         try {

@@ -1,4 +1,4 @@
-# Rezeptliebe 1.2.1
+# Rezepte 1.2.1
 
 ## Admin-Zugang
 
