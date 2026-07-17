@@ -1,17 +1,17 @@
-// Service Worker für die Rezeptliebe-PWA
+// Service Worker für die Rezepte-PWA
 // Strategy:
 // - network-first für /static/* (CSS, JS, Alpine), damit Updates sofort sichtbar sind
 // - cache-first stale-while-revalidate für /api/recipes/{id}/thumb
 //   (Bilder ändern sich selten — Liste lädt instant aus dem Cache)
 // - network-first für alles andere
 // - Offline: Fallback auf cached '/'
-const CACHE_NAME = 'rezeptliebe-v1.2.4-pdf-route-fix';
-const THUMB_CACHE = 'rezeptliebe-thumbs-v1';
-const DETAIL_CACHE = 'rezeptliebe-detail-v1';   // /api/recipes/{id} responses
-const VIDEO_CACHE = 'rezeptliebe-videos-v1';    // /api/recipes/{id}/video
+const CACHE_NAME = 'rezepte-v1.2.5-pdf-recipe-extract';
+const THUMB_CACHE = 'rezepte-thumbs-v1';
+const DETAIL_CACHE = 'rezepte-detail-v1';   // /api/recipes/{id} responses
+const VIDEO_CACHE = 'rezepte-videos-v1';    // /api/recipes/{id}/video
 const STATIC_CACHE_URLS = [
   '/',
-  '/static/rezeptliebe.css',
+  '/static/rezepte.css',
   '/static/app.js',
   '/static/alpine.min.js',
   '/manifest.json',

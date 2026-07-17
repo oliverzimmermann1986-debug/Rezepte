@@ -16,11 +16,15 @@ from pydantic import BaseModel, Field
 
 from ..auth import SESSION_COOKIE, auth_disabled, require_admin, require_auth, session_user
 from ..config_store import get_config
+from ..core.analyzer import build_analyzer
 from ..core.pdf_processing import (
     analyze_pdf_bytes, backup_original_pdf, find_recipe_pdfs, process_pdf_bytes, process_pdf_path,
 )
 from ..core.safety import atomic_write_bytes
 from ..db import get_db
+from ..recipes.pdf_recipe_extract import (
+    apply_extracted_recipe_data, existing_hints, extract_pdf_text, extract_recipe_data,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +218,8 @@ class PdfBatchPayload(BaseModel):
     scan_dpi: int = Field(300, ge=180, le=400)
     ocr_language: str = Field("deu+eng", min_length=3, max_length=80)
     keep_original: bool = True
+    extract_recipe_data: bool = True
+    overwrite_recipe_data: bool = False
     background: bool = False
 
 
@@ -345,6 +351,10 @@ def _pdf_result_base(payload: PdfBatchPayload, targets: List[Path]) -> Dict[str,
         "changed": 0,
         "errors": 0,
         "warnings": 0,
+        "ingredients_found": 0,
+        "steps_found": 0,
+        "recipes_updated": 0,
+        "recipe_data_skipped": 0,
         "current_file": None,
         "files": [],
     }
@@ -355,11 +365,25 @@ def _process_pdf_targets(
     targets: List[Path],
     *,
     run_id: Optional[int] = None,
+    actor: str = "system",
 ) -> Dict[str, Any]:
     db = get_db(); cfg = get_config()
     pdf_cfg = cfg.get("pdf", default={}) or {}
     backup_root = Path(cfg.get("paths", "data_dir", default="/opt/scrapper/data")) / "pdf-originals"
     result = _pdf_result_base(payload, targets)
+    analyzer = None
+    existing_tags: List[str] = []
+    existing_canonical: List[str] = []
+    if payload.extract_recipe_data:
+        existing_tags, existing_canonical = existing_hints(db)
+        try:
+            analyzer = build_analyzer(cfg.get("ai", default={}) or {})
+        except Exception as exc:
+            logger.warning("PDF-Rezeptauswertung läuft ohne KI, lokaler Parser aktiv: %s", exc)
+            result["warnings"] += 1
+            result.setdefault("general_warnings", []).append(
+                "OpenAI nicht verfügbar; klassische Zutatenlisten werden lokal gelesen, Schritte und Portionen eventuell nicht."
+            )
 
     for index, path in enumerate(targets, start=1):
         result["current_file"] = str(path)
@@ -383,20 +407,61 @@ def _process_pdf_targets(
                 osd_min_confidence=float(pdf_cfg.get("osd_min_confidence", 1.0) or 1.0),
                 max_osd_pages=int(pdf_cfg.get("max_osd_pages", 100) or 100),
             )
+            processed_pdf: bytes | Path
             if payload.dry_run:
-                _preview, report = process_pdf_bytes(path.read_bytes(), **kwargs)
+                preview_bytes, report = process_pdf_bytes(path.read_bytes(), **kwargs)
+                processed_pdf = preview_bytes
             else:
                 report = process_pdf_path(
                     path, backup_root=backup_root,
                     keep_original=payload.keep_original, **kwargs,
                 )
-            data = report.as_dict(); data["path"] = str(path)
-            result["files"].append(data)
+                processed_pdf = path
+            file_result = report.as_dict(); file_result["path"] = str(path)
+
+            if payload.extract_recipe_data:
+                pdf_text = extract_pdf_text(processed_pdf)
+                extracted = extract_recipe_data(
+                    pdf_text, analyzer=analyzer, existing_tags=existing_tags,
+                    existing_canonical=existing_canonical,
+                )
+                file_result.update({
+                    "recipe_text_chars": len(pdf_text),
+                    "ingredients_found": len(extracted.ingredients),
+                    "steps_found": len(extracted.steps),
+                    "servings_found": extracted.servings,
+                    "recipe_extraction_method": extracted.method,
+                    "ingredient_preview": [
+                        {"name": item.get("name"), "amount": item.get("amount"), "unit": item.get("unit")}
+                        for item in extracted.ingredients[:12]
+                    ],
+                    "recipe_extraction_warnings": extracted.warnings,
+                })
+                result["ingredients_found"] += len(extracted.ingredients)
+                result["steps_found"] += len(extracted.steps)
+
+                recipe = db.recipe_get_by_folder(str(path.parent))
+                if recipe and not payload.dry_run:
+                    applied = apply_extracted_recipe_data(
+                        db, int(recipe["id"]), extracted, actor=actor,
+                        overwrite=payload.overwrite_recipe_data, create_version=True,
+                        update_description=True,
+                    )
+                    file_result["recipe_id"] = int(recipe["id"])
+                    file_result["recipe_update"] = applied
+                    if applied.get("changed"):
+                        result["recipes_updated"] += 1
+                    elif extracted.ingredients or extracted.steps:
+                        result["recipe_data_skipped"] += 1
+                elif not recipe:
+                    file_result["recipe_update_warning"] = "PDF-Ordner ist noch keinem Rezeptdatensatz zugeordnet"
+
+            result["files"].append(file_result)
             if report.changed:
                 result["changed"] += 1
             if not report.ok:
                 result["errors"] += 1
-            result["warnings"] += len(report.warnings or [])
+            result["warnings"] += len(report.warnings or []) + len(file_result.get("recipe_extraction_warnings") or [])
         except Exception as exc:
             logger.exception("PDF-Datei konnte nicht verarbeitet werden: %s", path)
             result["errors"] += 1
@@ -419,12 +484,12 @@ def _process_pdf_targets(
     return result
 
 
-def _run_pdf_background(payload_data: Dict[str, Any], targets: List[Path], run_id: int) -> None:
+def _run_pdf_background(payload_data: Dict[str, Any], targets: List[Path], run_id: int, actor: str) -> None:
     global _PDF_ACTIVE_RUN_ID
     db = get_db()
     try:
         payload = PdfBatchPayload.model_validate(payload_data)
-        result = _process_pdf_targets(payload, targets, run_id=run_id)
+        result = _process_pdf_targets(payload, targets, run_id=run_id, actor=actor)
         db.maintenance_finish(run_id, ok=result["ok"], result=result)
     except Exception as exc:
         logger.exception("PDF-Hintergrundlauf #%s abgebrochen", run_id)
@@ -459,7 +524,7 @@ def process_pdfs(payload: PdfBatchPayload, request: Request, response: Response)
 
     if not payload.background:
         run_id = db.maintenance_start("pdf_dry_run" if payload.dry_run else "pdf_process", actor)
-        result = _process_pdf_targets(payload, targets)
+        result = _process_pdf_targets(payload, targets, actor=actor)
         result["preflight"] = preflight
         db.maintenance_finish(run_id, ok=result["ok"], result=result)
         return result
@@ -476,7 +541,7 @@ def process_pdfs(payload: PdfBatchPayload, request: Request, response: Response)
     initial = _pdf_result_base(payload, targets)
     initial["preflight"] = preflight
     db.maintenance_progress(run_id, initial)
-    _PDF_EXECUTOR.submit(_run_pdf_background, payload.model_dump(), targets, run_id)
+    _PDF_EXECUTOR.submit(_run_pdf_background, payload.model_dump(), targets, run_id, actor)
     response.status_code = 202
     return {
         "ok": True, "accepted": True, "run_id": run_id,

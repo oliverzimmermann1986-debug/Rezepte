@@ -29,6 +29,9 @@ from ..core.analyzer import RecipeAnalysis, WeddingAnalysis, build_analyzer
 from ..core.downloader import VideoDownloader
 from ..core.email_processor import MailAccount, EmailRouter
 from ..core.pdf_processing import process_pdf_bytes
+from ..recipes.pdf_recipe_extract import (
+    apply_extracted_recipe_data, existing_hints, extract_recipe_data,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -435,7 +438,8 @@ class ScraperJob:
             return None
 
     def _save_attachment_file(self, target_dir: Path, attachment_data: bytes,
-                                ext: str, info: Dict, source_text: Optional[str] = None) -> None:
+                                ext: str, info: Dict, source_text: Optional[str] = None,
+                                original_pdf_data: Optional[bytes] = None) -> None:
         """Schreibt die Attachment-Datei + info.json + optional die extrahierte
         Text-Description in den target_dir."""
         from ..core.safety import atomic_write_bytes, atomic_write_text, atomic_write_json, write_manifest
@@ -454,6 +458,44 @@ class ScraperJob:
         except Exception:
             pass
 
+    def _extract_pdf_recipe_data(self, description: str):
+        """Liest Zutaten, Schritte, Portionen und Tags direkt aus PDF-Text.
+
+        Der lokale Parser funktioniert ohne Cloud; bei konfiguriertem Analyzer
+        ergänzt die KI schwierig formatierte Zutatenlisten und Arbeitsschritte.
+        """
+        tags, canonical = existing_hints(self.db)
+        return extract_recipe_data(
+            description, analyzer=self.analyzer if self.analyzer_enabled else None,
+            existing_tags=tags, existing_canonical=canonical,
+        )
+
+    def _index_saved_attachment_recipe(self, target: Path, analysis: RecipeAnalysis,
+                                       synth_url: str, description: str,
+                                       structured) -> Optional[int]:
+        """Legt ein PDF-Rezept sofort in der DB an und übernimmt die erkannten
+        Zutaten. Damit muss der Benutzer nicht erst die Rezeptseite öffnen, um
+        den allgemeinen Hintergrundindexer anzustoßen.
+        """
+        try:
+            recipe_id = self.db.recipe_upsert(
+                url=synth_url, name=analysis.name, type=analysis.type,
+                category=analysis.category or "Allgemein",
+                folder_path=str(target), description=description,
+                thumb_filename=None, video_filename=None,
+                source_added_at=time.time(),
+            )
+            applied = apply_extracted_recipe_data(
+                self.db, recipe_id, structured, actor="mail-import",
+                overwrite=False, create_version=False, update_description=True,
+            )
+            if not applied.get("ok"):
+                logger.warning("PDF-Rezeptdaten konnten nicht gespeichert werden: %s", applied)
+            return recipe_id
+        except Exception as exc:
+            logger.exception("PDF-Rezept konnte nicht direkt indiziert werden: %s", exc)
+            return None
+
     def process_attachment(self, att: Dict, synth_url: str) -> Dict:
         """Verarbeitet ein Mail-Attachment (PDF/JPG/PNG):
 
@@ -470,6 +512,7 @@ class ScraperJob:
         default_cat = att.get("default_category") or "Sonstiges"
         result: Dict = {"url": synth_url, "type": content_type, "status": "error"}
         pdf_rotation = None
+        structured_recipe = None
 
         # PDF vor Textanalyse und Ablage konservativ aufbereiten. Das Original
         # wird bei jeder echten Änderung versteckt im Rezeptordner aufbewahrt.
@@ -514,6 +557,11 @@ class ScraperJob:
             # Kein Text greifbar
             description = subject or "(kein Subject)"
 
+        # PDF-Rezepte sofort strukturiert auslesen. Die Ausgabe wird sowohl in
+        # Pending-Vorschlägen als auch beim Auto-Import verwendet.
+        if ext == ".pdf" and content_type == "recipe":
+            structured_recipe = self._extract_pdf_recipe_data(description)
+
         try:
             if content_type == "recipe":
                 # Bei JPG/PNG + OpenAI-Provider: Vision-Call
@@ -534,6 +582,10 @@ class ScraperJob:
                             "category": analysis.category, "confidence": analysis.confidence,
                             "source": "mail-attachment", "filename": att["filename"],
                             "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
+                            "ingredients": (structured_recipe.ingredients if structured_recipe else []),
+                            "steps": (structured_recipe.steps if structured_recipe else []),
+                            "servings": (structured_recipe.servings if structured_recipe else None),
+                            "extraction_method": (structured_recipe.method if structured_recipe else None),
                         },
                     )
                     result.update({"status": "pending", "name": analysis.name})
@@ -551,15 +603,32 @@ class ScraperJob:
                         "filename": att["filename"], "mail_subject": subject,
                         "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
                         "description": description[:5000],
+                        "pdf_recipe_extraction": {
+                            "method": structured_recipe.method if structured_recipe else None,
+                            "ingredients": len(structured_recipe.ingredients) if structured_recipe else 0,
+                            "steps": len(structured_recipe.steps) if structured_recipe else 0,
+                            "servings": structured_recipe.servings if structured_recipe else None,
+                            "warnings": structured_recipe.warnings if structured_recipe else [],
+                        },
                         "timestamp": datetime.now().isoformat(),
                     }
                     self._save_attachment_file(
                         target, data, ext, info, description,
                         original_pdf_data=original_pdf_data if self.pdf_keep_original else None,
                     )
+                    recipe_id = None
+                    if ext == ".pdf" and structured_recipe is not None:
+                        recipe_id = self._index_saved_attachment_recipe(
+                            target, analysis, synth_url, description, structured_recipe,
+                        )
                     self.db.history_add(synth_url, content_type="recipe",
                                         name=analysis.name, target_dir=str(target))
-                    result.update({"status": "auto", "name": analysis.name, "target": str(target)})
+                    result.update({
+                        "status": "auto", "name": analysis.name, "target": str(target),
+                        "recipe_id": recipe_id,
+                        "ingredients": len(structured_recipe.ingredients) if structured_recipe else 0,
+                        "steps": len(structured_recipe.steps) if structured_recipe else 0,
+                    })
 
             else:  # wedding
                 analysis = None
@@ -614,15 +683,6 @@ class ScraperJob:
             result["error"] = str(e)
 
         return result
-        """Kopiert das Video nach temp_dir/pending/ damit es das Cleanup überlebt."""
-        if not video or not video.exists():
-            return None
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        pending_root = self.temp_dir / "pending"
-        pending_root.mkdir(parents=True, exist_ok=True)
-        dst = pending_root / f"{ts}_video{video.suffix}"
-        shutil.copy2(video, dst)
-        return dst
 
     def _stash_for_pending(self, video: Path) -> Optional[str]:
         """Kopiert das Temp-Video an einen persistenten Pending-Ort, da der

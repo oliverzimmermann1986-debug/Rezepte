@@ -1,4 +1,4 @@
-REZEPTLIEBE – ÜBERNAHME IN DAS RICHTIGE REPOSITORY
+REZEPTE – ÜBERNAHME IN DAS RICHTIGE REPOSITORY
 
 1. ZIP entpacken und vorhandenes Repository ersetzen/zusammenführen.
 2. Änderungen prüfen:
@@ -6,7 +6,7 @@ REZEPTLIEBE – ÜBERNAHME IN DAS RICHTIGE REPOSITORY
    git diff --stat
 3. Commit erstellen:
    git add .
-   git commit -m "Rezeptliebe: Butter-Yellow Mobile-First UI"
+   git commit -m "Rezepte: Butter-Yellow Mobile-First UI"
    git push
 
 Update im bestehenden Container:

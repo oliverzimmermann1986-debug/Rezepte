@@ -2,18 +2,18 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <title>Rezeptliebe</title>
+  <title>Rezepte</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, viewport-fit=cover">
   <meta name="theme-color" content="#f5c84f">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="Rezeptliebe">
+  <meta name="apple-mobile-web-app-title" content="Rezepte">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="application-name" content="Rezeptliebe">
+  <meta name="application-name" content="Rezepte">
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/png" href="/static/icon-192.png">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/rezeptliebe.css?v={VERSION}">
+  <link rel="stylesheet" href="/static/rezepte.css?v={VERSION}">
   <script defer src="/static/alpine.min.js"></script>
   <script>
     // Service Worker registrieren — non-blocking
@@ -44,7 +44,7 @@
   <header class="mobile-appbar" aria-label="App-Kopfzeile">
     <div class="mobile-brand-mark"><svg class="brand-chef-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M15 37h18v5H15z"/><path d="M14 34V23.5c-4.1-.5-7-3.6-7-7.4 0-4.2 3.5-7.6 7.8-7.6 1.2 0 2.4.3 3.4.8C19.7 6.1 22.9 4 26.5 4c4.8 0 8.8 3.7 9.2 8.4h.8c4.1 0 7.5 3.3 7.5 7.4 0 3.9-3.1 7.1-7 7.4V34H14z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M19 21v10M29 21v10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></div>
     <div class="mobile-title-wrap">
-      <span class="mobile-product">Rezeptliebe</span>
+      <span class="mobile-product">Rezepte</span>
       <span class="mobile-page-title" x-text="pageLabel()"></span>
     </div>
     <div class="mobile-appbar-actions">
@@ -64,7 +64,7 @@
     <div class="brand-block">
       <div class="brand-mark"><svg class="brand-chef-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M15 37h18v5H15z"/><path d="M14 34V23.5c-4.1-.5-7-3.6-7-7.4 0-4.2 3.5-7.6 7.8-7.6 1.2 0 2.4.3 3.4.8C19.7 6.1 22.9 4 26.5 4c4.8 0 8.8 3.7 9.2 8.4h.8c4.1 0 7.5 3.3 7.5 7.4 0 3.9-3.1 7.1-7 7.4V34H14z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M19 21v10M29 21v10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></div>
       <div>
-        <div class="logo">Rezeptliebe</div>
+        <div class="logo">Rezepte</div>
         <div class="brand-subtitle">Deine Rezeptbibliothek</div>
       </div>
     </div>
@@ -90,7 +90,7 @@
     <div class="foot">
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
-      <div class="sidebar-meta"><span>v1.2.4</span><a href="/logout">Abmelden</a></div>
+      <div class="sidebar-meta"><span>v1.2.5</span><a href="/logout">Abmelden</a></div>
     </div>
   </aside>
 
@@ -1097,6 +1097,12 @@
           <div class="field"><label>Scan-Qualität</label><select x-model.number="admin.pdf.scan_dpi"><option :value="240">Gut · 240 DPI</option><option :value="300">Hoch · 300 DPI</option><option :value="400">Maximum · 400 DPI</option></select><div class="hint">300 DPI ist der empfohlene Kompromiss aus Lesbarkeit, Dateigröße und Geschwindigkeit.</div></div>
           <div class="field" x-show="admin.pdf.ocr_scans"><label>OCR-Sprachen</label><input x-model="admin.pdf.ocr_language" placeholder="deu+eng"><div class="hint">Tesseract-Sprachcodes, z. B. deu+eng.</div></div>
           <label class="check-row"><input type="checkbox" x-model="admin.pdf.keep_original"> Original immer sichern</label>
+          <div class="admin-subsection">
+            <h3>Rezeptdaten auslesen</h3>
+            <label class="check-row"><input type="checkbox" x-model="admin.pdf.extract_recipe_data"> Zutaten, Schritte und Portionen aus dem PDF lesen</label>
+            <label class="check-row" x-show="admin.pdf.extract_recipe_data"><input type="checkbox" x-model="admin.pdf.overwrite_recipe_data"> Bereits gepflegte Rezeptdaten überschreiben</label>
+            <div class="hint" x-show="admin.pdf.extract_recipe_data">Standardmäßig werden nur fehlende Daten ergänzt. Klassische Zutatenlisten werden lokal erkannt; bei konfiguriertem OpenAI werden auch komplexe Layouts, Arbeitsschritte, Portionen und Tags ausgewertet.</div>
+          </div>
           <div class="admin-info-card pdf-preflight" x-show="admin.pdf.preflight">
             <strong x-text="admin.pdf.preflight?.ok ? 'Systemprüfung bereit' : 'Systemprüfung mit Fehlern'"></strong>
             <div class="muted" x-text="admin.pdf.preflight?.recipe_root ? 'Rezeptpfad: '+admin.pdf.preflight.recipe_root : ''"></div>
@@ -1120,6 +1126,9 @@
                 <span><strong x-text="admin.pdf.result.changed || 0"></strong> geändert</span>
                 <span><strong x-text="admin.pdf.result.errors || 0"></strong> Fehler</span>
                 <span><strong x-text="admin.pdf.result.warnings || 0"></strong> Warnungen</span>
+                <span x-show="admin.pdf.extract_recipe_data"><strong x-text="admin.pdf.result.ingredients_found || 0"></strong> Zutaten erkannt</span>
+                <span x-show="admin.pdf.extract_recipe_data"><strong x-text="admin.pdf.result.steps_found || 0"></strong> Schritte erkannt</span>
+                <span x-show="admin.pdf.extract_recipe_data"><strong x-text="admin.pdf.result.recipes_updated || 0"></strong> Rezepte ergänzt</span>
               </div>
               <div class="admin-info-card" x-show="admin.pdf.running">
                 <strong>Hintergrundlauf aktiv</strong>
@@ -1132,6 +1141,8 @@
                   <div class="admin-file-result">
                     <strong x-text="f.path.split('/').pop()"></strong>
                     <span x-text="f.error || ((f.rotated_pages||0)+' gedreht · '+(f.orientation_detected_pages||0)+' erkannt · '+(f.cropped_pages||0)+' beschnitten · '+(f.ocr_pages||0)+' OCR · '+(f.sharpened_pages||0)+' geschärft' + (f.rotation_reason ? ' · '+f.rotation_reason : ''))"></span>
+                    <small x-show="admin.pdf.extract_recipe_data" x-text="(f.ingredients_found||0)+' Zutaten · '+(f.steps_found||0)+' Schritte' + (f.servings_found ? ' · '+f.servings_found+' Portionen' : '') + (f.recipe_update?.changed ? ' · übernommen' : (f.recipe_update_warning ? ' · '+f.recipe_update_warning : ''))"></small>
+                    <small x-show="(f.ingredient_preview || []).length" x-text="(f.ingredient_preview || []).map(i => [i.amount, i.unit, i.name].filter(v => v!==null && v!==undefined && v!=='').join(' ')).join(' · ')"></small>
                     <small x-show="(f.rotation_decisions || []).length" x-text="(f.rotation_decisions || []).map(d => 'S.'+d.page+': '+d.method+' '+d.old_rotation+'°→'+d.new_rotation+'°').join(' · ')"></small>
                   </div>
                 </template>

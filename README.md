@@ -1,4 +1,4 @@
-# Rezeptliebe
+# Rezepte
 
 Proxmox-LXC-Container für den Scraper-Job:
 
@@ -281,7 +281,7 @@ Sichere die idealerweise **außerhalb** des Containers. Optionen:
 ```bash
 # Variante B: cron-Job der das täglich nach 04:30 macht
 cat > /etc/cron.d/scrapper-offsite-backup <<'EOF'
-30 4 * * * scrapper rsync -a /opt/scrapper/data/backups/ /mnt/offsite/rezeptliebe-backups/
+30 4 * * * scrapper rsync -a /opt/scrapper/data/backups/ /mnt/offsite/rezepte-backups/
 EOF
 
 # Variante C: Proxmox-Backup vom kompletten Container (vzdump)
@@ -489,3 +489,7 @@ sudo bash proxmox/update-local.sh
 
 Das Skript überträgt Backend und Frontend gemeinsam, bewahrt alle Laufzeitdaten,
 startet `scrapper-web` neu und verifiziert anschließend Version und PDF-Routen.
+
+### PDF-Rezeptdaten
+
+PDF-Rezepte werden nach OCR/Ausrichtung direkt auf Zutaten, Mengen, Einheiten, Schritte und Portionen ausgewertet. Für Bestandsdateien steht die Funktion unter **Admin → PDF & Scan** zur Verfügung. Details: `PDF_RECIPE_EXTRACTION.md`.

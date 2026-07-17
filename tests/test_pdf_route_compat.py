@@ -15,12 +15,12 @@ def test_pdf_admin_routes_are_registered():
 def test_health_and_system_info_report_build_version(client):
     health = client.get("/healthz")
     assert health.status_code == 200
-    assert health.json()["version"] == "1.2.4"
+    assert health.json()["version"] == "1.2.5"
     assert "pdf-preflight" in health.json()["capabilities"]
 
     info = client.get("/api/system/info")
     assert info.status_code == 200
-    assert info.json()["version"] == "1.2.4"
+    assert info.json()["version"] == "1.2.5"
     assert "pdf-background-jobs" in info.json()["capabilities"]
 
 
@@ -38,4 +38,4 @@ def test_local_updater_does_not_git_pull():
     assert "\n  git pull" not in updater
     assert "rsync -a --delete" in updater
     assert "/api/admin/pdf/preflight" in updater
-    assert '"version":"1.2.4"' in updater
+    assert '"version":"1.2.5"' in updater

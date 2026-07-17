@@ -1,5 +1,5 @@
 /* =====================================================================
-   Rezeptliebe · Butter Yellow Design System
+   Rezepte · Butter Yellow Design System
    Single source of truth for the complete UI. No external fonts, no
    One coherent Butter Yellow design system without legacy theme layers.
    ===================================================================== */
@@ -2682,7 +2682,7 @@ input[type="checkbox"] { width: auto !important; }
 
 
 /* =====================================================================
-   Rezeptliebe canonical visual layer
+   Rezepte canonical visual layer
    ===================================================================== */
 html {
   min-width: 320px;
@@ -3525,3 +3525,14 @@ a { color: var(--accent-deep); }
   background: var(--accent, #e5bd4f);
   transition: width .25s ease;
 }
+
+/* v1.2.5: strukturierte Rezeptdaten direkt aus PDF */
+.admin-subsection {
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid #ead7a4;
+  border-radius: 14px;
+  background: #fffaf0;
+}
+.admin-subsection h3 { margin: 0 0 10px; font-size: 1rem; color: #65460d; }
+.admin-subsection .hint { margin-top: 8px; line-height: 1.45; }

@@ -1,8 +1,8 @@
-# Rezeptliebe – Butter-Yellow Design
+# Rezepte – Butter-Yellow Design
 
 ## Umsetzung
 
-- `app/static/rezeptliebe.css` ist das einzige App-Stylesheet.
+- `app/static/rezepte.css` ist das einzige App-Stylesheet.
 - Alte Dark-/Light-/Ocean-/Forest-/Lavender-Themes und externe Google Fonts wurden entfernt.
 - Die Rezeptbibliothek ist die Startseite. Favoriten sind als eigener Navigationspunkt verfügbar.
 - Die erweiterte Filterung öffnet sich am Desktop als rechtes Side-Sheet und mobil als Bottom-Sheet.

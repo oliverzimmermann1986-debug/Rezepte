@@ -53,7 +53,7 @@ async def _stream(request: Request) -> AsyncIterator[bytes]:
 
     # Initial-Snapshot sofort senden damit das UI nicht 2 s warten muss
     try:
-        yield _format("status", await asyncio.to_thread(_status_snapshot, db)).encode()
+        yield _format("status", _status_snapshot(db)).encode()
     except Exception:
         pass
 
@@ -64,16 +64,13 @@ async def _stream(request: Request) -> AsyncIterator[bytes]:
             return
 
         try:
-            # DB-Zugriffe sind synchron (sqlite3) - via to_thread ausführen,
-            # sonst blockiert jeder offene SSE-Client alle 2 s den Event-Loop
-            # und damit sämtliche anderen Requests.
-            snapshot = await asyncio.to_thread(_status_snapshot, db)
+            snapshot = _status_snapshot(db)
             yield _format("status", snapshot).encode()
 
             # Progress-Events nur wenn was läuft
             if snapshot.get("scraper") or snapshot.get("reanalyze"):
                 try:
-                    p = await asyncio.to_thread(api_jobs.scraper_progress)
+                    p = api_jobs.scraper_progress()
                     yield _format("scraper_progress", p).encode()
                 except Exception as e:
                     logger.debug(f"scraper_progress fail: {e}")

@@ -1,4 +1,4 @@
-# Rezeptliebe 1.2.0
+# Rezepte 1.2.0
 
 ## Neu
 

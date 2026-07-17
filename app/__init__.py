@@ -1,2 +1,2 @@
-"""Rezeptliebe App Package."""
-__version__ = "1.2.4"
+"""Rezepte App Package."""
+__version__ = "1.2.5"
