@@ -55,6 +55,12 @@ python3 -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/pip" install --upgrade pip wheel
 "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 
+# Headless Chromium für TikTok-Captions, die erst nach Klick auf "mehr"
+# gerendert werden. Ein fixer Pfad macht den Browser für den Service-User
+# verfügbar, obwohl die Installation als root läuft.
+PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/playwright-browsers" \
+  "$APP_DIR/venv/bin/python" -m playwright install --with-deps chromium
+
 # 6. yt-dlp via pip (immer aktuelle Version)
 "$APP_DIR/venv/bin/pip" install -U yt-dlp
 

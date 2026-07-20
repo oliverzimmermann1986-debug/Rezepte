@@ -2737,7 +2737,9 @@ function scrapperApp() {
             const parts = [];
             if (r.description_updated) parts.push('Beschreibung');
             if (r.thumbnail_updated) parts.push('Bild');
-            this.showToast(`✓ ${parts.join(' + ')} aktualisiert`);
+            this.showToast(
+              `✓ ${parts.join(' + ')} aktualisiert${r.ingredients_queued ? ' · Zutatenanalyse gestartet' : ''}`
+            );
             // Re-Fetch damit das neue Thumb + Description sichtbar werden
             const fresh = await this.api('GET', '/api/recipes/' + id);
             if (fresh) this.recipeDetail.data = fresh;
@@ -3273,7 +3275,9 @@ function scrapperApp() {
             const parts = [];
             if (r.description_updated) parts.push('Beschreibung');
             if (r.thumbnail_updated) parts.push('Bild');
-            this.showToast(`✓ ${parts.join(' + ')} aktualisiert`);
+            this.showToast(
+              `✓ ${parts.join(' + ')} aktualisiert${r.ingredients_queued ? ' · Zutatenanalyse gestartet' : ''}`
+            );
           } else {
             this.showToast('⊘ Schon aktuell — keine Änderung');
           }

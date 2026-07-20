@@ -11,6 +11,7 @@ Group=scrapper
 WorkingDirectory=/opt/scrapper
 Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
 Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
+Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/scrapper/playwright-browsers"
 # Begrenzung pro OCR-Prozess; verhindert CPU-/RAM-Spitzen bei PDF-Bestandsläufen.
 Environment="OMP_THREAD_LIMIT=1"
 # Bind-Adresse:
@@ -42,7 +43,9 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=true
-MemoryDenyWriteExecute=true
+# Chromium/V8 benötigt ausführbaren JIT-Speicher für den optionalen
+# Browser-Abruf langer TikTok-Captions.
+MemoryDenyWriteExecute=false
 RestrictSUIDSGID=true
 
 [Install]

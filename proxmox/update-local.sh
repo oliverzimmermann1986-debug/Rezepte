@@ -45,7 +45,8 @@ if [[ -d "$APP_DIR/app" ]]; then
   echo "Sichere bisherigen Anwendungscode nach $BACKUP_FILE"
   tar -C "$APP_DIR" -czf "$BACKUP_FILE" \
     --exclude='./data' --exclude='./venv' --exclude='./logs' \
-    --exclude='./temp' --exclude='./files' --exclude='./.git' .
+    --exclude='./temp' --exclude='./files' --exclude='./playwright-browsers' \
+    --exclude='./.git' .
 fi
 
 systemctl stop scrapper-web.service 2>/dev/null || true
@@ -73,7 +74,8 @@ if [[ "$SOURCE_DIR" != "$APP_DIR" ]]; then
   echo "Übertrage Anwendungscode vollständig…"
   rsync -a --delete \
     --exclude='/data/' --exclude='/venv/' --exclude='/logs/' \
-    --exclude='/temp/' --exclude='/files/' --exclude='/.git/' \
+    --exclude='/temp/' --exclude='/files/' --exclude='/playwright-browsers/' \
+    --exclude='/.git/' \
     "$SOURCE_DIR/" "$APP_DIR/"
 else
   echo "Release liegt bereits in $APP_DIR; aktualisiere Abhängigkeiten und Dienste."
@@ -81,6 +83,9 @@ fi
 
 python3 -m venv "$APP_DIR/venv" --upgrade-deps
 "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/playwright-browsers" \
+  "$APP_DIR/venv/bin/python" -m playwright install --with-deps chromium
+chmod -R a+rX "$APP_DIR/playwright-browsers"
 
 install -m 0644 "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/scrapper-web.service
 install -m 0644 "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/scrapper-job.service

@@ -112,6 +112,12 @@ ytdlp:
   # Datei muss vom scrapper-User lesbar sein (chmod 600 reicht wenn owner).
   # Leer lassen wenn nur öffentliche TikToks/Instagram-Reels gescrapet werden.
   cookies_file: ""
+  # TikTok zeigt lange Captions teils erst nach Klick auf "mehr". Beim
+  # manuellen Re-Scrape liest ein Headless-Chromium diese gerenderte Caption.
+  expanded_tiktok_caption: true
+  browser_timeout_seconds: 35
+  # Optional: eigener Chromium-Pfad; leer = Playwright-Browser verwenden.
+  browser_executable_path: ""
 
 # Scheduling (systemd Timer)
 schedule:

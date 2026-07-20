@@ -476,8 +476,10 @@ def recover_empty(request: Request) -> Dict[str, Any]:
 @router.post("/{recipe_id}/rescrape")
 def rescrape_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
     """Re-Scrape: ruft yt-dlp nochmal für die ursprüngliche URL auf und
-    aktualisiert Caption + Thumbnail im Folder. Video wird NICHT neu
-    heruntergeladen (--skip-download). Zutaten/Schritte bleiben unberührt.
+    aktualisiert Caption + Thumbnail im Folder. Bei TikTok wird optional die
+    im Browser aufgeklappte lange Caption gelesen. Video wird NICHT neu
+    heruntergeladen (--skip-download). Nach einer Caption-Änderung wird die
+    Zutaten-/Schrittanalyse erneut eingeplant.
 
     Use-Cases:
     - Rezepte ohne Thumbnail (Audit 'Kein Bild') → frisches Bild holen
@@ -502,13 +504,30 @@ def rescrape_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
     # Downloader bauen mit Config
     cfg = get_config()
     from ..core.downloader import VideoDownloader
-    ytdlp_path = cfg.get("paths", "ytdlp", default="yt-dlp")
+    ytdlp_cfg = cfg.get("ytdlp", default={}) or {}
+    ytdlp_path = ytdlp_cfg.get("binary", "/opt/scrapper/venv/bin/yt-dlp")
     temp_dir = Path(cfg.get("paths", "temp_dir", default="/tmp/scrapper"))
-    cookies_file = cfg.get("downloader", "cookies_file", default=None)
+    cookies_file = str(ytdlp_cfg.get("cookies_file") or "").strip() or None
     dl = VideoDownloader(ytdlp_path=ytdlp_path, temp_dir=temp_dir,
                           cookies_file=cookies_file)
 
-    meta = dl.refresh_metadata(url)
+    meta = dl.refresh_metadata(url) or {}
+    description_source = "yt-dlp"
+
+    # TikTok exposes only the short first line through public metadata in some
+    # posts. Its website renders the long recipe caption after clicking "mehr".
+    if ytdlp_cfg.get("expanded_tiktok_caption", True):
+        from ..core.tiktok_caption import fetch_expanded_tiktok_caption
+        expanded = fetch_expanded_tiktok_caption(
+            url,
+            fallback_text=str(meta.get("description_text") or ""),
+            cookies_file=cookies_file,
+            timeout_seconds=int(ytdlp_cfg.get("browser_timeout_seconds", 35)),
+            executable_path=str(ytdlp_cfg.get("browser_executable_path") or "").strip() or None,
+        )
+        if expanded:
+            meta["description_text"] = expanded
+            description_source = "tiktok-browser"
     if not meta:
         return {"ok": False, "error": "yt-dlp lieferte nichts — URL down/geo-blocked/login nötig?"}
 
@@ -522,8 +541,11 @@ def rescrape_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
         if new_desc != old_desc:
             _version_before(recipe_id, request, "Beschreibung aus Quelle aktualisiert", source="import")
             with db.conn() as c:
-                c.execute("UPDATE recipes SET description=? WHERE id=?",
-                          (new_desc, recipe_id))
+                c.execute(
+                    "UPDATE recipes SET description=?, ingredients_status='pending', "
+                    "ingredients_extracted_at=NULL WHERE id=?",
+                    (new_desc, recipe_id),
+                )
             # Plus im Folder als description.txt ablegen für Konsistenz
             try:
                 (folder_p / "description.txt").write_text(new_desc, encoding="utf-8")
@@ -557,11 +579,24 @@ def rescrape_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"Thumbnail-Copy fehler #{recipe_id}: {e}")
 
-    logger.info(f"rescrape #{recipe_id} '{rec.get('name')}': {changed}")
+    worker_started = False
+    if changed["description"]:
+        try:
+            worker_started = ensure_extraction_running()
+        except Exception as e:
+            logger.warning("Re-Scrape: Extraktions-Worker konnte nicht starten: %s", e, exc_info=True)
+
+    logger.info(
+        "rescrape #%s '%s': %s, description_source=%s, worker_started=%s",
+        recipe_id, rec.get("name"), changed, description_source, worker_started,
+    )
     return {
         "ok": True,
         "description_updated": changed["description"],
         "thumbnail_updated": changed["thumbnail"],
+        "description_source": description_source,
+        "ingredients_queued": changed["description"],
+        "worker_started": worker_started,
         "any_change": changed["description"] or changed["thumbnail"],
     }
 
