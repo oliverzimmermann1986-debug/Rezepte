@@ -156,6 +156,19 @@
         </div>
       </div>
 
+      <!-- Manueller Direkt-Import einer einzelnen Video-URL -->
+      <div class="config-section" style="margin-bottom: 14px;">
+        <div class="body" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+          <input x-model="manualImportUrl" @keydown.enter="importUrl()"
+                 placeholder="TikTok-/Instagram-Video-URL direkt importieren…"
+                 style="flex: 1; min-width: 240px;">
+          <button class="btn btn-primary" @click="importUrl()" :disabled="manualImporting || !manualImportUrl">
+            <span x-show="!manualImporting">⬇ Importieren</span>
+            <span x-show="manualImporting">… lädt + KI</span>
+          </button>
+        </div>
+      </div>
+
       <div class="admin-stage-grid" x-show="admin.importCenter?.stages">
         <div class="admin-stage-card"><strong x-text="admin.importCenter?.stages?.needs_review || 0"></strong><span>Rückfrage erforderlich</span></div>
         <div class="admin-stage-card"><strong x-text="admin.importCenter?.stages?.running || 0"></strong><span>Wird verarbeitet</span></div>

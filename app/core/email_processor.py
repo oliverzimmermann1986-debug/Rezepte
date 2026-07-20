@@ -23,6 +23,24 @@ URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+
+def is_content_url(url: str) -> bool:
+    """True nur, wenn die URL auf einen EINZELNEN Post zeigt (kein Profil).
+
+    Profil-Links wie ``tiktok.com/@chefkoch`` oder ``instagram.com/handle`` lassen
+    yt-dlp das ganze Konto auflösen -> Timeout/Hänger, nie ein Rezept, und werden
+    sonst jeden Lauf erneut versucht. Kurzlinks (vm./vt.tiktok.com) zeigen auf genau
+    einen Clip und sind daher ok.
+    """
+    u = (url or "").lower()
+    if "vm.tiktok.com/" in u or "vt.tiktok.com/" in u:
+        return True
+    if "tiktok.com/" in u:
+        return "/video/" in u or "/photo/" in u
+    if "instagram.com/" in u:
+        return "/reel/" in u or "/p/" in u or "/tv/" in u
+    return False
+
 # Attachment-Filename-Endungen die wir verarbeiten. Alles andere wird
 # ignoriert (PDFs für Rezept-Karten/Hochzeitspläne, JPGs für Fotos).
 ATTACHMENT_EXTS = {".pdf", ".jpg", ".jpeg", ".png"}
@@ -201,6 +219,9 @@ class MailAccount:
                         if url in seen_urls:
                             continue
                         seen_urls.add(url)
+                        if not is_content_url(url):
+                            logger.info(f"[{self.name}] Profil-/Nicht-Video-URL übersprungen: {url}")
+                            continue
                         urls.append({
                             "url": url,
                             "type": self.content_type,

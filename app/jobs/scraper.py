@@ -312,6 +312,14 @@ class ScraperJob:
                     target = self._save_recipe(r, url, video, description)
                     self.db.history_add(url, content_type="recipe", name=r.name,
                                          target_dir=str(target))
+                    # Sofort in die DB indizieren - sonst existiert nur der Ordner
+                    # und das Rezept erscheint erst nach dem nächsten Filesystem-Sync.
+                    try:
+                        from ..recipes.indexer import _index_one
+                        _index_one(self.db, target,
+                                   target.parent.parent.name, target.parent.name)
+                    except Exception as e:
+                        logger.warning(f"Sofort-Index nach Import fehlgeschlagen ({target}): {e}")
                     result.update({"status": "auto", "name": r.name, "target": str(target)})
             else:  # wedding
                 default_cat = item.get("default_category") or "Sonstiges"

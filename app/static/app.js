@@ -1097,6 +1097,30 @@ function scrapperApp() {
     failedDownloads: [],
     retryingUrl: null,
     bulkBusy: false,
+    manualImportUrl: '',
+    manualImporting: false,
+
+    async importUrl() {
+      const url = (this.manualImportUrl || '').trim();
+      if (!url || this.manualImporting) return;
+      this.manualImporting = true;
+      try {
+        const r = await this.api('POST', '/api/pending/import-url', { url, type: 'recipe' });
+        if (r && r.ok) {
+          if (r.status === 'duplicate') this.showToast('Schon importiert — übersprungen');
+          else this.showToast(`✓ ${r.status === 'pending' ? 'In Pending' : 'Importiert'}: ${r.name || url}`);
+          this.manualImportUrl = '';
+          this.loadPending();
+          if (typeof this.loadAdminImport === 'function') this.loadAdminImport();
+        } else {
+          this.showToast('Import fehlgeschlagen: ' + ((r && r.error) || 'Download/URL-Fehler'), 'error');
+        }
+      } catch (e) {
+        // api() zeigt bei 4xx (z.B. Profil-URL) schon einen Fehler-Toast
+      } finally {
+        this.manualImporting = false;
+      }
+    },
 
     async loadPending() {
       let items = await this.api('GET', '/api/pending');

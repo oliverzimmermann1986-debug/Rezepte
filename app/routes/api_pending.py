@@ -39,6 +39,39 @@ def list_pending(status: str = "pending", sort: str = "newest") -> List[Dict[str
     return get_db().pending_list(status=status, sort=sort)
 
 
+class ImportUrlBody(BaseModel):
+    url: str
+    type: str = "recipe"          # 'recipe' | 'wedding'
+
+
+@router.post("/import-url")
+def import_url(body: ImportUrlBody) -> Dict[str, Any]:
+    """Manueller Direkt-Import einer einzelnen URL (gleicher Pfad wie der
+    Mail-Import: Download -> KI -> speichern, bei geringer Confidence -> Pending).
+    Läuft synchron; Downloads sind i.d.R. wenige Sekunden."""
+    from ..core.email_processor import is_content_url
+
+    url = (body.url or "").strip()
+    if not url:
+        raise HTTPException(400, "URL fehlt")
+    if body.type not in ("recipe", "wedding"):
+        raise HTTPException(400, "type muss 'recipe' oder 'wedding' sein")
+    if not is_content_url(url):
+        raise HTTPException(
+            400,
+            "Das sieht nach einem Profil-Link aus (kein einzelnes Video/Reel). "
+            "Bitte den Link zu einem konkreten Post einfügen.",
+        )
+
+    db = get_db()
+    if db.history_has(url):
+        return {"ok": True, "status": "duplicate", "url": url,
+                "message": "URL wurde bereits importiert"}
+
+    result = get_scraper_job().process_url({"url": url, "type": body.type})
+    return {"ok": result.get("status") in ("auto", "pending"), **result}
+
+
 class BulkSkipBody(BaseModel):
     urls: List[str]
 
