@@ -192,7 +192,17 @@ def fetch_expanded_tiktok_caption(
                 page = context.new_page()
                 page.set_default_timeout(min(timeout_ms, 10_000))
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                # TikTok hydrates the article after domcontentloaded. Without
+                # this short wait the visible "mehr" node can exist before
+                # React has attached the expand handler.
+                page.wait_for_selector(
+                    '[data-e2e="video-desc"]',
+                    state="visible",
+                    timeout=timeout_ms,
+                )
+                page.wait_for_timeout(2_000)
                 _dismiss_overlays(page)
+                page.wait_for_timeout(500)
                 page_title = page.title()
 
                 article = _target_article(page, url)
