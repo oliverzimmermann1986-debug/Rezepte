@@ -54,6 +54,22 @@ def clean_expanded_caption(text: str) -> str:
     return "\n".join(cleaned).strip()
 
 
+def caption_from_article_text(text: str, page_title: str) -> str:
+    """Extract the long caption from TikTok's full rendered article text.
+
+    The expanded recipe is currently a sibling of the short description
+    container. Its title is also used as the browser page title, which gives
+    us a stable boundary without creator, location, video, or counter UI.
+    """
+    title = re.sub(r"\s*\|\s*TikTok\s*$", "", page_title or "", flags=re.IGNORECASE).strip()
+    if not title:
+        return ""
+    start = text.find(title)
+    if start < 0:
+        return ""
+    return clean_expanded_caption(text[start:])
+
+
 def parse_netscape_cookies(path: Optional[str]) -> List[Dict[str, Any]]:
     """Convert a Netscape cookies.txt file to Playwright cookie objects."""
     if not path:
@@ -177,6 +193,7 @@ def fetch_expanded_tiktok_caption(
                 page.set_default_timeout(min(timeout_ms, 10_000))
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
                 _dismiss_overlays(page)
+                page_title = page.title()
 
                 article = _target_article(page, url)
                 article.wait_for(state="visible", timeout=timeout_ms)
@@ -200,21 +217,35 @@ def fetch_expanded_tiktok_caption(
                     except Exception:
                         continue
 
-                best = before
+                best_container = before
+                best_article = ""
                 for _ in range(12):
                     page.wait_for_timeout(250)
                     expanded = article.locator('[data-media-card-description-container="true"]')
                     if expanded.count():
                         candidate = expanded.first.inner_text(timeout=3_000)
-                        if len(candidate) > len(best):
-                            best = candidate
-                    if len(best) >= max(240, len(before) + 100):
+                        if len(candidate) > len(best_container):
+                            best_container = candidate
+                    article_candidate = article.inner_text(timeout=3_000)
+                    if len(article_candidate) > len(best_article):
+                        best_article = article_candidate
+                    article_caption = caption_from_article_text(best_article, page_title)
+                    if len(article_caption) >= max(240, len(before) + 100):
                         break
 
-                caption = clean_expanded_caption(best)
+                caption = max(
+                    clean_expanded_caption(best_container),
+                    caption_from_article_text(best_article, page_title),
+                    key=len,
+                )
                 fallback = clean_expanded_caption(fallback_text)
                 if len(caption) < max(160, len(fallback) + 80):
+                    logger.info(
+                        "TikTok-Caption blieb kurz: container=%s, article=%s, fallback=%s",
+                        len(best_container), len(best_article), len(fallback),
+                    )
                     return None
+                logger.info("Lange TikTok-Caption geladen: %s Zeichen", len(caption))
                 return caption
             finally:
                 browser.close()

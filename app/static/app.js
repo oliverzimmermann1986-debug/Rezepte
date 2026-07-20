@@ -125,14 +125,14 @@ function scrapperApp() {
         total_recipes: 0,
         exact_duplicates: [], url_duplicates: [], folder_duplicates: [], similar_clusters: [],
         bad_names: [], sync_errors: [], ai_category_findings: [], ai_name_findings: [],
-        ai_folder_findings: [], ai_suggestions: [], empty_recipes: [], failed_downloads: [],
+        ai_folder_findings: [], ai_suggestions: [], empty_recipes: [], empty_rescrape_ids: [], failed_downloads: [],
         data_gaps: { no_image: [], no_steps: [], no_url: [], few_ingredients: [], no_description: [], unverified: [], fs_missing: [], no_nutrition: [] },
       },
       summary: {
         exact_count: 0, exact_groups: 0, url_count: 0, folder_count: 0,
         similar_count: 0, similar_clusters: 0, bad_count: 0, sync_error_count: 0,
         ai_category_count: 0, ai_name_count: 0, ai_folder_count: 0,
-        empty_recipe_count: 0, failed_download_count: 0, with_ai_suggestions: 0,
+        empty_recipe_count: 0, empty_rescrape_count: 0, failed_download_count: 0, with_ai_suggestions: 0,
         no_image_count: 0, no_steps_count: 0, no_url_count: 0,
         few_ingredients_count: 0, no_description_count: 0, unverified_count: 0,
         fs_missing_count: 0, no_nutrition_count: 0,
@@ -2755,12 +2755,17 @@ function scrapperApp() {
       if (!id || this.recipeDetail.rescraping) return;
       this.recipeDetail.rescraping = true;
       try {
-        const r = await this.api('POST', `/api/recipes/${id}/rescrape`);
+        // Bei leeren Rezepten muss auch bei unveränderter Caption die aktuelle
+        // Zutatenanalyse erneut eingeplant werden.
+        const needsReanalysis = !(this.recipeDetail.data?.ingredients?.length);
+        const endpoint = `/api/recipes/${id}/rescrape${needsReanalysis ? '?reanalyze=true' : ''}`;
+        const r = await this.api('POST', endpoint);
         if (r && r.ok) {
-          if (r.any_change) {
+          if (r.any_change || r.ingredients_queued) {
             const parts = [];
             if (r.description_updated) parts.push('Beschreibung');
             if (r.thumbnail_updated) parts.push('Bild');
+            if (r.ingredients_queued && !parts.length) parts.push('Zutatenanalyse');
             this.showToast(
               `✓ ${parts.join(' + ')} aktualisiert${r.ingredients_queued ? ' · Zutatenanalyse gestartet' : ''}`
             );
@@ -3067,15 +3072,70 @@ function scrapperApp() {
       if (r && r.ok) await this.loadAudit();
     },
 
-    // Bulk: alle Rezepte mit status=ok+0 Zutaten auf pending zurücksetzen.
-    // Worker pickt sie auf und versucht KI-Extract neu (mit aktuellem Prompt).
+    // Bulk: aktive leere Rezepte mit gespeichertem Text auf pending setzen.
+    // Worker pickt ok/error/skipped auf und versucht den KI-Extract erneut.
     async recoverEmpty() {
-      const n = this.audit.data?.empty_recipes?.length || 0;
+      const n = this.audit.summary?.empty_recipe_count || 0;
       if (!confirm(`${n} Rezepte auf 'pending' zurücksetzen?\n\nDer Worker extrahiert sie dann neu mit dem aktuellen Prompt. Bestehende Zutaten/Schritte würden überschrieben (sind ja eh leer).`)) return;
       const r = await this.api('POST', '/api/recipes/recover-empty');
       if (r && r.ok) {
         this.showToast(`✓ ${r.reset_count} Rezepte auf pending — Worker läuft`);
         await this.loadAudit();
+      }
+    },
+
+    // Alle aktiven, nicht verifizierten Rezepte ohne Zutaten und mit URL
+    // sequenziell durch denselben Quellenabruf wie im Rezept-Modal schicken.
+    // reanalyze=true plant die Extraktion auch bei unveränderter Caption neu ein.
+    async rescrapeBulkMissingIngredients() {
+      if (this.audit.rescrapingBulk) {
+        this.audit.rescrapingBulk = false;
+        return;
+      }
+      const ids = this.audit.data?.empty_rescrape_ids || [];
+      if (ids.length === 0) {
+        this.showToast('Keine leeren Rezepte mit abrufbarer URL gefunden');
+        return;
+      }
+      const etaSec = ids.length * 15;
+      const eta = etaSec > 60 ? `~${Math.ceil(etaSec / 60)} Min` : `~${etaSec}s`;
+      if (!confirm(
+        `${ids.length} Rezepte ohne Zutaten erneut von ihrer URL abrufen?\n\n` +
+        `TikTok-Captions werden aufgeklappt und anschließend neu analysiert. ` +
+        `Der Lauf ist sequenziell und dauert ungefähr ${eta}.\n\n` +
+        `Zum Abbrechen den Fortschritts-Button erneut anklicken.`
+      )) return;
+
+      this.audit.rescrapingBulk = true;
+      this.audit.rescrapeProgress = 0;
+      this.audit.rescrapeTotal = ids.length;
+      let queued = 0, browserCaptions = 0, failed = 0;
+      try {
+        for (const id of ids) {
+          if (!this.audit.rescrapingBulk) break;
+          this.audit.rescrapeProgress++;
+          try {
+            const response = await this.api(
+              'POST', `/api/recipes/${id}/rescrape?reanalyze=true`
+            );
+            if (response?.ok && response.ingredients_queued) {
+              queued++;
+              if (response.description_source === 'tiktok-browser') browserCaptions++;
+            } else {
+              failed++;
+            }
+          } catch (e) {
+            failed++;
+          }
+        }
+        this.showToast(
+          `✓ ${queued} neu eingeplant · ${browserCaptions} lange TikTok-Captions · ${failed} übersprungen/fehlgeschlagen`
+        );
+        await this.loadAudit();
+      } finally {
+        this.audit.rescrapingBulk = false;
+        this.audit.rescrapeProgress = 0;
+        this.audit.rescrapeTotal = 0;
       }
     },
 

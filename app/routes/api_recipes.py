@@ -413,8 +413,8 @@ def extraction_status():
 
 @router.post("/recover-empty")
 def recover_empty(request: Request) -> Dict[str, Any]:
-    """Setzt ingredients_status='pending' für alle Rezepte die status IN
-    ('ok','error') haben aber 0 Zutaten in recipe_ingredients. Meist alte
+    """Setzt ingredients_status='pending' für alle aktiven Rezepte die status IN
+    ('ok','error','skipped') haben aber 0 Zutaten in recipe_ingredients. Meist alte
     Extracts wo das Prompt zu restriktiv war oder das JSON abgeschnitten
     wurde. Worker pickt die zurückgesetzten Rezepte auf und versucht neu
     mit dem aktuellen Prompt + max_tokens=6000.
@@ -430,7 +430,9 @@ def recover_empty(request: Request) -> Dict[str, Any]:
                 SELECT r.id
                 FROM recipes r
                 LEFT JOIN recipe_ingredients ri ON ri.recipe_id = r.id
-                WHERE r.ingredients_status IN ('ok', 'error')
+                WHERE r.ingredients_status IN ('ok', 'error', 'skipped')
+                  AND r.deleted_at IS NULL
+                  AND COALESCE(r.user_verified, 0) = 0
                   AND r.description IS NOT NULL
                   AND length(r.description) >= 20
                 GROUP BY r.id
@@ -474,7 +476,11 @@ def recover_empty(request: Request) -> Dict[str, Any]:
 
 
 @router.post("/{recipe_id}/rescrape")
-def rescrape_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
+def rescrape_recipe(
+    recipe_id: int,
+    request: Request,
+    reanalyze: bool = Query(False, description="Zutatenanalyse auch bei unveränderter Caption neu starten"),
+) -> Dict[str, Any]:
     """Re-Scrape: ruft yt-dlp nochmal für die ursprüngliche URL auf und
     aktualisiert Caption + Thumbnail im Folder. Bei TikTok wird optional die
     im Browser aufgeklappte lange Caption gelesen. Video wird NICHT neu
@@ -535,6 +541,7 @@ def rescrape_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
     changed = {"description": False, "thumbnail": False}
 
     # Description aktualisieren
+    extraction_queued = False
     new_desc = meta.get("description_text")
     if new_desc and new_desc.strip():
         old_desc = rec.get("description") or ""
@@ -552,6 +559,26 @@ def rescrape_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
             except OSError as e:
                 logger.warning(f"description.txt schreiben fehler: {e}")
             changed["description"] = True
+            extraction_queued = True
+
+    # Bei leeren Rezepten muss die Analyse auch dann erneut laufen, wenn die
+    # Quelle exakt denselben Text liefert. Der normale Einzel-Re-Scrape bleibt
+    # ohne reanalyze-Flag unverändert und fasst bestehende KI-Daten nicht an.
+    effective_desc = str(new_desc or rec.get("description") or "").strip()
+    if reanalyze and not extraction_queued and len(effective_desc) >= 20:
+        _version_before(
+            recipe_id,
+            request,
+            "Zutatenanalyse nach Quellenabruf erneut eingeplant",
+            source="admin",
+        )
+        with db.conn() as c:
+            c.execute(
+                "UPDATE recipes SET ingredients_status='pending', "
+                "ingredients_extracted_at=NULL WHERE id=?",
+                (recipe_id,),
+            )
+        extraction_queued = True
 
     # Thumbnail ersetzen
     new_thumb = meta.get("thumbnail_path")
@@ -580,7 +607,7 @@ def rescrape_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
             logger.warning(f"Thumbnail-Copy fehler #{recipe_id}: {e}")
 
     worker_started = False
-    if changed["description"]:
+    if extraction_queued:
         try:
             worker_started = ensure_extraction_running()
         except Exception as e:
@@ -595,7 +622,7 @@ def rescrape_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
         "description_updated": changed["description"],
         "thumbnail_updated": changed["thumbnail"],
         "description_source": description_source,
-        "ingredients_queued": changed["description"],
+        "ingredients_queued": extraction_queued,
         "worker_started": worker_started,
         "any_change": changed["description"] or changed["thumbnail"],
     }

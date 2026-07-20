@@ -87,25 +87,28 @@ def get_audit(
     result["ai_name_findings"] = name_findings
     result["ai_folder_findings"] = folder_findings
 
-    # Verdächtig leere Rezepte: status='ok' aber 0 Zutaten obwohl Description da ist.
-    # Verifizierte Rezepte werden ausgeschlossen — User hat manuell bestätigt
-    # dass es so gewollt ist.
+    # Alle aktiven Rezepte ohne Zutaten. Verifizierte Rezepte werden
+    # ausgeschlossen — der User hat ihren Zustand bewusst bestätigt.
     with db.conn() as c:
         empty_rows = c.execute("""
-            SELECT r.id, r.name, length(r.description) as desc_len, r.folder_path
+            SELECT r.id, r.name, COALESCE(length(r.description), 0) as desc_len,
+                   r.folder_path, r.url, r.ingredients_status
             FROM recipes r
             LEFT JOIN recipe_ingredients ri ON ri.recipe_id = r.id
-            WHERE r.ingredients_status IN ('ok', 'error')
-              AND r.description IS NOT NULL
-              AND length(r.description) >= 20
+            WHERE r.deleted_at IS NULL
               AND COALESCE(r.user_verified, 0) = 0
             GROUP BY r.id
             HAVING COUNT(ri.id) = 0
-            ORDER BY length(r.description) DESC
-            LIMIT 50
+            ORDER BY CASE WHEN COALESCE(TRIM(r.url), '') <> '' THEN 0 ELSE 1 END,
+                     COALESCE(length(r.description), 0) DESC
         """).fetchall()
-    empty_recipes = [dict(r) for r in empty_rows]
-    result["empty_recipes"] = empty_recipes
+    all_empty_recipes = [dict(r) for r in empty_rows]
+    # Maximal 100 Detailzeilen fürs DOM, aber alle abrufbaren IDs für den
+    # sequenziellen Bulk-Re-Scrape bereitstellen.
+    result["empty_recipes"] = all_empty_recipes[:100]
+    result["empty_rescrape_ids"] = [
+        int(r["id"]) for r in all_empty_recipes if str(r.get("url") or "").strip()
+    ]
 
     # Daten-Lücken-Detections (kein Bild / keine Schritte / keine URL /
     # nur 1-2 Zutaten / keine Description). EIN Query mit allen Flags pro
@@ -214,7 +217,8 @@ def get_audit(
         "ai_category_count": len(cat_findings),
         "ai_name_count": len(name_findings),
         "ai_folder_count": len(folder_findings),
-        "empty_recipe_count": len(empty_recipes),
+        "empty_recipe_count": len(all_empty_recipes),
+        "empty_rescrape_count": len(result["empty_rescrape_ids"]),
         "no_image_count": len(no_image),
         "no_steps_count": len(no_steps),
         "no_url_count": len(no_url),

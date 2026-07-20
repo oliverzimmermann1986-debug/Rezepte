@@ -1841,17 +1841,24 @@
 
         <!-- ════ Tab: Daten-Lücken ════ -->
         <div x-show="audit.activeTab === 'gaps'">
-          <!-- Verdächtig leere Rezepte: status=ok aber 0 Zutaten -->
+          <!-- Aktive, nicht verifizierte Rezepte ohne Zutaten -->
         <div class="audit-section" x-show="(audit.data?.empty_recipes?.length || 0) > 0">
-          <h3>📭 Verdächtig leer (<span x-text="audit.data?.empty_recipes?.length"></span>)</h3>
+          <h3>📭 Ohne Zutaten (<span x-text="audit.summary?.empty_recipe_count || 0"></span>)</h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
-            Rezepte mit Status „ok" aber 0 Zutaten — die KI hat in einem früheren Lauf nichts gefunden.
-            Häufig PDF-Header / Markdown-Bullets die der alte Prompt übersehen hat.
-            Klick „Alle neu extrahieren" setzt sie auf „pending", Worker probiert mit aktuellem Prompt.
+            Aktive, nicht verifizierte Rezepte ohne Zutaten. Der URL-Nachscan ruft die Quelle erneut ab,
+            klappt lange TikTok-Captions auf und startet anschließend die Zutatenanalyse neu.
+            Rezepte ohne URL können nur anhand ihres bereits gespeicherten Textes neu analysiert werden.
           </div>
-          <div style="margin-bottom: 12px;">
-            <button class="btn btn-primary btn-sm" @click="recoverEmpty()">
-              ⟳ Alle <span x-text="audit.data?.empty_recipes?.length"></span> neu extrahieren
+          <div style="margin-bottom: 12px; display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn btn-primary btn-sm" @click="rescrapeBulkMissingIngredients()">
+              <span x-show="!audit.rescrapingBulk">
+                🔄 <span x-text="audit.summary?.empty_rescrape_count || 0"></span> mit URL nachscannen
+              </span>
+              <span x-show="audit.rescrapingBulk"
+                    x-text="'… ' + audit.rescrapeProgress + '/' + audit.rescrapeTotal + ' (Klick=Abbrechen)'"></span>
+            </button>
+            <button class="btn btn-sm" @click="recoverEmpty()" :disabled="audit.rescrapingBulk">
+              ⟳ Nur gespeicherte Texte neu analysieren
             </button>
           </div>
           <template x-for="r in (audit.data?.empty_recipes || [])" :key="r.id">
