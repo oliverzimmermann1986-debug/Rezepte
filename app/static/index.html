@@ -1950,7 +1950,7 @@
 
         <!-- 📋 Keine Schritte (Zutaten da, aber 0 steps) -->
         <div class="audit-section" x-show="(audit.data?.data_gaps?.no_steps?.length || 0) > 0">
-          <h3>📋 Keine Schritte (<span x-text="audit.summary?.no_steps_count"></span>) <button class="btn btn-sm" style="float:right;" @click="bulkVerifyDetection('no_steps')" title="Alle in der Liste als geprüft markieren">✓ Alle als geprüft markieren</button><button class="btn btn-sm btn-danger" style="float:right; margin-right:6px;" @click="bulkDeleteDetection('no_steps')" title="Alle Rezepte + Files dieser Liste löschen">🗑 Alle löschen</button></h3>
+          <h3>📋 Keine Schritte (<span x-text="audit.summary?.no_steps_count"></span>) <button class="btn btn-sm btn-primary" style="float:right;" @click="rescrapeBulkMissingSteps()" title="Quelle erneut abrufen und Schritte neu analysieren">🔄 Mit URL nachscannen</button><button class="btn btn-sm" style="float:right; margin-right:6px;" @click="bulkVerifyDetection('no_steps')" title="Alle in der Liste als geprüft markieren">✓ Alle als geprüft markieren</button><button class="btn btn-sm btn-danger" style="float:right; margin-right:6px;" @click="bulkDeleteDetection('no_steps')" title="Alle Rezepte + Files dieser Liste löschen">🗑 Alle löschen</button></h3>
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
             Rezepte mit Zutaten aber leerer Schritt-Liste. KI hat keine fand oder Description war nur eine Zutatenliste.
           </div>

@@ -3087,20 +3087,19 @@ function scrapperApp() {
     // Alle aktiven, nicht verifizierten Rezepte ohne Zutaten und mit URL
     // sequenziell durch denselben Quellenabruf wie im Rezept-Modal schicken.
     // reanalyze=true plant die Extraktion auch bei unveränderter Caption neu ein.
-    async rescrapeBulkMissingIngredients() {
+    async rescrapeBulkRecipeIds(ids, label) {
       if (this.audit.rescrapingBulk) {
         this.audit.rescrapingBulk = false;
         return;
       }
-      const ids = this.audit.data?.empty_rescrape_ids || [];
       if (ids.length === 0) {
-        this.showToast('Keine leeren Rezepte mit abrufbarer URL gefunden');
+        this.showToast(`Keine Rezepte ${label} mit abrufbarer URL gefunden`);
         return;
       }
       const etaSec = ids.length * 15;
       const eta = etaSec > 60 ? `~${Math.ceil(etaSec / 60)} Min` : `~${etaSec}s`;
       if (!confirm(
-        `${ids.length} Rezepte ohne Zutaten erneut von ihrer URL abrufen?\n\n` +
+        `${ids.length} Rezepte ${label} erneut von ihrer URL abrufen?\n\n` +
         `TikTok-Captions werden aufgeklappt und anschließend neu analysiert. ` +
         `Der Lauf ist sequenziell und dauert ungefähr ${eta}.\n\n` +
         `Zum Abbrechen den Fortschritts-Button erneut anklicken.`
@@ -3142,6 +3141,18 @@ function scrapperApp() {
     // Bulk: Nährwerte für bis zu 50 Rezepte berechnen. Synchroner Lauf —
     // UI ist blockiert für ~30s, danach Audit neu laden. Bei mehr als 50
     // pending Rezepten muss User wiederholt klicken (siehe Audit-Liste).
+    async rescrapeBulkMissingIngredients() {
+      const ids = this.audit.data?.empty_rescrape_ids || [];
+      return this.rescrapeBulkRecipeIds(ids, 'ohne Zutaten');
+    },
+
+    async rescrapeBulkMissingSteps() {
+      const ids = (this.audit.data?.data_gaps?.no_steps || [])
+        .filter(r => String(r.url || '').trim())
+        .map(r => r.id);
+      return this.rescrapeBulkRecipeIds(ids, 'ohne Schritte');
+    },
+
     async bulkComputeNutrition() {
       const total = this.audit.data?.data_gaps?.no_nutrition?.length || 0;
       if (total === 0) return;

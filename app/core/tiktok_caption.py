@@ -207,12 +207,12 @@ def fetch_expanded_tiktok_caption(
                         more = article.get_by_text(label, exact=True)
                         if more.count() and more.first.is_visible():
                             try:
-                                more.first.click(timeout=3_000, force=True)
-                            except Exception:
-                                # TikTok occasionally places a transparent
-                                # overlay above the text node. A DOM click still
-                                # triggers React's expand handler in that case.
+                                # TikTok's text node is sometimes covered by a
+                                # transparent layer. The DOM click is the same
+                                # interaction verified in the headless diagnostic.
                                 more.first.evaluate("element => element.click()")
+                            except Exception:
+                                more.first.click(timeout=3_000, force=True)
                             break
                     except Exception:
                         continue
