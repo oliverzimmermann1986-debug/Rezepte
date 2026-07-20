@@ -22,3 +22,6 @@ temp/
 .idea/
 *.swp
 .DS_Store
+
+# graphify Wissensgraph-Output (lokal, nicht versionieren)
+graphify-out/

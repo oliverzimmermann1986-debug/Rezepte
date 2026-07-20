@@ -88,12 +88,27 @@ def _write_oncalendar(timer_path: str, new_value: str) -> None:
                 new_lines.append(f"OnCalendar={new_value}")
             new_lines.append(line)
         out_lines = new_lines
-    p.write_text("\n".join(out_lines) + "\n")
+    try:
+        p.write_text("\n".join(out_lines) + "\n")
+    except OSError as exc:
+        # Häufigster Fall: der Dienst läuft mit systemd-Sandboxing (ProtectSystem),
+        # das /etc read-only macht → EROFS. Klarer Hinweis statt nacktem 500.
+        raise HTTPException(
+            500,
+            f"Timer-Datei nicht schreibbar ({exc.strerror}): {timer_path}. "
+            "Dem Service scrapper-web Schreibrecht geben, z.B. drop-in mit "
+            f"ReadWritePaths={timer_path}, dann daemon-reload + restart.",
+        ) from exc
 
 
-def _systemctl_via_sudo(*args) -> Dict:
-    """Ruft systemctl mit sudo auf. Erfordert sudoers-Eintrag für scrapper."""
-    cmd = ["sudo", "-n", "systemctl"] + list(args)
+def _systemctl(*args) -> Dict:
+    """Ruft systemctl auf - OHNE sudo. Der Dienst läuft gehärtet mit erzwungenem
+    NoNewPrivileges (durch ProtectKernel*/SystemCallFilter), das sudo grundsätzlich
+    blockiert. Stattdessen direkt via D-Bus/polkit; das braucht kein setuid.
+    Erfordert eine polkit-Regel, die dem Service-User reload-daemon + manage-units
+    für scrapper-job.{timer,service} erlaubt
+    (siehe /etc/polkit-1/rules.d/49-scrapper-systemctl.rules)."""
+    cmd = ["systemctl"] + list(args)
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     return {
         "ok": r.returncode == 0,
@@ -172,18 +187,20 @@ def update_schedule(body: ScheduleUpdate) -> Dict:
         return {"ok": True, "message": "Nichts zu ändern"}
 
     results = []
-    daemon = _systemctl_via_sudo("daemon-reload")
+    daemon = _systemctl("daemon-reload")
     results.append({"step": "daemon-reload", **daemon})
     if not daemon["ok"]:
         return {
             "ok": False,
-            "error": "sudo systemctl daemon-reload schlug fehl - sudoers-Eintrag fehlt?",
+            "error": "systemctl daemon-reload fehlgeschlagen - polkit-Regel für "
+                     "User scrapper fehlt? (reload-daemon). Details: "
+                     + (daemon.get("stderr") or "").strip()[:200],
             "details": results,
         }
 
     for kind, _ in changes:
         unit = Path(TIMER_FILES[kind]).name
-        r = _systemctl_via_sudo("restart", unit)
+        r = _systemctl("restart", unit)
         results.append({"step": f"restart {unit}", **r})
 
     cfg = get_config()

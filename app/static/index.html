@@ -526,6 +526,13 @@
                     <span class="muted">Nächster Lauf</span>
                     <span class="mono" style="color: var(--accent)" x-text="(schedule.scraper && schedule.scraper.next_run) || '—'"></span>
                   </div>
+                  <div style="margin-top: 12px; display: flex; gap: 8px;">
+                    <button type="button" class="btn btn-sm btn-primary"
+                            @click="runScraper()" :disabled="status.scraper"
+                            x-text="status.scraper ? '… läuft' : '▶ Jetzt ausführen'"></button>
+                    <button type="button" class="btn btn-sm btn-danger" x-show="status.scraper"
+                            @click="cancelScraper()">Abbrechen</button>
+                  </div>
                   <div style="margin-top: 14px;">
                     <div class="muted" style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;">Schnellauswahl</div>
                     <div class="preset-chips">
@@ -603,6 +610,12 @@
                 <div class="field"><label>Folder</label><input x-model="config.mail.recipe.folder"></div>
                 <div class="field"><label>Max Mails</label><input type="number" x-model.number="config.mail.recipe.max_mails"></div>
               </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 6px;">
+                <input type="checkbox" x-model="config.mail.recipe.delete_processed" id="mr-del">
+                <label for="mr-del" style="font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--fg);">
+                  Verarbeitete Mails <strong>löschen</strong> (nach erfolgreichem Import aus dem Postfach entfernen)
+                </label>
+              </div>
             </div>
           </div>
 
@@ -639,6 +652,12 @@
                 <input type="checkbox" x-model="config.mail.wedding.always_pending" id="wd-pending">
                 <label for="wd-pending" style="font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--fg);">
                   Hochzeit-Items <strong>immer</strong> in Pending – Name/Kategorie manuell vergeben
+                </label>
+              </div>
+              <div class="field" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 6px;">
+                <input type="checkbox" x-model="config.mail.wedding.delete_processed" id="mw-del">
+                <label for="mw-del" style="font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--fg);">
+                  Verarbeitete Mails <strong>löschen</strong> (nach erfolgreichem Import aus dem Postfach entfernen)
                 </label>
               </div>
             </div>
