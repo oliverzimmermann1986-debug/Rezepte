@@ -23,7 +23,10 @@ function scrapperApp() {
         ocr_language: 'deu+eng', keep_original: true, limit: 500,
         extract_recipe_data: true, overwrite_recipe_data: false,
       },
-      pageEditor: { loading: false, saving: false, filename: '', pages: [], previewKey: Date.now() },
+      pageEditor: {
+        loading: false, saving: false, filename: '', pages: [],
+        loadedRecipeId: null, requestEpoch: 0, previewKey: Date.now(),
+      },
       maintenanceRuns: [],
       maintenanceBusy: '',
       maintenanceResult: null,
@@ -173,6 +176,11 @@ function scrapperApp() {
       syncError: null,    // Original-sync_errors row
       dbRecipe: null,     // Vom GET /api/recipes/{id} (Konflikt-Partner)
       fsPreview: null,    // Vom GET /api/audit/folder-preview (Konflikt-Folder)
+      loadingDb: false,
+      loadingFs: false,
+      actionBusy: false,
+      requestEpoch: 0,
+      controller: null,
     },
     // Benutzer-Verwaltung (Multi-User-Auth)
     users: {
@@ -198,8 +206,12 @@ function scrapperApp() {
       sharing: false,                // Loading-state für 🔗 Share-Button
       verifying: false,              // Loading für 'manuell geprüft'-Toggle
       rescraping: false,             // Loading für Re-Scrape im Modal
+      activeId: null,
+      requestEpoch: 0,
+      controller: null,
     },
     _wakeLock: null,
+    _wakeLockEpoch: 0,
     // Per-Schritt-Timer (key = step.id, value = {status, remaining, intervalId})
     // Bewusst auf scrapperApp-Top-Level damit Alpine reactivity trackt.
     timers: {},
@@ -224,7 +236,16 @@ function scrapperApp() {
       this.$nextTick(() => window.RezepteRuntime?.initAccessibleDialogs());
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) this._pauseBackgroundWork();
-        else this._resumeBackgroundWork();
+        else {
+          this._resumeBackgroundWork();
+          if (
+            this.recipeDetail.show
+            && this.recipeDetail.cookMode
+            && !this._wakeLock
+          ) {
+            this._acquireWakeLock();
+          }
+        }
       });
       window.addEventListener('popstate', () => {
         const params = new URLSearchParams(window.location.search);
@@ -361,14 +382,42 @@ function scrapperApp() {
     async loadPdfPages() {
       const id = Number(this.admin.pdf.recipe_id || 0);
       if (!id) return this.showToast('Bitte zuerst eine Rezept-ID eingeben', 'err');
+      const epoch = ++this.admin.pageEditor.requestEpoch;
+      this.admin.pageEditor.loadedRecipeId = null;
+      this.admin.pageEditor.filename = '';
+      this.admin.pageEditor.pages = [];
       this.admin.pageEditor.loading = true;
       try {
         const r = await this.api('GET', `/api/admin/pdf/${id}/pages`);
+        if (
+          epoch !== this.admin.pageEditor.requestEpoch
+          || Number(this.admin.pdf.recipe_id || 0) !== id
+          || !r
+        ) return;
+        this.admin.pageEditor.loadedRecipeId = id;
         this.admin.pageEditor.filename = r.filename || '';
         this.admin.pageEditor.pages = (r.pages || []).map(page => ({ ...page, rotation_delta: 0, deleted: false }));
         this.admin.pageEditor.previewKey = Date.now();
       } catch (_) { this.showToast('PDF-Seiten konnten nicht geladen werden', 'err'); }
-      finally { this.admin.pageEditor.loading = false; }
+      finally {
+        if (epoch === this.admin.pageEditor.requestEpoch) {
+          this.admin.pageEditor.loading = false;
+        }
+      }
+    },
+
+    invalidatePdfPageEditor() {
+      const currentId = Number(this.admin.pdf.recipe_id || 0);
+      if (
+        this.admin.pageEditor.loadedRecipeId !== null
+        && currentId !== Number(this.admin.pageEditor.loadedRecipeId)
+      ) {
+        this.admin.pageEditor.requestEpoch += 1;
+        this.admin.pageEditor.loadedRecipeId = null;
+        this.admin.pageEditor.filename = '';
+        this.admin.pageEditor.pages = [];
+        this.admin.pageEditor.loading = false;
+      }
     },
 
     movePdfPage(index, delta) {
@@ -386,10 +435,15 @@ function scrapperApp() {
     },
 
     async applyPdfPageEdits() {
-      const id = Number(this.admin.pdf.recipe_id || 0);
+      const id = Number(this.admin.pageEditor.loadedRecipeId || 0);
+      const inputId = Number(this.admin.pdf.recipe_id || 0);
       const active = this.admin.pageEditor.pages.filter(page => !page.deleted);
-      if (!id || !active.length) return this.showToast('Mindestens eine Seite muss erhalten bleiben', 'err');
+      if (!id || id !== inputId) {
+        return this.showToast('Rezept-ID wurde geändert – Seiten bitte neu laden', 'err');
+      }
+      if (!active.length) return this.showToast('Mindestens eine Seite muss erhalten bleiben', 'err');
       if (!confirm(`${active.length} PDF-Seite(n) in der angezeigten Reihenfolge speichern? Das Original wird vorher gesichert.`)) return;
+      const epoch = this.admin.pageEditor.requestEpoch;
       this.admin.pageEditor.saving = true;
       try {
         const rotations = {};
@@ -397,8 +451,13 @@ function scrapperApp() {
         const r = await this.api('POST', `/api/admin/pdf/${id}/pages/apply`, {
           order: active.map(page => page.page), rotations, keep_original: true,
         });
-        if (r?.ok) {
+        if (
+          r?.ok
+          && epoch === this.admin.pageEditor.requestEpoch
+          && Number(this.admin.pageEditor.loadedRecipeId) === id
+        ) {
           this.showToast('PDF-Seiten gespeichert');
+          this.admin.pageEditor.saving = false;
           await this.loadPdfPages();
           await this.loadAdminOverview();
           if (typeof this.loadRecipes === 'function') await this.loadRecipes();
@@ -2064,24 +2123,31 @@ function scrapperApp() {
       const state = {
         status: 'running',     // 'idle' | 'running' | 'done'
         remaining: step.timer_seconds,
+        endsAt: Date.now() + Number(step.timer_seconds) * 1000,
         intervalId: null,
         running: true,         // CSS hint
+        notified: false,
       };
       this.timers[id] = state;
-      state.intervalId = setInterval(() => {
-        state.remaining -= 1;
+      const tick = () => {
+        state.remaining = Math.max(0, Math.ceil((state.endsAt - Date.now()) / 1000));
         if (state.remaining <= 0) {
           state.remaining = 0;
           state.status = 'done';
           state.running = false;
           clearInterval(state.intervalId);
           state.intervalId = null;
-          this._playTimerDoneSound();
-          this.showToast('⏰ Timer fertig: ' + (step.instruction || '').slice(0, 60), 'ok');
+          if (!state.notified) {
+            state.notified = true;
+            this._playTimerDoneSound();
+            this.showToast('⏰ Timer fertig: ' + (step.instruction || '').slice(0, 60), 'ok');
+          }
         }
         // Alpine reactivity: timers selber neu zuweisen erzwingt Re-Render
         this.timers = { ...this.timers, [id]: { ...state } };
-      }, 1000);
+      };
+      state.intervalId = setInterval(tick, 1000);
+      tick();
     },
 
     stopStepTimer(step, opts = {}) {
@@ -2369,12 +2435,44 @@ function scrapperApp() {
     _detailPrefetch: new Map(),
     prefetchRecipeDetail(id) {
       if (this._detailPrefetch.has(id)) return;  // already fetched
-      this._detailPrefetch.set(id, this.api('GET', '/api/recipes/' + id));
+      const promise = this.api(
+        'GET',
+        '/api/recipes/' + id,
+        undefined,
+        {silent: true},
+      ).catch(() => null);
+      this._detailPrefetch.set(id, promise);
       // Cache nach 30s expirieren damit stale Daten nicht ewig leben
-      setTimeout(() => this._detailPrefetch.delete(id), 30000);
+      setTimeout(() => {
+        if (this._detailPrefetch.get(id) === promise) {
+          this._detailPrefetch.delete(id);
+        }
+      }, 30000);
+    },
+
+    _detailContext() {
+      return {
+        id: Number(this.recipeDetail.activeId || this.recipeDetail.data?.id || 0),
+        epoch: Number(this.recipeDetail.requestEpoch || 0),
+      };
+    },
+
+    _detailOwns(context) {
+      return Boolean(
+        context?.id
+        && this.recipeDetail.show
+        && Number(this.recipeDetail.activeId) === Number(context.id)
+        && Number(this.recipeDetail.requestEpoch) === Number(context.epoch)
+      );
     },
 
     async openRecipe(id) {
+      id = Number(id);
+      this.recipeDetail.controller?.abort();
+      const controller = new AbortController();
+      const epoch = ++this.recipeDetail.requestEpoch;
+      this.recipeDetail.controller = controller;
+      this.recipeDetail.activeId = id;
       this.recipeDetail.show = true;
       this.recipeDetail.data = null;
       this.recipeDetail.newTag = '';
@@ -2389,9 +2487,29 @@ function scrapperApp() {
       this.recipeDetail.rescraping = false;
       // Prefetched-Promise nutzen falls da, sonst fresh fetch
       const cached = this._detailPrefetch.get(id);
-      const r = cached ? await cached : await this.api('GET', '/api/recipes/' + id);
+      let r = cached ? await cached : null;
+      if (
+        !r
+        && this.recipeDetail.show
+        && this.recipeDetail.activeId === id
+        && this.recipeDetail.requestEpoch === epoch
+      ) {
+        r = await this.api(
+          'GET',
+          '/api/recipes/' + id,
+          undefined,
+          {signal: controller.signal},
+        );
+      }
       this._detailPrefetch.delete(id);  // einmalig konsumieren
-      if (r) this.recipeDetail.data = r;
+      if (
+        r
+        && this.recipeDetail.show
+        && this.recipeDetail.activeId === id
+        && this.recipeDetail.requestEpoch === epoch
+      ) {
+        this.recipeDetail.data = r;
+      }
     },
 
     async toggleCookMode() {
@@ -2409,13 +2527,26 @@ function scrapperApp() {
       // Firefox erst seit 126). Bei Nicht-Verfügbarkeit graceful weiter — die
       // CSS-only-Cook-Mode-Optik funktioniert eh.
       if (!('wakeLock' in navigator)) return;
+      const epoch = ++this._wakeLockEpoch;
       try {
-        this._wakeLock = await navigator.wakeLock.request('screen');
+        const lock = await navigator.wakeLock.request('screen');
+        if (
+          epoch !== this._wakeLockEpoch
+          || !this.recipeDetail.show
+          || !this.recipeDetail.cookMode
+        ) {
+          try { await lock.release(); } catch (_) {}
+          return;
+        }
+        this._wakeLock = lock;
         this.recipeDetail.wakeLockActive = true;
         // Browser kann Lock implizit beenden (z.B. Tab im Hintergrund) —
         // Listener informiert uns damit der UI-Indikator stimmt.
-        this._wakeLock.addEventListener('release', () => {
-          this.recipeDetail.wakeLockActive = false;
+        lock.addEventListener('release', () => {
+          if (this._wakeLock === lock) {
+            this._wakeLock = null;
+            this.recipeDetail.wakeLockActive = false;
+          }
         });
       } catch (e) {
         // Verweigerung (User-Gesture fehlt o.ä.) — kein Showstopper
@@ -2424,10 +2555,12 @@ function scrapperApp() {
     },
 
     async _releaseWakeLock() {
+      this._wakeLockEpoch += 1;
       this.recipeDetail.wakeLockActive = false;
-      if (this._wakeLock) {
-        try { await this._wakeLock.release(); } catch (e) {}
-        this._wakeLock = null;
+      const lock = this._wakeLock;
+      this._wakeLock = null;
+      if (lock) {
+        try { await lock.release(); } catch (e) {}
       }
     },
 
@@ -2442,6 +2575,10 @@ function scrapperApp() {
       // nächste open würde mit angeschaltetem Cook-Mode starten
       this._releaseWakeLock();
       this.recipeDetail.cookMode = false;
+      this.recipeDetail.controller?.abort();
+      this.recipeDetail.controller = null;
+      this.recipeDetail.requestEpoch += 1;
+      this.recipeDetail.activeId = null;
       this.recipeDetail.show = false;
       this.recipeDetail.data = null;
       // Edit-State + ephemerale Loading-States ZWINGEND clearen
@@ -2452,6 +2589,7 @@ function scrapperApp() {
     async addTagToRecipe() {
       const name = (this.recipeDetail.newTag || '').trim();
       if (!name || !this.recipeDetail.data) return;
+      const context = this._detailContext();
       // Nur User-Tags durchreichen — Backend recipe_tags_set ersetzt
       // ohnehin nur auto=0; Auto-Tags bleiben.
       const userTags = (this.recipeDetail.data.tags || [])
@@ -2459,12 +2597,12 @@ function scrapperApp() {
         .map(t => t.name);
       if (userTags.includes(name)) { this.recipeDetail.newTag = ''; return; }
       userTags.push(name);
-      const r = await this.api('PUT', `/api/recipes/${this.recipeDetail.data.id}/tags`,
+      const r = await this.api('PUT', `/api/recipes/${context.id}/tags`,
                                 { tags: userTags });
-      if (r && r.ok) {
+      if (r && r.ok && this._detailOwns(context)) {
         // Re-fetch komplette Tag-Liste (User + Auto)
-        const fresh = await this.api('GET', `/api/recipes/${this.recipeDetail.data.id}`);
-        if (fresh) this.recipeDetail.data.tags = fresh.tags;
+        const fresh = await this.api('GET', `/api/recipes/${context.id}`);
+        if (fresh && this._detailOwns(context)) this.recipeDetail.data.tags = fresh.tags;
         this.recipeDetail.newTag = '';
         this.loadFacets();
       }
@@ -2472,6 +2610,7 @@ function scrapperApp() {
 
     async removeTagFromRecipe(tagName) {
       if (!this.recipeDetail.data) return;
+      const context = this._detailContext();
       // Auto-Tags lassen sich nicht entfernen (× ist im UI eh nicht da).
       // Defensiv: falls doch aufgerufen, hier abfangen.
       const tag = (this.recipeDetail.data.tags || []).find(t => t.name === tagName);
@@ -2479,11 +2618,11 @@ function scrapperApp() {
       const userTags = (this.recipeDetail.data.tags || [])
         .filter(t => !t.auto && t.name !== tagName)
         .map(t => t.name);
-      const r = await this.api('PUT', `/api/recipes/${this.recipeDetail.data.id}/tags`,
+      const r = await this.api('PUT', `/api/recipes/${context.id}/tags`,
                                 { tags: userTags });
-      if (r && r.ok) {
-        const fresh = await this.api('GET', `/api/recipes/${this.recipeDetail.data.id}`);
-        if (fresh) this.recipeDetail.data.tags = fresh.tags;
+      if (r && r.ok && this._detailOwns(context)) {
+        const fresh = await this.api('GET', `/api/recipes/${context.id}`);
+        if (fresh && this._detailOwns(context)) this.recipeDetail.data.tags = fresh.tags;
         this.loadFacets();
       }
     },
@@ -2512,21 +2651,30 @@ function scrapperApp() {
       return (Math.round(m * 100) / 100).toString().replace('.', ',');
     },
 
+    safeExternalUrl(value) {
+      try {
+        const parsed = new URL(String(value || ''));
+        return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : null;
+      } catch (_) {
+        return null;
+      }
+    },
+
     async extractIngredients() {
       if (!this.recipeDetail.data || this.recipeDetail.extracting) return;
+      const context = this._detailContext();
       this.recipeDetail.extracting = true;
       try {
-        const id = this.recipeDetail.data.id;
-        const r = await this.api('POST', `/api/recipes/${id}/extract`);
-        if (r && r.ok) {
+        const r = await this.api('POST', `/api/recipes/${context.id}/extract`);
+        if (r && r.ok && this._detailOwns(context)) {
           this.showToast(`✓ ${r.count || 0} Zutaten extrahiert`);
           // Frisch laden um Zutatenliste im Modal zu aktualisieren
-          const fresh = await this.api('GET', '/api/recipes/' + id);
-          if (fresh) this.recipeDetail.data = fresh;
+          const fresh = await this.api('GET', '/api/recipes/' + context.id);
+          if (fresh && this._detailOwns(context)) this.recipeDetail.data = fresh;
           this.loadFacets();
         }
       } finally {
-        this.recipeDetail.extracting = false;
+        if (this._detailOwns(context)) this.recipeDetail.extracting = false;
       }
     },
 
@@ -2556,9 +2704,12 @@ function scrapperApp() {
       this.$nextTick(() => {
         const dl = document.getElementById('known-ingredients');
         if (!dl) return;
-        dl.innerHTML = this.knownIngredients
-          .map(ki => `<option value="${(ki.display_name || '').replace(/"/g, '&quot;')}">`)
-          .join('');
+        const options = this.knownIngredients.map((ingredient) => {
+          const option = document.createElement('option');
+          option.value = String(ingredient.display_name || '');
+          return option;
+        });
+        dl.replaceChildren(...options);
       });
     },
 
@@ -2634,8 +2785,8 @@ function scrapperApp() {
 
     async saveIngredients() {
       if (this.recipeDetail.savingIngredients) return;
-      const id = this.recipeDetail.data?.id;
-      if (!id) return;
+      const context = this._detailContext();
+      if (!context.id) return;
       // aber wir filtern hier schon damit der Toast-Count stimmt.
       const cleaned = this.recipeDetail.editIngs
         .filter(i => (i.name || '').trim())
@@ -2647,22 +2798,22 @@ function scrapperApp() {
         }));
       this.recipeDetail.savingIngredients = true;
       try {
-        const r = await this.api('PUT', `/api/recipes/${id}/ingredients`,
+        const r = await this.api('PUT', `/api/recipes/${context.id}/ingredients`,
                                   { ingredients: cleaned });
-        if (r && r.ok) {
+        if (r && r.ok && this._detailOwns(context)) {
           // Server returnt die kanonisch verarbeitete Liste — UI darauf
           // aktualisieren statt den lokalen Working-Buffer zu nutzen
           this.recipeDetail.data.ingredients = r.ingredients;
           // Tags könnten sich geändert haben (Diät-Tags Recompute) — frisch laden
-          const fresh = await this.api('GET', '/api/recipes/' + id);
-          if (fresh) this.recipeDetail.data = fresh;
+          const fresh = await this.api('GET', '/api/recipes/' + context.id);
+          if (fresh && this._detailOwns(context)) this.recipeDetail.data = fresh;
           this.recipeDetail.editingIngredients = false;
           this.recipeDetail.editIngs = [];
           this.showToast(`✓ ${cleaned.length} Zutaten gespeichert`);
           this.loadFacets();
         }
       } finally {
-        this.recipeDetail.savingIngredients = false;
+        if (this._detailOwns(context)) this.recipeDetail.savingIngredients = false;
       }
     },
 
@@ -2670,8 +2821,8 @@ function scrapperApp() {
     // ⚡ Button im Detail-Modal — funktioniert sowohl für Erst-Berechnung
     // als auch für Recompute (z.B. nach manuellem Zutaten-Edit).
     async computeNutrition() {
-      const id = this.recipeDetail.data?.id;
-      if (!id || this.recipeDetail.computingNutrition) return;
+      const context = this._detailContext();
+      if (!context.id || this.recipeDetail.computingNutrition) return;
       const ingCount = this.recipeDetail.data?.ingredients?.length || 0;
       if (ingCount < 3) {
         this.showToast('Mindestens 3 Zutaten nötig', 'err');
@@ -2679,8 +2830,8 @@ function scrapperApp() {
       }
       this.recipeDetail.computingNutrition = true;
       try {
-        const r = await this.api('POST', `/api/recipes/${id}/nutrition`);
-        if (r && r.ok) {
+        const r = await this.api('POST', `/api/recipes/${context.id}/nutrition`);
+        if (r && r.ok && this._detailOwns(context)) {
           // In-place die data-Felder updaten damit Modal sofort die Werte zeigt
           this.recipeDetail.data.calories_per_serving = r.calories;
           this.recipeDetail.data.protein_g = r.protein_g;
@@ -2689,7 +2840,7 @@ function scrapperApp() {
           this.showToast(`✓ ~${r.calories} kcal/Portion`);
         }
       } finally {
-        this.recipeDetail.computingNutrition = false;
+        if (this._detailOwns(context)) this.recipeDetail.computingNutrition = false;
       }
     },
 
@@ -2731,13 +2882,13 @@ function scrapperApp() {
     // Username + Timestamp werden mitgespeichert. Unchecken setzt beides
     // zurück auf NULL.
     async toggleVerified(verified) {
-      const id = this.recipeDetail.data?.id;
-      if (!id || this.recipeDetail.verifying) return;
+      const context = this._detailContext();
+      if (!context.id || this.recipeDetail.verifying) return;
       this.recipeDetail.verifying = true;
       try {
         const r = await this.api('POST',
-          `/api/recipes/${id}/verify?verified=${verified ? 'true' : 'false'}`);
-        if (r && r.ok) {
+          `/api/recipes/${context.id}/verify?verified=${verified ? 'true' : 'false'}`);
+        if (r && r.ok && this._detailOwns(context)) {
           // In-place updaten damit UI sofort den Username + Timestamp zeigt
           this.recipeDetail.data.user_verified = verified ? 1 : 0;
           this.recipeDetail.data.verified_by = verified ? r.by : null;
@@ -2745,22 +2896,22 @@ function scrapperApp() {
           this.showToast(verified ? '✓ Als geprüft markiert' : '⊘ Verifikation entfernt');
         }
       } finally {
-        this.recipeDetail.verifying = false;
+        if (this._detailOwns(context)) this.recipeDetail.verifying = false;
       }
     },
 
     // Re-Scrape aus dem Detail-Modal — gleicher Endpoint wie aus Audit
     async rescrapeFromDetailModal() {
-      const id = this.recipeDetail.data?.id;
-      if (!id || this.recipeDetail.rescraping) return;
+      const context = this._detailContext();
+      if (!context.id || this.recipeDetail.rescraping) return;
       this.recipeDetail.rescraping = true;
       try {
         // Bei leeren Rezepten muss auch bei unveränderter Caption die aktuelle
         // Zutatenanalyse erneut eingeplant werden.
         const needsReanalysis = !(this.recipeDetail.data?.ingredients?.length);
-        const endpoint = `/api/recipes/${id}/rescrape${needsReanalysis ? '?reanalyze=true' : ''}`;
+        const endpoint = `/api/recipes/${context.id}/rescrape${needsReanalysis ? '?reanalyze=true' : ''}`;
         const r = await this.api('POST', endpoint);
-        if (r && r.ok) {
+        if (r && r.ok && this._detailOwns(context)) {
           if (r.any_change || r.ingredients_queued) {
             const parts = [];
             if (r.description_updated) parts.push('Beschreibung');
@@ -2770,8 +2921,8 @@ function scrapperApp() {
               `✓ ${parts.join(' + ')} aktualisiert${r.ingredients_queued ? ' · Zutatenanalyse gestartet' : ''}`
             );
             // Re-Fetch damit das neue Thumb + Description sichtbar werden
-            const fresh = await this.api('GET', '/api/recipes/' + id);
-            if (fresh) this.recipeDetail.data = fresh;
+            const fresh = await this.api('GET', '/api/recipes/' + context.id);
+            if (fresh && this._detailOwns(context)) this.recipeDetail.data = fresh;
           } else {
             this.showToast('⊘ Schon aktuell — keine Änderung');
           }
@@ -2779,7 +2930,7 @@ function scrapperApp() {
           this.showToast('Re-Scrape: ' + (r.error || 'fehler'), 'err');
         }
       } finally {
-        this.recipeDetail.rescraping = false;
+        if (this._detailOwns(context)) this.recipeDetail.rescraping = false;
       }
     },
 
@@ -3701,29 +3852,65 @@ function scrapperApp() {
     // FS-Folder-Preview (info.json + description + media-Liste). User sieht
     // beide Seiten und entscheidet welcher behalten wird.
     async openFsCompare(syncError) {
+      this.fsCompare.controller?.abort();
+      const controller = new AbortController();
+      const epoch = ++this.fsCompare.requestEpoch;
+      this.fsCompare.controller = controller;
       this.fsCompare.show = true;
-      this.fsCompare.syncError = syncError;
+      this.fsCompare.syncError = {...syncError};
       this.fsCompare.dbRecipe = null;
       this.fsCompare.fsPreview = null;
+      this.fsCompare.actionBusy = false;
       // Loading-Flags damit das UI 'Wird geladen' vs 'Keine Daten' unterscheiden kann
       this.fsCompare.loadingDb = !!syncError.conflict_with_id;
       this.fsCompare.loadingFs = true;
       try {
         const [db, fs] = await Promise.all([
           syncError.conflict_with_id
-            ? this.api('GET', '/api/recipes/' + syncError.conflict_with_id)
+            ? this.api(
+                'GET',
+                '/api/recipes/' + syncError.conflict_with_id,
+                undefined,
+                {signal: controller.signal},
+              )
             : Promise.resolve(null),
-          this.api('GET', '/api/audit/folder-preview?path=' +
-                   encodeURIComponent(syncError.folder_path)),
+          this.api(
+            'GET',
+            '/api/audit/folder-preview?path=' + encodeURIComponent(syncError.folder_path),
+            undefined,
+            {signal: controller.signal},
+          ),
         ]);
+        if (
+          epoch !== this.fsCompare.requestEpoch
+          || !this.fsCompare.show
+          || this.fsCompare.syncError?.id !== syncError.id
+        ) return;
         this.fsCompare.dbRecipe = db;
         this.fsCompare.fsPreview = fs;
       } catch (e) {
-        this.showToast('Fehler beim Laden: ' + e.message, 'err');
+        if (epoch === this.fsCompare.requestEpoch) {
+          this.showToast('Fehler beim Laden: ' + e.message, 'err');
+        }
       } finally {
-        this.fsCompare.loadingDb = false;
-        this.fsCompare.loadingFs = false;
+        if (epoch === this.fsCompare.requestEpoch) {
+          this.fsCompare.loadingDb = false;
+          this.fsCompare.loadingFs = false;
+        }
       }
+    },
+
+    closeFsCompare() {
+      this.fsCompare.controller?.abort();
+      this.fsCompare.controller = null;
+      this.fsCompare.requestEpoch += 1;
+      this.fsCompare.show = false;
+      this.fsCompare.syncError = null;
+      this.fsCompare.dbRecipe = null;
+      this.fsCompare.fsPreview = null;
+      this.fsCompare.loadingDb = false;
+      this.fsCompare.loadingFs = false;
+      this.fsCompare.actionBusy = false;
     },
 
     // Compare-Aktion: das in-DB Rezept (+ sein Folder) löschen, dann
@@ -3731,13 +3918,24 @@ function scrapperApp() {
     // Folder neu indexiert wird (= übernimmt die URL).
     async deleteFsCompareDb() {
       const r = this.fsCompare.dbRecipe;
-      if (!r) return;
+      const epoch = this.fsCompare.requestEpoch;
+      if (!r || this.fsCompare.loadingDb || this.fsCompare.loadingFs || this.fsCompare.actionBusy) return;
       if (!confirm(`DB-Rezept #${r.id} „${r.name}" löschen?\n\nDer Folder ${r.folder_path} wird auch entfernt.\nDanach kann der Konflikt-Folder beim nächsten Sync rein.`)) return;
-      const resp = await this.api('DELETE', '/api/recipes/' + r.id);
-      if (resp && resp.ok) {
-        this.showToast('✓ DB-Rezept gelöscht');
-        this.fsCompare.show = false;
-        await this.loadAudit();
+      if (epoch !== this.fsCompare.requestEpoch || this.fsCompare.dbRecipe?.id !== r.id) return;
+      this.fsCompare.actionBusy = true;
+      try {
+        const resp = await this.api('DELETE', '/api/recipes/' + r.id);
+        if (
+          resp?.ok
+          && epoch === this.fsCompare.requestEpoch
+          && this.fsCompare.dbRecipe?.id === r.id
+        ) {
+          this.showToast('✓ DB-Rezept gelöscht');
+          this.closeFsCompare();
+          await this.loadAudit();
+        }
+      } finally {
+        if (epoch === this.fsCompare.requestEpoch) this.fsCompare.actionBusy = false;
       }
     },
 
@@ -3745,13 +3943,24 @@ function scrapperApp() {
     // aus dem Compare-Modal heraus).
     async deleteFsCompareFs() {
       const path = this.fsCompare.fsPreview?.folder_path;
-      if (!path) return;
+      const epoch = this.fsCompare.requestEpoch;
+      if (!path || this.fsCompare.loadingDb || this.fsCompare.loadingFs || this.fsCompare.actionBusy) return;
       if (!confirm(`FS-Folder löschen?\n\n${path}\n\nDie Dateien werden dauerhaft entfernt.`)) return;
-      const r = await this.api('POST', '/api/audit/recipe/delete-by-path', { folder_path: path });
-      if (r && r.ok) {
-        this.showToast('✓ FS-Folder gelöscht');
-        this.fsCompare.show = false;
-        await this.loadAudit();
+      if (epoch !== this.fsCompare.requestEpoch || this.fsCompare.fsPreview?.folder_path !== path) return;
+      this.fsCompare.actionBusy = true;
+      try {
+        const r = await this.api('POST', '/api/audit/recipe/delete-by-path', { folder_path: path });
+        if (
+          r?.ok
+          && epoch === this.fsCompare.requestEpoch
+          && this.fsCompare.fsPreview?.folder_path === path
+        ) {
+          this.showToast('✓ FS-Folder gelöscht');
+          this.closeFsCompare();
+          await this.loadAudit();
+        }
+      } finally {
+        if (epoch === this.fsCompare.requestEpoch) this.fsCompare.actionBusy = false;
       }
     },
 

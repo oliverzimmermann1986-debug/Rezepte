@@ -244,6 +244,15 @@ def safe_delete_recipe(
     folder = recipe.get("folder_path")
     name = recipe.get("name")
 
+    if hard and not delete_files and folder:
+        candidate = Path(folder)
+        if candidate.exists():
+            folder_path = _assert_inside_root(candidate)
+            raise RuntimeError(
+                "Hard-Delete ohne Dateilöschung abgelehnt: "
+                "der verbleibende Ordner würde beim nächsten Sync erneut indiziert"
+            )
+
     # Cart aufräumen
     cart_updates = _purge_recipe_from_cart(db, recipe_id)
 
@@ -289,6 +298,92 @@ def safe_delete_recipe(
         "folder_deleted": folder_deleted,
         "cart_entries_updated": cart_updates,
         "soft": not hard,
+    }
+
+
+def safe_restore_recipe(db: Database, recipe_id: int) -> Dict[str, Any]:
+    """Stellt DB-Eintrag und gegebenenfalls Quarantäneordner gemeinsam her."""
+    recipe = db.recipe_get(recipe_id)
+    if not recipe:
+        raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
+    if recipe.get("deleted_at") is None:
+        return db.recipe_restore(recipe_id)
+
+    folder = _assert_inside_root(Path(recipe["folder_path"]))
+    files_deleted = bool(recipe.get("files_deleted"))
+    moved_from: Optional[Path] = None
+
+    if files_deleted:
+        if folder.is_dir():
+            # Ein manueller Repair kann den Ordner bereits zurückgebracht haben.
+            files_restored = True
+        else:
+            history = db.deleted_history_latest(
+                str(recipe["folder_path"]),
+                reason="soft_delete",
+            )
+            quarantine_value = str(
+                (history or {}).get("quarantine_path") or ""
+            ).strip()
+            if not quarantine_value:
+                raise RuntimeError("Kein Quarantänepfad für dieses Rezept gespeichert")
+            quarantine = Path(quarantine_value)
+
+            trash_root = Path(get_config().get(
+                "safety",
+                "trash_dir",
+                default="/opt/scrapper/data/trash",
+            )).resolve()
+            try:
+                quarantine_resolved = quarantine.resolve(strict=True)
+                quarantine_resolved.relative_to(trash_root)
+            except (OSError, ValueError) as exc:
+                raise RuntimeError(
+                    "Gespeicherter Quarantänepfad fehlt oder liegt außerhalb des Papierkorbs"
+                ) from exc
+
+            if folder.exists():
+                raise RuntimeError(f"Zielordner existiert bereits: {folder}")
+            folder.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.move(str(quarantine_resolved), str(folder))
+                moved_from = quarantine_resolved
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Dateien konnten nicht aus der Quarantäne wiederhergestellt werden: {exc}"
+                ) from exc
+            files_restored = True
+    else:
+        if not folder.is_dir():
+            raise RuntimeError(
+                "Rezeptordner fehlt; Restore würde einen aktiven Eintrag ohne Dateien erzeugen"
+            )
+        files_restored = False
+
+    try:
+        result = db.recipe_restore(
+            recipe_id,
+            files_restored=files_restored,
+        )
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error") or "DB-Restore fehlgeschlagen")
+    except Exception:
+        # Best-effort-Kompensation: Wenn die DB-Aktivierung scheitert, den
+        # gerade verschobenen Ordner zurück in die Quarantäne legen.
+        if moved_from and folder.exists() and not moved_from.exists():
+            try:
+                moved_from.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(folder), str(moved_from))
+            except Exception:
+                logger.exception(
+                    "Restore-Kompensation für Rezept #%s fehlgeschlagen",
+                    recipe_id,
+                )
+        raise
+
+    return {
+        **result,
+        "files_restored": files_restored,
     }
 
 

@@ -239,7 +239,7 @@
               </details>
 
               <div class="url-row">
-                <a :href="item.url" target="_blank" x-text="item.url"></a>
+                <a :href="safeExternalUrl(item.url)" target="_blank" rel="noopener noreferrer" x-text="item.url"></a>
               </div>
 
               <!-- Inline Resolve-Form -->
@@ -1117,7 +1117,7 @@
       <div class="admin-two-col">
         <div class="card admin-form-card">
           <h3>Umfang</h3>
-          <div class="field"><label>Einzelne Rezept-ID</label><input type="number" min="1" x-model="admin.pdf.recipe_id" placeholder="leer = Bestand"></div>
+          <div class="field"><label>Einzelne Rezept-ID</label><input type="number" min="1" x-model="admin.pdf.recipe_id" @input="invalidatePdfPageEditor()" placeholder="leer = Bestand"></div>
           <div class="field" x-show="!admin.pdf.recipe_id"><label>Maximal verarbeiten</label><input type="number" min="1" max="2000" x-model.number="admin.pdf.limit"><div class="hint">Leer gelassene Rezept-ID = gesamter Bestand bis zu diesem Limit.</div></div>
           <label class="check-row"><input type="checkbox" x-model="admin.pdf.auto_rotate"> Seiten automatisch drehen</label>
           <label class="check-row"><input type="checkbox" x-model="admin.pdf.remove_blank_pages"> Eindeutig leere Seiten entfernen</label>
@@ -1186,14 +1186,14 @@
       <div class="card pdf-page-editor">
         <div class="flex" style="justify-content:space-between; align-items:flex-start; gap:12px;">
           <div><h3>Seiteneditor</h3><div class="muted">Einzelne Seiten drehen, löschen und neu anordnen. Rezept-ID oben eintragen.</div></div>
-          <div class="flex"><button class="btn" @click="loadPdfPages()" :disabled="admin.pageEditor.loading || !admin.pdf.recipe_id">Seiten laden</button><button class="btn btn-primary" @click="applyPdfPageEdits()" :disabled="admin.pageEditor.saving || !admin.pageEditor.pages.length">Speichern</button></div>
+          <div class="flex"><button class="btn" @click="loadPdfPages()" :disabled="admin.pageEditor.loading || !admin.pdf.recipe_id">Seiten laden</button><button class="btn btn-primary" @click="applyPdfPageEdits()" :disabled="admin.pageEditor.saving || !admin.pageEditor.pages.length || Number(admin.pageEditor.loadedRecipeId)!==Number(admin.pdf.recipe_id)">Speichern</button></div>
         </div>
         <div class="empty" x-show="admin.pageEditor.loading">Seiten werden analysiert…</div>
         <div class="pdf-page-grid" x-show="admin.pageEditor.pages.length">
           <template x-for="(pageItem, index) in admin.pageEditor.pages" :key="pageItem.page">
             <article class="pdf-page-card" :class="pageItem.deleted && 'deleted'">
               <div class="pdf-page-preview-wrap">
-                <img :src="'/api/admin/pdf/'+admin.pdf.recipe_id+'/pages/'+pageItem.page+'/preview?width=420&v='+admin.pageEditor.previewKey"
+                <img :src="'/api/admin/pdf/'+admin.pageEditor.loadedRecipeId+'/pages/'+pageItem.page+'/preview?width=420&v='+admin.pageEditor.previewKey"
                      :alt="'PDF-Seite '+pageItem.page" class="pdf-page-preview"
                      :style="'transform: rotate('+pageItem.rotation_delta+'deg)'">
                 <span class="pdf-page-number" x-text="'Originalseite '+pageItem.page"></span>
@@ -2526,11 +2526,11 @@
   </main>
 
   <!-- FS-Konflikt-Compare-Modal: Side-by-Side beider Folder -->
-  <div x-cloak x-show="fsCompare.show" class="modal-backdrop" @click.self="fsCompare.show = false" x-transition.opacity>
+  <div x-cloak x-show="fsCompare.show" class="modal-backdrop" @click.self="closeFsCompare()" x-transition.opacity>
     <div class="modal modal-wide fs-compare-modal">
       <div class="modal-head">
         <h3>🔍 FS-Konflikt-Vergleich</h3>
-        <button class="btn-icon" @click="fsCompare.show = false" data-dialog-close aria-label="Vergleich schließen">✕</button>
+        <button class="btn-icon" @click="closeFsCompare()" data-dialog-close aria-label="Vergleich schließen">✕</button>
       </div>
       <div class="modal-body fs-compare-body">
         <!-- Links: in-DB-Rezept -->
@@ -2550,7 +2550,7 @@
             <div class="fs-compare-content">
               <div class="fs-compare-meta">
                 <div><strong>Folder:</strong> <code x-text="fsCompare.dbRecipe.folder_path"></code></div>
-                <div><strong>URL:</strong> <a :href="fsCompare.dbRecipe.url" target="_blank" x-text="fsCompare.dbRecipe.url"></a></div>
+                <div><strong>URL:</strong> <a :href="safeExternalUrl(fsCompare.dbRecipe.url)" target="_blank" rel="noopener noreferrer" x-text="fsCompare.dbRecipe.url"></a></div>
                 <div x-show="fsCompare.dbRecipe.type || fsCompare.dbRecipe.category">
                   <strong>Kategorie:</strong>
                   <span x-text="(fsCompare.dbRecipe.type || '?') + ' / ' + (fsCompare.dbRecipe.category || '?')"></span>
@@ -2562,10 +2562,10 @@
                 <pre x-text="(fsCompare.dbRecipe.description || '').substring(0, 1500)"></pre>
               </div>
               <div class="fs-compare-actions">
-                <button class="btn btn-secondary btn-sm" @click="openRecipe(fsCompare.dbRecipe.id); fsCompare.show = false">
+                <button class="btn btn-secondary btn-sm" @click="openRecipe(fsCompare.dbRecipe.id); closeFsCompare()" :disabled="fsCompare.loadingDb || fsCompare.loadingFs || fsCompare.actionBusy">
                   Im Detail-Modal öffnen
                 </button>
-                <button class="btn btn-danger btn-sm" @click="deleteFsCompareDb()">
+                <button class="btn btn-danger btn-sm" @click="deleteFsCompareDb()" :disabled="fsCompare.loadingDb || fsCompare.loadingFs || fsCompare.actionBusy">
                   🗑 DB-Rezept + Folder löschen
                 </button>
               </div>
@@ -2589,7 +2589,7 @@
                 <div><strong>Folder:</strong> <code x-text="fsCompare.fsPreview.folder_path"></code></div>
                 <div x-show="fsCompare.fsPreview.info?.url">
                   <strong>URL:</strong>
-                  <a :href="fsCompare.fsPreview.info.url" target="_blank" x-text="fsCompare.fsPreview.info.url"></a>
+                  <a :href="safeExternalUrl(fsCompare.fsPreview.info.url)" target="_blank" rel="noopener noreferrer" x-text="fsCompare.fsPreview.info.url"></a>
                 </div>
                 <div><strong>Medien:</strong>
                   <template x-for="m in fsCompare.fsPreview.media" :key="m.name">
@@ -2602,7 +2602,7 @@
                 <pre x-text="(fsCompare.fsPreview.description || '— keine Beschreibung gefunden —').substring(0, 1500)"></pre>
               </div>
               <div class="fs-compare-actions">
-                <button class="btn btn-danger btn-sm" @click="deleteFsCompareFs()">
+                <button class="btn btn-danger btn-sm" @click="deleteFsCompareFs()" :disabled="fsCompare.loadingDb || fsCompare.loadingFs || fsCompare.actionBusy">
                   🗑 FS-Folder löschen
                 </button>
               </div>
@@ -2733,7 +2733,7 @@
               </button>
               <div><span x-text="recipeDetail.data?.type"></span> · <span x-text="recipeDetail.data?.category"></span></div>
               <div x-show="recipeDetail.data?.url" style="overflow:hidden;">
-                <a :href="recipeDetail.data?.url" target="_blank" rel="noopener"
+                <a :href="safeExternalUrl(recipeDetail.data?.url)" target="_blank" rel="noopener noreferrer"
                    style="display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom;"
                    :title="recipeDetail.data?.url">
                   🔗 <span x-text="(recipeDetail.data?.url || '').replace(/^https?:\/\//, '').split('?')[0]"></span>

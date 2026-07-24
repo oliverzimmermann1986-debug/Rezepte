@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS background_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,
   payload_json TEXT NOT NULL DEFAULT '{}',
+  dedupe_key TEXT,
   status TEXT NOT NULL DEFAULT 'queued', -- queued|running|ok|error
   created_at REAL NOT NULL,
   started_at REAL,
@@ -95,7 +96,9 @@ CREATE TABLE IF NOT EXISTS recipes (
   source_added_at REAL,                     -- Original history.processed_at
   indexed_at REAL NOT NULL,                 -- als die recipes-Zeile entstand
   ingredients_extracted_at REAL,            -- NULL = noch nicht durch KI
-  ingredients_status TEXT DEFAULT 'pending' -- pending | ok | error | skipped
+  ingredients_status TEXT DEFAULT 'pending',-- pending | running | ok | error | skipped
+  extraction_claimed_at REAL,
+  extraction_claim_owner TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_recipes_type     ON recipes(type, category);
 CREATE INDEX IF NOT EXISTS idx_recipes_added    ON recipes(source_added_at DESC);
@@ -171,6 +174,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'user',           -- Legacy, nicht mehr ausgewertet
   disabled INTEGER NOT NULL DEFAULT 0,
+  session_version INTEGER NOT NULL DEFAULT 0,  -- erhöht bei Passwort/Sperr-Änderungen
   created_at REAL NOT NULL,
   last_login_at REAL                           -- NULL bis 1. Login
 );
@@ -365,6 +369,11 @@ class Database:
             ("is_favorite", "INTEGER NOT NULL DEFAULT 0"),
             # Bewertung 1-5 Sterne (0 = unbewertet). Persönlich pro Rezept.
             ("rating", "INTEGER NOT NULL DEFAULT 0"),
+            # Worker-Lease: verhindert, dass parallele Worker dasselbe Rezept
+            # gleichzeitig extrahieren. Verwaiste Claims werden nach Ablauf
+            # der Lease automatisch wieder auf pending gesetzt.
+            ("extraction_claimed_at", "REAL"),
+            ("extraction_claim_owner", "TEXT"),
         ):
             if col not in cols:
                 c.execute(f"ALTER TABLE recipes ADD COLUMN {col} {sqltype}")
@@ -391,6 +400,27 @@ class Database:
             # recipe|wedding. Nötig seit Mails nach Verarbeitung gelöscht werden:
             # Retries kommen aus dieser Tabelle, der Typ muss überleben.
             c.execute("ALTER TABLE download_failures ADD COLUMN content_type TEXT NOT NULL DEFAULT 'recipe'")
+
+        user_cols = {r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()}
+        if "session_version" not in user_cols:
+            # Bestehende signierte Cookies enthalten keine Version und werden
+            # nach dem Upgrade bewusst einmalig ungültig. Ab dann invalidieren
+            # Passwortwechsel und Aktivstatusänderungen alle alten Sessions.
+            c.execute(
+                "ALTER TABLE users ADD COLUMN session_version "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+
+        task_cols = {
+            r[1] for r in c.execute("PRAGMA table_info(background_tasks)").fetchall()
+        }
+        if "dedupe_key" not in task_cols:
+            c.execute("ALTER TABLE background_tasks ADD COLUMN dedupe_key TEXT")
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_background_tasks_active_dedupe "
+            "ON background_tasks(kind, dedupe_key) "
+            "WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running')"
+        )
 
         # Soft-Delete-Audit: gelöschte/quarantänierte Einträge (Härtung gegen
         # Datenverlust — Ordner landet in Quarantäne, hier bleibt die Herkunft).
@@ -837,12 +867,41 @@ class Database:
             return cur.rowcount or 0
 
     # ---------------- Persistente Background-Tasks ----------------
-    def background_task_enqueue(self, kind: str, payload: Dict[str, Any]) -> int:
+    def background_task_enqueue(
+        self,
+        kind: str,
+        payload: Dict[str, Any],
+        *,
+        dedupe_key: Optional[str] = None,
+    ) -> int:
+        """Reiht einen Task ein oder liefert den gleichartigen aktiven Task.
+
+        ``BEGIN IMMEDIATE`` plus partieller Unique-Index verhindert, dass zwei
+        Prozesse dieselbe Share-URL gleichzeitig als queued/running anlegen.
+        Nach einem terminalen Status darf bewusst ein neuer Versuch entstehen.
+        """
         with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            if dedupe_key:
+                existing = c.execute(
+                    "SELECT id FROM background_tasks "
+                    "WHERE kind=? AND dedupe_key=? "
+                    "AND status IN ('queued', 'running') "
+                    "ORDER BY id LIMIT 1",
+                    (kind, dedupe_key),
+                ).fetchone()
+                if existing:
+                    return int(existing["id"])
             cur = c.execute(
-                "INSERT INTO background_tasks(kind, payload_json, status, created_at) "
-                "VALUES (?, ?, 'queued', ?)",
-                (kind, json.dumps(payload, ensure_ascii=False), time.time()),
+                "INSERT INTO background_tasks("
+                "kind, payload_json, dedupe_key, status, created_at"
+                ") VALUES (?, ?, ?, 'queued', ?)",
+                (
+                    kind,
+                    json.dumps(payload, ensure_ascii=False),
+                    dedupe_key,
+                    time.time(),
+                ),
             )
             return int(cur.lastrowid)
 
@@ -969,6 +1028,29 @@ class Database:
                 out.append(d)
             return out
 
+    def deleted_history_latest(
+        self,
+        target_dir: str,
+        *,
+        reason: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        sql = "SELECT * FROM deleted_history WHERE target_dir=?"
+        params: List[Any] = [target_dir]
+        if reason:
+            sql += " AND reason=?"
+            params.append(reason)
+        sql += " ORDER BY deleted_at DESC, id DESC LIMIT 1"
+        with self.conn() as c:
+            row = c.execute(sql, params).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        try:
+            result["metadata"] = json.loads(result.get("metadata") or "{}")
+        except Exception:
+            result["metadata"] = {}
+        return result
+
     def backup_to(self, dest_path, *, compress: bool = False, verify: bool = True) -> dict:
         """Online-Backup der SQLite-DB via PRAGMA-basierte .backup-API.
         Konsistent auch bei laufenden Writes (keine Locks nötig).
@@ -989,9 +1071,11 @@ class Database:
             dest = _P(str(dest) + ".gz")
         dest.parent.mkdir(parents=True, exist_ok=True)
 
-        # Erst nach temp-Datei schreiben, dann atomic move/gzip - so kein
-        # halb-fertiges Backup im Ziel-Verzeichnis bei Crash mittendrin.
-        tmp_db = dest.parent / f".tmp-{dest.name}.{os.getpid()}.db"
+        # Beide temporären Dateien liegen im Zielverzeichnis. Damit ist das
+        # abschließende os.replace auch über Mount-Grenzen hinweg atomar.
+        nonce = f"{os.getpid()}.{time.time_ns()}"
+        tmp_db = dest.parent / f".tmp-{dest.name}.{nonce}.db"
+        tmp_out = dest.parent / f".tmp-{dest.name}.{nonce}.out"
         try:
             # Schritt 1: Online-Backup nach tmp-Datei (immer unkomprimiert,
             # damit wir verify und compress separat machen können).
@@ -1012,18 +1096,34 @@ class Database:
                     row = check.execute("PRAGMA integrity_check").fetchone()
                     verified = (row and row[0] == "ok")
                     if not verified:
-                        return {"ok": False, "error": f"integrity_check failed: {row}",
-                                "dest": str(dest)}
+                        raise RuntimeError(f"integrity_check failed: {row}")
                 finally:
                     check.close()
 
-            # Schritt 3: Compress oder Move ins finale Ziel
+            # Schritt 3: Komprimieren und das geschlossene Archiv einmal
+            # vollständig lesen (CRC/Truncation), bevor das alte Ziel ersetzt
+            # wird. So bleibt bei Fehlern das letzte gute Backup erhalten.
             if compress:
-                with open(tmp_db, "rb") as fin, gzip.open(dest, "wb", compresslevel=6) as fout:
-                    shutil.copyfileobj(fin, fout)
+                with open(tmp_db, "rb") as fin, open(tmp_out, "wb") as raw:
+                    with gzip.GzipFile(
+                        filename=dest.name,
+                        mode="wb",
+                        fileobj=raw,
+                        compresslevel=6,
+                        mtime=0,
+                    ) as fout:
+                        shutil.copyfileobj(fin, fout)
+                    raw.flush()
+                    os.fsync(raw.fileno())
+                with gzip.open(tmp_out, "rb") as check_gzip:
+                    while check_gzip.read(1024 * 1024):
+                        pass
+                os.replace(tmp_out, dest)
                 tmp_db.unlink(missing_ok=True)
             else:
-                tmp_db.replace(dest)
+                with open(tmp_db, "rb") as raw:
+                    os.fsync(raw.fileno())
+                os.replace(tmp_db, dest)
 
             return {
                 "ok": True,
@@ -1033,10 +1133,11 @@ class Database:
                 "verified": verified,
             }
         except Exception as e:
-            try:
-                tmp_db.unlink(missing_ok=True)
-            except Exception:
-                pass
+            for temporary in (tmp_db, tmp_out):
+                try:
+                    temporary.unlink(missing_ok=True)
+                except Exception:
+                    pass
             return {"ok": False, "error": str(e)}
 
     def vacuum(self) -> dict:
@@ -1098,7 +1199,12 @@ class Database:
                 sql = ("UPDATE recipes SET url=?, name=?, type=?, category=?, "
                        "description=?, thumb_filename=?, video_filename=?, "
                        "source_added_at=COALESCE(?, source_added_at)"
-                       + (", ingredients_status='pending', ingredients_extracted_at=NULL" if reset_status else "")
+                       + (
+                           ", ingredients_status='pending', "
+                           "ingredients_extracted_at=NULL, extraction_claimed_at=NULL, "
+                           "extraction_claim_owner=NULL"
+                           if reset_status else ""
+                       )
                        + " WHERE id=?")
                 c.execute(sql,
                     (url, name, type, category, description,
@@ -1145,16 +1251,37 @@ class Database:
                 (time.time(), 1 if files_deleted else 0, recipe_id),
             )
 
-    def recipe_restore(self, recipe_id: int) -> Dict[str, Any]:
+    def recipe_restore(
+        self,
+        recipe_id: int,
+        *,
+        files_restored: bool = False,
+    ) -> Dict[str, Any]:
         """Aus Papierkorb wiederherstellen (deleted_at = NULL).
-        Returns dict mit ok + files_deleted (war Folder weg?)."""
+        Ein Rezept mit quarantänierten Dateien darf erst nach erfolgreichem
+        Filesystem-Restore aktiviert werden."""
         with self.conn() as c:
             row = c.execute(
-                "SELECT folder_path, files_deleted FROM recipes WHERE id=?",
+                "SELECT folder_path, files_deleted, deleted_at "
+                "FROM recipes WHERE id=?",
                 (recipe_id,)
             ).fetchone()
             if not row:
                 return {"ok": False, "error": "Rezept nicht gefunden"}
+            if row["deleted_at"] is None:
+                return {
+                    "ok": True,
+                    "folder_path": row["folder_path"],
+                    "files_deleted": bool(row["files_deleted"]),
+                    "already_active": True,
+                }
+            if row["files_deleted"] and not files_restored:
+                return {
+                    "ok": False,
+                    "error": "Rezeptdateien müssen zuerst aus der Quarantäne wiederhergestellt werden",
+                    "folder_path": row["folder_path"],
+                    "files_deleted": True,
+                }
             c.execute(
                 "UPDATE recipes SET deleted_at=NULL, files_deleted=0 WHERE id=?",
                 (recipe_id,)
@@ -1332,6 +1459,71 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def recipes_requeue_stale_extractions(self, lease_seconds: int = 1800) -> int:
+        """Gibt nach Prozessabbruch verwaiste Worker-Claims wieder frei."""
+        cutoff = time.time() - max(60, int(lease_seconds))
+        with self.conn() as c:
+            cur = c.execute(
+                "UPDATE recipes SET ingredients_status='pending', "
+                "extraction_claimed_at=NULL, extraction_claim_owner=NULL "
+                "WHERE ingredients_status='running' "
+                "AND COALESCE(extraction_claimed_at, 0) < ?",
+                (cutoff,),
+            )
+            return int(cur.rowcount)
+
+    def recipes_claim_extraction(
+        self,
+        *,
+        limit: int,
+        owner: str,
+        lease_seconds: int = 1800,
+    ) -> List[Dict[str, Any]]:
+        """Claimt einen Batch in EINER Write-Transaktion.
+
+        Dadurch können weder mehrere App-Prozesse noch überlappende Worker
+        dieselben pending-Zeilen auswählen. Alte Claims werden vorher
+        automatisch freigegeben.
+        """
+        if not owner:
+            raise ValueError("owner darf nicht leer sein")
+        limit = max(1, min(int(limit), 100))
+        now = time.time()
+        cutoff = now - max(60, int(lease_seconds))
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                "UPDATE recipes SET ingredients_status='pending', "
+                "extraction_claimed_at=NULL, extraction_claim_owner=NULL "
+                "WHERE ingredients_status='running' "
+                "AND COALESCE(extraction_claimed_at, 0) < ?",
+                (cutoff,),
+            )
+            ids = [
+                int(r["id"])
+                for r in c.execute(
+                    "SELECT id FROM recipes WHERE ingredients_status='pending' "
+                    "AND deleted_at IS NULL "
+                    "ORDER BY COALESCE(source_added_at, indexed_at) DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            ]
+            if not ids:
+                return []
+            placeholders = ",".join("?" for _ in ids)
+            c.execute(
+                f"UPDATE recipes SET ingredients_status='running', "
+                f"extraction_claimed_at=?, extraction_claim_owner=? "
+                f"WHERE id IN ({placeholders}) AND ingredients_status='pending'",
+                (now, owner, *ids),
+            )
+            rows = c.execute(
+                f"SELECT * FROM recipes WHERE id IN ({placeholders}) "
+                "AND ingredients_status='running' AND extraction_claim_owner=?",
+                (*ids, owner),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def recipes_extraction_stats(self) -> Dict[str, int]:
         with self.conn() as c:
             rows = c.execute(
@@ -1344,11 +1536,21 @@ class Database:
         recipe_id: int,
         status: str,
         ingredients: Optional[List[Dict[str, Any]]] = None,
-    ) -> None:
+        *,
+        claim_owner: Optional[str] = None,
+    ) -> bool:
         """Setzt status + writes ingredients ATOMISCH. Bei status='ok' werden
         alte ingredients ersetzt; bei status='error'/'skipped' nur das Flag."""
         now = time.time()
         with self.conn() as c:
+            if claim_owner is not None:
+                owned = c.execute(
+                    "SELECT 1 FROM recipes WHERE id=? "
+                    "AND ingredients_status='running' AND extraction_claim_owner=?",
+                    (recipe_id, claim_owner),
+                ).fetchone()
+                if not owned:
+                    return False
             if status == "ok" and ingredients is not None:
                 c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
                 for idx, ing in enumerate(ingredients):
@@ -1359,9 +1561,105 @@ class Database:
                          ing.get("amount"), ing.get("unit"), ing.get("raw"), idx),
                     )
             c.execute(
-                "UPDATE recipes SET ingredients_status=?, ingredients_extracted_at=? WHERE id=?",
+                "UPDATE recipes SET ingredients_status=?, ingredients_extracted_at=?, "
+                "extraction_claimed_at=NULL, extraction_claim_owner=NULL WHERE id=?",
                 (status, now, recipe_id),
             )
+            return True
+
+    def recipe_apply_extraction_result(
+        self,
+        recipe_id: int,
+        *,
+        ingredients: List[Dict[str, Any]],
+        steps: List[Dict[str, Any]],
+        servings: Optional[int],
+        auto_tags: List[str],
+        claim_owner: Optional[str] = None,
+    ) -> bool:
+        """Ersetzt das komplette KI-Ergebnis atomar und setzt erst zuletzt ok."""
+        if servings is not None:
+            try:
+                servings = int(servings)
+                if servings <= 0:
+                    servings = None
+            except (TypeError, ValueError):
+                servings = None
+
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            if claim_owner is not None:
+                owned = c.execute(
+                    "SELECT 1 FROM recipes WHERE id=? "
+                    "AND ingredients_status='running' AND extraction_claim_owner=?",
+                    (recipe_id, claim_owner),
+                ).fetchone()
+                if not owned:
+                    return False
+
+            c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
+            for idx, ing in enumerate(ingredients):
+                c.execute(
+                    "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, "
+                    "amount, unit, raw, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        recipe_id,
+                        ing.get("name") or "",
+                        ing.get("canonical_name"),
+                        ing.get("amount"),
+                        ing.get("unit"),
+                        ing.get("raw"),
+                        idx,
+                    ),
+                )
+
+            c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
+            for idx, step in enumerate(steps, start=1):
+                instruction = (step.get("instruction") or "").strip()
+                if not instruction:
+                    continue
+                timer = step.get("timer_seconds")
+                try:
+                    timer = int(timer) if timer is not None else None
+                    if timer is not None and timer <= 0:
+                        timer = None
+                except (TypeError, ValueError):
+                    timer = None
+                c.execute(
+                    "INSERT INTO recipe_steps "
+                    "(recipe_id, step_number, instruction, timer_seconds) "
+                    "VALUES (?, ?, ?, ?)",
+                    (recipe_id, idx, instruction, timer),
+                )
+
+            c.execute("UPDATE recipes SET servings=? WHERE id=?", (servings, recipe_id))
+            c.execute(
+                "DELETE FROM recipe_tags WHERE recipe_id=? AND auto=1",
+                (recipe_id,),
+            )
+            for raw in auto_tags:
+                name = (raw or "").strip()
+                if not name:
+                    continue
+                c.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+                tag = c.execute(
+                    "SELECT id FROM tags WHERE name=? COLLATE NOCASE",
+                    (name,),
+                ).fetchone()
+                if tag:
+                    c.execute(
+                        "INSERT OR IGNORE INTO recipe_tags "
+                        "(recipe_id, tag_id, auto) VALUES (?, ?, 1)",
+                        (recipe_id, int(tag["id"])),
+                    )
+
+            cur = c.execute(
+                "UPDATE recipes SET ingredients_status='ok', "
+                "ingredients_extracted_at=?, extraction_claimed_at=NULL, "
+                "extraction_claim_owner=NULL WHERE id=?",
+                (time.time(), recipe_id),
+            )
+            return bool(cur.rowcount)
 
     def recipe_ingredients_get(self, recipe_id: int) -> List[Dict[str, Any]]:
         with self.conn() as c:
@@ -1703,7 +2001,8 @@ class Database:
     def user_set_password(self, user_id: int, password_hash: str) -> None:
         with self.conn() as c:
             c.execute(
-                "UPDATE users SET password_hash=? WHERE id=?",
+                "UPDATE users SET password_hash=?, "
+                "session_version=session_version+1 WHERE id=?",
                 (password_hash, user_id),
             )
 
@@ -1715,7 +2014,8 @@ class Database:
     def user_set_disabled(self, user_id: int, disabled: bool) -> None:
         with self.conn() as c:
             c.execute(
-                "UPDATE users SET disabled=? WHERE id=?",
+                "UPDATE users SET disabled=?, "
+                "session_version=session_version+1 WHERE id=?",
                 (1 if disabled else 0, user_id),
             )
 

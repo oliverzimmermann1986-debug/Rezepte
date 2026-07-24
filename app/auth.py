@@ -74,6 +74,9 @@ def check_credentials(username: str, password: str) -> bool:
     # Config-Fallback: nur greift wenn DB komplett leer ist (typisch vor
     # erster Migration). Nach migrate_users_to_db() ist immer mindestens
     # ein admin in der DB — dann läuft alles über den DB-Pfad.
+    with db.conn() as c:
+        if c.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            return False
     cfg = get_config()
     cfg_u = str(cfg.get("web", "username", default="admin"))
     cfg_p = cfg.get("web", "password", default="") or ""
@@ -156,20 +159,98 @@ def _serializer() -> URLSafeTimedSerializer:
 
 
 def create_session(username: str) -> str:
-    return _serializer().dumps({"user": username})
+    """Erstellt eine widerrufbare Session.
+
+    DB-Benutzer tragen ihre aktuelle ``session_version`` im Token. Ein
+    Passwortwechsel oder eine Aktivstatusänderung erhöht die Version und macht
+    damit alle vorherigen Cookies sofort ungültig. Der Legacy-Config-Benutzer
+    bleibt für noch nicht migrierte Installationen kompatibel.
+    """
+    from .db import get_db
+
+    user = get_db().user_get_by_name(username)
+    if user:
+        if user.get("disabled"):
+            raise ValueError("Benutzerkonto ist deaktiviert")
+        payload = {
+            "user": str(user["username"]),
+            "ver": int(user.get("session_version") or 0),
+        }
+    else:
+        db = get_db()
+        with db.conn() as c:
+            if c.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+                raise ValueError("Unbekannter Benutzer")
+        cfg = get_config()
+        cfg_user = str(cfg.get("web", "username", default="admin"))
+        if not hmac.compare_digest(str(username), cfg_user):
+            raise ValueError("Unbekannter Benutzer")
+        payload = {
+            "user": cfg_user,
+            "legacy": True,
+            "ver": int(cfg.get("web", "session_version", default=0) or 0),
+        }
+    return _serializer().dumps(payload)
 
 
 def session_user(token: str) -> Optional[str]:
     """Returnt username aus gültiger Session, sonst None.
     Eine Schicht über verify_session() — der Caller braucht oft den User-Namen,
-    nicht nur den 'valid yes/no'-Status (z.B. für require_admin)."""
+    nicht nur den 'valid yes/no'-Status (z.B. für require_admin).
+
+    Signatur und Alter reichen nicht: Der aktuelle Benutzerzustand wird bei
+    jedem Request aus der DB gelesen, damit Sperre, Löschung und Passwortwechsel
+    bestehende Cookies unmittelbar invalidieren.
+    """
     if not token:
         return None
     try:
         data = _serializer().loads(token, max_age=SESSION_MAX_AGE)
         u = data.get("user")
-        return str(u) if u else None
-    except (BadSignature, SignatureExpired):
+        if not u:
+            return None
+
+        username = str(u)
+        from .db import get_db
+        user = get_db().user_get_by_name(username)
+        if user:
+            if user.get("disabled"):
+                return None
+            token_version = data.get("ver")
+            if token_version is None:
+                return None
+            try:
+                if int(token_version) != int(user.get("session_version") or 0):
+                    return None
+            except (TypeError, ValueError):
+                return None
+            return str(user["username"])
+
+        # Nur vor der ersten Benutzer-Migration zulassen. Sobald mindestens ein
+        # DB-User existiert, darf ein gelöschter Benutzer nicht auf den
+        # Config-Fallback zurückfallen.
+        with get_db().conn() as c:
+            has_db_users = bool(c.execute("SELECT 1 FROM users LIMIT 1").fetchone())
+        if has_db_users or not data.get("legacy"):
+            return None
+        cfg = get_config()
+        cfg_user = str(cfg.get("web", "username", default="admin"))
+        try:
+            version_ok = int(data.get("ver", -1)) == int(
+                cfg.get("web", "session_version", default=0) or 0
+            )
+        except (TypeError, ValueError):
+            version_ok = False
+        return (
+            cfg_user
+            if version_ok and hmac.compare_digest(username, cfg_user)
+            else None
+        )
+    except (BadSignature, SignatureExpired, TypeError, ValueError):
+        return None
+    except Exception:
+        # Auth-Prüfungen fail-closed. Details nur serverseitig loggen.
+        logger.exception("Session konnte nicht gegen Benutzerstatus geprüft werden")
         return None
 
 

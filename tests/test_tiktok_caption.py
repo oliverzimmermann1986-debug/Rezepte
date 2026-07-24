@@ -127,7 +127,8 @@ def test_rescrape_prefers_expanded_caption_and_queues_extraction(
                     "expanded_tiktok_caption": True,
                     "browser_timeout_seconds": 12,
                 },
-                ("paths", "temp_dir"): str(tmp_path / "temp"),
+                    ("paths", "temp_dir"): str(tmp_path / "temp"),
+                    ("paths", "recipe_dir"): str(tmp_path),
             }
             return values.get(keys, default)
 
@@ -198,7 +199,8 @@ def test_rescrape_reanalyze_queues_unchanged_description(
         def get(self, *keys, default=None):
             values = {
                 ("ytdlp",): {"binary": "yt-dlp", "expanded_tiktok_caption": True},
-                ("paths", "temp_dir"): str(tmp_path / "temp"),
+                    ("paths", "temp_dir"): str(tmp_path / "temp"),
+                    ("paths", "recipe_dir"): str(tmp_path),
             }
             return values.get(keys, default)
 

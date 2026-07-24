@@ -76,33 +76,46 @@ def _has_usable_description(text: Optional[str], min_len: int) -> bool:
 
 def _save_video_files(target_dir: Path, video_path: Path,
                        description: Optional[str], info: Dict,
-                       description_original: Optional[str] = None) -> None:
+                       description_original: Optional[str] = None) -> Path:
     """Schreibt Video + description.txt + info.json in den Ziel-Ordner.
 
     Wenn description_original gesetzt ist (= Caption wurde übersetzt), wird
     sie als description_original.txt zusätzlich geschrieben. So bleibt das
     Original erhalten für späteres Audit oder Re-Übersetzung.
     """
-    from ..core.safety import atomic_write_text, atomic_write_json, atomic_copy_file, write_manifest
-    target_dir.mkdir(parents=True, exist_ok=True)
-    file_base = target_dir.name
-    if video_path and video_path.exists():
-        atomic_copy_file(video_path, target_dir / f"{file_base}{video_path.suffix}")
-        # yt-dlp legt das Cover als video.jpg neben das Video (--write-thumbnail).
-        # Mitkopieren als thumb.jpg → Indexer setzt thumb_filename, kein "Kein Bild".
-        for t in sorted(video_path.parent.glob("*.jpg")) + sorted(video_path.parent.glob("*.webp")) + sorted(video_path.parent.glob("*.png")):
-            atomic_copy_file(t, target_dir / f"thumb{t.suffix}")
-            break
-    if description:
-        atomic_write_text(target_dir / "description.txt", description)
-    if description_original:
-        atomic_write_text(target_dir / "description_original.txt", description_original)
-    atomic_write_json(target_dir / "info.json", info)
-    # Manifest (SHA-256 pro Datei) für Repair-/Integritäts-Scan
-    try:
-        write_manifest(target_dir, source={"kind": "recipe", "name": file_base})
-    except Exception:
-        pass
+    from ..core.safety import (
+        AtomicDirectoryCommit,
+        atomic_copy_file,
+        atomic_write_json,
+        atomic_write_text,
+    )
+
+    with AtomicDirectoryCommit(target_dir) as commit:
+        work_dir = commit.stage_dir
+        file_base = commit.target_dir.name
+        if video_path and video_path.exists():
+            atomic_copy_file(video_path, work_dir / f"{file_base}{video_path.suffix}")
+            # yt-dlp legt das Cover als video.jpg neben das Video
+            # (--write-thumbnail). Mitkopieren als thumb.jpg.
+            thumbnails = (
+                sorted(video_path.parent.glob("*.jpg"))
+                + sorted(video_path.parent.glob("*.webp"))
+                + sorted(video_path.parent.glob("*.png"))
+            )
+            for thumbnail in thumbnails:
+                atomic_copy_file(thumbnail, work_dir / f"thumb{thumbnail.suffix}")
+                break
+        if description:
+            atomic_write_text(work_dir / "description.txt", description)
+        if description_original:
+            atomic_write_text(
+                work_dir / "description_original.txt",
+                description_original,
+            )
+        atomic_write_json(work_dir / "info.json", info)
+        return commit.commit(
+            manifest_source={"kind": "recipe", "name": file_base},
+        )
 
 
 class ScraperJob:
@@ -249,8 +262,13 @@ class ScraperJob:
         if description_original:
             info["description_original"] = description_original
             info["translated"] = True
-        _save_video_files(target, video, description, info, description_original)
-        return target
+        return _save_video_files(
+            target,
+            video,
+            description,
+            info,
+            description_original,
+        )
 
     def _save_wedding(self, w: WeddingAnalysis, url: str, video: Path,
                       description: Optional[str], default_cat: str = "Sonstiges") -> Path:
@@ -270,14 +288,31 @@ class ScraperJob:
         if description_original:
             info["description_original"] = description_original
             info["translated"] = True
-        _save_video_files(target, video, description, info, description_original)
-        return target
+        return _save_video_files(
+            target,
+            video,
+            description,
+            info,
+            description_original,
+        )
 
     # ---------------- URL-Verarbeitung ----------------
     def process_url(self, item: Dict) -> Dict:
         url = item["url"]
         content_type = item["type"]
         result: Dict = {"url": url, "type": content_type, "status": "error"}
+
+        existing = self.db.history_get(url)
+        if (
+            existing
+            and existing.get("target_dir")
+            and Path(existing["target_dir"]).is_dir()
+        ):
+            return {
+                **result,
+                "status": "already_processed",
+                "target": existing["target_dir"],
+            }
 
         video = self.downloader.download(url)
         if not video:
@@ -310,8 +345,6 @@ class ScraperJob:
                     result.update({"status": "pending", "name": r.name})
                 else:
                     target = self._save_recipe(r, url, video, description)
-                    self.db.history_add(url, content_type="recipe", name=r.name,
-                                         target_dir=str(target))
                     # Sofort in die DB indizieren - sonst existiert nur der Ordner
                     # und das Rezept erscheint erst nach dem nächsten Filesystem-Sync.
                     try:
@@ -319,7 +352,27 @@ class ScraperJob:
                         _index_one(self.db, target,
                                    target.parent.parent.name, target.parent.name)
                     except Exception as e:
-                        logger.warning(f"Sofort-Index nach Import fehlgeschlagen ({target}): {e}")
+                        from ..core.safety import quarantine_move
+                        trash_root = Path(self.cfg.get(
+                            "safety",
+                            "trash_dir",
+                            default="/opt/scrapper/data/quarantine",
+                        ))
+                        quarantine_move(
+                            target,
+                            trash_root,
+                            reason="import-index-failed",
+                            source={"url": url, "error": str(e)},
+                        )
+                        raise RuntimeError(
+                            f"Sofort-Index nach Import fehlgeschlagen: {e}"
+                        ) from e
+                    self.db.history_add(
+                        url,
+                        content_type="recipe",
+                        name=r.name,
+                        target_dir=str(target),
+                    )
                     result.update({"status": "auto", "name": r.name, "target": str(target)})
             else:  # wedding
                 default_cat = item.get("default_category") or "Sonstiges"

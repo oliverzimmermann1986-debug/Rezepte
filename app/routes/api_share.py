@@ -17,16 +17,20 @@ geheim halten; Rotation = ``web.share_token`` in der Config leeren + Neustart.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import secrets
 import time
+from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from ..auth import require_auth
 from ..config_store import get_config
+from ..db import get_db
 from ..jobs import scraper as scraper_job
 from ..jobs.locks import file_lock_or_none
 from ..jobs.task_queue import enqueue
@@ -47,6 +51,7 @@ def _share_token() -> str:
     if len(tok) < 24:
         tok = secrets.token_urlsafe(32)
         cfg.set("web", "share_token", tok)
+        cfg.save()
         logger.warning("web.share_token fehlte/zu kurz — neues generiert.")
     return tok
 
@@ -62,10 +67,55 @@ class ShareIn(BaseModel):
     token: Optional[str] = None   # Alternative zum X-Share-Token-Header
 
 
+def _normalized_share_url(value: str) -> str:
+    parsed = urlsplit((value or "").strip())
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise HTTPException(400, "Nur gültige HTTPS-URLs sind erlaubt")
+    if parsed.username or parsed.password:
+        raise HTTPException(400, "URL darf keine eingebetteten Zugangsdaten enthalten")
+    host = parsed.hostname.lower()
+    allowed_domains = ("tiktok.com", "instagram.com")
+    if not any(host == domain or host.endswith("." + domain)
+               for domain in allowed_domains):
+        raise HTTPException(
+            400,
+            "Share-Import unterstützt nur TikTok- und Instagram-URLs",
+        )
+    host_for_netloc = f"[{host}]" if ":" in host else host
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(400, "Ungültiger URL-Port") from exc
+    default_port = (parsed.scheme.lower() == "http" and port == 80) or (
+        parsed.scheme.lower() == "https" and port == 443
+    )
+    netloc = host_for_netloc + (f":{port}" if port and not default_port else "")
+    return urlunsplit((
+        parsed.scheme.lower(),
+        netloc,
+        parsed.path or "/",
+        parsed.query,
+        "",
+    ))
+
+
 def run_share_ingest_task(payload: dict) -> dict:
     """Queue-Handler: eine URL durch die normale Pipeline verarbeiten."""
-    url = str(payload.get("url") or "")
+    # Auch im Worker erneut validieren: Queue-Inhalte können aus älteren
+    # Versionen stammen oder direkt in die Datenbank gelangt sein.
+    try:
+        url = _normalized_share_url(str(payload.get("url") or ""))
+    except HTTPException as exc:
+        return {"ok": False, "error": str(exc.detail)}
     content_type = str(payload.get("type") or "recipe")
+    existing = get_db().history_get(url)
+    if existing and existing.get("target_dir") and Path(existing["target_dir"]).is_dir():
+        return {
+            "ok": True,
+            "url": url,
+            "status": "already_processed",
+            "target": existing["target_dir"],
+        }
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
         with file_lock_or_none("scraper") as flock:
@@ -85,11 +135,16 @@ def share_intake(payload: ShareIn,
     """Nimmt eine URL entgegen, prüft das Token, reiht sie async ein. Antwortet
     sofort (Kurzbefehl-Timeout) — das Ergebnis erscheint danach in Rezepte/Pending."""
     _check_token(x_share_token or payload.token)
-    url = (payload.url or "").strip()
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "Keine gültige URL")
+    url = _normalized_share_url(payload.url)
     ctype = payload.type if payload.type in ("recipe", "wedding") else "recipe"
-    task_id = enqueue("share_ingest", {"url": url, "type": ctype})
+    dedupe_key = hashlib.sha256(
+        f"{ctype}\0{url}".encode("utf-8")
+    ).hexdigest()
+    task_id = enqueue(
+        "share_ingest",
+        {"url": url, "type": ctype},
+        dedupe_key=dedupe_key,
+    )
     return {"ok": True, "accepted": True, "task_id": task_id, "queued": url}
 
 

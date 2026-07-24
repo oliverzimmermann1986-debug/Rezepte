@@ -14,8 +14,17 @@ _lock = threading.Lock()
 _thread: threading.Thread | None = None
 
 
-def enqueue(kind: str, payload: Dict[str, Any]) -> int:
-    task_id = get_db().background_task_enqueue(kind, payload)
+def enqueue(
+    kind: str,
+    payload: Dict[str, Any],
+    *,
+    dedupe_key: str | None = None,
+) -> int:
+    task_id = get_db().background_task_enqueue(
+        kind,
+        payload,
+        dedupe_key=dedupe_key,
+    )
     _wake.set()
     return task_id
 

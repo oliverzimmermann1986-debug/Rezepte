@@ -4,10 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from ..auth import hash_password, is_hashed, require_auth
+from ..auth import SESSION_COOKIE, hash_password, is_hashed, require_auth, session_user
 from ..config_store import get_config
 from ..jobs.scraper import invalidate_scraper_job
 
@@ -22,19 +22,61 @@ def read_config() -> Dict[str, Any]:
 
 
 @router.put("")
-def update_config(payload: Dict[str, Any]):
+def update_config(payload: Dict[str, Any], request: Request):
     """Schreibt die komplette Config neu. Maskierte Felder werden zurückgemerged."""
     store = get_config()
     current = store.all()
+
+    # Ein gespeicherter OpenAI-Key darf nicht still an eine neue Base-URL
+    # gebunden werden. Sonst könnte ein Benutzer nur die URL ändern, die
+    # Key-Maske stehen lassen und den geheimen Key über /api/test/openai an
+    # seinen Host senden.
+    current_base = str(_get(current, ("ai", "openai", "base_url")) or "").rstrip("/")
+    incoming_base = str(_get(payload, ("ai", "openai", "base_url")) or "").rstrip("/")
+    current_key = _get(current, ("ai", "openai", "api_key"))
+    incoming_key = _get(payload, ("ai", "openai", "api_key"))
+    if (
+        current_key
+        and current_base != incoming_base
+        and (not incoming_key or incoming_key == MASKED)
+    ):
+        raise HTTPException(
+            400,
+            "Bei Änderung der OpenAI Base-URL muss der API-Key neu eingegeben werden",
+        )
+
     merged = _unmask(payload, current)
     # Web-Passwort, falls Klartext, immer bcrypt-hashen
-    pw = _get(merged, ("web", "password"))
-    if isinstance(pw, str) and pw and not is_hashed(pw):
-        if len(pw) < 8:
+    incoming_password = _get(payload, ("web", "password"))
+    new_password_hash = None
+    if (
+        isinstance(incoming_password, str)
+        and incoming_password
+        and incoming_password != MASKED
+        and not is_hashed(incoming_password)
+    ):
+        if len(incoming_password) < 8:
             raise HTTPException(400, "Passwort muss mindestens 8 Zeichen haben")
-        _set(merged, ("web", "password"), hash_password(pw))
+        new_password_hash = hash_password(incoming_password)
+        _set(merged, ("web", "password"), new_password_hash)
+        current_version = int(_get(current, ("web", "session_version")) or 0)
+        _set(merged, ("web", "session_version"), current_version + 1)
     store.replace(merged)
     store.save()
+    if new_password_hash:
+        username = session_user(request.cookies.get(SESSION_COOKIE, ""))
+        if username:
+            from ..db import get_db
+            user = get_db().user_get_by_name(username)
+            if user:
+                get_db().user_set_password(int(user["id"]), new_password_hash)
+        initial_password = Path(
+            _get(merged, ("paths", "data_dir")) or "/opt/scrapper/data"
+        ) / ".initial-password"
+        try:
+            initial_password.unlink(missing_ok=True)
+        except OSError:
+            pass
     # ScraperJob hat 30+ Config-Werte gecached - invalidieren damit der
     # nächste Resolve/Reanalyze die neuen Settings nutzt.
     invalidate_scraper_job()
@@ -52,9 +94,11 @@ MASKED = "********"
 MASK_PATHS = [
     ("web", "password"),
     ("web", "secret_key"),
+    ("web", "share_token"),
     ("mail", "recipe", "password"),
     ("mail", "wedding", "password"),
     ("ai", "openai", "api_key"),
+    ("einkauf", "cf_access_client_secret"),
 ]
 
 

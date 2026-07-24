@@ -19,6 +19,50 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 
+def _resolve_under(path: Path, roots: Iterable[Path], *, kind: str) -> Path:
+    """Löst einen Pfad ohne Symlink-Ausbruch unter allen ``roots`` auf.
+
+    Sowohl der logische als auch der aufgelöste Pfad müssen innerhalb der
+    erlaubten Wurzeln liegen. Symlinks in den unterhalb der Wurzel liegenden
+    Komponenten werden abgelehnt, auch wenn ihr Ziel zufällig wieder innerhalb
+    der Wurzel läge. Die Wurzel selbst darf ein administrativ konfigurierter
+    Mount-/Symlink-Pfad sein.
+    """
+    logical = Path(os.path.abspath(str(path)))
+    resolved = path.resolve(strict=True)
+    for root in roots:
+        logical_root = Path(os.path.abspath(str(root)))
+        resolved_root = root.resolve(strict=True)
+        try:
+            logical.relative_to(logical_root)
+            resolved.relative_to(resolved_root)
+        except ValueError as exc:
+            raise ValueError(f"Pfad liegt außerhalb der erlaubten Wurzel: {path}") from exc
+
+        current = logical
+        while current != logical_root:
+            if current.is_symlink():
+                raise ValueError(f"Symlink ist für Medienpfade nicht erlaubt: {current}")
+            parent = current.parent
+            if parent == current:
+                raise ValueError(f"Pfadwurzel konnte nicht validiert werden: {path}")
+            current = parent
+
+    if kind == "file" and not resolved.is_file():
+        raise ValueError(f"Keine reguläre Datei: {path}")
+    if kind == "directory" and not resolved.is_dir():
+        raise ValueError(f"Kein Verzeichnis: {path}")
+    return resolved
+
+
+def resolve_regular_file_under(path: Path, *roots: Path) -> Path:
+    return _resolve_under(path, roots, kind="file")
+
+
+def resolve_directory_under(path: Path, *roots: Path) -> Path:
+    return _resolve_under(path, roots, kind="directory")
+
+
 def fsync_dir(path: Path) -> None:
     """Best-effort fsync eines Verzeichnisses, damit Renames auch nach Stromausfall
     stabiler sind. Auf manchen FS/OS nicht unterstützt -> ignorieren."""

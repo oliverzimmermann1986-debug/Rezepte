@@ -90,6 +90,8 @@ chmod -R a+rX "$APP_DIR/playwright-browsers"
 install -m 0644 "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/scrapper-web.service
 install -m 0644 "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/scrapper-job.service
 install -m 0644 "$APP_DIR/systemd/scrapper-job.timer" /etc/systemd/system/scrapper-job.timer
+install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.service" /etc/systemd/system/scrapper-db-backup.service
+install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.timer" /etc/systemd/system/scrapper-db-backup.timer
 
 mkdir -p "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" "$APP_DIR/files/rezepte"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" "$APP_DIR/files"
@@ -98,9 +100,10 @@ find "$APP_DIR" -path "$APP_DIR/data" -prune -o -path "$APP_DIR/logs" -prune \
   -o -path "$APP_DIR/venv" -prune -o -exec chown root:root {} +
 
 systemctl daemon-reload
-systemctl enable scrapper-web.service scrapper-job.timer >/dev/null
+systemctl enable scrapper-web.service scrapper-job.timer scrapper-db-backup.timer >/dev/null
 systemctl restart scrapper-web.service
 systemctl restart scrapper-job.timer
+systemctl restart scrapper-db-backup.timer
 
 for _ in {1..30}; do
   if curl -fsS http://127.0.0.1:8000/healthz > /tmp/rezepte-health.json 2>/dev/null; then
@@ -109,9 +112,10 @@ for _ in {1..30}; do
   sleep 1
 done
 
-if ! grep -q '"version":"1.2.5"' /tmp/rezepte-health.json 2>/dev/null && \
-   ! grep -q '"version": "1.2.5"' /tmp/rezepte-health.json 2>/dev/null; then
-  echo "Fehler: Dienst läuft, meldet aber nicht Version 1.2.5." >&2
+EXPECTED_VERSION="$(sed -n 's/^APP_VERSION = "\([^"]*\)"/\1/p' "$APP_DIR/app/main.py" | head -n 1)"
+HEALTH_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version", ""))' /tmp/rezepte-health.json 2>/dev/null || true)"
+if [[ -z "$EXPECTED_VERSION" || "$HEALTH_VERSION" != "$EXPECTED_VERSION" ]]; then
+  echo "Fehler: Erwartete Version '$EXPECTED_VERSION', Dienst meldet '$HEALTH_VERSION'." >&2
   journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
   false
 fi
@@ -127,6 +131,6 @@ if [[ "$PDF_STATUS" == "404" || "$PDF_STATUS" == "000" ]]; then
 fi
 
 trap - ERR
-echo "Update erfolgreich. Backend und Frontend laufen gemeinsam auf Version 1.2.5."
+echo "Update erfolgreich. Backend und Frontend laufen gemeinsam auf Version $EXPECTED_VERSION."
 echo "Gesundheit: $(cat /tmp/rezepte-health.json)"
 echo "PDF-Route: HTTP $PDF_STATUS (200 oder 401 sind korrekt)"

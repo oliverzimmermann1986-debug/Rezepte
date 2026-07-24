@@ -38,4 +38,6 @@ def test_local_updater_does_not_git_pull():
     assert "\n  git pull" not in updater
     assert "rsync -a --delete" in updater
     assert "/api/admin/pdf/preflight" in updater
-    assert '"version":"1.2.5"' in updater
+    assert "EXPECTED_VERSION=" in updater
+    assert 'HEALTH_VERSION=' in updater
+    assert '"$HEALTH_VERSION" != "$EXPECTED_VERSION"' in updater

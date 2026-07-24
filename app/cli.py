@@ -34,9 +34,26 @@ def _cmd_set_password() -> int:
         print("Passwörter stimmen nicht überein.", file=sys.stderr)
         return 2
     cfg = get_config()
-    cfg.set("web", "password", hash_password(pw))
+    password_hash = hash_password(pw)
+    username = str(cfg.get("web", "username", default="admin"))
+    user = get_db().user_get_by_name(username)
+    if user:
+        get_db().user_set_password(int(user["id"]), password_hash)
+    cfg.set("web", "password", password_hash)
+    cfg.set(
+        "web",
+        "session_version",
+        int(cfg.get("web", "session_version", default=0) or 0) + 1,
+    )
     cfg.save()
-    print("✓ Passwort gespeichert (bcrypt).")
+    initial_password = Path(
+        cfg.get("paths", "data_dir", default="/opt/scrapper/data")
+    ) / ".initial-password"
+    try:
+        initial_password.unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"! Initial-Passwortdatei konnte nicht entfernt werden: {exc}", file=sys.stderr)
+    print("✓ Passwort gespeichert (bcrypt); bestehende Sessions widerrufen.")
     return 0
 
 
@@ -91,12 +108,18 @@ def _cmd_db_backup(args: list) -> int:
         r = get_db().backup_to(weekly, compress=True, verify=True)
         if r.get("ok"):
             print(f"✓ Weekly:  {r['dest']} ({r['size_bytes']/1024/1024:.2f} MB)")
+        else:
+            print(f"✗ Weekly-Backup fehlgeschlagen: {r.get('error')}", file=sys.stderr)
+            return 1
 
     # Monthly nur wenn noch nicht da
     if not monthly.exists():
         r = get_db().backup_to(monthly, compress=True, verify=True)
         if r.get("ok"):
             print(f"✓ Monthly: {r['dest']} ({r['size_bytes']/1024/1024:.2f} MB)")
+        else:
+            print(f"✗ Monthly-Backup fehlgeschlagen: {r.get('error')}", file=sys.stderr)
+            return 1
 
     # Retention: alte Tiers löschen
     _prune_tier(backups_root / "daily",   keep_days=7)

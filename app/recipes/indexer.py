@@ -26,9 +26,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -135,9 +137,20 @@ def sync_filesystem(db: Optional[Database] = None) -> dict:
 
 
 def _safe_iterdir(p: Path):
-    """iterdir() das PermissionError + nicht-existierende Pfade toleriert."""
+    """Sicheres ``iterdir`` ohne Symlink-Folgen.
+
+    Der Rezeptbaum ist ein Datenimport-Grenzbereich. Ein dort platzierter
+    Symlink darf weder beim Indexieren externe Verzeichnisse betreten noch
+    später eine externe Datei als Rezeptmedium registrieren.
+    """
     try:
-        return list(p.iterdir())
+        items = []
+        for child in p.iterdir():
+            if child.is_symlink():
+                logger.warning("Indexer überspringt Symlink: %s", child)
+                continue
+            items.append(child)
+        return items
     except (PermissionError, FileNotFoundError, OSError) as e:
         logger.warning(f"iterdir({p}): {e}")
         return []
@@ -310,6 +323,12 @@ def ensure_extraction_running() -> bool:
         if _worker_thread and _worker_thread.is_alive():
             return False
         db = get_db()
+        recovered = db.recipes_requeue_stale_extractions()
+        if recovered:
+            logger.warning(
+                "Extraction-Worker: %d verwaiste Claims erneut eingeplant",
+                recovered,
+            )
         stats = db.recipes_extraction_stats()
         if not stats.get("pending"):
             return False  # nichts zu tun
@@ -350,8 +369,9 @@ def _extraction_loop() -> None:
     batch_size = 9   # 3 Worker × 3 Items pro Batch — Batches schnell durch
     max_workers = 3
     idle_loops = 0
+    claim_owner = f"{os.getpid()}:{uuid.uuid4().hex}"
     while not _worker_stop.is_set():
-        batch = db.recipes_pending_extraction(limit=batch_size)
+        batch = db.recipes_claim_extraction(limit=batch_size, owner=claim_owner)
         if not batch:
             # 3x in Folge leer = wirklich nichts mehr, beenden
             idle_loops += 1
@@ -362,7 +382,10 @@ def _extraction_loop() -> None:
             continue
         idle_loops = 0
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="extract") as ex:
-            futures = [ex.submit(_extract_for_recipe, db, analyzer, r) for r in batch]
+            futures = {
+                ex.submit(_extract_for_recipe, db, analyzer, r, claim_owner): r
+                for r in batch
+            }
             for f in as_completed(futures):
                 if _worker_stop.is_set():
                     # Restliche Futures nicht abbrechen — laufen aus, Loop endet danach
@@ -373,9 +396,21 @@ def _extraction_loop() -> None:
                     # _extract_for_recipe sollte selbst nichts raisen, aber falls
                     # doch (z.B. OOM): nur loggen, anderen futures weiter laufen lassen
                     logger.exception(f"_extract_for_recipe future failed: {e}")
+                    failed_recipe = futures[f]
+                    db.recipe_set_extraction_result(
+                        int(failed_recipe["id"]),
+                        status="error",
+                        ingredients=[],
+                        claim_owner=claim_owner,
+                    )
 
 
-def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
+def _extract_for_recipe(
+    db: Database,
+    analyzer,
+    recipe: dict,
+    claim_owner: str,
+) -> None:
     """Holt Zutaten für EIN Rezept und schreibt sie ins DB. Niemals raised —
     Fehler werden auf 'error'-Status gesetzt, sodass die Schleife weiterläuft.
 
@@ -411,7 +446,12 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
 
     # Wenn immer noch nichts: skipped (kein .txt, kein PDF mit Text, kein verwertbares Bild)
     if len(desc.strip()) < 20:
-        db.recipe_set_extraction_result(rid, status="skipped", ingredients=[])
+        db.recipe_set_extraction_result(
+            rid,
+            status="skipped",
+            ingredients=[],
+            claim_owner=claim_owner,
+        )
         logger.debug(f"Rezept #{rid} '{recipe.get('name')}': description zu kurz, skipped")
         return
 
@@ -469,14 +509,18 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
         )
     except Exception as e:
         logger.warning(f"Rezept #{rid}: KI-Call failed: {e}")
-        db.recipe_set_extraction_result(rid, status="error", ingredients=[])
+        db.recipe_set_extraction_result(
+            rid, status="error", ingredients=[], claim_owner=claim_owner
+        )
         return
 
     # KI hat None returnt = _call failed (timeout/length-trunc/etc).
     # Lieber als error markieren damit der Audit-Tab das sichtbar macht.
     if content is None:
         logger.warning(f"Rezept #{rid}: analyze_recipe_content returnt None")
-        db.recipe_set_extraction_result(rid, status="error", ingredients=[])
+        db.recipe_set_extraction_result(
+            rid, status="error", ingredients=[], claim_owner=claim_owner
+        )
         return
 
     # canonical_name + unit-normalize beim Insert mit dranhängen
@@ -499,17 +543,14 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
             f"Rezept #{rid}: 0 Zutaten extrahiert obwohl description "
             f"{len(desc)} chars hat — markiere als 'error' statt 'ok'"
         )
-        db.recipe_set_extraction_result(rid, status="error", ingredients=[])
+        db.recipe_set_extraction_result(
+            rid, status="error", ingredients=[], claim_owner=claim_owner
+        )
         return
 
-    db.recipe_set_extraction_result(rid, status="ok", ingredients=prepared)
     # Schritte + Portionen aus dem gleichen Call übernehmen
     steps = content.get("steps") or []
-    if steps:
-        db.recipe_steps_set(rid, steps)
     servings = content.get("servings")
-    if servings is not None:
-        db.recipe_set_servings(rid, servings)
 
     # Auto-Tags: KI-Tags (stilistisch) + Regel-Tags (Diät/Allergene)
     # Vereinigt unter einer Tabelle, mit auto=1 markiert. User-Tags
@@ -518,7 +559,21 @@ def _extract_for_recipe(db: Database, analyzer, recipe: dict) -> None:
     ki_tags = content.get("tags") or []
     diet_tags = compute_diet_tags([p["canonical_name"] for p in prepared])
     all_auto_tags = sorted(set(ki_tags) | set(diet_tags))
-    db.recipe_auto_tags_set(rid, all_auto_tags)
+    applied = db.recipe_apply_extraction_result(
+        rid,
+        ingredients=prepared,
+        steps=steps,
+        servings=servings,
+        auto_tags=all_auto_tags,
+        claim_owner=claim_owner,
+    )
+    if not applied:
+        logger.warning(
+            "Rezept #%s: Claim ging während der Extraktion verloren; "
+            "veraltetes Ergebnis wird verworfen",
+            rid,
+        )
+        return
 
     # Nährwerte berechnen — nur wenn genug Zutaten da sind (>=3, sonst meist
     # KI-Halbextrakt). +1 KI-Call, ~$0.0005. Skip wenn schon berechnet

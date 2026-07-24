@@ -130,8 +130,10 @@ def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
     assert 'initial_admin_tab="pdf"' in main_py
     assert "document.body?.dataset?.initialPage" in js
     assert "window.location.pathname.startsWith('/admin')" in js
-    assert "rezepte-v1.2.5" in sw
-    assert "fetch(event.request, { cache: 'no-store' })" in sw
+    assert "rezepte-static-v1.2.6-security" in sw
+    assert "caches.delete" in sw
+    assert "request.mode === 'navigate'" in sw
+    assert "fetch(event.request, {cache: 'no-store'})" in sw
 
 
 def test_admin_is_visible_for_every_authenticated_user():

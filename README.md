@@ -386,6 +386,7 @@ web:
   secret_key: <48 random chars>
   bind_host: 127.0.0.1
   bind_port: 8000
+  trusted_proxies: [127.0.0.1/32, "::1/128"]
 
 paths:
   recipe_dir: /pfad/zu/rezepten

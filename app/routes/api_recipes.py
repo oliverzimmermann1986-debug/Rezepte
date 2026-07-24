@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import require_auth
 from ..core.analyzer import build_analyzer
+from ..core.safety import resolve_directory_under, resolve_regular_file_under
 from ..core.ttl_cache import TTLCache
 from ..config_store import get_config
 from ..db import get_db
@@ -46,6 +47,36 @@ from ..recipes.sync_manager import request_sync, sync_status
 from ..recipes.image_cache import ensure_thumbnail, invalidate_thumbnail_cache, normalize_image
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"], dependencies=[Depends(require_auth)])
+
+
+def _recipe_root() -> Path:
+    return Path(get_config().get("paths", "recipe_dir", default="/mnt/rezepte"))
+
+
+def _safe_recipe_folder(recipe: Dict[str, Any]) -> Path:
+    try:
+        return resolve_directory_under(Path(recipe["folder_path"]), _recipe_root())
+    except (KeyError, OSError, ValueError) as exc:
+        logger.warning("Unsicherer/fehlender Rezeptordner für #%s: %s", recipe.get("id"), exc)
+        raise HTTPException(404, "Rezeptordner fehlt oder ist nicht zulässig") from exc
+
+
+def _safe_recipe_file(recipe: Dict[str, Any], filename: str) -> Path:
+    folder = _safe_recipe_folder(recipe)
+    try:
+        return resolve_regular_file_under(
+            folder / str(filename),
+            folder,
+            _recipe_root(),
+        )
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "Unsicherer/fehlender Medienpfad für Rezept #%s (%r): %s",
+            recipe.get("id"),
+            filename,
+            exc,
+        )
+        raise HTTPException(404, "Mediendatei fehlt oder ist nicht zulässig") from exc
 
 
 def _actor(request: Request) -> str:
@@ -252,9 +283,10 @@ def get_recipe(recipe_id: int):
     # PDF-Rezepte (Mail-Import): Original-PDF melden, damit das Frontend
     # einen "PDF öffnen"-Button zeigen kann (Bild allein reicht nicht).
     try:
-        folder = Path(r["folder_path"])
+        folder = _safe_recipe_folder(r)
         pdfs = sorted(p.name for p in folder.iterdir()
-                      if p.is_file() and p.suffix.lower() == ".pdf")
+                      if p.is_file() and not p.is_symlink()
+                      and p.suffix.lower() == ".pdf")
         r["pdf_filename"] = pdfs[0] if pdfs else None
     except Exception:
         r["pdf_filename"] = None
@@ -268,13 +300,21 @@ def get_recipe_pdf(recipe_id: int):
     r = db.recipe_get(recipe_id)
     if not r:
         raise HTTPException(404, "Rezept nicht gefunden")
-    folder = Path(r["folder_path"])
+    folder = _safe_recipe_folder(r)
     pdfs = sorted(p for p in folder.iterdir()
-                  if p.is_file() and p.suffix.lower() == ".pdf") if folder.is_dir() else []
+                  if p.is_file() and not p.is_symlink()
+                  and p.suffix.lower() == ".pdf")
     if not pdfs:
         raise HTTPException(404, "Kein PDF vorhanden")
-    return FileResponse(pdfs[0], media_type="application/pdf",
-                        headers={"Content-Disposition": f'inline; filename="{pdfs[0].name}"'})
+    pdf = _safe_recipe_file(r, pdfs[0].name)
+    return FileResponse(
+        pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{pdf.name}"',
+            "Cache-Control": "private, max-age=300",
+        },
+    )
 
 
 # ── Mutation ────────────────────────────────────────────────────────────
@@ -447,7 +487,9 @@ def recover_empty(request: Request) -> Dict[str, Any]:
         if ids:
             with db.conn() as c:
                 c.executemany(
-                    "UPDATE recipes SET ingredients_status='pending' WHERE id=?",
+                    "UPDATE recipes SET ingredients_status='pending', "
+                    "ingredients_extracted_at=NULL, extraction_claimed_at=NULL, "
+                    "extraction_claim_owner=NULL WHERE id=?",
                     [(rid,) for rid in ids],
                 )
 
@@ -495,7 +537,6 @@ def rescrape_recipe(
 
     Fehlerfälle: URL nicht da, yt-dlp-Fehler (Video gelöscht, geo-blocked,
     Login nötig). Returnt 200 mit ok=False + Detail bei Fehlern."""
-    import shutil as _shutil
     db = get_db()
     rec = db.recipe_get(recipe_id)
     if not rec:
@@ -503,9 +544,10 @@ def rescrape_recipe(
     url = rec.get("url")
     if not url:
         return {"ok": False, "error": "Rezept hat keine URL (manuell angelegt?)"}
-    folder = rec.get("folder_path")
-    if not folder or not Path(folder).exists():
-        return {"ok": False, "error": f"FS-Folder nicht da: {folder}"}
+    try:
+        folder_p = _safe_recipe_folder(rec)
+    except HTTPException:
+        return {"ok": False, "error": "FS-Folder fehlt oder ist nicht zulässig"}
 
     # Downloader bauen mit Config
     cfg = get_config()
@@ -537,7 +579,6 @@ def rescrape_recipe(
     if not meta:
         return {"ok": False, "error": "yt-dlp lieferte nichts — URL down/geo-blocked/login nötig?"}
 
-    folder_p = Path(folder)
     changed = {"description": False, "thumbnail": False}
 
     # Description aktualisieren
@@ -547,17 +588,22 @@ def rescrape_recipe(
         old_desc = rec.get("description") or ""
         if new_desc != old_desc:
             _version_before(recipe_id, request, "Beschreibung aus Quelle aktualisiert", source="import")
+            from ..core.safety import atomic_write_text
+            try:
+                atomic_write_text(folder_p / "description.txt", new_desc)
+            except OSError as exc:
+                logger.warning("description.txt schreiben fehler: %s", exc)
+                return {
+                    "ok": False,
+                    "error": "Beschreibung konnte nicht sicher gespeichert werden",
+                }
             with db.conn() as c:
                 c.execute(
                     "UPDATE recipes SET description=?, ingredients_status='pending', "
-                    "ingredients_extracted_at=NULL WHERE id=?",
+                    "ingredients_extracted_at=NULL, extraction_claimed_at=NULL, "
+                    "extraction_claim_owner=NULL WHERE id=?",
                     (new_desc, recipe_id),
                 )
-            # Plus im Folder als description.txt ablegen für Konsistenz
-            try:
-                (folder_p / "description.txt").write_text(new_desc, encoding="utf-8")
-            except OSError as e:
-                logger.warning(f"description.txt schreiben fehler: {e}")
             changed["description"] = True
             extraction_queued = True
 
@@ -575,36 +621,41 @@ def rescrape_recipe(
         with db.conn() as c:
             c.execute(
                 "UPDATE recipes SET ingredients_status='pending', "
-                "ingredients_extracted_at=NULL WHERE id=?",
+                "ingredients_extracted_at=NULL, extraction_claimed_at=NULL, "
+                "extraction_claim_owner=NULL WHERE id=?",
                 (recipe_id,),
             )
         extraction_queued = True
 
     # Thumbnail ersetzen
-    new_thumb = meta.get("thumbnail_path")
-    if new_thumb and Path(new_thumb).exists():
+    new_thumb = meta.get("thumbnail_bytes")
+    if new_thumb:
+        staged_thumb = folder_p / f".thumb-refresh-{time.time_ns()}.img"
         try:
-            # Existing Thumbs im Folder löschen (jpg/jpeg/webp/png mit thumb-prefix
-            # oder gleichem Stem wie folder-name)
-            for old in folder_p.glob("thumb.*"):
-                old.unlink(missing_ok=True)
-            for old in folder_p.glob("*.jpg"):
-                # Nur Thumb-Dateien — kein User-Foto
-                if old.name.startswith("thumb") or old.stem == folder_p.name:
-                    old.unlink(missing_ok=True)
+            from ..core.safety import atomic_write_bytes
+            atomic_write_bytes(staged_thumb, bytes(new_thumb))
             target_thumb = folder_p / "thumb.jpg"
-            _shutil.copy2(new_thumb, target_thumb)
+            normalize_image(staged_thumb, target_thumb)
             with db.conn() as c:
                 c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?",
                           ("thumb.jpg", recipe_id))
+            # Erst nach erfolgreicher Normalisierung + DB-Aktualisierung alte
+            # Varianten entfernen. Das funktionierende Bild bleibt bei Fehlern
+            # dadurch erhalten.
+            for old in folder_p.glob("thumb.*"):
+                if old != target_thumb:
+                    old.unlink(missing_ok=True)
+            for old in folder_p.glob("*.jpg"):
+                if old != target_thumb and (
+                    old.name.startswith("thumb") or old.stem == folder_p.name
+                ):
+                    old.unlink(missing_ok=True)
+            invalidate_thumbnail_cache(folder_p)
             changed["thumbnail"] = True
-            # Tempdir aufräumen
-            try:
-                _shutil.rmtree(Path(new_thumb).parent, ignore_errors=True)
-            except Exception:
-                pass
         except Exception as e:
             logger.warning(f"Thumbnail-Copy fehler #{recipe_id}: {e}")
+        finally:
+            staged_thumb.unlink(missing_ok=True)
 
     worker_started = False
     if extraction_queued:
@@ -781,6 +832,11 @@ def compute_nutrition_for(recipe_id: int, request: Request) -> Dict[str, Any]:
     recipe = db.recipe_get(recipe_id)
     if not recipe:
         raise HTTPException(404, "Rezept nicht gefunden")
+    if recipe.get("ingredients_status") == "running":
+        raise HTTPException(
+            409,
+            "Für dieses Rezept läuft bereits eine Extraktion",
+        )
     ings = db.recipe_ingredients_get(recipe_id)
     if len(ings) < 3:
         raise HTTPException(400, f"Zu wenig Zutaten ({len(ings)}) für sinnvolle Schätzung")
@@ -856,6 +912,11 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
     recipe = db.recipe_get(recipe_id)
     if not recipe:
         raise HTTPException(404, "Rezept nicht gefunden")
+    if recipe.get("ingredients_status") == "running":
+        raise HTTPException(
+            409,
+            "Für dieses Rezept läuft bereits eine Extraktion",
+        )
     _version_before(recipe_id, request, "KI-Inhalte neu extrahiert", source="ai")
 
     desc = recipe.get("description") or ""
@@ -888,6 +949,9 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
     except Exception as e:
         db.recipe_set_extraction_result(recipe_id, status="error", ingredients=[])
         raise HTTPException(502, f"KI-Call fehlgeschlagen: {e}")
+    if content is None:
+        db.recipe_set_extraction_result(recipe_id, status="error", ingredients=[])
+        raise HTTPException(502, "KI lieferte kein verwertbares Ergebnis")
 
     prepared = []
     for it in (content.get("ingredients") or []):
@@ -898,21 +962,21 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
             "unit": normalize_unit(it.get("unit")),
             "raw": it.get("raw"),
         })
-    db.recipe_set_extraction_result(recipe_id, status="ok", ingredients=prepared)
-
     steps = content.get("steps") or []
-    if steps:
-        db.recipe_steps_set(recipe_id, steps)
     servings = content.get("servings")
-    if servings is not None:
-        db.recipe_set_servings(recipe_id, servings)
 
     # Auto-Tags (KI + Regel-Pass)
     from ..recipes.auto_tags import compute_diet_tags
     ki_tags = content.get("tags") or []
     diet_tags = compute_diet_tags([p["canonical_name"] for p in prepared])
     all_auto_tags = sorted(set(ki_tags) | set(diet_tags))
-    db.recipe_auto_tags_set(recipe_id, all_auto_tags)
+    db.recipe_apply_extraction_result(
+        recipe_id,
+        ingredients=prepared,
+        steps=steps,
+        servings=servings,
+        auto_tags=all_auto_tags,
+    )
 
     return {
         "ok": True,
@@ -996,13 +1060,21 @@ def trash_list(limit: int = Query(200, ge=1, le=500),
 @router.post("/{recipe_id}/restore")
 def restore_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
     """Aus Papierkorb wiederherstellen (deleted_at = NULL)."""
-    db = get_db()
+    from ..recipes.manage import safe_restore_recipe
+
     _version_before(recipe_id, request, "Aus Papierkorb wiederhergestellt")
-    result = db.recipe_restore(recipe_id)
-    if not result.get("ok"):
-        raise HTTPException(404, result.get("error", "Restore fehlgeschlagen"))
-    logger.info(f"recipe #{recipe_id} restored (files_deleted was {result['files_deleted']})")
-    return result
+    try:
+        result = safe_restore_recipe(get_db(), recipe_id)
+        logger.info(
+            "recipe #%s restored (files_restored=%s)",
+            recipe_id,
+            result.get("files_restored"),
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.delete("/trash/empty")
@@ -1012,12 +1084,20 @@ def empty_trash(delete_files: bool = True) -> Dict[str, Any]:
     (falls noch da)."""
     from ..recipes.manage import safe_delete_recipe
     db = get_db()
-    trash_items = db.recipe_list(only_deleted=True, limit=500, offset=0)
+    with db.conn() as c:
+        trash_ids = [
+            int(row["id"])
+            for row in c.execute(
+                "SELECT id FROM recipes WHERE deleted_at IS NOT NULL "
+                "ORDER BY deleted_at, id"
+            ).fetchall()
+        ]
     deleted = 0
     errors = []
-    for item in trash_items:
+    for recipe_id in trash_ids:
+        item = db.recipe_get(recipe_id) or {"id": recipe_id}
         try:
-            safe_delete_recipe(db, item["id"], delete_files=delete_files, hard=True)
+            safe_delete_recipe(db, recipe_id, delete_files=delete_files, hard=True)
             deleted += 1
         except Exception as e:
             errors.append({"id": item["id"], "name": item.get("name"), "error": str(e)})
@@ -1099,14 +1179,15 @@ def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
     if not r:
         raise HTTPException(404, "rezept nicht gefunden")
 
-    folder = Path(r["folder_path"])
+    folder = _safe_recipe_folder(r)
     src = None
 
     # 1. Registriertes Thumbnail bevorzugen
     if r.get("thumb_filename"):
-        cand = folder / r["thumb_filename"]
-        if cand.exists() and cand.is_file():
-            src = cand
+        try:
+            src = _safe_recipe_file(r, r["thumb_filename"])
+        except HTTPException:
+            src = None
 
     # 2. Fallback: kein registriertes Thumb → im Folder nach Medien suchen.
     #    Deckt Email-Importe (PDF/Bild-Attachment) und nicht-registrierte
@@ -1116,17 +1197,19 @@ def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
         img_exts = {".jpg", ".jpeg", ".png", ".webp"}
         images = sorted(
             p for p in folder.iterdir()
-            if p.is_file() and p.suffix.lower() in img_exts
+            if p.is_file() and not p.is_symlink()
+            and p.suffix.lower() in img_exts
             and not p.name.startswith("thumb-w")
         )
         if images:
-            src = images[0]
+            src = _safe_recipe_file(r, images[0].name)
         else:
             # PDF → erste Seite zu JPG rendern, on-disk cachen (pdf-page1.jpg)
             pdfs = sorted(p for p in folder.iterdir()
-                          if p.is_file() and p.suffix.lower() == ".pdf")
+                          if p.is_file() and not p.is_symlink()
+                          and p.suffix.lower() == ".pdf")
             if pdfs:
-                pdf = pdfs[0]
+                pdf = _safe_recipe_file(r, pdfs[0].name)
                 rendered = folder / "pdf-page1.jpg"
                 if rendered.exists() and rendered.stat().st_mtime >= pdf.stat().st_mtime:
                     src = rendered
@@ -1161,7 +1244,7 @@ def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
     return FileResponse(
         str(serve),
         headers={
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            "Cache-Control": "private, max-age=86400, stale-while-revalidate=604800",
             "ETag": f'"{int(mtime)}-{serve.stat().st_size}"',
         },
     )
@@ -1174,9 +1257,7 @@ def get_video(recipe_id: int):
     r = db.recipe_get(recipe_id)
     if not r or not r.get("video_filename"):
         raise HTTPException(404, "kein video")
-    fp = Path(r["folder_path"]) / r["video_filename"]
-    if not fp.exists() or not fp.is_file():
-        raise HTTPException(404, "video-datei fehlt")
+    fp = _safe_recipe_file(r, r["video_filename"])
     # Range-Requests werden von FileResponse direkt unterstützt — wichtig
     # damit das <video>-Element im Browser Seek-Operationen kann.
     # Videos sind ~10-50MB pro Stück, cachen sich daher schnell auf.
@@ -1184,7 +1265,7 @@ def get_video(recipe_id: int):
     return FileResponse(
         str(fp),
         headers={
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            "Cache-Control": "private, max-age=86400, stale-while-revalidate=604800",
             "ETag": f'"{int(mtime)}-{fp.stat().st_size}"',
         },
     )

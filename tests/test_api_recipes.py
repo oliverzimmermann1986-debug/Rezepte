@@ -168,8 +168,13 @@ def test_soft_delete_default(client, test_db):
     assert trash["items"][0]["days_until_purge"] > 25  # frisch gelöscht
 
 
-def test_restore_from_trash(client, test_db):
-    rec = _create_recipe(test_db, name="R", folder_path="/tmp/r")
+def test_restore_from_trash(client, test_db, tmp_path, monkeypatch):
+    import app.recipes.manage as manage
+
+    monkeypatch.setattr(manage, "_recipe_root", lambda: tmp_path.resolve())
+    folder = tmp_path / "r"
+    folder.mkdir()
+    rec = _create_recipe(test_db, name="R", folder_path=str(folder))
     rid = rec["id"]
     client.delete(f"/api/recipes/{rid}")
 

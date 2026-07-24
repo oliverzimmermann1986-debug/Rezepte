@@ -7,6 +7,7 @@ werden im Web-UI über ein <video>-Element angezeigt, kein Standbild nötig.
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -47,6 +48,7 @@ class VideoDownloader:
             )
             if result.returncode != 0:
                 logger.error(f"yt-dlp Fehler: {result.stderr.strip()}")
+                shutil.rmtree(sub, ignore_errors=True)
                 return None
             videos = (
                 list(sub.glob("video.mp4"))
@@ -57,13 +59,16 @@ class VideoDownloader:
             videos = [v for v in videos if v.suffix.lower() not in (".description", ".part")]
             if not videos:
                 logger.warning(f"yt-dlp: kein Video heruntergeladen für {url}")
+                shutil.rmtree(sub, ignore_errors=True)
                 return None
             return videos[0]
         except subprocess.TimeoutExpired:
             logger.error("yt-dlp Timeout")
+            shutil.rmtree(sub, ignore_errors=True)
             return None
         except Exception as e:
             logger.error(f"yt-dlp Exception: {e}")
+            shutil.rmtree(sub, ignore_errors=True)
             return None
 
     @staticmethod
@@ -80,9 +85,10 @@ class VideoDownloader:
         except Exception:
             return None
 
-    def refresh_metadata(self, url: str) -> Optional[Dict[str, Path]]:
+    def refresh_metadata(self, url: str) -> Optional[Dict[str, Any]]:
         """Re-Scrape: holt Beschreibung + Thumbnail ohne Video-Download.
-        Returnt {'description_text': str, 'thumbnail_path': Path} oder None.
+        Returnt Beschreibung und optional begrenzte Thumbnail-Bytes. Der
+        temporäre yt-dlp-Ordner wird vor dem Return immer entfernt.
 
         Schneller als download() weil nur Metadata gepulled werden (~2-5s
         statt ~30s für Video-DL). Geeignet für 'frische Caption + Bild'-
@@ -108,28 +114,44 @@ class VideoDownloader:
             )
             if result.returncode != 0:
                 logger.warning(f"yt-dlp refresh_metadata fehler: {result.stderr.strip()[:300]}")
+                shutil.rmtree(sub, ignore_errors=True)
                 return None
         except subprocess.TimeoutExpired:
             logger.warning(f"yt-dlp refresh_metadata Timeout für {url}")
+            shutil.rmtree(sub, ignore_errors=True)
             return None
         except Exception as e:
             logger.warning(f"yt-dlp refresh_metadata Exception: {e}")
+            shutil.rmtree(sub, ignore_errors=True)
             return None
 
         # description-File suchen (yt-dlp schreibt thumb.description trotz -o)
         desc_files = list(sub.glob("*.description"))
         thumb_files = list(sub.glob("*.jpg")) + list(sub.glob("*.jpeg")) + list(sub.glob("*.webp")) + list(sub.glob("*.png"))
         if not desc_files and not thumb_files:
+            shutil.rmtree(sub, ignore_errors=True)
             return None
 
         out: Dict[str, Any] = {}
-        if desc_files:
-            try:
+        try:
+            if desc_files:
                 txt = desc_files[0].read_text(encoding="utf-8").strip()
                 if txt:
-                    out["description_text"] = txt
-            except Exception as e:
-                logger.warning(f"Description read fehler: {e}")
-        if thumb_files:
-            out["thumbnail_path"] = thumb_files[0]
-        return out or None
+                    out["description_text"] = txt[:200_000]
+            if thumb_files:
+                thumb = thumb_files[0]
+                size = thumb.stat().st_size
+                if size <= 10 * 1024 * 1024:
+                    out["thumbnail_bytes"] = thumb.read_bytes()
+                    out["thumbnail_suffix"] = thumb.suffix.lower()
+                else:
+                    logger.warning(
+                        "yt-dlp Thumbnail zu groß (%s Bytes), wird verworfen",
+                        size,
+                    )
+            return out or None
+        except Exception as e:
+            logger.warning(f"Metadata read fehler: {e}")
+            return None
+        finally:
+            shutil.rmtree(sub, ignore_errors=True)

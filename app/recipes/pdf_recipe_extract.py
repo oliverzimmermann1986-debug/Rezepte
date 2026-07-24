@@ -327,20 +327,23 @@ def apply_extracted_recipe_data(db, recipe_id: int, data: ExtractedRecipeData, *
         with db.conn() as conn:
             conn.execute("UPDATE recipes SET description=? WHERE id=?", (data.text, recipe_id))
     if will_write_ingredients:
-        db.recipe_set_extraction_result(recipe_id, status="ok", ingredients=data.ingredients)
-    elif not current_ingredients and not data.ingredients:
-        with db.conn() as conn:
-            conn.execute("UPDATE recipes SET ingredients_status='error' WHERE id=?", (recipe_id,))
-    if will_write_steps:
-        db.recipe_steps_set(recipe_id, data.steps)
-    if will_write_servings:
-        db.recipe_set_servings(recipe_id, data.servings)
-
-    if will_write_ingredients:
         auto_tags = sorted(set(data.tags) | set(compute_diet_tags([
             item.get("canonical_name") for item in data.ingredients if item.get("canonical_name")
         ])))
-        db.recipe_auto_tags_set(recipe_id, auto_tags)
+        db.recipe_apply_extraction_result(
+            recipe_id,
+            ingredients=data.ingredients,
+            steps=data.steps if will_write_steps else current_steps,
+            servings=data.servings if will_write_servings else recipe.get("servings"),
+            auto_tags=auto_tags,
+        )
+    elif not current_ingredients and not data.ingredients:
+        with db.conn() as conn:
+            conn.execute("UPDATE recipes SET ingredients_status='error' WHERE id=?", (recipe_id,))
+    if will_write_steps and not will_write_ingredients:
+        db.recipe_steps_set(recipe_id, data.steps)
+    if will_write_servings and not will_write_ingredients:
+        db.recipe_set_servings(recipe_id, data.servings)
 
     return {
         "ok": True,

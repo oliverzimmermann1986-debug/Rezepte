@@ -103,6 +103,8 @@ echo "⚙️  Installiere systemd Units..."
 cp "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/
 cp "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/
 cp "$APP_DIR/systemd/scrapper-job.timer"   /etc/systemd/system/
+cp "$APP_DIR/systemd/scrapper-db-backup.service" /etc/systemd/system/
+cp "$APP_DIR/systemd/scrapper-db-backup.timer"   /etc/systemd/system/
 
 # sudoers-Eintrag damit scrapper Timer-Files schreiben + systemd neuladen darf
 install -m 0440 "$APP_DIR/systemd/sudoers-scrapper" /etc/sudoers.d/scrapper
@@ -114,6 +116,7 @@ systemctl daemon-reload
 # 10. Web-Service starten + enablen
 systemctl enable --now scrapper-web.service
 systemctl enable --now scrapper-job.timer
+systemctl enable --now scrapper-db-backup.timer
 # 11. Status anzeigen
 sleep 2
 echo ""

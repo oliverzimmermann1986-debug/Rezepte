@@ -380,7 +380,19 @@ def login(
         )
 
     login_limiter.record_success(ip)
-    token = create_session(username)
+    try:
+        token = create_session(username)
+    except ValueError:
+        # Konto kann zwischen Credential-Prüfung und Session-Erstellung
+        # deaktiviert oder gelöscht worden sein.
+        logger.warning("Session-Erstellung für %r nach erfolgreichem Login abgelehnt", username)
+        return HTMLResponse(
+            LOGIN_HTML.format(
+                error='<p class="error">❌ Konto ist nicht mehr aktiv</p>',
+                next=_safe_next(next),
+            ),
+            status_code=401,
+        )
     resp = RedirectResponse(url=_safe_next(next), status_code=303)
     _set_session_cookie(resp, token, request)
     return resp
@@ -390,6 +402,11 @@ def login(
 def logout():
     resp = RedirectResponse(url="/login", status_code=303)
     resp.delete_cookie(SESSION_COOKIE, path="/")
+    # Löscht insbesondere Cache Storage alter Service-Worker-Versionen. Private
+    # Rezeptdaten dürfen auf gemeinsam genutzten Geräten nicht nach Logout
+    # offline verfügbar bleiben.
+    resp.headers["Clear-Site-Data"] = '"cache", "storage"'
+    resp.headers["Cache-Control"] = "no-store"
     return resp
 
 

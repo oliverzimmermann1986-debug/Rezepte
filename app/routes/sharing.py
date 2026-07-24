@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import html
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +35,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import SESSION_COOKIE, require_auth, session_user
 from ..config_store import get_config
+from ..core.safety import resolve_directory_under, resolve_regular_file_under
 from ..db import get_db
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,24 @@ def _serializer() -> URLSafeTimedSerializer:
     if not secret or len(secret) < 32:
         raise RuntimeError("web.secret_key fehlt — Sharing nicht möglich")
     return URLSafeTimedSerializer(secret, salt=SHARE_SALT)
+
+
+def _load_share_token(token: str) -> dict:
+    """Lädt neue Tokens mit eigenem ``exp`` und alte Tokens mit 30-Tage-Frist."""
+    data = _serializer().loads(token, max_age=365 * 86400)
+    exp = data.get("exp")
+    if exp is None:
+        # Kompatibilität: alte Tokens hatten kein exp und waren fest 30 Tage gültig.
+        return _serializer().loads(
+            token,
+            max_age=SHARE_MAX_AGE_DAYS_DEFAULT * 86400,
+        )
+    try:
+        if float(exp) < time.time():
+            raise SignatureExpired("Share-Link ist abgelaufen", payload=data)
+    except (TypeError, ValueError) as exc:
+        raise BadSignature("Ungültiges Ablaufdatum im Share-Token") from exc
+    return data
 
 
 def _format_ingredient(ing: dict) -> str:
@@ -270,7 +290,7 @@ def _load_recipe_full(recipe_id: int) -> dict:
     """Lädt Rezept + Zutaten + Schritte + Tags. Raised 404 wenn nicht da."""
     db = get_db()
     r = db.recipe_get(recipe_id)
-    if not r:
+    if not r or r.get("deleted_at") is not None:
         raise HTTPException(404, "Rezept nicht gefunden")
     r["ingredients"] = db.recipe_ingredients_get(recipe_id)
     r["steps"] = db.recipe_steps_get(recipe_id)
@@ -299,11 +319,16 @@ def create_share_link(recipe_id: int, payload: ShareRequest, request: Request):
     Default-Gültigkeit 30 Tage (max 365). Stateless — Revocation via
     secret_key-Rotation."""
     db = get_db()
-    if not db.recipe_get(recipe_id):
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
         raise HTTPException(404, "Rezept nicht gefunden")
 
     username = session_user(request.cookies.get(SESSION_COOKIE, "")) or "anonymous"
-    token = _serializer().dumps({"rid": int(recipe_id), "by": username})
+    token = _serializer().dumps({
+        "rid": int(recipe_id),
+        "by": username,
+        "exp": time.time() + payload.expires_days * 86400,
+    })
 
     # base_url respektiert X-Forwarded-Proto + Host bei Reverse-Proxy
     base = str(request.base_url).rstrip("/")
@@ -324,7 +349,7 @@ def share_recipe(token: str):
     """Validiert Token, zeigt Print-View für den Empfänger. Bei Bad/Expired
     Token: klare Fehlerseite (Status 410/403 mit kurzem HTML statt JSON)."""
     try:
-        data = _serializer().loads(token, max_age=SHARE_MAX_AGE_DAYS_DEFAULT * 86400)
+        data = _load_share_token(token)
     except SignatureExpired:
         return HTMLResponse(
             "<h1>Link abgelaufen</h1><p>Dieser Share-Link ist nicht mehr gültig. "
@@ -363,21 +388,27 @@ def share_recipe(token: str):
 def share_thumb(token: str):
     """Public-Thumbnail mit gleicher Token-Validation wie die Hauptview."""
     try:
-        data = _serializer().loads(token, max_age=SHARE_MAX_AGE_DAYS_DEFAULT * 86400)
+        data = _load_share_token(token)
     except (BadSignature, SignatureExpired):
         raise HTTPException(403, "Ungültiger oder abgelaufener Link")
 
     rid = int(data.get("rid") or 0)
     db = get_db()
     r = db.recipe_get(rid)
-    if not r or not r.get("thumb_filename"):
+    if (
+        not r
+        or r.get("deleted_at") is not None
+        or not r.get("thumb_filename")
+    ):
         raise HTTPException(404)
-    fp = Path(r["folder_path"]) / r["thumb_filename"]
-    if not fp.exists() or not fp.is_file():
-        raise HTTPException(404)
-    # Path-Traversal-Check: thumb muss im recipe-Folder bleiben
     try:
-        fp.resolve().relative_to(Path(r["folder_path"]).resolve())
-    except ValueError:
-        raise HTTPException(403)
-    return FileResponse(str(fp))
+        root = Path(get_config().get("paths", "recipe_dir", default="/mnt/rezepte"))
+        folder = resolve_directory_under(Path(r["folder_path"]), root)
+        fp = resolve_regular_file_under(
+            folder / str(r["thumb_filename"]),
+            folder,
+            root,
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(404) from exc
+    return FileResponse(str(fp), headers={"Cache-Control": "private, max-age=300"})
