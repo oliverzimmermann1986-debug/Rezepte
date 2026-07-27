@@ -1,7 +1,7 @@
 {
   "name": "Rezepte",
   "short_name": "Rezepte",
-  "description": "Mobile Rezeptbibliothek mit Suche, Favoriten und Einkaufsliste",
+  "description": "Private Rezeptbibliothek mit Suche, Filtern und Einkaufsliste",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -38,16 +38,6 @@
     {
       "name": "Rezepte",
       "url": "/?tab=recipes",
-      "icons": [
-        {
-          "src": "/static/icon-192.png",
-          "sizes": "192x192"
-        }
-      ]
-    },
-    {
-      "name": "Favoriten",
-      "url": "/?tab=favorites",
       "icons": [
         {
           "src": "/static/icon-192.png",

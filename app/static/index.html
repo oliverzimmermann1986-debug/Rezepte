@@ -48,11 +48,6 @@
       <span class="mobile-page-title" x-text="pageLabel()"></span>
     </div>
     <div class="mobile-appbar-actions">
-      <button type="button" class="mobile-admin-button"
-              @click="navTo('admin')" :class="page==='admin' && 'active'"
-              aria-label="Admin Center öffnen" title="Admin Center">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/><circle cx="18" cy="17" r="3"/></svg>
-      </button>
       <div class="mobile-runtime" :title="status.scraper ? 'Import läuft' : 'Bereit'">
         <span class="status-dot" :class="status.scraper ? 'busy' : 'online'"></span>
       </div>
@@ -73,15 +68,12 @@
       <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="M8 4v16M4 9h16"/></svg></span><span class="nav-label">Rezepte</span>
       <span class="badge" x-show="recipes.extractionPending > 0" x-text="recipes.extractionPending" title="Zutaten werden extrahiert"></span>
     </button>
-    <button type="button" class="nav-item nav-primary" :class="page==='favorites' && 'active'" @click="navTo('favorites')" title="Favorisierte Rezepte">
-      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg></span><span class="nav-label">Favoriten</span>
-    </button>
     <button type="button" class="nav-item nav-primary" :class="page==='cart' && 'active'" @click="navTo('cart')" title="Einkaufsliste">
       <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h2l2.4 11.2a2 2 0 0 0 2 1.6h7.8a2 2 0 0 0 2-1.6L21 7H6"/><circle cx="10" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg></span><span class="nav-label">Einkaufsliste</span>
       <span class="badge" x-show="cart.items.length > 0" x-text="cart.items.length"></span>
     </button>
     <button type="button" class="nav-item nav-primary"
-            :class="page==='admin' && 'active'" @click="navTo('admin')" title="Administration">
+            :class="page==='admin' && 'active'" @click="admin.tab='home'; navTo('admin')" title="Administration">
       <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/><circle cx="18" cy="17" r="3"/></svg></span>
       <span class="nav-label">Admin</span>
       <span class="badge badge-warn" x-show="(admin.overview?.counts?.pending || 0) + (admin.overview?.counts?.failed_downloads || 0) > 0"
@@ -98,39 +90,43 @@
   <main class="main">
 
     <section class="admin-shell" x-show="page==='admin'">
-      <div class="page-head admin-page-head">
-        <div>
-          <h1>Administration</h1>
-          <div class="subtitle">Import, Qualität, Versionen, PDF-Aufbereitung, Suche und Systempflege an einem Ort</div>
+      <div x-show="admin.tab==='home'">
+        <div class="page-head admin-page-head">
+          <div>
+            <h1>Administration</h1>
+            <div class="subtitle">Privater Bereich für Import, Qualität und Systempflege</div>
+          </div>
+          <button class="btn" @click="loadAdminOverview()">⟳ Status</button>
         </div>
-        <button class="btn" @click="loadAdminOverview()">⟳ Status</button>
+
+        <div class="admin-access-note">
+          <strong>Privater Admin-Bereich</strong>
+          <span>Angemeldet als <span x-text="session.username || 'lokal'"></span></span>
+        </div>
+
+        <div class="admin-overview-grid" x-show="admin.overview">
+          <div class="admin-kpi"><strong x-text="admin.overview?.counts?.pending || 0"></strong><span>Offene Importe</span></div>
+          <div class="admin-kpi"><strong x-text="admin.overview?.counts?.failed_downloads || 0"></strong><span>Fehlgeschlagen</span></div>
+          <div class="admin-kpi"><strong x-text="admin.overview?.pdf_count || 0"></strong><span>PDFs</span></div>
+        </div>
+
+        <nav class="admin-home-grid" aria-label="Admin-Bereiche">
+          <button class="admin-home-tile" @click="selectAdminTab('import')"><span class="admin-home-icon">⇧</span><strong>Importzentrale</strong><small>Importe, Jobs und Fehler</small></button>
+          <button class="admin-home-tile" @click="selectAdminTab('quality')"><span class="admin-home-icon">✓</span><strong>Qualität</strong><small>Audit und KI-Findings</small></button>
+          <button class="admin-home-tile" @click="selectAdminTab('versions')"><span class="admin-home-icon">◇</span><strong>Versionen</strong><small>Änderungen wiederherstellen</small></button>
+          <button class="admin-home-tile" @click="selectAdminTab('pdf')"><span class="admin-home-icon">▤</span><strong>PDF &amp; Scan</strong><small>PDFs und Seiten bearbeiten</small></button>
+          <button class="admin-home-tile" @click="selectAdminTab('search')"><span class="admin-home-icon">⌕</span><strong>Suche</strong><small>Synonyme und Suchindex</small></button>
+          <button class="admin-home-tile" @click="selectAdminTab('maintenance')"><span class="admin-home-icon">⌁</span><strong>Wartung</strong><small>Datenbank und Medien prüfen</small></button>
+          <button class="admin-home-tile" @click="selectAdminTab('master')"><span class="admin-home-icon">▱</span><strong>Stammdaten</strong><small>Tags und Zutaten-Namen</small></button>
+          <button class="admin-home-tile" @click="selectAdminTab('settings')"><span class="admin-home-icon">⚙</span><strong>Einstellungen</strong><small>Private Konfiguration</small></button>
+          <button class="admin-home-tile admin-home-tile-danger" @click="selectAdminTab('trash')"><span class="admin-home-icon">⌫</span><strong>Papierkorb</strong><small>Gelöschte Rezepte</small></button>
+        </nav>
       </div>
 
-      <div class="admin-access-note">
-        <strong>Angemeldet als <span x-text="session.username || 'unbekannt'"></span></strong>
-        <span>Alle angemeldeten Benutzer haben Vollzugriff · Direktaufruf: <code>/admin</code></span>
+      <div class="admin-subnav" x-show="admin.tab!=='home'">
+        <button class="btn btn-secondary" @click="selectAdminTab('home')">← Übersicht</button>
+        <strong x-text="adminTabLabel()"></strong>
       </div>
-
-      <div class="admin-overview-grid" x-show="admin.overview">
-        <div class="admin-kpi"><strong x-text="admin.overview?.counts?.pending || 0"></strong><span>Offene Importe</span></div>
-        <div class="admin-kpi"><strong x-text="admin.overview?.counts?.failed_downloads || 0"></strong><span>Fehlgeschlagen</span></div>
-        <div class="admin-kpi"><strong x-text="admin.overview?.counts?.versions || 0"></strong><span>Versionen</span></div>
-        <div class="admin-kpi"><strong x-text="admin.overview?.pdf_count || 0"></strong><span>PDF-Dateien</span></div>
-        <div class="admin-kpi"><strong x-text="admin.overview?.counts?.open_findings || 0"></strong><span>Offene Findings</span></div>
-        <div class="admin-kpi"><strong x-text="formatBytes(admin.overview?.db_size_bytes || 0)"></strong><span>Datenbank</span></div>
-      </div>
-
-      <nav class="admin-tabs" aria-label="Admin-Bereiche">
-        <button :class="admin.tab==='import' && 'active'" @click="selectAdminTab('import')">Importzentrale</button>
-        <button :class="admin.tab==='quality' && 'active'" @click="selectAdminTab('quality')">Qualität</button>
-        <button :class="admin.tab==='versions' && 'active'" @click="selectAdminTab('versions')">Versionen</button>
-        <button :class="admin.tab==='pdf' && 'active'" @click="selectAdminTab('pdf')">PDF &amp; Scan</button>
-        <button :class="admin.tab==='search' && 'active'" @click="selectAdminTab('search')">Suche</button>
-        <button :class="admin.tab==='maintenance' && 'active'" @click="selectAdminTab('maintenance')">Wartung</button>
-        <button :class="admin.tab==='master' && 'active'" @click="selectAdminTab('master')">Stammdaten</button>
-        <button :class="admin.tab==='settings' && 'active'" @click="selectAdminTab('settings')">Einstellungen</button>
-        <button :class="admin.tab==='trash' && 'active'" @click="selectAdminTab('trash')">Papierkorb</button>
-      </nav>
     </section>
 
     <!-- ========== DASHBOARD ========== -->
@@ -432,79 +428,6 @@
                 <div class="field"><label>Port</label><input type="number" x-model.number="config.web.bind_port"></div>
               </div>
               <div class="field"><label>Session Secret</label><input x-model="config.web.secret_key"><div class="hint">mind. 32 Zeichen, zufällig</div></div>
-            </div>
-          </div>
-
-
-          <!-- ════ Benutzer-Verwaltung ════ -->
-          <div class="config-section">
-            <div class="head">
-              <span style="flex: 1;">👥 Benutzer</span>
-              <button class="btn" @click="loadUsers()" :disabled="users.loading">
-                <span x-show="!users.loading">⟳ Neu laden</span>
-                <span x-show="users.loading">…</span>
-              </button>
-              <button class="btn btn-primary" @click="users.showAdd = true">+ Neuer Benutzer</button>
-            </div>
-            <div class="body">
-              <div class="muted" style="margin-bottom: 12px; font-size: 13px;">
-                Multi-User-Login mit identischen Rechten für alle aktiven Konten.
-                Benutzerkonten steuern nur Anmeldung, Passwort und Aktivstatus. Selbst-Löschen bleibt blockiert.
-              </div>
-
-              <table class="master-table" x-show="users.list.length > 0">
-                <thead>
-                  <tr><th>Benutzer</th><th>Status</th><th>Letzter Login</th><th></th></tr>
-                </thead>
-                <tbody>
-                  <template x-for="u in users.list" :key="u.id">
-                    <tr :class="u.disabled && 'unused'">
-                      <td>
-                        <strong x-text="u.username"></strong>
-                      </td>
-                      <td>
-                        <label style="font-size:12px;">
-                          <input type="checkbox" :checked="!u.disabled"
-                                 @change="setUserDisabled(u, !$event.target.checked)">
-                          aktiv
-                        </label>
-                      </td>
-                      <td class="muted" style="font-size: 12px;"
-                          x-text="u.last_login_at ? formatTs(u.last_login_at) : '—'"></td>
-                      <td class="actions">
-                        <button class="btn btn-sm" @click="changeUserPassword(u)" title="Passwort ändern">🔑</button>
-                        <button class="btn btn-sm btn-danger" @click="deleteUser(u)" title="Löschen">🗑</button>
-                      </td>
-                    </tr>
-                  </template>
-                </tbody>
-              </table>
-
-              <div x-show="users.list.length === 0 && !users.loading" class="empty-state" style="margin: 12px 0;">
-                — keine Benutzer in DB — der config-Login funktioniert weiterhin als Fallback.
-              </div>
-
-              <!-- Add-User-Inline-Form -->
-              <div x-show="users.showAdd" class="card" style="margin-top: 14px;">
-                <h4 style="margin-top:0;">Neuen Benutzer anlegen</h4>
-                <div class="row">
-                  <div class="field">
-                    <label>Username</label>
-                    <input x-model="users.addForm.username" placeholder="3-32 Zeichen, a-z 0-9 _ . -">
-                  </div>
-                  <div class="field">
-                    <label>Passwort</label>
-                    <input type="password" x-model="users.addForm.password" placeholder="≥ 8 Zeichen">
-                  </div>
-                </div>
-                <div style="display:flex; gap:8px; margin-top: 10px; justify-content: flex-end;">
-                  <button class="btn btn-secondary" @click="users.showAdd = false">Abbrechen</button>
-                  <button class="btn btn-primary" @click="createUser()" :disabled="users.creating">
-                    <span x-show="!users.creating">Anlegen</span>
-                    <span x-show="users.creating">…</span>
-                  </button>
-                </div>
-              </div>
             </div>
           </div>
 
@@ -1028,27 +951,6 @@
                  x-text="maintenanceOutput"></div>
           </div>
 
-          <!-- ════ Einkauf-App-Integration ════ -->
-          <div class="card">
-            <h3>📦 Einkauf-App-Integration</h3>
-            <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
-              Cart-Items per „An Einkauf-App senden"-Button an externe API pushen.
-              Endpoint: <code>POST /items</code> mit <code>{raw_text}</code>, danach optional
-              <code>POST /consolidate</code>.
-            </div>
-            <div class="field">
-              <label>API-Basis-URL</label>
-              <input x-model="config.einkauf.api_url" placeholder="https://einkaufen.mausbaeren.me">
-              <div class="hint">Leer lassen = Feature deaktiviert. Ohne abschließenden Slash.</div>
-            </div>
-            <div class="field">
-              <label>
-                <input type="checkbox" x-model="config.einkauf.auto_consolidate">
-                Nach Push automatisch <code>/consolidate</code> aufrufen
-              </label>
-            </div>
-          </div>
-
           <div style="text-align: right; margin: 20px 0 60px;">
             <button class="btn btn-primary" @click="saveConfig()">💾 Speichern</button>
           </div>
@@ -1268,10 +1170,10 @@
       </div>
     </section>
 
-    <section x-show="page==='recipes' || page==='favorites'" class="recipes-page">
+    <section x-show="page==='recipes'" class="recipes-page">
       <div class="recipes-hero">
-        <h1 x-text="page === 'favorites' ? 'Favoriten' : 'Rezepte'"></h1>
-        <div class="recipes-hero-subtitle" x-text="page === 'favorites' ? 'Deine gespeicherten Lieblingsrezepte.' : 'Entdecke und finde deine Lieblingsrezepte.'"></div>
+        <h1>Rezepte</h1>
+        <div class="recipes-hero-subtitle">Entdecke und finde deine Lieblingsrezepte.</div>
         <div class="recipes-searchbar">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11l2 2 4-4"/></svg>
           <input type="search" x-model="recipes.filters.search" @input.debounce.350ms="recipes.filters.offset=0; loadRecipes()" placeholder="Suche, z. B. Pasta ohne Zwiebel oder Hack -scharf …" aria-label="Rezepte durchsuchen">
@@ -1280,16 +1182,8 @@
           </button>
         </div>
         <div class="recipes-quick-filters">
-          <select x-model="recipes.filters.category" @change="recipes.filters.offset=0; loadRecipes()" aria-label="Kategorie filtern">
-            <option value="">Kategorie: Alle</option>
-            <template x-for="c in recipes.facets.categories" :key="c"><option :value="c" x-text="c"></option></template>
-          </select>
-          <select x-model="recipes.filters.type" @change="recipes.filters.offset=0; loadRecipes()" aria-label="Typ filtern">
-            <option value="">Typ: Alle</option>
-            <template x-for="t in recipes.facets.types" :key="t"><option :value="t" x-text="t"></option></template>
-          </select>
           <button type="button" class="btn btn-secondary" @click="recipes.filterDrawerOpen = true" :aria-expanded="recipes.filterDrawerOpen.toString()" aria-controls="recipe-filter-panel">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></svg> Weitere Filter
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg> Filter
             <span class="badge" x-show="activeFilterCount() > 0" x-text="activeFilterCount()"></span>
           </button>
           <button type="button" class="btn btn-ghost" @click="resetFilters()" x-show="activeFilterCount() > 0">Zurücksetzen</button>
@@ -1319,46 +1213,6 @@
               <button class="btn btn-primary btn-sm" @click="recipes.filterDrawerOpen = false">Fertig</button>
             </div>
           </div>
-          <div class="filter-block">
-            <label>Typ</label>
-            <select x-model="recipes.filters.type" @change="loadRecipes()">
-              <option value="">— alle —</option>
-              <template x-for="t in recipes.facets.types" :key="t">
-                <option :value="t" x-text="t"></option>
-              </template>
-            </select>
-          </div>
-
-          <div class="filter-block">
-            <label>Kategorie</label>
-            <select x-model="recipes.filters.category" @change="loadRecipes()">
-              <option value="">— alle —</option>
-              <template x-for="c in recipes.facets.categories" :key="c">
-                <option :value="c" x-text="c"></option>
-              </template>
-            </select>
-          </div>
-
-          <div class="filter-block">
-            <label>Zutaten-Status</label>
-            <select x-model="recipes.filters.ingredients_status" @change="recipes.filters.offset=0; loadRecipes()">
-              <option value="">— alle —</option>
-              <option value="ok">✓ Geprüft (KI-Extraktion ok)</option>
-              <option value="pending">⏳ Wartet auf KI</option>
-              <option value="error">⚠ Fehler</option>
-              <option value="skipped">— Übersprungen</option>
-            </select>
-          </div>
-
-          <div class="filter-block">
-            <label>Manuell geprüft</label>
-            <select x-model="recipes.filters.verified" @change="recipes.filters.offset=0; loadRecipes()">
-              <option value="">— alle —</option>
-              <option :value="true">✓ Nur geprüfte</option>
-              <option :value="false">☐ Nur ungeprüfte</option>
-            </select>
-          </div>
-
           <div class="filter-block">
             <label>Favoriten</label>
             <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 6px 0;">
@@ -1399,8 +1253,9 @@
             <input type="text" x-model="recipes.ingredientSearch"
                    placeholder="🔍 Zutat suchen…"
                    style="width:100%; margin-bottom:8px; padding:6px 10px;
-                          background:var(--bg); border:1px solid var(--border);
-                          border-radius:5px; color:var(--fg); font-size:13px;">
+                           background:var(--bg); border:1px solid var(--border);
+                           border-radius:5px; color:var(--fg); font-size:13px;">
+            <div class="filter-helper">Mehrere Zutaten möglich · alle ausgewählten Zutaten müssen enthalten sein</div>
             <div class="chip-list">
               <!-- Ausgewählte immer zuerst, durchstreichbar -->
               <template x-for="canonical in recipes.filters.ingredients" :key="'sel-'+canonical">
@@ -1432,6 +1287,52 @@
             </div>
           </div>
 
+          <div class="filter-optional-grid">
+            <div class="filter-block">
+              <label>Typ <span class="muted">(optional)</span></label>
+              <select x-model="recipes.filters.type" @change="loadRecipes()">
+                <option value="">— alle —</option>
+                <template x-for="t in recipes.facets.types" :key="t">
+                  <option :value="t" x-text="t"></option>
+                </template>
+              </select>
+            </div>
+
+            <div class="filter-block">
+              <label>Kategorie <span class="muted">(optional)</span></label>
+              <select x-model="recipes.filters.category" @change="loadRecipes()">
+                <option value="">— alle —</option>
+                <template x-for="c in recipes.facets.categories" :key="c">
+                  <option :value="c" x-text="c"></option>
+                </template>
+              </select>
+            </div>
+          </div>
+
+          <details class="filter-advanced-status">
+            <summary>Weitere Statusfilter</summary>
+            <div class="filter-optional-grid">
+              <div class="filter-block">
+                <label>Zutaten-Status</label>
+                <select x-model="recipes.filters.ingredients_status" @change="recipes.filters.offset=0; loadRecipes()">
+                  <option value="">— alle —</option>
+                  <option value="ok">✓ Geprüft (KI-Extraktion ok)</option>
+                  <option value="pending">⏳ Wartet auf KI</option>
+                  <option value="error">⚠ Fehler</option>
+                  <option value="skipped">— Übersprungen</option>
+                </select>
+              </div>
+              <div class="filter-block">
+                <label>Manuell geprüft</label>
+                <select x-model="recipes.filters.verified" @change="recipes.filters.offset=0; loadRecipes()">
+                  <option value="">— alle —</option>
+                  <option :value="true">✓ Nur geprüfte</option>
+                  <option :value="false">☐ Nur ungeprüfte</option>
+                </select>
+              </div>
+            </div>
+          </details>
+
           <button class="btn btn-secondary" @click="resetFilters()" style="width: 100%; margin-top: 12px;">Filter zurücksetzen</button>
           <button class="btn btn-secondary" @click="syncRecipes()" :disabled="recipes.sync.running" style="width: 100%; margin-top: 6px;" title="Filesystem im Hintergrund neu scannen">
             <span x-show="!recipes.sync.running">↻ Bibliothek neu einlesen</span>
@@ -1448,14 +1349,10 @@
         <div class="recipes-main">
           <div class="recipes-header">
             <div class="recipes-title-row">
-              <h2 x-text="page === 'favorites' ? 'Gespeicherte Rezepte' : 'Empfohlene Rezepte'"></h2>
+              <h2>Empfohlene Rezepte</h2>
               <span class="muted" x-text="recipes.total + ' insgesamt'"></span>
             </div>
             <div class="recipes-header-actions">
-              <button class="btn btn-secondary recipes-filter-btn" @click="recipes.filterDrawerOpen = true">
-                Weitere Filter
-                <span class="badge" x-show="activeFilterCount() > 0" x-text="activeFilterCount()"></span>
-              </button>
               <div class="recipes-info" x-show="recipes.extractionRunning">
                 <span class="pill running">KI</span>
                 <span>Extrahiere Zutaten… <span x-text="recipes.extractionStats.pending || 0"></span> übrig</span>
@@ -1551,16 +1448,8 @@
             <h1 style="margin:0; font-size: 22px;">Einkaufsliste <span class="muted" style="font-weight: normal; font-size: 14px;" x-text="'('+cart.items.length+' Posten)'"></span></h1>
           </div>
           <div class="flex" style="gap: 8px;">
-            <button class="btn btn-primary" @click="pushToEinkauf()"
-                    :disabled="cart.items.length === 0 || pushingToEinkauf"
-                    x-show="config?.einkauf?.api_url"
-                    :title="'Items an ' + (config?.einkauf?.api_url || 'Einkauf-App') + ' senden'">
-              <span x-show="!pushingToEinkauf">📦 Senden</span>
-              <span x-show="pushingToEinkauf">… sende</span>
-            </button>
-            <button class="btn btn-secondary" @click="exportCart()" :disabled="cart.items.length === 0">📋 Export</button>
             <button class="btn btn-secondary" @click="clearCheckedFromCart()" :disabled="!cart.items.some(i => i.checked)">✓ Erledigte weg</button>
-            <button class="btn btn-danger" @click="clearCart()" :disabled="cart.items.length === 0">🗑 Alles</button>
+            <button class="btn btn-danger" @click="clearCart()" :disabled="cart.items.length === 0">Alles</button>
           </div>
         </div>
 
@@ -1568,7 +1457,14 @@
         <div class="cart-add">
           <input type="text" x-model="cart.add.name" placeholder="Zutat" />
           <input type="number" step="any" x-model.number="cart.add.amount" placeholder="Menge" style="width: 90px;" />
-          <input type="text" x-model="cart.add.unit" placeholder="Einheit" style="width: 80px;" />
+          <select x-model="cart.add.unit" aria-label="Einheit">
+            <option value="">Einheit</option>
+            <option value="g">g</option>
+            <option value="kg">kg</option>
+            <option value="ml">ml</option>
+            <option value="l">l</option>
+            <option value="Stück">Stück</option>
+          </select>
           <button class="btn btn-primary" @click="addToCart()">＋ Hinzufügen</button>
         </div>
 
@@ -2847,7 +2743,7 @@
                     <button class="btn btn-secondary btn-sm" @click="cancelEditIngredients()">Abbrechen</button>
                     <button class="btn btn-primary btn-sm" @click="saveIngredients()"
                             :disabled="recipeDetail.savingIngredients">
-                      <span x-show="!recipeDetail.savingIngredients">💾 Speichern</span>
+                      <span x-show="!recipeDetail.savingIngredients">Bestätigen</span>
                       <span x-show="recipeDetail.savingIngredients">…</span>
                     </button>
                   </div>

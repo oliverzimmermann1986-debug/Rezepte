@@ -3574,3 +3574,206 @@ a { color: var(--accent-deep); }
   .skeleton-block::after, .skeleton-line::after { animation: none; }
 }
 .modal:focus { outline: none; }
+
+/* =====================================================================
+   Butter Yellow Refined · Mockup implementation (canonical final layer)
+   ===================================================================== */
+
+.btn,
+.btn-icon {
+  min-height: 44px;
+}
+.btn-icon {
+  min-width: 44px;
+}
+
+/* Die Bibliothek bleibt auf allen Breakpoints horizontal aufgebaut. */
+.recipes-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.recipe-card {
+  display: grid;
+  grid-template-columns: 172px minmax(0, 1fr);
+  min-height: 176px;
+}
+.recipe-thumb {
+  width: 172px;
+  height: 100%;
+  min-height: 176px;
+  aspect-ratio: auto;
+}
+.recipe-meta {
+  min-height: 176px;
+}
+
+.filter-helper {
+  margin: -1px 0 10px;
+  color: var(--fg-mute);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.filter-optional-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.filter-advanced-status {
+  margin: 4px 0 14px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fffaf0;
+}
+.filter-advanced-status summary {
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 750;
+}
+.filter-advanced-status[open] summary {
+  margin-bottom: 12px;
+}
+
+/* Private Admin-Übersicht: Kacheln statt einer langen Tab-Leiste. */
+.admin-home-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 13px;
+}
+.admin-home-tile {
+  min-height: 154px;
+  padding: 19px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 7px;
+  color: var(--fg);
+  background: linear-gradient(145deg, #fff, #fffaf0);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+  text-align: left;
+  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+.admin-home-tile:hover {
+  transform: translateY(-2px);
+  border-color: #ddb44a;
+  box-shadow: 0 17px 38px rgba(111, 85, 39, .13);
+}
+.admin-home-tile:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(var(--accent-rgb), .28), var(--shadow-card);
+}
+.admin-home-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  color: #805706;
+  background: #fff0b5;
+  border: 1px solid #ecc655;
+  border-radius: 13px;
+  font-size: 24px;
+  line-height: 1;
+}
+.admin-home-tile strong {
+  color: #4a3624;
+  font-family: var(--serif);
+  font-size: 18px;
+}
+.admin-home-tile small {
+  color: var(--fg-mute);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.admin-home-tile-danger .admin-home-icon {
+  color: var(--err);
+  background: #fff1e9;
+  border-color: #ecc2b6;
+}
+.admin-subnav {
+  margin-bottom: 18px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  color: var(--fg-dim);
+  background: #fffaf0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.admin-subnav strong {
+  color: var(--fg);
+  font-family: var(--serif);
+  font-size: 18px;
+}
+.admin-overview-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.cart-add select {
+  min-width: 104px;
+  min-height: 44px;
+  padding: 9px 32px 9px 11px;
+  color: var(--fg);
+  background: #fffdf8;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+}
+
+@media (max-width: 900px) {
+  .recipes-grid {
+    grid-template-columns: 1fr;
+  }
+  .recipe-card {
+    grid-template-columns: 122px minmax(0, 1fr);
+    min-height: 146px;
+  }
+  .recipe-thumb {
+    width: 122px;
+    min-height: 146px;
+  }
+  .recipe-meta {
+    min-height: 146px;
+  }
+  .admin-home-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-home-tile {
+    min-height: 126px;
+    padding: 15px;
+  }
+  .filter-optional-grid {
+    grid-template-columns: 1fr;
+  }
+  .btn-sm {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 600px) {
+  .recipe-card {
+    grid-template-columns: 108px minmax(0, 1fr);
+  }
+  .recipe-thumb {
+    width: 108px;
+  }
+  .cart-add {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 92px 96px;
+  }
+  .cart-add input[type="text"]:first-of-type {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+  .cart-add input[type="number"],
+  .cart-add select {
+    width: 100% !important;
+    min-width: 0;
+  }
+  .cart-add button {
+    grid-column: 1 / -1;
+  }
+}
