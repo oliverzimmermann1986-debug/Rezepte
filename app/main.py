@@ -429,7 +429,7 @@ def _static_version() -> str:
 
 
 def _render_spa(request: Request, *, initial_page: str = "recipes",
-                initial_admin_tab: str = "import"):
+                initial_admin_tab: str = "home"):
     token = request.cookies.get(SESSION_COOKIE, "")
     if not auth_disabled() and (not token or not verify_session(token)):
         next_path = request.url.path or "/"
@@ -451,7 +451,7 @@ def _render_spa(request: Request, *, initial_page: str = "recipes",
 @app.get("/admin", response_class=HTMLResponse)
 def admin_shortcut(request: Request):
     """Echte Admin-Einstiegsseite; kein Redirect und keine Query-Navigation."""
-    return _render_spa(request, initial_page="admin", initial_admin_tab="import")
+    return _render_spa(request, initial_page="admin", initial_admin_tab="home")
 
 
 @app.get("/admin/pdf", response_class=HTMLResponse)

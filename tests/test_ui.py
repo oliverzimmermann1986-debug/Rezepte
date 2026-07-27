@@ -21,7 +21,9 @@ def test_recipe_library_is_default_and_has_primary_navigation():
     js = (STATIC / "app.js").read_text()
     html = (STATIC / "index.html").read_text()
     assert "page: 'recipes'" in js
-    assert "favorites" in js
+    assert "new Set(['recipes','cart','admin'])" in js
+    assert '<span class="nav-label">Favoriten</span>' not in html
+    assert html.count('class="nav-item nav-primary"') == 3
     assert "Einkaufsliste" in html
     assert "Rezepte" in html
     assert "recipes-searchbar" in html
@@ -54,7 +56,8 @@ def test_manifest_uses_rezepte_brand_and_butter_palette():
     assert manifest["theme_color"] == "#f5c84f"
     assert manifest["background_color"] == "#fffaf0"
     assert any(shortcut["url"] == "/?tab=recipes" for shortcut in manifest["shortcuts"])
-    assert any(shortcut["url"] == "/?tab=favorites" for shortcut in manifest["shortcuts"])
+    assert any(shortcut["url"] == "/?tab=cart" for shortcut in manifest["shortcuts"])
+    assert not any(shortcut["url"] == "/?tab=favorites" for shortcut in manifest["shortcuts"])
 
 
 def test_no_removed_remote_sync_feature_remains_in_runtime():
@@ -90,7 +93,7 @@ def test_pdf_auto_rotation_settings_are_exposed_with_safe_defaults():
     assert "cfg.pdf.auto_rotate = true" in js
 
 
-def test_admin_center_replaces_fragmented_navigation():
+def test_admin_center_uses_private_tile_navigation():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     js = (STATIC / "app.js").read_text(encoding="utf-8")
     css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
@@ -98,8 +101,11 @@ def test_admin_center_replaces_fragmented_navigation():
     for label in ("Importzentrale", "Versionen", "PDF &amp; Scan", "Suche", "Wartung"):
         assert label in html
     assert "page==='admin'" in html
-    assert "['recipes','favorites','cart','admin']" in js.replace(" ", "") or "'recipes','favorites','cart','admin'" in js.replace(" ", "")
-    assert ".admin-tabs" in css
+    assert "['recipes','cart','admin']" in js.replace(" ", "")
+    assert "admin-home-grid" in html
+    assert ".admin-home-tile" in css
+    assert "Privater Admin-Bereich" in html
+    assert "Multi-User-Login" not in html
     assert ".maintenance-grid" in css
 
 
@@ -110,11 +116,12 @@ def test_mobile_admin_and_footer_have_reserved_space():
     assert "var(--mobile-nav-height)" in css
 
 
-def test_admin_center_has_direct_mobile_entry_and_pdf_quality_controls():
+def test_admin_center_has_three_item_mobile_entry_and_pdf_quality_controls():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     js = (STATIC / "app.js").read_text(encoding="utf-8")
-    assert 'aria-label="Admin Center öffnen"' in html
-    assert 'Direktaufruf: <code>/admin</code>' in html
+    assert html.count('class="nav-item nav-primary"') == 3
+    assert '<span class="nav-label">Admin</span>' in html
+    assert "mobile-admin-button" not in html
     assert 'x-model="admin.pdf.sharpen_scans"' in html
     assert 'x-model.number="admin.pdf.scan_dpi"' in html
     assert "scan_dpi: 300" in js
@@ -127,25 +134,44 @@ def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
     sw = (STATIC / "sw.js").read_text(encoding="utf-8")
     assert '@app.get("/admin", response_class=HTMLResponse)' in main_py
     assert 'initial_page="admin"' in main_py
+    assert 'initial_admin_tab="home"' in main_py
     assert 'initial_admin_tab="pdf"' in main_py
     assert "document.body?.dataset?.initialPage" in js
     assert "window.location.pathname.startsWith('/admin')" in js
-    assert "rezepte-static-v1.2.6-security" in sw
+    assert "params.get('tab') || routePage" in js
+    assert "params.get('section')" in js
+    assert "rezepte-static-v1.2.7-butter-refined" in sw
     assert "caches.delete" in sw
     assert "request.mode === 'navigate'" in sw
     assert "fetch(event.request, {cache: 'no-store'})" in sw
 
 
-def test_admin_is_visible_for_every_authenticated_user():
+def test_admin_ui_is_private_and_has_no_user_management():
     js = (STATIC / "app.js").read_text(encoding="utf-8")
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     users_api = (ROOT / "app" / "routes" / "api_users.py").read_text(encoding="utf-8")
-    assert 'x-show="session.is_admin"' not in html
-    assert "Admin-Rechte erforderlich" not in js
-    assert "setUserRole" not in js
-    assert "<th>Rolle</th>" not in html
+    assert "Privater Admin-Bereich" in html
+    assert "Benutzer-Verwaltung" not in html
+    assert "loadUsers" not in js
+    assert "createUser" not in js
     assert "role: Optional[str]" not in users_api
-    assert "Alle angemeldeten Benutzer haben Vollzugriff" in html
+
+
+def test_refined_recipe_filters_and_shopping_list_match_mockup():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "recipes-quick-filters" in html
+    assert 'aria-label="Kategorie filtern"' not in html
+    assert 'aria-label="Typ filtern"' not in html
+    assert "Mehrere Zutaten möglich" in html
+    assert "Nur Favoriten anzeigen" in html
+    assert "📦 Senden" not in html
+    assert "📋 Export" not in html
+    assert "pushToEinkauf" not in js
+    assert "exportCart" not in js
+    for unit in ('value="g"', 'value="kg"', 'value="ml"', 'value="l"'):
+        assert unit in html
+    assert ">Bestätigen</span>" in html
 
 
 def test_pdf_admin_uses_background_jobs_and_preflight():

@@ -337,7 +337,7 @@ def test_direct_admin_routes_render_requested_start_page(client, monkeypatch):
     admin = client.get("/admin")
     assert admin.status_code == 200
     assert 'data-initial-page="admin"' in admin.text
-    assert 'data-initial-admin-tab="import"' in admin.text
+    assert 'data-initial-admin-tab="home"' in admin.text
     assert admin.headers.get("cache-control") == "no-store"
 
     pdf = client.get("/admin/pdf")

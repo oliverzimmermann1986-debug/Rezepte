@@ -5,7 +5,7 @@ function scrapperApp() {
     session: { username: '', is_admin: true, full_access: true, loaded: false },
     systemInfo: { version: '', capabilities: [], loaded: false, backendOutdated: false },
     admin: {
-      tab: 'import',
+      tab: 'home',
       overview: null,
       importCenter: null,
       versions: [],
@@ -36,16 +36,21 @@ function scrapperApp() {
     // Zentrale Navigations-Helper — page-switch plus die zugehörigen
     // Loader. Vorher waren die Loader direkt im @click jeder nav-item,
     // was beim Refactor (z.B. neue Bottom-Sheet) duplication erzeugte.
-    navTo(targetPage, { updateUrl = true } = {}) {
-      const allowed = new Set(['recipes','favorites','cart','admin']);
+    navTo(targetPage, { updateUrl = true, preserveRecipeFilters = false } = {}) {
+      // Alte Favoriten-Deep-Links bleiben kompatibel, landen aber in der
+      // Rezeptbibliothek mit aktivem Favoritenfilter statt auf einer Extra-Seite.
+      if (targetPage === 'favorites') {
+        targetPage = 'recipes';
+        preserveRecipeFilters = true;
+        this.recipes.filters.favorite_only = true;
+      }
+      const allowed = new Set(['recipes','cart','admin']);
       if (!allowed.has(targetPage)) targetPage = 'recipes';
       this.page = targetPage;
       if (this.browser?.show) this.browser.show = false;
       if (this.recipeDetail?.show) this.recipeDetail.show = false;
 
-      if (targetPage === 'favorites') {
-        this.recipes.filters.favorite_only = true;
-      } else if (targetPage === 'recipes') {
+      if (targetPage === 'recipes' && !preserveRecipeFilters) {
         this.recipes.filters.favorite_only = false;
       }
 
@@ -53,10 +58,9 @@ function scrapperApp() {
       else this._stopAdminRuntime();
 
       switch (targetPage) {
-        case 'admin':     this.selectAdminTab(this.admin.tab || 'import', { updateUrl: false }); break;
-        case 'recipes':
-        case 'favorites': this.recipes.filters.offset = 0; this.loadRecipes(); break;
-        case 'cart':      this.loadCart(); if (!this.config?.einkauf) this.loadConfig(); break;
+        case 'admin':   this.selectAdminTab(this.admin.tab || 'home', { updateUrl: false }); break;
+        case 'recipes': this.recipes.filters.offset = 0; this.loadRecipes(); break;
+        case 'cart':    this.loadCart(); break;
       }
 
       if (updateUrl && window.history?.replaceState) {
@@ -68,8 +72,7 @@ function scrapperApp() {
     },
     pageLabel() {
       return ({
-        recipes: 'Alle Rezepte', favorites: 'Favoriten', cart: 'Einkaufsliste',
-        admin: 'Admin',
+        recipes: 'Alle Rezepte', cart: 'Einkaufsliste', admin: 'Admin',
       })[this.page] || 'Rezepte';
     },
     config: {},
@@ -119,7 +122,6 @@ function scrapperApp() {
       items: [],
       add: { name: '', amount: null, unit: '' },
     },
-    pushingToEinkauf: false,    // Loading-state für Push-Button
     trash: {
       items: [], totalCount: 0, loading: false, emptying: false,
     },
@@ -182,14 +184,6 @@ function scrapperApp() {
       requestEpoch: 0,
       controller: null,
     },
-    // Benutzer-Verwaltung (Multi-User-Auth)
-    users: {
-      list: [],
-      loading: false,
-      showAdd: false,
-      creating: false,
-      addForm: { username: '', password: '' },
-    },
     knownIngredients: [],   // distinct Zutaten-Namen für Edit-Autocomplete
     recipeDetail: {
       show: false, data: null, newTag: '',
@@ -218,21 +212,25 @@ function scrapperApp() {
     _audioCtx: null,
     init() {
       const params = new URLSearchParams(window.location.search);
-      const routePage = document.body?.dataset?.initialPage ||
-        (window.location.pathname.startsWith('/admin') ? 'admin' : '');
-      const requestedPage = routePage || params.get('tab');
-      const validTab = ['recipes','favorites','cart','admin'].includes(requestedPage) ? requestedPage : 'recipes';
+      const isAdminRoute = window.location.pathname.startsWith('/admin');
+      const routePage = document.body?.dataset?.initialPage || 'recipes';
+      const requestedPage = isAdminRoute ? 'admin' : (params.get('tab') || routePage);
+      const legacyFavorites = requestedPage === 'favorites';
+      const validTab = ['recipes','cart','admin'].includes(requestedPage) ? requestedPage : 'recipes';
       this.page = validTab;
+      if (legacyFavorites) this.recipes.filters.favorite_only = true;
       if (validTab === 'admin') {
-        const routeAdminTab = document.body?.dataset?.initialAdminTab ||
-          (window.location.pathname === '/admin/pdf' ? 'pdf' : '');
-        const requestedAdmin = routeAdminTab || params.get('admin');
+        const routeAdminTab = window.location.pathname === '/admin/pdf' ? 'pdf' : '';
+        const requestedAdmin = routeAdminTab ||
+          params.get('section') ||
+          params.get('admin') ||
+          document.body?.dataset?.initialAdminTab;
         if (requestedAdmin) this.admin.tab = requestedAdmin;
       }
 
       this.loadSystemInfo();
       this.loadSession();
-      this.navTo(this.page, { updateUrl: false });
+      this.navTo(this.page, { updateUrl: false, preserveRecipeFilters: legacyFavorites });
       this.$nextTick(() => window.RezepteRuntime?.initAccessibleDialogs());
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) this._pauseBackgroundWork();
@@ -284,11 +282,13 @@ function scrapperApp() {
     },
 
     async selectAdminTab(tab, { updateUrl = true } = {}) {
-      const allowed = new Set(['import','quality','versions','pdf','search','maintenance','master','settings','trash']);
-      this.admin.tab = allowed.has(tab) ? tab : 'import';
+      const allowed = new Set(['home','import','quality','versions','pdf','search','maintenance','master','settings','trash']);
+      this.admin.tab = allowed.has(tab) ? tab : 'home';
       this.page = 'admin';
       if (updateUrl && window.history?.replaceState) {
-        const target = this.admin.tab === 'pdf' ? '/admin/pdf' : `/admin?section=${encodeURIComponent(this.admin.tab)}`;
+        const target = this.admin.tab === 'home'
+          ? '/admin'
+          : (this.admin.tab === 'pdf' ? '/admin/pdf' : `/admin?section=${encodeURIComponent(this.admin.tab)}`);
         window.history.replaceState({}, '', target);
       }
       this.loadAdminOverview();
@@ -301,9 +301,24 @@ function scrapperApp() {
         case 'search': this.loadAdminSynonyms(); break;
         case 'maintenance': this.loadMaintenanceRuns(); break;
         case 'master': this.loadMaster(); break;
-        case 'settings': this.loadConfig(); this.loadUsers(); break;
+        case 'settings': this.loadConfig(); break;
         case 'trash': this.loadTrash(); break;
       }
+    },
+
+    adminTabLabel() {
+      return ({
+        home: 'Übersicht',
+        import: 'Importzentrale',
+        quality: 'Qualität',
+        versions: 'Versionen',
+        pdf: 'PDF & Scan',
+        search: 'Suche',
+        maintenance: 'Wartung',
+        master: 'Stammdaten',
+        settings: 'Einstellungen',
+        trash: 'Papierkorb',
+      })[this.admin.tab] || 'Administration';
     },
 
     async loadAdminOverview() {
@@ -694,7 +709,7 @@ function scrapperApp() {
       if (!this._bgPaused) return;
       this._bgPaused = false;
       if (this.page === 'admin') this._startAdminRuntime();
-      if (this.page === 'recipes' || this.page === 'favorites') {
+      if (this.page === 'recipes') {
         this.loadRecipes();
         if (this.recipes.sync.running) this._scheduleSyncPoll();
         if (this.recipes.extractionRunning) this._scheduleExtractionPoll();
@@ -800,7 +815,6 @@ function scrapperApp() {
     reloadCurrentPage() {
       const map = {
         recipes: () => this.loadRecipes(),
-        favorites: () => this.loadRecipes(),
         cart: () => this.loadCart(),
         admin: () => this.selectAdminTab(this.admin.tab, { updateUrl: false }),
       };
@@ -1475,69 +1489,7 @@ function scrapperApp() {
 
     // ------------- Config -------------
     // ════════════════════════════════════════════════════════════════════
-    // Benutzer-Verwaltung (alle aktiven Konten mit Vollzugriff)
     // ════════════════════════════════════════════════════════════════════
-    async loadUsers() {
-      this.users.loading = true;
-      try {
-        const r = await this.api('GET', '/api/users');
-        if (r) this.users.list = r.users || [];
-      } finally {
-        this.users.loading = false;
-      }
-    },
-
-    async createUser() {
-      const f = this.users.addForm;
-      if (!f.username || !f.password) {
-        this.showToast('Username und Passwort pflichtig', 'err');
-        return;
-      }
-      this.users.creating = true;
-      try {
-        const r = await this.api('POST', '/api/users', {
-          username: f.username.trim(),
-          password: f.password,
-        });
-        if (r && r.ok) {
-          this.showToast(`✓ Benutzer '${r.username}' angelegt`);
-          this.users.showAdd = false;
-          this.users.addForm = { username: '', password: '' };
-          await this.loadUsers();
-        }
-      } finally {
-        this.users.creating = false;
-      }
-    },
-
-    async changeUserPassword(u) {
-      const pw = window.prompt(`Neues Passwort für „${u.username}":\n\n(mindestens 8 Zeichen)`);
-      if (!pw) return;
-      if (pw.length < 8) { this.showToast('Mindestens 8 Zeichen', 'err'); return; }
-      const r = await this.api('PATCH', `/api/users/${u.id}`, { password: pw });
-      if (r && r.ok) this.showToast('✓ Passwort geändert');
-    },
-
-
-    async setUserDisabled(u, disabled) {
-      const r = await this.api('PATCH', `/api/users/${u.id}`, { disabled });
-      if (r && r.ok) {
-        this.showToast(disabled ? `✓ '${u.username}' deaktiviert` : `✓ '${u.username}' aktiviert`);
-        await this.loadUsers();
-      } else {
-        await this.loadUsers();
-      }
-    },
-
-    async deleteUser(u) {
-      if (!confirm(`Benutzer „${u.username}" wirklich löschen?\n\nDer Datensatz wird endgültig entfernt.`)) return;
-      const r = await this.api('DELETE', `/api/users/${u.id}`);
-      if (r && r.ok) {
-        this.showToast(`✓ Benutzer '${r.deleted}' gelöscht`);
-        await this.loadUsers();
-      }
-    },
-
     async loadConfig() {
       const cfg = await this.api('GET', '/api/config');
       // Defaults absichern damit Alpine-Bindings nicht meckern
@@ -2270,7 +2222,7 @@ function scrapperApp() {
     resetFilters() {
       this.recipes.filters = {
         search: '', type: '', category: '', tag_ids: [], ingredients: [],
-        ingredients_status: '', verified: '', favorite_only: this.page === 'favorites', min_rating: 0,
+        ingredients_status: '', verified: '', favorite_only: false, min_rating: 0,
         limit: 60, offset: 0,
       };
       this.loadRecipes();
@@ -2386,7 +2338,7 @@ function scrapperApp() {
           this.recipes.extractionPending = s.stats?.pending || 0;
           if (!s.running) {
             this._extractionPoller.stop();
-            if (wasRunning && (this.page === 'recipes' || this.page === 'favorites')) this.loadRecipes();
+            if (wasRunning && this.page === 'recipes') this.loadRecipes();
           }
           return oldPending !== this.recipes.extractionPending || wasRunning !== !!s.running;
         }, {
@@ -2982,64 +2934,6 @@ function scrapperApp() {
       if (r && r.ok) {
         this.showToast(`${r.deleted} erledigt-Posten gelöscht`);
         this.loadCart();
-      }
-    },
-
-    // Cart → externe Einkauf-App pushen (POST /items pro Eintrag, dann
-    // optional /consolidate). Skippt abgehakte Items per Default — die
-    // hat man ja schon. Bei vollem Erfolg fragt nochmal ob Cart geleert
-    // werden soll (Quality-of-Life — sonst hat man die Items doppelt).
-    async pushToEinkauf() {
-      const open = this.cart.items.filter(i => !i.checked).length;
-      if (open === 0) {
-        this.showToast('Keine offenen Items zu senden', 'err');
-        return;
-      }
-      const target = this.config?.einkauf?.api_url || 'die Einkauf-App';
-      if (!confirm(`${open} Items an ${target} senden?\n\nAbgehakte Items werden übersprungen.`)) return;
-      this.pushingToEinkauf = true;
-      try {
-        const r = await this.api('POST', '/api/cart/push-to-einkauf', {
-          consolidate: !!(this.config?.einkauf?.auto_consolidate),
-          only_unchecked: true,
-          clear_after: false,
-        });
-        if (!r) return;
-        const failedN = r.failed?.length || 0;
-        if (failedN === 0) {
-          this.showToast(`✓ ${r.pushed} Items gesendet${r.consolidated ? ' + konsolidiert' : ''}`);
-          // Bei vollem Erfolg fragen ob Cart geleert werden soll
-          if (r.pushed > 0 && confirm(`Cart jetzt leeren? (${r.pushed} Items wurden erfolgreich übertragen)`)) {
-            await this.api('POST', '/api/cart/clear', { only_checked: false });
-            this.cart.items = [];
-          }
-        } else {
-          this.showToast(`⚠ ${r.pushed} gesendet, ${failedN} Fehler — siehe Console`, 'err');
-          console.warn('Einkauf-Push-Fehler:', r.failed);
-        }
-      } finally {
-        this.pushingToEinkauf = false;
-      }
-    },
-
-    async exportCart() {
-      // Plain-Text-Endpoint liefert die Liste, wir öffnen sie in einem Popup
-      try {
-        const resp = await fetch('/api/cart/export.txt', { credentials: 'include' });
-        const text = await resp.text();
-        // Versuche Clipboard, sonst Download
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(text);
-          this.showToast('In die Zwischenablage kopiert');
-        } else {
-          const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = 'einkaufsliste.txt';
-          a.click();
-        }
-      } catch(e) {
-        this.showToast('Export fehlgeschlagen', 'error');
       }
     },
 
