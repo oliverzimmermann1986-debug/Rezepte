@@ -103,7 +103,7 @@
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
-        <span x-text="'v' + (systemInfo.version || '1.2.8')"></span>
+        <span x-text="'v' + (systemInfo.version || '1.3.0')"></span>
         <form method="get" action="/logout" class="logout-form">
           <button type="submit" class="sidebar-logout-button">Abmelden</button>
         </form>
@@ -1254,33 +1254,6 @@
     </section>
 
     <section x-show="page==='recipes'" class="recipes-page">
-      <div class="recipes-hero">
-        <h1>Rezepte</h1>
-        <div class="recipes-hero-subtitle">Entdecke und finde deine Lieblingsrezepte.</div>
-        <div class="recipes-searchbar">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11l2 2 4-4"/></svg>
-          <input type="search" x-model="recipes.filters.search" @input.debounce.350ms="recipes.filters.offset=0; loadRecipes()" placeholder="Suche, z. B. Pasta ohne Zwiebel oder Hack -scharf …" aria-label="Rezepte durchsuchen">
-          <button type="button" class="btn btn-primary" @click="recipes.filters.offset=0; loadRecipes()" aria-label="Suche ausführen">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11l2 2 4-4"/></svg><span class="search-label">Suche</span>
-          </button>
-        </div>
-        <div class="recipes-quick-filters">
-          <button type="button" class="btn btn-secondary" @click="recipes.filterDrawerOpen = true" :aria-expanded="recipes.filterDrawerOpen.toString()" aria-controls="recipe-filter-panel">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg> Filter
-            <span class="badge" x-show="activeFilterCount() > 0" x-text="activeFilterCount()"></span>
-          </button>
-          <button type="button" class="btn btn-ghost" @click="resetFilters()" x-show="activeFilterCount() > 0">Zurücksetzen</button>
-          <span class="recipes-filter-summary" x-text="recipes.total + ' Rezepte'"></span>
-        </div>
-        <div class="search-correction" x-show="recipes.searchMeta?.corrected || recipes.searchMeta?.suggestion">
-          <span>
-            <strong x-show="recipes.searchMeta?.corrected">Suche automatisch korrigiert:</strong>
-            <strong x-show="!recipes.searchMeta?.corrected">Meintest du:</strong>
-            <span x-text="recipes.searchMeta?.suggestion || recipes.searchMeta?.query"></span>
-          </span>
-          <button type="button" class="btn btn-sm" @click="applySearchSuggestion()">Übernehmen</button>
-        </div>
-      </div>
       <div class="recipes-layout">
         <!-- Filter-Drawer-Backdrop (nur Mobile, beim Tippen schließen) -->
         <div class="recipes-filters-backdrop" x-show="recipes.filterDrawerOpen"
@@ -1428,12 +1401,98 @@
           </div>
         </aside>
 
-        <!-- Grid -->
+        <!-- Mise-en-place workspace -->
         <div class="recipes-main">
+          <div class="recipes-workspace">
+            <div class="recipes-library-column">
+              <div class="recipes-hero">
+                <div class="recipes-hero-heading">
+                  <div>
+                    <h1>Rezepte</h1>
+                    <div class="recipes-hero-subtitle">Was möchtest du kochen?</div>
+                  </div>
+                  <span class="recipes-filter-summary" x-text="recipes.total + ' Rezepte'"></span>
+                </div>
+                <div class="recipes-search-tools">
+                  <label class="recipes-searchbar">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+                    <input type="search" x-model="recipes.filters.search"
+                           @input.debounce.350ms="recipes.filters.offset=0; loadRecipes()"
+                           @keydown.enter.prevent="recipes.filters.offset=0; loadRecipes()"
+                           placeholder="Was möchtest du kochen?"
+                           aria-label="Rezepte durchsuchen">
+                  </label>
+                  <div class="recipes-quick-filters">
+                    <button type="button" class="btn btn-primary"
+                            @click="recipes.filterDrawerOpen = true"
+                            :aria-expanded="recipes.filterDrawerOpen.toString()"
+                            aria-controls="recipe-filter-panel">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+                      Filter
+                      <span class="badge" x-show="activeFilterCount() > 0"
+                            x-text="activeFilterCount()"></span>
+                    </button>
+                    <button type="button" class="btn btn-ghost"
+                            @click="resetFilters()"
+                            x-show="activeFilterCount() > 0"
+                            aria-label="Filter zurücksetzen">×</button>
+                  </div>
+                </div>
+                <div class="search-correction"
+                     x-show="recipes.searchMeta?.corrected || recipes.searchMeta?.suggestion">
+                  <span>
+                    <strong x-show="recipes.searchMeta?.corrected">Suche automatisch korrigiert:</strong>
+                    <strong x-show="!recipes.searchMeta?.corrected">Meintest du:</strong>
+                    <span x-text="recipes.searchMeta?.suggestion || recipes.searchMeta?.query"></span>
+                  </span>
+                  <button type="button" class="btn btn-sm"
+                          @click="applySearchSuggestion()">Übernehmen</button>
+                </div>
+              </div>
+
+              <template x-if="recipes.items.length > 0">
+                <article class="recipe-featured"
+                         @click="openRecipe(recipes.items[0].id)"
+                         @pointerenter="prefetchRecipeDetail(recipes.items[0].id)"
+                         @touchstart.passive="prefetchRecipeDetail(recipes.items[0].id)">
+                  <div class="recipe-featured-media">
+                    <img :src="'/api/recipes/'+recipes.items[0].id+'/thumb?w=900'"
+                         :srcset="'/api/recipes/'+recipes.items[0].id+'/thumb?w=900 1x, /api/recipes/'+recipes.items[0].id+'/thumb?w=1400 2x'"
+                         alt="" decoding="async"
+                         @error="$el.style.display='none'">
+                    <div class="recipe-thumb-placeholder"
+                         :style="'background:'+recipePlaceholderGradient(recipes.items[0].name)">
+                      <span class="rtp-emoji" x-text="recipeEmoji(recipes.items[0])"></span>
+                    </div>
+                  </div>
+                  <div class="recipe-featured-copy">
+                    <div class="recipe-featured-kicker">Heute entdecken</div>
+                    <h2 x-text="recipes.items[0].name"></h2>
+                    <p x-show="recipes.items[0].description"
+                       x-text="recipes.items[0].description"></p>
+                    <div class="recipe-featured-meta">
+                      <span x-show="recipes.items[0].ingredients_count">
+                        <strong x-text="recipes.items[0].ingredients_count"></strong> Zutaten
+                      </span>
+                      <span x-show="recipes.items[0].servings">
+                        <strong x-text="recipes.items[0].servings"></strong> Portionen
+                      </span>
+                      <span x-show="!recipes.items[0].ingredients_count && !recipes.items[0].servings"
+                            x-text="recipes.items[0].ingredients_status === 'ok' ? 'Zutaten bereit' : 'Wird vorbereitet'"></span>
+                    </div>
+                    <button type="button" class="btn recipe-featured-action"
+                            @click.stop="openRecipe(recipes.items[0].id)">
+                      Zum Rezept <span aria-hidden="true">→</span>
+                    </button>
+                  </div>
+                </article>
+              </template>
+
           <div class="recipes-header">
             <div class="recipes-title-row">
-              <h2>Empfohlene Rezepte</h2>
-              <span class="muted" x-text="recipes.total + ' insgesamt'"></span>
+              <h2>Weitere Rezepte</h2>
+              <span class="muted"
+                    x-text="Math.max(recipes.total - (recipes.items.length ? 1 : 0), 0) + ' weitere'"></span>
             </div>
             <div class="recipes-header-actions">
               <div class="recipes-info" x-show="recipes.extractionRunning">
@@ -1458,7 +1517,7 @@
                 </template>
               </div>
             </template>
-            <template x-for="r in recipes.items" :key="r.id">
+            <template x-for="r in recipes.items.slice(1)" :key="r.id">
               <div class="recipe-card"
                    @click="openRecipe(r.id)"
                    @pointerenter="prefetchRecipeDetail(r.id)"
@@ -1518,6 +1577,86 @@
             <div x-show="!recipes.loading && !recipes.loadingMore && recipes.items.length >= recipes.total && recipes.total > 0">
               ✓ Alle <span x-text="recipes.total"></span> Rezepte geladen
             </div>
+          </div>
+            </div>
+
+            <aside class="today-rail" x-show="recipes.items.length > 0"
+                   x-init="$nextTick(() => loadCart())">
+              <div class="today-rail-head">
+                <span>Heute kochen</span>
+                <span class="today-rail-status"
+                      :class="recipes.items[0]?.ingredients_status === 'ok' && 'ready'">
+                  <span class="status-dot"
+                        :class="recipes.items[0]?.ingredients_status === 'ok' ? 'online' : 'busy'"></span>
+                  <span x-text="recipes.items[0]?.ingredients_status === 'ok' ? 'bereit' : 'in Vorbereitung'"></span>
+                </span>
+              </div>
+
+              <div class="today-media">
+                <video x-show="recipes.items[0]?.video_filename" controls preload="metadata"
+                       :src="recipes.items[0] ? '/api/recipes/'+recipes.items[0].id+'/video' : ''"
+                       :poster="recipes.items[0] ? '/api/recipes/'+recipes.items[0].id+'/thumb?w=900' : ''"></video>
+                <img x-show="!recipes.items[0]?.video_filename"
+                     :src="recipes.items[0] ? '/api/recipes/'+recipes.items[0].id+'/thumb?w=900' : ''"
+                     alt="" @error="$el.style.display='none'">
+              </div>
+
+              <section class="today-recipe-card">
+                <h2 x-text="recipes.items[0]?.name"></h2>
+                <div class="today-ready-line">
+                  <span class="today-check"
+                        :class="recipes.items[0]?.ingredients_status === 'ok' && 'ready'">✓</span>
+                  <div>
+                    <strong x-text="recipes.items[0]?.ingredients_status === 'ok' ? 'Zutaten bereit' : 'Zutaten werden erkannt'"></strong>
+                    <span x-show="recipes.items[0]?.ingredients_count"
+                          x-text="recipes.items[0].ingredients_count + ' Zutaten im Rezept'"></span>
+                  </div>
+                </div>
+                <button type="button" class="btn btn-primary today-primary"
+                        @click="openRecipe(recipes.items[0].id)">
+                  Rezept öffnen <span aria-hidden="true">→</span>
+                </button>
+              </section>
+
+              <section class="today-shopping-card">
+                <div class="today-shopping-head">
+                  <div>
+                    <span class="today-eyebrow">Nächster Schritt</span>
+                    <h2>Einkauf</h2>
+                  </div>
+                  <button type="button" class="btn btn-secondary"
+                          @click="navTo('cart')">Liste öffnen →</button>
+                </div>
+                <div class="today-shopping-summary">
+                  <strong x-text="cart.external ? cart.total : cart.items.length"></strong>
+                  <span x-text="(cart.external ? cart.total : cart.items.length) === 1 ? ' offener Artikel' : ' offene Artikel'"></span>
+                </div>
+                <template x-if="cart.external && cart.list.length">
+                  <div class="today-shopping-groups">
+                    <template x-for="group in cart.list.slice(0, 3)" :key="group.category">
+                      <button type="button" @click="navTo('cart')" class="today-shopping-row">
+                        <span x-text="group.category || 'Weitere'"></span>
+                        <span x-text="group.items.length + ' Artikel'"></span>
+                      </button>
+                    </template>
+                  </div>
+                </template>
+                <template x-if="!cart.external && cart.items.length">
+                  <div class="today-shopping-groups">
+                    <template x-for="item in cart.items.slice(0, 3)" :key="item.id">
+                      <button type="button" @click="navTo('cart')" class="today-shopping-row">
+                        <span x-text="item.name"></span>
+                        <span x-text="item.amount_display || item.unit || ''"></span>
+                      </button>
+                    </template>
+                  </div>
+                </template>
+                <div class="today-shopping-empty"
+                     x-show="!(cart.external ? cart.total : cart.items.length)">
+                  Noch nichts auf der Liste.
+                </div>
+              </section>
+            </aside>
           </div>
         </div>
       </div>
@@ -2790,11 +2929,11 @@
   </div>
 
   <!-- Rezept-Detail-Modal -->
-  <div x-cloak x-show="recipeDetail.show" class="modal-backdrop" @click.self="closeRecipeDetail()">
-    <div class="modal modal-wide" :class="recipeDetail.cookMode && 'cook-mode'" @click.stop x-show="recipeDetail.data">
+  <div x-cloak x-show="recipeDetail.show" class="modal-backdrop recipe-detail-backdrop" @click.self="closeRecipeDetail()">
+    <div class="modal modal-wide recipe-detail-modal" :class="recipeDetail.cookMode && 'cook-mode'" @click.stop x-show="recipeDetail.data">
       <div class="modal-header">
         <h3 x-text="recipeDetail.data?.name || ''"></h3>
-        <div style="display:flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-right: 48px;">
+        <div class="recipe-header-actions">
           <span x-show="recipeDetail.wakeLockActive" class="wake-lock-indicator" title="Bildschirm bleibt wach">🔆 wach</span>
           <!-- Re-Scrape: yt-dlp nochmal für die URL — frische Caption + Bild -->
           <button class="btn btn-secondary btn-sm"
@@ -2852,9 +2991,9 @@
 
       <!-- Rating-Picker direkt unter dem Modal-Header.
            Klick auf Stern setzt Rating. Klick auf den gleichen Stern nochmal = 0 (entfernen). -->
-      <div x-show="recipeDetail.data" style="padding: 8px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px;">
-        <span style="font-size: 12px; color: var(--fg-mute);">Meine Bewertung:</span>
-        <div style="display: flex; gap: 2px; font-size: 22px; line-height: 1; cursor: pointer;">
+      <div x-show="recipeDetail.data" class="recipe-rating-row">
+        <span class="recipe-rating-label">Meine Bewertung:</span>
+        <div class="recipe-rating-stars">
           <template x-for="n in [1,2,3,4,5]" :key="n">
             <span @click="setRating(recipeDetail.data.id, (recipeDetail.data?.rating === n) ? 0 : n)"
                   :style="'color: ' + ((recipeDetail.data?.rating || 0) >= n ? 'var(--accent)' : 'var(--fg-mute)') + '; transition: color 0.1s; -webkit-tap-highlight-color: transparent;'"

@@ -1390,7 +1390,11 @@ class Database:
             include_deleted=include_deleted,
             only_deleted=only_deleted,
         )
-        select_sql = "SELECT r.*"
+        select_sql = (
+            "SELECT r.*, "
+            "(SELECT COUNT(*) FROM recipe_ingredients ri "
+            " WHERE ri.recipe_id=r.id) AS ingredients_count"
+        )
         params: List[Any] = []
         if search:
             rank_sql, rank_params = search_rank_sql(self, search)

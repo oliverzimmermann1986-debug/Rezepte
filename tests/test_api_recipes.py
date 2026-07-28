@@ -25,6 +25,28 @@ def test_list_returns_inserted_recipes(client, test_db):
     assert names == ["Spargel", "Tomate"]
 
 
+def test_list_includes_servings_and_real_ingredient_count(client, test_db):
+    recipe = _create_recipe(test_db, name="Pasta", folder_path="/tmp/pasta")
+    test_db.recipe_set_servings(recipe["id"], 4)
+    with test_db.conn() as connection:
+        connection.executemany(
+            """
+            INSERT INTO recipe_ingredients
+            (recipe_id, name, canonical_name, amount, unit, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (recipe["id"], "Pasta", "pasta", 500, "g", 0),
+                (recipe["id"], "Tomaten", "tomaten", 6, "Stück", 1),
+            ],
+        )
+
+    item = client.get("/api/recipes").json()["items"][0]
+
+    assert item["servings"] == 4
+    assert item["ingredients_count"] == 2
+
+
 def test_list_filter_by_type(client, test_db):
     _create_recipe(test_db, name="Suppe", folder_path="/tmp/su", type="Vorspeise")
     _create_recipe(test_db, name="Pasta", folder_path="/tmp/pa", type="Hauptgericht")

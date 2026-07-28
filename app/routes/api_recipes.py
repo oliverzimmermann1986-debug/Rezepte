@@ -205,6 +205,8 @@ def list_recipes(
             "ingredients_status": r.get("ingredients_status"),
             "is_favorite": bool(r.get("is_favorite")),
             "rating": r.get("rating") or 0,
+            "servings": r.get("servings"),
+            "ingredients_count": int(r.get("ingredients_count") or 0),
             "description": ((r.get("description") or "").strip()[:220]),
         })
     return {"total": total, "items": out, "extraction_running": is_extraction_running(),

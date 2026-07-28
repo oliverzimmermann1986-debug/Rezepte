@@ -140,10 +140,23 @@ def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
     assert "window.location.pathname.startsWith('/admin')" in js
     assert "params.get('tab') || routePage" in js
     assert "params.get('section')" in js
-    assert "rezepte-static-v1.2.10-external-logout" in sw
+    assert "rezepte-static-v1.3.0-mise-en-place" in sw
     assert "caches.delete" in sw
     assert "request.mode === 'navigate'" in sw
     assert "fetch(event.request, {cache: 'no-store'})" in sw
+
+
+def test_recipe_library_uses_structural_redesign_and_real_recipe_data():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
+    assert 'class="recipes-workspace"' in html
+    assert 'class="recipe-featured"' in html
+    assert 'class="today-rail"' in html
+    assert "recipes.items.slice(1)" in html
+    assert "recipes.items[0].ingredients_count" in html
+    assert "recipes.items[0].servings" in html
+    assert ".recipe-detail-modal.cook-mode" in css
+    assert "@media (max-width: 768px)" in css
 
 
 def test_logout_controls_work_without_javascript_on_desktop_and_mobile():
