@@ -103,7 +103,7 @@
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
-        <span x-text="'v' + (systemInfo.version || '1.2.7')"></span>
+        <span x-text="'v' + (systemInfo.version || '1.2.8')"></span>
         <form method="get" action="/logout" class="logout-form">
           <button type="submit" class="sidebar-logout-button">Abmelden</button>
         </form>
@@ -461,6 +461,17 @@
                 <div class="field"><label>Port</label><input type="number" x-model.number="config.web.bind_port"></div>
               </div>
               <div class="field"><label>Session Secret</label><input x-model="config.web.secret_key"><div class="hint">mind. 32 Zeichen, zufällig</div></div>
+              <div class="field">
+                <label>Externe Logout-URL <span class="muted">(optional)</span></label>
+                <input x-model="config.web.external_logout_url"
+                       placeholder="/cdn-cgi/access/logout"
+                       autocomplete="url">
+                <div class="hint">
+                  Bei deaktivierter interner Anmeldung wird standardmäßig
+                  Cloudflare Access abgemeldet. Nur für andere vorgeschaltete
+                  Login-Dienste überschreiben.
+                </div>
+              </div>
             </div>
           </div>
 

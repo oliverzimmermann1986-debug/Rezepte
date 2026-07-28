@@ -15,13 +15,13 @@ def test_pdf_admin_routes_are_registered():
 def test_health_and_system_info_report_build_version(client):
     health = client.get("/healthz")
     assert health.status_code == 200
-    assert health.json()["version"] == "1.2.7"
+    assert health.json()["version"] == "1.2.8"
     assert "pdf-preflight" in health.json()["capabilities"]
     assert "recurring-shopping" in health.json()["capabilities"]
 
     info = client.get("/api/system/info")
     assert info.status_code == 200
-    assert info.json()["version"] == "1.2.7"
+    assert info.json()["version"] == "1.2.8"
     assert "pdf-background-jobs" in info.json()["capabilities"]
     assert "einkauf-proxy" in info.json()["capabilities"]
 
@@ -33,6 +33,18 @@ def test_logout_clears_browser_state_and_redirects_to_login(client):
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["clear-site-data"] == '"cache", "storage"'
     assert "Max-Age=0" in response.headers["set-cookie"]
+
+
+def test_logout_delegates_to_cloudflare_when_internal_auth_is_disabled(
+    client, monkeypatch
+):
+    import app.main as main
+
+    monkeypatch.setattr(main, "auth_disabled", lambda: True)
+    response = client.get("/logout", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/cdn-cgi/access/logout"
+    assert response.headers["clear-site-data"] == '"cache", "storage"'
 
 
 def test_frontend_has_legacy_pdf_fallback():

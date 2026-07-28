@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Form, Request, status
 from fastapi.exceptions import HTTPException
@@ -221,7 +222,7 @@ async def _lifespan(app):
 
 
 # -------- FastAPI --------
-APP_VERSION = "1.2.7"
+APP_VERSION = "1.2.8"
 APP_CAPABILITIES = [
     "admin-center",
     "pdf-processing",
@@ -407,9 +408,30 @@ def login(
     return resp
 
 
+def _logout_target() -> str:
+    """Ziel passend zur aktiven Authentifizierungsgrenze wählen."""
+    if not auth_disabled():
+        return "/login"
+
+    configured = str(
+        get_config().get("web", "external_logout_url", default="") or ""
+    ).strip()
+    if configured:
+        parsed = urlsplit(configured)
+        is_local_path = configured.startswith("/") and not configured.startswith("//")
+        is_https_url = parsed.scheme == "https" and bool(parsed.netloc)
+        if is_local_path or is_https_url:
+            return configured
+        logger.warning("Unsichere web.external_logout_url ignoriert: %r", configured)
+
+    # Offizieller Logout-Endpunkt für Cloudflare Access. Ein relativer Pfad
+    # funktioniert unabhängig vom öffentlichen Hostnamen der Installation.
+    return "/cdn-cgi/access/logout"
+
+
 @app.get("/logout")
 def logout():
-    resp = RedirectResponse(url="/login", status_code=303)
+    resp = RedirectResponse(url=_logout_target(), status_code=303)
     resp.delete_cookie(SESSION_COOKIE, path="/")
     # Löscht insbesondere Cache Storage alter Service-Worker-Versionen. Private
     # Rezeptdaten dürfen auf gemeinsam genutzten Geräten nicht nach Logout

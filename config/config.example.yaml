@@ -15,6 +15,12 @@
 web:
   username: admin
   password: changeme
+  # Nur aktivieren, wenn davor eine eigene Zugriffskontrolle wie Cloudflare
+  # Access liegt. Der Logout nutzt dann /cdn-cgi/access/logout.
+  auth_disabled: false
+  # Optional für andere vorgeschaltete Login-Dienste. Erlaubt sind lokale
+  # Pfade oder vollständige HTTPS-URLs.
+  external_logout_url: ""
   bind_host: 127.0.0.1
   bind_port: 8000
   secret_key: change-this-to-random-string-32chars-min

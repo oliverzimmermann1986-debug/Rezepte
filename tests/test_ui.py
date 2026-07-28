@@ -140,7 +140,7 @@ def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
     assert "window.location.pathname.startsWith('/admin')" in js
     assert "params.get('tab') || routePage" in js
     assert "params.get('section')" in js
-    assert "rezepte-static-v1.2.9-logout-control" in sw
+    assert "rezepte-static-v1.2.10-external-logout" in sw
     assert "caches.delete" in sw
     assert "request.mode === 'navigate'" in sw
     assert "fetch(event.request, {cache: 'no-store'})" in sw
@@ -155,6 +155,7 @@ def test_logout_controls_work_without_javascript_on_desktop_and_mobile():
     assert 'href="/logout"' not in html
     assert ".mobile-logout-button" in css
     assert ".sidebar-logout-button" in css
+    assert 'x-model="config.web.external_logout_url"' in html
 
 
 def test_admin_ui_is_private_and_has_no_user_management():
