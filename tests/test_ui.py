@@ -140,7 +140,7 @@ def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
     assert "window.location.pathname.startsWith('/admin')" in js
     assert "params.get('tab') || routePage" in js
     assert "params.get('section')" in js
-    assert "rezepte-static-v1.2.7-butter-refined" in sw
+    assert "rezepte-static-v1.2.8-recurring-shopping" in sw
     assert "caches.delete" in sw
     assert "request.mode === 'navigate'" in sw
     assert "fetch(event.request, {cache: 'no-store'})" in sw
@@ -172,6 +172,49 @@ def test_refined_recipe_filters_and_shopping_list_match_mockup():
     for unit in ('value="g"', 'value="kg"', 'value="ml"', 'value="l"'):
         assert unit in html
     assert ">Bestätigen</span>" in html
+
+
+def test_failed_imports_can_be_discarded_from_import_center():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    pending_api = (ROOT / "app" / "routes" / "api_pending.py").read_text(encoding="utf-8")
+    assert "Verwerfen" in html
+    assert "discardFailedDownload(f.url)" in html
+    assert "discardingUrl === f.url" in html
+    assert "async discardFailedDownload(url)" in js
+    assert "/discard" in pending_api
+    assert "download_failure_clear(url)" in pending_api
+
+
+def test_external_shopping_and_recurring_ui_are_available():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
+    main_py = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    config_example = (ROOT / "config" / "config.example.yaml").read_text(encoding="utf-8")
+
+    assert "api_einkauf" in main_py
+    assert "Wiederkehrend" in html
+    assert "Fällige jetzt eintragen" in html
+    assert 'x-model="config.einkauf.api_url"' in html
+    assert 'x-model="config.einkauf.app_token"' in html
+    assert "/api/einkauf/recurring" in js
+    assert "async recSave()" in js
+    assert "async recRunNow()" in js
+    assert ".recurring-form" in css
+    assert "app_token:" in config_example
+
+
+def test_ingredients_can_be_excluded_from_shopping():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    updater = (ROOT / "proxmox" / "update-local.sh").read_text(encoding="utf-8")
+
+    assert "Nicht einkaufen" in html
+    assert "setShoppingExclusion(c, $event.target.checked)" in html
+    assert "async setShoppingExclusion(can, excluded)" in js
+    assert "/shopping-exclusion" in js
+    assert 'chmod 0755 "$APP_DIR"' in updater
 
 
 def test_pdf_admin_uses_background_jobs_and_preflight():

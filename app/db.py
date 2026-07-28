@@ -164,6 +164,13 @@ CREATE TABLE IF NOT EXISTS shopping_cart (
 CREATE INDEX IF NOT EXISTS idx_cart_canonical ON shopping_cart(canonical_name, unit);
 CREATE INDEX IF NOT EXISTS idx_cart_added     ON shopping_cart(added_at DESC);
 
+-- shopping_exclusions: globale Zutaten, die beim Kochen nicht auf die
+-- Einkaufsliste übernommen werden sollen (z.B. Salz, Wasser, Pfeffer).
+CREATE TABLE IF NOT EXISTS shopping_exclusions (
+  canonical_name TEXT PRIMARY KEY COLLATE NOCASE,
+  created_at REAL NOT NULL
+);
+
 -- users: Multi-User-Auth. Bcrypt-Hashes in password_hash. Die role-Spalte
 -- bleibt nur für Abwärtskompatibilität; Berechtigungen werden nicht danach
 -- unterschieden. disabled=1 → kein Login mehr,
@@ -1668,6 +1675,31 @@ class Database:
                 (recipe_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def shopping_excluded_canonicals(self) -> set[str]:
+        """Canonical-Namen, die nie automatisch eingekauft werden."""
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT canonical_name FROM shopping_exclusions"
+            ).fetchall()
+            return {str(row["canonical_name"]).strip().lower() for row in rows}
+
+    def shopping_exclusion_set(self, canonical_name: str, excluded: bool) -> None:
+        canonical = (canonical_name or "").strip().lower()
+        if not canonical:
+            raise ValueError("canonical_name darf nicht leer sein")
+        with self.conn() as c:
+            if excluded:
+                c.execute(
+                    "INSERT OR IGNORE INTO shopping_exclusions "
+                    "(canonical_name, created_at) VALUES (?, ?)",
+                    (canonical, time.time()),
+                )
+            else:
+                c.execute(
+                    "DELETE FROM shopping_exclusions WHERE canonical_name=?",
+                    (canonical,),
+                )
 
     # ─── Steps + Servings ─────────────────────────────────────────────────
 

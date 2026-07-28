@@ -169,11 +169,11 @@ external_hdd:
   unmount_delay_sec: 2                      # FS-Flush nach umount
   http_timeout_sec: 8                       # Shelly-API-Timeout
 
-# Integration mit externer Einkauf-App (z.B. einkaufen.mausbaeren.me).
-# Cart-Items werden bei Klick auf "An Einkauf-App senden" als
-# POST /items mit { raw_text: "200 g Pasta" } gepostet. Optional ruft
-# der Push danach noch POST /consolidate auf damit die Empfänger-Seite
-# Mengen zusammenführt.
+# Verbindung zur vollwertigen Einkaufsliste. Bevorzugt wird die interne
+# Adresse des zweiten Dienstes im selben Container/Netz verwendet.
 einkauf:
-  api_url: ""                               # z.B. https://einkaufen.mausbaeren.me — leer = Feature deaktiviert
+  api_url: ""                               # z.B. http://127.0.0.1:8010 — leer = lokaler Rezepte-Cart
+  app_token: ""                             # APP_TOKEN des Einkauf-Dienstes
+  cf_access_client_id: ""                   # nur bei Zugriff über Cloudflare Access
+  cf_access_client_secret: ""
   auto_consolidate: true                    # nach Push /consolidate aufrufen?

@@ -81,6 +81,10 @@ else
   echo "Release liegt bereits in $APP_DIR; aktualisiere Abhängigkeiten und Dienste."
 fi
 
+# `mktemp -d` erzeugt Release-Verzeichnisse mit 0700. `rsync -a` übernimmt
+# diesen Modus sonst auf APP_DIR und systemd kann als APP_USER nicht hinein.
+chmod 0755 "$APP_DIR"
+
 python3 -m venv "$APP_DIR/venv" --upgrade-deps
 "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/playwright-browsers" \

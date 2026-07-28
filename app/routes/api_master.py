@@ -118,16 +118,45 @@ def list_canonicals() -> Dict[str, Any]:
     db = get_db()
     with db.conn() as c:
         rows = c.execute("""
-            SELECT canonical_name,
+            SELECT ri.canonical_name,
                    COUNT(*) as ingredient_count,
-                   COUNT(DISTINCT recipe_id) as recipe_count,
-                   GROUP_CONCAT(DISTINCT name) as raw_names
-            FROM recipe_ingredients
-            WHERE canonical_name IS NOT NULL AND canonical_name != ''
-            GROUP BY canonical_name
-            ORDER BY recipe_count DESC, canonical_name
+                   COUNT(DISTINCT ri.recipe_id) as recipe_count,
+                   GROUP_CONCAT(DISTINCT ri.name) as raw_names,
+                   CASE WHEN se.canonical_name IS NULL THEN 0 ELSE 1 END
+                     as shopping_excluded
+            FROM recipe_ingredients ri
+            LEFT JOIN shopping_exclusions se
+              ON se.canonical_name = ri.canonical_name
+            WHERE ri.canonical_name IS NOT NULL AND ri.canonical_name != ''
+            GROUP BY ri.canonical_name
+            ORDER BY recipe_count DESC, ri.canonical_name
         """).fetchall()
     return {"canonicals": [dict(r) for r in rows]}
+
+
+class ShoppingExclusionUpdate(BaseModel):
+    excluded: bool
+
+
+@router.put("/canonicals/{canonical_name}/shopping-exclusion")
+def update_shopping_exclusion(
+    canonical_name: str,
+    payload: ShoppingExclusionUpdate,
+) -> Dict[str, Any]:
+    """Zutat global vom automatischen Einkauf ausschließen oder freigeben."""
+    db = get_db()
+    canonical = canonical_name.strip().lower()
+    if not canonical:
+        raise HTTPException(400, "canonical_name darf nicht leer sein")
+    with db.conn() as c:
+        exists = c.execute(
+            "SELECT 1 FROM recipe_ingredients WHERE canonical_name=? LIMIT 1",
+            (canonical,),
+        ).fetchone()
+    if not exists:
+        raise HTTPException(404, f"Canonical '{canonical}' nicht gefunden")
+    db.shopping_exclusion_set(canonical, payload.excluded)
+    return {"ok": True, "canonical_name": canonical, "excluded": payload.excluded}
 
 
 class CanonicalRename(BaseModel):
@@ -171,5 +200,21 @@ def rename_canonical(payload: CanonicalRename) -> Dict[str, Any]:
             c.execute(
                 "UPDATE recipe_ingredients SET canonical_name=? WHERE canonical_name=?",
                 (new, old),
+            )
+        old_excluded = c.execute(
+            "SELECT 1 FROM shopping_exclusions WHERE canonical_name=?",
+            (old,),
+        ).fetchone()
+        if old_excluded:
+            c.execute(
+                "INSERT OR IGNORE INTO shopping_exclusions "
+                "(canonical_name, created_at) "
+                "SELECT ?, created_at FROM shopping_exclusions "
+                "WHERE canonical_name=?",
+                (new, old),
+            )
+            c.execute(
+                "DELETE FROM shopping_exclusions WHERE canonical_name=?",
+                (old,),
             )
     return {"ok": True, "affected": count}

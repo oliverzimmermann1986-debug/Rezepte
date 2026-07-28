@@ -19,9 +19,9 @@ from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, auth_disabled, check_credent
                     verify_session)
 from .config_store import get_config, migrate_pdf_quality_defaults
 from .db import get_db
-from .routes import (api_admin, api_audit, api_browse, api_config, api_events, api_hdd, api_history,
-                     api_jobs, api_master, api_metrics, api_pending, api_recipes, api_schedule,
-                     api_share, api_shopping, api_stats, api_test, api_users, sharing)
+from .routes import (api_admin, api_audit, api_browse, api_config, api_einkauf, api_events, api_hdd,
+                     api_history, api_jobs, api_master, api_metrics, api_pending, api_recipes,
+                     api_schedule, api_share, api_shopping, api_stats, api_test, api_users, sharing)
 from .security import SecurityHeadersMiddleware, client_ip, login_limiter
 
 # -------- Logging --------
@@ -221,8 +221,16 @@ async def _lifespan(app):
 
 
 # -------- FastAPI --------
-APP_VERSION = "1.2.5"
-APP_CAPABILITIES = ["admin-center", "pdf-processing", "pdf-background-jobs", "pdf-preflight", "pdf-recipe-extraction"]
+APP_VERSION = "1.2.6"
+APP_CAPABILITIES = [
+    "admin-center",
+    "pdf-processing",
+    "pdf-background-jobs",
+    "pdf-preflight",
+    "pdf-recipe-extraction",
+    "einkauf-proxy",
+    "recurring-shopping",
+]
 
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).
 _enable_docs = os.getenv("SCRAPPER_ENABLE_DOCS", "0") == "1"
@@ -284,6 +292,7 @@ app.include_router(api_stats.router)
 app.include_router(api_hdd.router)
 app.include_router(api_events.router)
 app.include_router(api_recipes.router)
+app.include_router(api_einkauf.router)
 app.include_router(api_shopping.router)
 app.include_router(api_audit.router)
 app.include_router(api_master.router)

@@ -98,6 +98,7 @@ MASK_PATHS = [
     ("mail", "recipe", "password"),
     ("mail", "wedding", "password"),
     ("ai", "openai", "api_key"),
+    ("einkauf", "app_token"),
     ("einkauf", "cf_access_client_secret"),
 ]
 

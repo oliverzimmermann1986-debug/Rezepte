@@ -28,6 +28,16 @@
 </head>
 <body>
 
+<!--
+  DIRECTION CONTRACT
+  THESIS: Eine warme, belastbare Küchenwerkzeugtafel für eine private Rezeptbibliothek.
+  OWN-WORLD: Butter Yellow, Cremeflächen, dunkle Serifentitel und klare Arbeitszustände.
+  STORY: Rezepte finden, Zutaten in den Einkauf geben, Importe und Qualität verwalten.
+  FIRST VIEWPORT: Suche, Filter und Rezeptauswahl stehen sofort im Fokus.
+  FORM: Desktop-Sidebar, mobile App-Bar und Daumennavigation bilden eine zusammenhängende App.
+  FINISH: Die Oberfläche soll freundlich, ruhig und im Küchenalltag unmittelbar bedienbar wirken.
+-->
+
 <!-- PWA Install-Banner: Android Chrome zeigt nativen Install-Prompt,
      iOS Safari hat keine Programmatic-Install — User muss manuell via
      Teilen-Button. Plus: im Standalone-Mode (= bereits installiert)
@@ -70,7 +80,9 @@
     </button>
     <button type="button" class="nav-item nav-primary" :class="page==='cart' && 'active'" @click="navTo('cart')" title="Einkaufsliste">
       <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h2l2.4 11.2a2 2 0 0 0 2 1.6h7.8a2 2 0 0 0 2-1.6L21 7H6"/><circle cx="10" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg></span><span class="nav-label">Einkaufsliste</span>
-      <span class="badge" x-show="cart.items.length > 0" x-text="cart.items.length"></span>
+      <span class="badge"
+            x-show="(cart.external ? cart.total : cart.items.length) > 0"
+            x-text="cart.external ? cart.total : cart.items.length"></span>
     </button>
     <button type="button" class="nav-item nav-primary"
             :class="page==='admin' && 'active'" @click="admin.tab='home'; navTo('admin')" title="Administration">
@@ -82,7 +94,10 @@
     <div class="foot">
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
-      <div class="sidebar-meta"><span>v1.2.5</span><a href="/logout">Abmelden</a></div>
+      <div class="sidebar-meta">
+        <span x-text="'v' + (systemInfo.version || '1.2.6')"></span>
+        <a href="/logout">Abmelden</a>
+      </div>
     </div>
   </aside>
 
@@ -325,10 +340,18 @@
                   <td class="muted" style="font-size: 11px; max-width: 280px; word-break: break-word;" x-text="(f.last_error || '—').slice(0, 100)"></td>
                   <td style="text-align:right;" class="mono muted" x-text="formatTs(f.last_try)"></td>
                   <td style="text-align:right;">
-                    <button class="btn" @click="retryFailed(f.url)" :disabled="retryingUrl === f.url">
-                      <span x-show="retryingUrl !== f.url">↻ Reset</span>
-                      <span x-show="retryingUrl === f.url">…</span>
-                    </button>
+                    <div class="failed-download-actions">
+                      <button class="btn" @click="retryFailed(f.url)"
+                              :disabled="retryingUrl === f.url || discardingUrl === f.url">
+                        <span x-show="retryingUrl !== f.url">↻ Erneut versuchen</span>
+                        <span x-show="retryingUrl === f.url">…</span>
+                      </button>
+                      <button class="btn btn-danger" @click="discardFailedDownload(f.url)"
+                              :disabled="discardingUrl === f.url || retryingUrl === f.url">
+                        <span x-show="discardingUrl !== f.url">Verwerfen</span>
+                        <span x-show="discardingUrl === f.url">…</span>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               </template>
@@ -428,6 +451,45 @@
                 <div class="field"><label>Port</label><input type="number" x-model.number="config.web.bind_port"></div>
               </div>
               <div class="field"><label>Session Secret</label><input x-model="config.web.secret_key"><div class="hint">mind. 32 Zeichen, zufällig</div></div>
+            </div>
+          </div>
+
+          <!-- Vollwertige Einkaufsliste -->
+          <div class="config-section">
+            <div class="head">Einkaufsliste verbinden</div>
+            <div class="body">
+              <div class="field">
+                <label>Interne API-URL</label>
+                <input x-model="config.einkauf.api_url"
+                       placeholder="http://127.0.0.1:8010"
+                       autocomplete="url">
+                <div class="hint">
+                  Leer lassen nutzt den einfachen lokalen Rezept-Warenkorb.
+                  Für Wiederkehrendes die interne Adresse des Einkauf-Dienstes eintragen.
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>App-Token</label>
+                  <input type="password" x-model="config.einkauf.app_token"
+                         autocomplete="new-password"
+                         placeholder="APP_TOKEN des Einkauf-Dienstes">
+                </div>
+                <div class="field">
+                  <label>Cloudflare Client-ID <span class="muted">(optional)</span></label>
+                  <input x-model="config.einkauf.cf_access_client_id"
+                         autocomplete="off">
+                </div>
+              </div>
+              <div class="field">
+                <label>Cloudflare Client-Secret <span class="muted">(optional)</span></label>
+                <input type="password" x-model="config.einkauf.cf_access_client_secret"
+                       autocomplete="new-password">
+                <div class="hint">
+                  Nur erforderlich, wenn statt der internen URL ein
+                  Cloudflare-Access-geschützter Endpunkt verwendet wird.
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1440,69 +1502,257 @@
       </div>
     </section>
 
-    <!-- ========== EINKAUFSKORB ========== -->
+    <!-- ========== EINKAUFSLISTE ========== -->
     <section x-show="page==='cart'" class="cart-page">
       <div class="card">
-        <div class="page-head" style="margin-bottom: 16px; border-bottom: none; padding-bottom: 0;">
+        <div class="page-head cart-page-head">
           <div>
-            <h1 style="margin:0; font-size: 22px;">Einkaufsliste <span class="muted" style="font-weight: normal; font-size: 14px;" x-text="'('+cart.items.length+' Posten)'"></span></h1>
-          </div>
-          <div class="flex" style="gap: 8px;">
-            <button class="btn btn-secondary" @click="clearCheckedFromCart()" :disabled="!cart.items.some(i => i.checked)">✓ Erledigte weg</button>
-            <button class="btn btn-danger" @click="clearCart()" :disabled="cart.items.length === 0">Alles</button>
+            <h1>Einkaufsliste</h1>
+            <p class="muted" x-show="cart.tab === 'list'"
+               x-text="cart.external
+                 ? cart.total + (cart.total === 1 ? ' offener Artikel' : ' offene Artikel')
+                 : cart.items.length + (cart.items.length === 1 ? ' Artikel' : ' Artikel')"></p>
           </div>
         </div>
 
-        <!-- Manuell hinzufügen -->
-        <div class="cart-add">
-          <input type="text" x-model="cart.add.name" placeholder="Zutat" />
-          <input type="number" step="any" x-model.number="cart.add.amount" placeholder="Menge" style="width: 90px;" />
-          <select x-model="cart.add.unit" aria-label="Einheit">
-            <option value="">Einheit</option>
-            <option value="g">g</option>
-            <option value="kg">kg</option>
-            <option value="ml">ml</option>
-            <option value="l">l</option>
-            <option value="Stück">Stück</option>
-          </select>
-          <button class="btn btn-primary" @click="addToCart()">＋ Hinzufügen</button>
+        <div class="cart-tabs" role="tablist" aria-label="Bereiche der Einkaufsliste">
+          <button type="button" role="tab" class="cart-tab"
+                  :class="cart.tab === 'list' && 'active'"
+                  :aria-selected="cart.tab === 'list'"
+                  @click="cartTab('list')">
+            Liste
+          </button>
+          <button type="button" role="tab" class="cart-tab"
+                  :class="cart.tab === 'recurring' && 'active'"
+                  :aria-selected="cart.tab === 'recurring'"
+                  @click="cartTab('recurring')">
+            Wiederkehrend
+          </button>
         </div>
 
-        <!-- Liste -->
-        <div class="cart-list" x-show="cart.items.length > 0">
-          <template x-for="it in cart.items" :key="it.id">
-            <!-- Swipe-Wrapper: enthält Action-Layer (links erledigt, rechts löschen)
-                 + die eigentliche Karte die ge-swiped wird. -->
-            <div class="cart-swipe-row">
-              <div class="cart-swipe-actions cart-swipe-left">
-                <span>✓ erledigt</span>
-              </div>
-              <div class="cart-swipe-actions cart-swipe-right">
-                <span>🗑 löschen</span>
-              </div>
-              <div class="cart-item" :class="it.checked && 'checked'"
-                   @touchstart="cartSwipeStart($event, it.id)"
-                   @touchmove="cartSwipeMove($event, it.id)"
-                   @touchend="cartSwipeEnd($event, it)">
-                <input type="checkbox" :checked="it.checked" @change="toggleCartItem(it.id, $event.target.checked)" />
-                <div class="cart-item-name">
-                  <span x-text="it.name"></span>
-                </div>
-                <div class="cart-item-amount">
-                  <span x-show="it.amount !== null" x-text="formatAmount(it.amount)"></span>
-                  <span class="muted" x-text="it.unit || ''"></span>
-                </div>
-                <div class="cart-item-source muted" x-show="it.source_recipe_ids.length > 0"
-                     :title="'aus '+it.source_recipe_ids.length+' Rezept(en)'">
-                  <span x-text="it.source_recipe_ids.length"></span>×
-                </div>
-                <button class="btn-icon" @click="deleteCartItem(it.id)" title="Entfernen">✕</button>
+        <div class="cart-connection-error" x-show="cart.connectionError">
+          <div>
+            <strong>Einkaufsliste nicht erreichbar</strong>
+            <span x-text="cart.connectionError"></span>
+          </div>
+          <button type="button" class="btn btn-secondary" @click="loadCart()"
+                  :disabled="cart.loading">
+            <span x-show="!cart.loading">Erneut laden</span>
+            <span x-show="cart.loading">Lädt …</span>
+          </button>
+        </div>
+
+        <!-- Liste: verbundener Einkauf-Dienst -->
+        <div x-show="cart.tab === 'list' && cart.external">
+          <div class="cart-list-actions">
+            <button class="btn btn-secondary" @click="clearCheckedFromCart()"
+                    :disabled="cart.loading || !cart.list.some(group => group.items.some(item => item.checked))">
+              ✓ Erledigte entfernen
+            </button>
+            <button class="btn btn-danger" @click="clearCart()"
+                    :disabled="cart.loading || cart.list.length === 0">
+              Liste leeren
+            </button>
+          </div>
+
+          <div class="cart-add external-cart-add">
+            <label class="sr-only" for="external-cart-item">Artikel hinzufügen</label>
+            <input id="external-cart-item" type="text" x-model="cart.quickAdd"
+                   @keydown.enter="addToCart()"
+                   placeholder="z. B. 2 Paprika oder 500 g Mehl"
+                   autocomplete="off" />
+            <button class="btn btn-primary" @click="addToCart()"
+                    :disabled="cart.loading || !cart.quickAdd.trim()">
+              ＋ Hinzufügen
+            </button>
+          </div>
+
+          <div class="cart-loading" x-show="cart.loading">Einkaufsliste wird geladen …</div>
+          <template x-for="group in cart.list" :key="group.category">
+            <div class="cart-group">
+              <h2 x-text="group.category || 'Sonstiges'"></h2>
+              <div class="cart-list">
+                <template x-for="item in group.items" :key="item.id">
+                  <div class="cart-item" :class="item.checked && 'checked'">
+                    <input type="checkbox" :checked="item.checked"
+                           :aria-label="item.name + (item.checked ? ' als offen markieren' : ' erledigen')"
+                           @change="toggleCartItem(item.id, $event.target.checked)" />
+                    <div class="cart-item-name">
+                      <span x-text="item.name"></span>
+                    </div>
+                    <div class="cart-item-amount">
+                      <span x-show="item.total_amount !== null && item.total_amount !== undefined"
+                            x-text="formatAmount(item.total_amount)"></span>
+                      <span class="muted" x-text="item.unit || ''"></span>
+                    </div>
+                    <button class="btn-icon" @click="deleteCartItem(item.id)"
+                            :aria-label="item.name + ' entfernen'" title="Entfernen">✕</button>
+                  </div>
+                </template>
               </div>
             </div>
           </template>
+          <div x-show="!cart.loading && !cart.connectionError && cart.list.length === 0"
+               class="empty-state">
+            Die Einkaufsliste ist leer. Artikel oben eingeben oder bei einem Rezept „Kochen“ wählen.
+          </div>
         </div>
-        <div x-show="cart.items.length === 0" class="empty-state">
-          Einkaufskorb ist leer. Klick im Rezept-Tab auf „Kochen" um Zutaten hinzuzufügen.
+
+        <!-- Liste: lokaler Fallback -->
+        <div x-show="cart.tab === 'list' && !cart.external">
+          <div class="cart-list-actions">
+            <button class="btn btn-secondary" @click="clearCheckedFromCart()"
+                    :disabled="!cart.items.some(item => item.checked)">✓ Erledigte entfernen</button>
+            <button class="btn btn-danger" @click="clearCart()"
+                    :disabled="cart.items.length === 0">Liste leeren</button>
+          </div>
+
+          <div class="cart-add">
+            <input type="text" x-model="cart.add.name" placeholder="Zutat" />
+            <input type="number" step="any" x-model.number="cart.add.amount"
+                   placeholder="Menge" aria-label="Menge" />
+            <select x-model="cart.add.unit" aria-label="Einheit">
+              <option value="">Einheit</option>
+              <option value="g">g</option>
+              <option value="kg">kg</option>
+              <option value="ml">ml</option>
+              <option value="l">l</option>
+              <option value="Stück">Stück</option>
+            </select>
+            <button class="btn btn-primary" @click="addToCart()">＋ Hinzufügen</button>
+          </div>
+
+          <div class="cart-list" x-show="cart.items.length > 0">
+            <template x-for="item in cart.items" :key="item.id">
+              <div class="cart-swipe-row">
+                <div class="cart-swipe-actions cart-swipe-left">
+                  <span>✓ erledigt</span>
+                </div>
+                <div class="cart-swipe-actions cart-swipe-right">
+                  <span>🗑 löschen</span>
+                </div>
+                <div class="cart-item" :class="item.checked && 'checked'"
+                     @touchstart="cartSwipeStart($event, item.id)"
+                     @touchmove="cartSwipeMove($event, item.id)"
+                     @touchend="cartSwipeEnd($event, item)">
+                  <input type="checkbox" :checked="item.checked"
+                         @change="toggleCartItem(item.id, $event.target.checked)" />
+                  <div class="cart-item-name">
+                    <span x-text="item.name"></span>
+                  </div>
+                  <div class="cart-item-amount">
+                    <span x-show="item.amount !== null" x-text="formatAmount(item.amount)"></span>
+                    <span class="muted" x-text="item.unit || ''"></span>
+                  </div>
+                  <div class="cart-item-source muted"
+                       x-show="item.source_recipe_ids && item.source_recipe_ids.length > 0"
+                       :title="'aus ' + item.source_recipe_ids.length + ' Rezept(en)'">
+                    <span x-text="item.source_recipe_ids.length"></span>×
+                  </div>
+                  <button class="btn-icon" @click="deleteCartItem(item.id)"
+                          title="Entfernen">✕</button>
+                </div>
+              </div>
+            </template>
+          </div>
+          <div x-show="cart.items.length === 0" class="empty-state">
+            Der lokale Einkaufskorb ist leer. Bei einem Rezept „Kochen“ wählen, um Zutaten hinzuzufügen.
+          </div>
+        </div>
+
+        <!-- Wiederkehrende Einkäufe -->
+        <div x-show="cart.tab === 'recurring'">
+          <div class="recurring-unconfigured" x-show="!cart.external">
+            <strong>Einkaufsliste noch nicht verbunden</strong>
+            <p>
+              Wiederkehrende Einkäufe werden vom bestehenden Einkauf-Dienst verwaltet.
+              Verbinde ihn einmal in den Einstellungen.
+            </p>
+            <button type="button" class="btn btn-primary"
+                    @click="navTo('admin'); selectAdminTab('settings')">
+              Verbindung einrichten
+            </button>
+          </div>
+
+          <div x-show="cart.external">
+            <form class="recurring-form" @submit.prevent="recSave()">
+              <div class="field recurring-name">
+                <label for="recurring-name">Artikel</label>
+                <input id="recurring-name" type="text" x-model="cart.recForm.name"
+                       placeholder="z. B. Milch" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="recurring-category">Kategorie</label>
+                <input id="recurring-category" type="text" x-model="cart.recForm.category"
+                       placeholder="z. B. Kühlregal" />
+              </div>
+              <div class="field">
+                <label for="recurring-unit">Einheit</label>
+                <input id="recurring-unit" type="text" x-model="cart.recForm.default_unit"
+                       placeholder="z. B. l" />
+              </div>
+              <div class="field">
+                <label for="recurring-interval">Alle … Tage</label>
+                <input id="recurring-interval" type="number" min="1" max="3650"
+                       x-model.number="cart.recForm.interval_days" />
+              </div>
+              <label class="recurring-active">
+                <input type="checkbox" x-model="cart.recForm.active" />
+                Aktiv
+              </label>
+              <div class="recurring-form-actions">
+                <button type="submit" class="btn btn-primary"
+                        :disabled="cart.recSaving || !cart.recForm.name.trim()">
+                  <span x-show="!cart.recSaving"
+                        x-text="cart.recForm.id ? 'Änderungen speichern' : '＋ Anlegen'"></span>
+                  <span x-show="cart.recSaving">Speichert …</span>
+                </button>
+                <button type="button" class="btn btn-secondary"
+                        x-show="cart.recForm.id" @click="recReset()"
+                        :disabled="cart.recSaving">
+                  Abbrechen
+                </button>
+                <button type="button" class="btn btn-secondary recurring-run"
+                        @click="recRunNow()" :disabled="cart.recRunning">
+                  <span x-show="!cart.recRunning">Fällige jetzt eintragen</span>
+                  <span x-show="cart.recRunning">Wird eingetragen …</span>
+                </button>
+              </div>
+            </form>
+
+            <div class="cart-loading" x-show="cart.recLoading">
+              Wiederkehrende Einkäufe werden geladen …
+            </div>
+            <div class="recurring-list" x-show="!cart.recLoading && cart.recurring.length > 0">
+              <template x-for="rule in cart.recurring" :key="rule.id">
+                <div class="recurring-item" :class="!rule.active && 'inactive'">
+                  <div class="recurring-main">
+                    <strong x-text="rule.name"></strong>
+                    <span class="recurring-meta">
+                      <span x-text="'alle ' + rule.interval_days + (rule.interval_days === 1 ? ' Tag' : ' Tage')"></span>
+                      <span x-show="rule.category" x-text="' · ' + rule.category"></span>
+                      <span x-show="rule.default_unit" x-text="' · ' + rule.default_unit"></span>
+                    </span>
+                  </div>
+                  <span class="recurring-due" :class="Number(rule.due_in_days || 0) <= 0 && rule.active && 'is-due'"
+                        x-text="recurringDueLabel(rule)"></span>
+                  <div class="recurring-actions">
+                    <button type="button" class="btn btn-secondary" @click="recEdit(rule)"
+                            :disabled="cart.recDeleting === rule.id">Bearbeiten</button>
+                    <button type="button" class="btn btn-danger" @click="recDelete(rule)"
+                            :disabled="cart.recDeleting === rule.id">
+                      <span x-show="cart.recDeleting !== rule.id">Löschen</span>
+                      <span x-show="cart.recDeleting === rule.id">…</span>
+                    </button>
+                  </div>
+                </div>
+              </template>
+            </div>
+            <div x-show="!cart.recLoading && !cart.connectionError && cart.recurring.length === 0"
+                 class="empty-state">
+              Noch keine wiederkehrenden Einkäufe. Lege oben den ersten Artikel an.
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -1587,6 +1837,7 @@
                   <th class="num">Rezepte</th>
                   <th class="num">Vorkommen</th>
                   <th>Schreibweisen</th>
+                  <th>Nicht einkaufen</th>
                   <th></th>
                 </tr>
               </thead>
@@ -1597,6 +1848,14 @@
                     <td class="num" x-text="c.recipe_count"></td>
                     <td class="num muted" x-text="c.ingredient_count"></td>
                     <td class="muted" style="font-size: 12px;" x-text="c.raw_names"></td>
+                    <td>
+                      <label class="shopping-exclusion-toggle">
+                        <input type="checkbox"
+                               :checked="Boolean(c.shopping_excluded)"
+                               @change="setShoppingExclusion(c, $event.target.checked)">
+                        <span x-text="c.shopping_excluded ? 'Ausgeschlossen' : 'Einkaufen'"></span>
+                      </label>
+                    </td>
                     <td class="actions">
                       <button class="btn btn-sm" @click="renameCanonical(c)" title="Umbenennen / Mergen">✎</button>
                     </td>

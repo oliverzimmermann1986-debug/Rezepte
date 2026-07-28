@@ -121,6 +121,26 @@ function scrapperApp() {
     cart: {
       items: [],
       add: { name: '', amount: null, unit: '' },
+      external: false,
+      connectionError: '',
+      list: [],
+      total: 0,
+      quickAdd: '',
+      loading: false,
+      tab: 'list',
+      recurring: [],
+      recLoading: false,
+      recForm: {
+        id: null,
+        name: '',
+        category: '',
+        default_unit: '',
+        interval_days: 7,
+        active: true,
+      },
+      recSaving: false,
+      recRunning: false,
+      recDeleting: null,
     },
     trash: {
       items: [], totalCount: 0, loading: false, emptying: false,
@@ -1169,6 +1189,7 @@ function scrapperApp() {
     selectedPending: [],
     failedDownloads: [],
     retryingUrl: null,
+    discardingUrl: null,
     bulkBusy: false,
     manualImportUrl: '',
     manualImporting: false,
@@ -1520,7 +1541,12 @@ function scrapperApp() {
       if (cfg.pdf.keep_original === undefined) cfg.pdf.keep_original = true;
       cfg.ytdlp ||= {};
       cfg.webhooks ||= [];
-      cfg.einkauf ||= { api_url: '', auto_consolidate: true };
+      cfg.einkauf ||= {};
+      cfg.einkauf.api_url ||= '';
+      cfg.einkauf.app_token ||= '';
+      cfg.einkauf.cf_access_client_id ||= '';
+      cfg.einkauf.cf_access_client_secret ||= '';
+      if (cfg.einkauf.auto_consolidate === undefined) cfg.einkauf.auto_consolidate = true;
       this.config = cfg;
       // Pro-Pair-Args ins UI laden
       this.recipeTypes = cfg.recipe_types || this.recipeTypes;
@@ -2888,15 +2914,62 @@ function scrapperApp() {
 
     // ── Einkaufskorb ──────────────────────────────────────────────────
     async loadCart() {
-      // Defensive: falls ein vorheriger Push hängen geblieben ist (z.B.
-      // Network-Drop oder Tab-Wechsel mid-request), beim Tab-Reload
-      // den Loading-State zurücksetzen damit der Button wieder klickbar ist.
-      this.pushingToEinkauf = false;
-      const r = await this.api('GET', '/api/cart');
-      if (r) this.cart.items = r.items || [];
+      this.cart.loading = true;
+      this.cart.connectionError = '';
+      try {
+        const status = await this.api(
+          'GET',
+          '/api/einkauf/status',
+          undefined,
+          { silent: true }
+        );
+        this.cart.external = !!status?.configured;
+
+        if (this.cart.external) {
+          try {
+            const groups = await this.api(
+              'GET',
+              '/api/einkauf/list?include_checked=true',
+              undefined,
+              { silent: true }
+            ) || {};
+            this.cart.list = Object.keys(groups)
+              .sort((a, b) => a.localeCompare(b, 'de'))
+              .map(category => ({ category, items: groups[category] || [] }));
+            this.cart.total = Object.values(groups)
+              .flat()
+              .filter(item => !item.checked)
+              .length;
+          } catch (error) {
+            this.cart.list = [];
+            this.cart.total = 0;
+            this.cart.connectionError =
+              error?.detail || 'Die verbundene Einkaufsliste ist nicht erreichbar.';
+          }
+          return;
+        }
+
+        const result = await this.api('GET', '/api/cart');
+        if (result) this.cart.items = result.items || [];
+      } finally {
+        this.cart.loading = false;
+      }
     },
 
     async addToCart() {
+      if (this.cart.external) {
+        const text = (this.cart.quickAdd || '').trim();
+        if (!text) {
+          this.showToast('Bitte einen Artikel eingeben', 'error');
+          return;
+        }
+        await this.api('POST', '/api/einkauf/items', { raw_text: text });
+        await this.api('POST', '/api/einkauf/consolidate');
+        this.cart.quickAdd = '';
+        await this.loadCart();
+        return;
+      }
+
       const name = (this.cart.add.name || '').trim();
       if (!name) { this.showToast('Zutat-Name fehlt', 'error'); return; }
       const r = await this.api('POST', '/api/cart/add', {
@@ -2911,6 +2984,15 @@ function scrapperApp() {
     },
 
     async toggleCartItem(id, checked) {
+      if (this.cart.external) {
+        await this.api(
+          'POST',
+          `/api/einkauf/list/${id}/${checked ? 'check' : 'uncheck'}`,
+          {}
+        );
+        await this.loadCart();
+        return;
+      }
       await this.api('PATCH', '/api/cart/' + id, { checked });
       // Lokal sofort updaten damit UI snappy ist; full reload nur bei größeren
       // Änderungen
@@ -2919,22 +3001,168 @@ function scrapperApp() {
     },
 
     async deleteCartItem(id) {
+      if (this.cart.external) {
+        await this.api('DELETE', '/api/einkauf/list/' + id);
+        await this.loadCart();
+        return;
+      }
       await this.api('DELETE', '/api/cart/' + id);
       this.cart.items = this.cart.items.filter(x => x.id !== id);
     },
 
     async clearCart() {
-      if (!confirm('Den ganzen Einkaufskorb leeren?')) return;
+      if (!confirm('Die gesamte Einkaufsliste leeren?')) return;
+      if (this.cart.external) {
+        await this.api('DELETE', '/api/einkauf/list/clear');
+        this.showToast('Einkaufsliste geleert');
+        await this.loadCart();
+        return;
+      }
       const r = await this.api('POST', '/api/cart/clear', { only_checked: false });
       if (r && r.ok) { this.cart.items = []; this.showToast('Gelöscht'); }
     },
 
     async clearCheckedFromCart() {
+      if (this.cart.external) {
+        await this.api('DELETE', '/api/einkauf/list/clear-checked');
+        this.showToast('Erledigte Artikel entfernt');
+        await this.loadCart();
+        return;
+      }
       const r = await this.api('POST', '/api/cart/clear', { only_checked: true });
       if (r && r.ok) {
         this.showToast(`${r.deleted} erledigt-Posten gelöscht`);
         this.loadCart();
       }
+    },
+
+    cartTab(tab) {
+      this.cart.tab = tab;
+      if (tab === 'recurring' && this.cart.external) this.loadRecurring();
+      if (tab === 'list') this.loadCart();
+    },
+
+    async loadRecurring() {
+      if (!this.cart.external) {
+        this.cart.recurring = [];
+        return;
+      }
+      this.cart.recLoading = true;
+      this.cart.connectionError = '';
+      try {
+        this.cart.recurring =
+          await this.api(
+            'GET',
+            '/api/einkauf/recurring',
+            undefined,
+            { silent: true }
+          ) || [];
+      } catch (error) {
+        this.cart.recurring = [];
+        this.cart.connectionError =
+          error?.detail || 'Wiederkehrende Einkäufe konnten nicht geladen werden.';
+      } finally {
+        this.cart.recLoading = false;
+      }
+    },
+
+    recEdit(rule) {
+      this.cart.recForm = {
+        id: rule.id,
+        name: rule.name,
+        category: rule.category || '',
+        default_unit: rule.default_unit || '',
+        interval_days: rule.interval_days || 7,
+        active: !!rule.active,
+      };
+    },
+
+    recReset() {
+      this.cart.recForm = {
+        id: null,
+        name: '',
+        category: '',
+        default_unit: '',
+        interval_days: 7,
+        active: true,
+      };
+    },
+
+    async recSave() {
+      if (this.cart.recSaving) return;
+      const form = this.cart.recForm;
+      const name = (form.name || '').trim();
+      if (!name) {
+        this.showToast('Artikelname fehlt', 'error');
+        return;
+      }
+      const intervalDays = Number(form.interval_days);
+      if (!Number.isInteger(intervalDays) || intervalDays < 1 || intervalDays > 3650) {
+        this.showToast('Intervall muss zwischen 1 und 3650 Tagen liegen', 'error');
+        return;
+      }
+
+      const body = {
+        name,
+        category: (form.category || '').trim() || null,
+        default_unit: (form.default_unit || '').trim() || null,
+        interval_days: intervalDays,
+        active: !!form.active,
+      };
+      this.cart.recSaving = true;
+      try {
+        if (form.id) {
+          await this.api('PATCH', '/api/einkauf/recurring/' + form.id, body);
+          this.showToast('Wiederkehrender Artikel aktualisiert');
+        } else {
+          await this.api('POST', '/api/einkauf/recurring', body);
+          this.showToast('Wiederkehrender Artikel angelegt');
+        }
+        this.recReset();
+        await this.loadRecurring();
+      } finally {
+        this.cart.recSaving = false;
+      }
+    },
+
+    async recDelete(rule) {
+      if (
+        this.cart.recDeleting ||
+        !confirm(`Wiederkehrenden Artikel „${rule.name}“ löschen?`)
+      ) return;
+      this.cart.recDeleting = rule.id;
+      try {
+        await this.api('DELETE', '/api/einkauf/recurring/' + rule.id);
+        this.showToast('Wiederkehrender Artikel gelöscht');
+        if (this.cart.recForm.id === rule.id) this.recReset();
+        await this.loadRecurring();
+      } finally {
+        this.cart.recDeleting = null;
+      }
+    },
+
+    async recRunNow() {
+      if (this.cart.recRunning) return;
+      this.cart.recRunning = true;
+      try {
+        const result = await this.api('POST', '/api/einkauf/recurring/run', {});
+        const count = result?.added?.length || 0;
+        this.showToast(
+          count === 1
+            ? '1 fälliger Artikel zur Einkaufsliste hinzugefügt'
+            : `${count} fällige Artikel zur Einkaufsliste hinzugefügt`
+        );
+        await Promise.all([this.loadRecurring(), this.loadCart()]);
+      } finally {
+        this.cart.recRunning = false;
+      }
+    },
+
+    recurringDueLabel(rule) {
+      if (!rule.active) return 'pausiert';
+      const days = Number(rule.due_in_days || 0);
+      if (days <= 0) return 'jetzt fällig';
+      return days === 1 ? 'morgen fällig' : `in ${days} Tagen fällig`;
     },
 
     // ════════════════════════════════════════════════════════════════════
@@ -3043,6 +3271,26 @@ function scrapperApp() {
       }
     },
 
+    async setShoppingExclusion(can, excluded) {
+      const previous = Boolean(can.shopping_excluded);
+      can.shopping_excluded = excluded ? 1 : 0;
+      const canonical = encodeURIComponent(can.canonical_name);
+      const r = await this.api(
+        'PUT',
+        `/api/master/canonicals/${canonical}/shopping-exclusion`,
+        { excluded: Boolean(excluded) }
+      );
+      if (!r?.ok) {
+        can.shopping_excluded = previous ? 1 : 0;
+        return;
+      }
+      this.showToast(
+        excluded
+          ? `${can.canonical_name} wird nicht eingekauft`
+          : `${can.canonical_name} wird wieder eingekauft`
+      );
+    },
+
     // ════════════════════════════════════════════════════════════════════
     // Audit-Dashboard
     // ════════════════════════════════════════════════════════════════════
@@ -3072,12 +3320,31 @@ function scrapperApp() {
       }
     },
     async discardFailedDownload(url) {
-      if (!confirm('URL dauerhaft verwerfen? Sie wird nie wieder versucht.')) return;
-      const r = await this.api('POST', `/api/pending/failed/${encodeURIComponent(url)}/discard`);
-      if (r?.ok) {
-        this.showToast('Verworfen');
-        this.audit.data.failed_downloads = this.audit.data.failed_downloads.filter(f => f.url !== url);
-        if (this.audit.summary) this.audit.summary.failed_download_count = Math.max(0, (this.audit.summary.failed_download_count || 1) - 1);
+      if (this.discardingUrl || !confirm(
+        'URL dauerhaft verwerfen?\n\nSie wird aus den Fehlversuchen entfernt und künftig nicht erneut importiert.'
+      )) return;
+      this.discardingUrl = url;
+      try {
+        const r = await this.api(
+          'POST',
+          `/api/pending/failed/${encodeURIComponent(url)}/discard`
+        );
+        if (r?.ok) {
+          this.showToast('URL dauerhaft verworfen');
+          this.failedDownloads = this.failedDownloads.filter(f => f.url !== url);
+          if (Array.isArray(this.audit.data?.failed_downloads)) {
+            this.audit.data.failed_downloads =
+              this.audit.data.failed_downloads.filter(f => f.url !== url);
+          }
+          if (this.audit.summary) {
+            this.audit.summary.failed_download_count = Math.max(
+              0,
+              (this.audit.summary.failed_download_count || 1) - 1
+            );
+          }
+        }
+      } finally {
+        this.discardingUrl = null;
       }
     },
 

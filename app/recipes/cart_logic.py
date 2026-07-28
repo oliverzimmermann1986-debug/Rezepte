@@ -83,6 +83,7 @@ def add_recipe_to_cart(db, recipe_id: int, multiplier: float = 1.0) -> Dict[str,
         multiplier = 1.0
 
     ingredients = db.recipe_ingredients_get(recipe_id)
+    excluded = db.shopping_excluded_canonicals()
     counters = {"added": 0, "merged": 0, "skipped": 0}
     for ing in ingredients:
         name = ing.get("name") or ""
@@ -91,6 +92,9 @@ def add_recipe_to_cart(db, recipe_id: int, multiplier: float = 1.0) -> Dict[str,
             # Zutat ohne erkennbaren Namen — überspringen (passiert nicht,
             # weil canonical_name in der DB seit Migration 1 immer gesetzt
             # wird, aber defensiv)
+            counters["skipped"] += 1
+            continue
+        if canon.strip().lower() in excluded:
             counters["skipped"] += 1
             continue
 
