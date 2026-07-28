@@ -61,6 +61,14 @@
       <div class="mobile-runtime" :title="status.scraper ? 'Import läuft' : 'Bereit'">
         <span class="status-dot" :class="status.scraper ? 'busy' : 'online'"></span>
       </div>
+      <form method="get" action="/logout" class="logout-form">
+        <button type="submit" class="mobile-logout-button" aria-label="Abmelden" title="Abmelden">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M10 5H5v14h5"/>
+            <path d="M14 8l4 4-4 4M18 12H9"/>
+          </svg>
+        </button>
+      </form>
     </div>
   </header>
 
@@ -95,8 +103,10 @@
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
-        <span x-text="'v' + (systemInfo.version || '1.2.6')"></span>
-        <a href="/logout">Abmelden</a>
+        <span x-text="'v' + (systemInfo.version || '1.2.7')"></span>
+        <form method="get" action="/logout" class="logout-form">
+          <button type="submit" class="sidebar-logout-button">Abmelden</button>
+        </form>
       </div>
     </div>
   </aside>

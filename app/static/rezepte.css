@@ -2840,7 +2840,23 @@ a { color: var(--accent-deep); }
   font-size: 11px;
 }
 .sidebar-meta { margin-top: 7px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.sidebar .foot a { font-weight: 700; }
+.logout-form { margin: 0; }
+.sidebar-logout-button {
+  min-height: 32px;
+  padding: 5px 8px;
+  color: #78520a;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sidebar-logout-button:hover,
+.sidebar-logout-button:focus-visible {
+  color: #513500;
+  background: #fff3c5;
+}
 
 .main {
   width: 100%;
@@ -3473,6 +3489,33 @@ a { color: var(--accent-deep); }
 .pdf-run-hint { margin-top: 13px; }
 .admin-file-result small { color: #7b6846; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 .mobile-appbar-actions { display: flex; align-items: center; gap: 6px; }
+.mobile-logout-button {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #78520a;
+  background: rgba(255,255,255,.62);
+  border: 1px solid rgba(205, 158, 48, .35);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.mobile-logout-button:hover,
+.mobile-logout-button:focus-visible {
+  color: #513500;
+  background: #fff3c5;
+  border-color: #d7a52d;
+}
+.mobile-logout-button svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .mobile-admin-button {
   width: 38px;
   height: 38px;

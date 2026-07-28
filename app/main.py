@@ -221,7 +221,7 @@ async def _lifespan(app):
 
 
 # -------- FastAPI --------
-APP_VERSION = "1.2.6"
+APP_VERSION = "1.2.7"
 APP_CAPABILITIES = [
     "admin-center",
     "pdf-processing",
