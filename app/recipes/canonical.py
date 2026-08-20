@@ -32,6 +32,31 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+TOMATO_CANONICAL = "tomate"
+TOMATO_SHOPPING_NAME = "Tomaten"
+TOMATO_CANONICAL_ALIASES = frozenset({
+    "tomate",
+    "tomaten",
+    "cherrytomate",
+    "cherrytomaten",
+    "cherry tomate",
+    "cherry tomaten",
+    "cherry-tomate",
+    "cherry-tomaten",
+    "cocktailtomate",
+    "cocktailtomaten",
+    "cocktail tomate",
+    "cocktail tomaten",
+    "cocktail-tomate",
+    "cocktail-tomaten",
+    "kirschtomate",
+    "kirschtomaten",
+    "kirsch tomate",
+    "kirsch tomaten",
+    "kirsch-tomate",
+    "kirsch-tomaten",
+})
+
 # Vorne dranhängende Adjektive / Qualifier, die wir entfernen.
 _ADJECTIVE_PREFIXES = [
     "frische", "frischer", "frisches", "frisch",
@@ -53,8 +78,7 @@ _ADJECTIVE_PREFIXES = [
 # Hand-kuratierte Synonyme. Key = bereits adjektiv-bereinigter lowercase-Form.
 _SYNONYMS = {
     # Verschiedene Schreibweisen
-    "tomate": "tomate",
-    "tomaten": "tomate",
+    **{alias: TOMATO_CANONICAL for alias in TOMATO_CANONICAL_ALIASES},
     "ei": "ei",
     "eier": "ei",
     "zwiebel": "zwiebel",

@@ -1,0 +1,259 @@
+name: Native iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_testflight:
+        description: "Signierten Build zu TestFlight hochladen"
+        required: false
+        default: false
+        type: boolean
+  push:
+    paths:
+      - "ios-swift/**"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "ios-swift/**"
+      - ".github/workflows/ios.yml"
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test SwiftUI app
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: ios-swift
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Select an available iPhone simulator
+        id: simulator
+        shell: bash
+        run: |
+          DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          for runtime in sorted(devices, reverse=True):
+              for device in devices[runtime]:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      print(device["udid"])
+                      raise SystemExit(0)
+          raise SystemExit("No available iPhone simulator found")
+          ')"
+          echo "device_id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
+          echo "Using simulator $DEVICE_ID"
+
+      - name: Build and run unit tests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Rezepte.xcodeproj \
+            -scheme Rezepte \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.device_id }}" \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Upload test result bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-results
+          path: ios-swift/TestResults.xcresult
+          if-no-files-found: ignore
+          retention-days: 14
+
+  testflight:
+    name: Archive and upload to TestFlight
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_testflight }}
+    needs: test
+    runs-on: macos-15
+    timeout-minutes: 45
+    environment: testflight
+
+    env:
+      IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID || 'de.mausbaeren.rezepte' }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+
+    defaults:
+      run:
+        working-directory: ios-swift
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Validate signing configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            APPLE_TEAM_ID P12_PASSWORD KEYCHAIN_PASSWORD
+            ASC_KEY_ID ASC_ISSUER_ID IOS_BUNDLE_ID
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing TestFlight configuration: $name" >&2
+              exit 1
+            fi
+          done
+          if [[ -z "${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}" ||
+                -z "${{ secrets.IOS_APPSTORE_PROFILE_BASE64 }}" ||
+                -z "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" ]]; then
+            echo "Missing one or more encoded signing files." >&2
+            exit 1
+          fi
+
+      - name: Install distribution certificate and profile
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="$RUNNER_TEMP/ios-distribution.p12"
+          PROFILE_PATH="$RUNNER_TEMP/ios-appstore.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/rezepte-signing.keychain-db"
+          PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
+
+          echo -n "${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}" | base64 --decode > "$CERTIFICATE_PATH"
+          echo -n "${{ secrets.IOS_APPSTORE_PROFILE_BASE64 }}" | base64 --decode > "$PROFILE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$P12_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+          PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
+          PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")"
+          PROFILE_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")"
+
+          if [[ "$PROFILE_APP_ID" != "$APPLE_TEAM_ID.$IOS_BUNDLE_ID" ]]; then
+            echo "Provisioning profile is for $PROFILE_APP_ID, expected $APPLE_TEAM_ID.$IOS_BUNDLE_ID" >&2
+            exit 1
+          fi
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          echo "profile_name=$PROFILE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create signed archive
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project Rezepte.xcodeproj \
+            -scheme Rezepte \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/Rezepte.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ steps.signing.outputs.profile_name }}" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
+
+      - name: Export signed IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
+          cat > "$EXPORT_OPTIONS" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>destination</key>
+            <string>export</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>teamID</key>
+            <string>$APPLE_TEAM_ID</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>$IOS_BUNDLE_ID</key>
+              <string>${{ steps.signing.outputs.profile_name }}</string>
+            </dict>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Rezepte.xcarchive" \
+            -exportPath "$RUNNER_TEMP/Export" \
+            -exportOptionsPlist "$EXPORT_OPTIONS"
+
+      - name: Upload IPA to App Store Connect
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEY_DIRECTORY="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$KEY_DIRECTORY"
+          echo -n "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" | base64 --decode \
+            > "$KEY_DIRECTORY/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$KEY_DIRECTORY/AuthKey_$ASC_KEY_ID.p8"
+
+          IPA_PATH="$(find "$RUNNER_TEMP/Export" -maxdepth 1 -name '*.ipa' -print -quit)"
+          if [[ -z "$IPA_PATH" ]]; then
+            echo "No IPA was exported." >&2
+            exit 1
+          fi
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$IPA_PATH" \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Upload archive diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-archive-diagnostics
+          path: |
+            ${{ runner.temp }}/Rezepte.xcarchive
+            ${{ runner.temp }}/Export
+          if-no-files-found: ignore
+          retention-days: 7

@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from ..auth import SESSION_COOKIE, auth_disabled, require_admin, require_auth, session_user
+from ..auth import auth_disabled, require_admin, require_auth, request_user
 from ..config_store import get_config
 from ..core.analyzer import build_analyzer
 from ..core.pdf_processing import (
@@ -42,7 +42,7 @@ _PDF_ACTIVE_RUN_ID: Optional[int] = None
 def _username(request: Request) -> str:
     if auth_disabled():
         return "local"
-    return session_user(request.cookies.get(SESSION_COOKIE, "")) or "unknown"
+    return request_user(request) or "unknown"
 
 
 @session_router.get("")

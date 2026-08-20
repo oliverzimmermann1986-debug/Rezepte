@@ -19,7 +19,11 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional, Tuple
 
-from .canonical import canonical_name as _canonical
+from .canonical import (
+    TOMATO_CANONICAL,
+    TOMATO_SHOPPING_NAME,
+    canonical_name as _canonical,
+)
 from .units import normalize_unit, to_base, from_base_display, unit_class
 
 logger = logging.getLogger(__name__)
@@ -37,7 +41,11 @@ def prepare_for_cart(name: str, amount: Optional[float], unit: Optional[str]) ->
     norm_unit = normalize_unit(unit)
     base_unit, base_amount = to_base(norm_unit, amount)
     return {
-        "name": (name or "").strip() or "?",
+        "name": (
+            TOMATO_SHOPPING_NAME
+            if canon == TOMATO_CANONICAL
+            else (name or "").strip() or "?"
+        ),
         "canonical_name": canon,
         "amount": base_amount,
         "unit": base_unit,
@@ -107,7 +115,7 @@ def add_recipe_to_cart(db, recipe_id: int, multiplier: float = 1.0) -> Dict[str,
         # War schon was im Cart mit selber canonical+unit?
         existed = db.cart_find_mergeable(canon, base_unit)
         db.cart_add_or_merge(
-            name=name or canon,
+            name=TOMATO_SHOPPING_NAME if canon == TOMATO_CANONICAL else name or canon,
             canonical_name=canon,
             amount=base_amount,
             unit=base_unit,
@@ -118,6 +126,74 @@ def add_recipe_to_cart(db, recipe_id: int, multiplier: float = 1.0) -> Dict[str,
         else:
             counters["added"] += 1
     return counters
+
+
+def aggregate_recipes_for_cart(
+    db,
+    selections: List[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    """Aggregiert mehrere Rezepte ohne den Warenkorb zu verändern.
+
+    ``selections`` enthält ``recipe_id`` und einen bereits berechneten
+    ``multiplier``. Das Ergebnis verwendet dieselben Basis-Einheiten und
+    Canonicals wie der echte Warenkorb und kann daher als Vorschau oder für
+    einen atomaren ``cart_replace`` verwendet werden.
+    """
+    excluded = db.shopping_excluded_canonicals()
+    aggregated: Dict[Tuple[str, Optional[str]], Dict[str, object]] = {}
+
+    for selection in selections:
+        try:
+            recipe_id = int(selection.get("recipe_id"))
+            multiplier = float(selection.get("multiplier", 1.0))
+        except (TypeError, ValueError):
+            continue
+        if multiplier <= 0 or multiplier > 100:
+            multiplier = 1.0
+
+        for ingredient in db.recipe_ingredients_get(recipe_id):
+            name = ingredient.get("name") or ""
+            canonical = ingredient.get("canonical_name") or _canonical(name)
+            if not canonical or canonical.strip().lower() in excluded:
+                continue
+            amount = ingredient.get("amount")
+            if amount is not None:
+                amount = float(amount) * multiplier
+            prepared = prepare_for_cart(name, amount, ingredient.get("unit"))
+            key = (str(prepared["canonical_name"]), prepared["unit"])
+            existing = aggregated.get(key)
+            if existing is None:
+                aggregated[key] = {
+                    **prepared,
+                    "source_recipe_ids": [recipe_id],
+                }
+                continue
+            if prepared["amount"] is not None:
+                existing["amount"] = (
+                    float(existing["amount"] or 0) + float(prepared["amount"])
+                )
+            sources = existing["source_recipe_ids"]
+            if recipe_id not in sources:
+                sources.append(recipe_id)
+
+    return sorted(
+        aggregated.values(),
+        key=lambda item: str(item.get("name") or "").casefold(),
+    )
+
+
+def aggregated_cart_for_display(items: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    out: List[Dict[str, object]] = []
+    for item in items:
+        display_value, display_unit = display_amount(item.get("amount"), item.get("unit"))
+        out.append({
+            **item,
+            "amount_base": item.get("amount"),
+            "unit_base": item.get("unit"),
+            "amount": display_value,
+            "unit": display_unit,
+        })
+    return out
 
 
 def cart_for_display(db) -> List[Dict[str, object]]:

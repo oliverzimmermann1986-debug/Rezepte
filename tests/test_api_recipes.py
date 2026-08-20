@@ -25,7 +25,7 @@ def test_list_returns_inserted_recipes(client, test_db):
     assert names == ["Spargel", "Tomate"]
 
 
-def test_list_includes_servings_and_real_ingredient_count(client, test_db):
+def test_list_includes_completeness_counts_and_manual_care_state(client, test_db):
     recipe = _create_recipe(test_db, name="Pasta", folder_path="/tmp/pasta")
     test_db.recipe_set_servings(recipe["id"], 4)
     with test_db.conn() as connection:
@@ -45,6 +45,72 @@ def test_list_includes_servings_and_real_ingredient_count(client, test_db):
 
     assert item["servings"] == 4
     assert item["ingredients_count"] == 2
+    assert item["steps_count"] == 0
+    assert item["needs_manual_care"] is True
+
+    test_db.recipe_steps_set(recipe["id"], [{"instruction": "Alles kochen."}])
+    complete = client.get("/api/recipes").json()["items"][0]
+
+    assert complete["steps_count"] == 1
+    assert complete["needs_manual_care"] is False
+
+
+def test_list_filter_needs_manual_care_is_server_side(client, test_db):
+    """Filter und total müssen zusammenpassen — auch über die Seitengrenze.
+
+    Die iOS-App filterte früher erst nach dem LIMIT und zählte damit nur
+    innerhalb der geladenen Seite; ab Seite 2 fehlten Treffer lautlos.
+    """
+    lueckenhaft = _create_recipe(test_db, name="Ohne Schritte", folder_path="/tmp/a")
+    with test_db.conn() as connection:
+        connection.execute(
+            """
+            INSERT INTO recipe_ingredients
+            (recipe_id, name, canonical_name, amount, unit, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (lueckenhaft["id"], "Mehl", "mehl", 200, "g", 0),
+        )
+    leer = _create_recipe(test_db, name="Ganz leer", folder_path="/tmp/b")
+    vollstaendig = _create_recipe(test_db, name="Komplett", folder_path="/tmp/c")
+    with test_db.conn() as connection:
+        connection.execute(
+            """
+            INSERT INTO recipe_ingredients
+            (recipe_id, name, canonical_name, amount, unit, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (vollstaendig["id"], "Reis", "reis", 300, "g", 0),
+        )
+    test_db.recipe_steps_set(vollstaendig["id"], [{"instruction": "Kochen."}])
+
+    offen = client.get("/api/recipes", params={"needs_manual_care": "true"}).json()
+    assert offen["total"] == 2
+    assert sorted(it["name"] for it in offen["items"]) == ["Ganz leer", "Ohne Schritte"]
+    assert all(it["needs_manual_care"] for it in offen["items"])
+    assert leer["id"] in {it["id"] for it in offen["items"]}
+
+    fertig = client.get("/api/recipes", params={"needs_manual_care": "false"}).json()
+    assert fertig["total"] == 1
+    assert fertig["items"][0]["name"] == "Komplett"
+
+    # total bleibt der Filter-Treffer, auch wenn die Seite kleiner ist
+    seite = client.get(
+        "/api/recipes", params={"needs_manual_care": "true", "limit": 1}
+    ).json()
+    assert seite["total"] == 2
+    assert len(seite["items"]) == 1
+
+    zweite = client.get(
+        "/api/recipes",
+        params={"needs_manual_care": "true", "limit": 1, "offset": 1},
+    ).json()
+    assert zweite["total"] == 2
+    assert len(zweite["items"]) == 1
+    assert zweite["items"][0]["id"] != seite["items"][0]["id"]
+
+    ohne_filter = client.get("/api/recipes").json()
+    assert ohne_filter["total"] == 3
 
 
 def test_list_filter_by_type(client, test_db):
@@ -55,6 +121,67 @@ def test_list_filter_by_type(client, test_db):
     body = r.json()
     assert body["total"] == 1
     assert body["items"][0]["name"] == "Suppe"
+
+
+def test_list_can_include_and_exclude_ingredients(client, test_db):
+    recipes = {
+        "Knoblauch und Zwiebel": ["knoblauch", "zwiebel"],
+        "Nur Knoblauch": ["knoblauch"],
+        "Nur Zwiebel": ["zwiebel"],
+        "Ohne beide": ["pasta"],
+    }
+    for index, (name, ingredients) in enumerate(recipes.items()):
+        recipe = _create_recipe(
+            test_db,
+            name=name,
+            folder_path=f"/tmp/ingredient-filter-{index}",
+        )
+        test_db.recipe_set_extraction_result(
+            recipe["id"],
+            "ok",
+            [
+                {
+                    "name": canonical.title(),
+                    "canonical_name": canonical,
+                    "amount": 1,
+                    "unit": "Stück",
+                }
+                for canonical in ingredients
+            ],
+        )
+        test_db.recipe_tags_set(
+            recipe["id"],
+            ["mit-zwiebel" if "zwiebel" in ingredients else "ohne-zwiebel"],
+        )
+
+    included = client.get("/api/recipes?ingredient=knoblauch").json()
+    assert {item["name"] for item in included["items"]} == {
+        "Knoblauch und Zwiebel",
+        "Nur Knoblauch",
+    }
+
+    excluded = client.get("/api/recipes?exclude_ingredient=zwiebel").json()
+    assert {item["name"] for item in excluded["items"]} == {
+        "Nur Knoblauch",
+        "Ohne beide",
+    }
+
+    combined = client.get(
+        "/api/recipes?ingredient=knoblauch&exclude_ingredient=zwiebel"
+    ).json()
+    assert [item["name"] for item in combined["items"]] == ["Nur Knoblauch"]
+
+    excluded_facets = client.get(
+        "/api/recipes/facets?exclude_ingredient=zwiebel"
+    ).json()
+    assert {
+        item["name"]: item["n"] for item in excluded_facets["tags"]
+    } == {"ohne-zwiebel": 2}
+
+    all_facets = client.get("/api/recipes/facets").json()
+    assert {
+        item["name"]: item["n"] for item in all_facets["tags"]
+    } == {"mit-zwiebel": 2, "ohne-zwiebel": 2}
 
 
 def test_list_search_in_name(client, test_db):

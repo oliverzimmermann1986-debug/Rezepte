@@ -80,10 +80,10 @@ def _safe_recipe_file(recipe: Dict[str, Any], filename: str) -> Path:
 
 
 def _actor(request: Request) -> str:
-    from ..auth import SESSION_COOKIE, auth_disabled, session_user
+    from ..auth import auth_disabled, request_user
     if auth_disabled():
         return "local"
-    return session_user(request.cookies.get(SESSION_COOKIE, "")) or "unknown"
+    return request_user(request) or "unknown"
 
 
 def _version_before(recipe_id: int, request: Request, reason: str, source: str = "user") -> int:
@@ -115,6 +115,10 @@ def list_recipes(
     folder: Optional[str] = Query(None, description="Pfad-Präfix, z.B. /mnt/rezepte/Hauptgericht"),
     tag_id: Optional[List[int]] = Query(None),
     ingredient: Optional[List[str]] = Query(None, description="canonical_name(s), AND-verknüpft"),
+    exclude_ingredient: Optional[List[str]] = Query(
+        None,
+        description="canonical_name(s), die im Rezept nicht vorkommen dürfen",
+    ),
     search: Optional[str] = Query(None),
     ingredients_status: Optional[str] = Query(None,
         description="Filter auf KI-Extraktions-Status: 'ok' | 'pending' | 'error' | 'skipped'"),
@@ -124,6 +128,10 @@ def list_recipes(
         description="Nur favorisierte Rezepte (is_favorite=1)"),
     min_rating: int = Query(0, ge=0, le=5,
         description="Mindestbewertung (0=alle, 1-5=Sterne)"),
+    needs_manual_care: Optional[bool] = Query(None,
+        description="True=nur Rezepte ohne Zutaten oder ohne Schritte, "
+                    "False=nur vollständige. Wird serverseitig gefiltert, damit "
+                    "total und Seitenzahl zum Filter passen."),
     limit: int = Query(60, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -139,11 +147,13 @@ def list_recipes(
         folder_prefix=folder,
         tag_ids=tag_id,
         ingredient_canonical=ingredient,
+        ingredient_excluded=exclude_ingredient,
         search=search,
         ingredients_status=ingredients_status,
         verified=verified,
         favorite_only=favorite_only,
         min_rating=min_rating,
+        needs_manual_care=needs_manual_care,
         limit=limit,
         offset=offset,
     )
@@ -153,11 +163,13 @@ def list_recipes(
         folder_prefix=folder,
         tag_ids=tag_id,
         ingredient_canonical=ingredient,
+        ingredient_excluded=exclude_ingredient,
         search=search,
         ingredients_status=ingredients_status,
         verified=verified,
         favorite_only=favorite_only,
         min_rating=min_rating,
+        needs_manual_care=needs_manual_care,
     )
 
     search_meta: Dict[str, Any] = {
@@ -172,15 +184,19 @@ def list_recipes(
             items = db.recipe_list(
                 type=type, category=category, folder_prefix=folder, tag_ids=tag_id,
                 ingredient_canonical=ingredient, search=effective_search,
+                ingredient_excluded=exclude_ingredient,
                 ingredients_status=ingredients_status, verified=verified,
                 favorite_only=favorite_only, min_rating=min_rating,
+                needs_manual_care=needs_manual_care,
                 limit=limit, offset=offset,
             )
             total = db.recipe_count(
                 type=type, category=category, folder_prefix=folder, tag_ids=tag_id,
                 ingredient_canonical=ingredient, search=effective_search,
+                ingredient_excluded=exclude_ingredient,
                 ingredients_status=ingredients_status, verified=verified,
                 favorite_only=favorite_only, min_rating=min_rating,
+                needs_manual_care=needs_manual_care,
             )
             if total:
                 search_meta["query"] = effective_search
@@ -207,6 +223,11 @@ def list_recipes(
             "rating": r.get("rating") or 0,
             "servings": r.get("servings"),
             "ingredients_count": int(r.get("ingredients_count") or 0),
+            "steps_count": int(r.get("steps_count") or 0),
+            "needs_manual_care": (
+                int(r.get("ingredients_count") or 0) == 0
+                or int(r.get("steps_count") or 0) == 0
+            ),
             "description": ((r.get("description") or "").strip()[:220]),
         })
     return {"total": total, "items": out, "extraction_running": is_extraction_running(),
@@ -219,6 +240,7 @@ def facets(
     category: Optional[str] = Query(None),
     tag_id: Optional[List[int]] = Query(None),
     ingredient: Optional[List[str]] = Query(None),
+    exclude_ingredient: Optional[List[str]] = Query(None),
     search: Optional[str] = Query(None),
     ingredients_status: Optional[str] = Query(None),
     verified: Optional[bool] = Query(None),
@@ -231,7 +253,8 @@ def facets(
        Types/Categories bleiben die volle Distinct-Liste (keine Counts in der UI)."""
     cache_key = (
         type or "", category or "", tuple(sorted(tag_id or [])),
-        tuple(sorted(ingredient or [])), search or "", ingredients_status or "",
+        tuple(sorted(ingredient or [])), tuple(sorted(exclude_ingredient or [])),
+        search or "", ingredients_status or "",
         verified, bool(favorite_only), int(min_rating),
     )
     cached = _FACET_CACHE.get(cache_key)
@@ -250,6 +273,7 @@ def facets(
         ).fetchall()]
     flt = dict(
         type=type, category=category, tag_ids=tag_id, ingredient_canonical=ingredient,
+        ingredient_excluded=exclude_ingredient,
         search=search, ingredients_status=ingredients_status, verified=verified,
         favorite_only=favorite_only, min_rating=min_rating,
     )
@@ -281,6 +305,14 @@ def get_recipe(recipe_id: int):
         raise HTTPException(404, "Rezept nicht gefunden")
     r["ingredients"] = db.recipe_ingredients_get(recipe_id)
     r["steps"] = db.recipe_steps_get(recipe_id)
+    r["is_favorite"] = bool(r.get("is_favorite"))
+    r["needs_manual_care"] = not r["ingredients"] or not r["steps"]
+    r["manual_care_reasons"] = [
+        label for missing, label in (
+            (not r["ingredients"], "Zutaten fehlen"),
+            (not r["steps"], "Zubereitungsschritte fehlen"),
+        ) if missing
+    ]
     r["tags"] = db.recipe_tags_get(recipe_id)
     # PDF-Rezepte (Mail-Import): Original-PDF melden, damit das Frontend
     # einen "PDF öffnen"-Button zeigen kann (Bild allein reicht nicht).

@@ -20,9 +20,10 @@ from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, auth_disabled, check_credent
                     verify_session)
 from .config_store import get_config, migrate_pdf_quality_defaults
 from .db import get_db
-from .routes import (api_admin, api_audit, api_browse, api_config, api_einkauf, api_events, api_hdd,
+from .routes import (api_admin, api_audit, api_auth, api_browse, api_config, api_einkauf, api_events, api_hdd,
                      api_history, api_jobs, api_master, api_metrics, api_pending, api_recipes,
-                     api_schedule, api_share, api_shopping, api_stats, api_test, api_users, sharing)
+                     api_meal_plan, api_schedule, api_share, api_shopping, api_stats, api_test,
+                     api_users, sharing)
 from .security import SecurityHeadersMiddleware, client_ip, login_limiter
 
 # -------- Logging --------
@@ -222,7 +223,7 @@ async def _lifespan(app):
 
 
 # -------- FastAPI --------
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 APP_CAPABILITIES = [
     "admin-center",
     "pdf-processing",
@@ -231,6 +232,10 @@ APP_CAPABILITIES = [
     "pdf-recipe-extraction",
     "einkauf-proxy",
     "recurring-shopping",
+    "ingredient-tristate-filter",
+    "weekly-meal-plan",
+    "weekly-meal-plan-pdf",
+    "recipe-pdf-export",
 ]
 
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).
@@ -280,6 +285,7 @@ def serve_manifest():
 
 # API-Routen
 app.include_router(api_admin.session_router)
+app.include_router(api_auth.router)
 app.include_router(api_admin.router)
 app.include_router(api_config.router)
 app.include_router(api_jobs.router)
@@ -295,6 +301,7 @@ app.include_router(api_events.router)
 app.include_router(api_recipes.router)
 app.include_router(api_einkauf.router)
 app.include_router(api_shopping.router)
+app.include_router(api_meal_plan.router)
 app.include_router(api_audit.router)
 app.include_router(api_master.router)
 app.include_router(api_users.router)
@@ -356,6 +363,45 @@ def login_page(next: str = "/"):
     if auth_disabled():
         return RedirectResponse(url="/", status_code=303)
     return LOGIN_HTML.format(error="", next=_safe_next(next))
+
+
+@app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+def privacy_page():
+    """Öffentliche Datenschutzhinweise für App Store und native App."""
+    return HTMLResponse(
+        """<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Datenschutz – Rezepte</title>
+<style>
+body{margin:0;background:#fffaf0;color:#433427;font:17px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:720px;margin:auto;padding:40px 20px 80px}h1{font-size:36px;line-height:1.1}
+h2{margin-top:32px;font-size:22px}a{color:#433427}small{color:#7b6a5c}
+</style></head><body><main>
+<h1>Datenschutz</h1>
+<p><strong>Rezepte</strong> ist eine private, selbst gehostete
+Rezeptverwaltung. Verantwortlich ist der Betreiber des Servers, dessen
+Adresse in der App eingetragen wurde.</p>
+<h2>Verarbeitete Daten</h2>
+<p>Die App verarbeitet die Server-Adresse, den Benutzernamen, ein
+widerrufbares Sitzungstoken sowie die auf dem privaten Server gespeicherten
+Rezepte, Einkaufslisten und Wochenpläne. Das Passwort wird nur zur Anmeldung
+an den gewählten Server übertragen und nicht von der App gespeichert.</p>
+<h2>Speicherung und Übertragung</h2>
+<p>Das Sitzungstoken wird im iOS-Schlüsselbund gespeichert. Die Kommunikation
+erfolgt über HTTPS direkt mit dem eingetragenen Rezepteserver. Die App enthält
+keine Werbung, keine Telemetrie und keine Analyse-SDKs.</p>
+<h2>Externe Quellen</h2>
+<p>TikTok- und Instagram-Links werden nicht automatisch aufgerufen. Erst wenn
+ein Nutzer den Quellenlink antippt, wird er an die jeweilige externe App oder
+Website übergeben; dann gelten deren Datenschutzbestimmungen.</p>
+<h2>Löschung und Auskunft</h2>
+<p>Rezepte und Kontodaten werden vom Betreiber des privaten Servers verwaltet.
+Anfragen zu Auskunft, Berichtigung oder Löschung sind an diesen Betreiber zu
+richten. Durch Abmelden wird das Sitzungstoken vom iPhone entfernt.</p>
+<p><small>Stand: 30. Juli 2026</small></p>
+</main></body></html>"""
+    )
 
 
 @app.post("/login")

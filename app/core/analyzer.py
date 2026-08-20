@@ -570,7 +570,12 @@ class OpenAIAnalyzer:
             "- amount: Zahl oder null. Bei Bereichen Mittel oder Untergrenze.\n"
             "- unit: nur aus: g, kg, ml, l, TL, EL, Stück, Prise, Bund, Zehe, "
             "Scheibe, Blatt, Pck, Dose, Tasse, Flasche, Glas. Sonst null.\n"
-            "- name: nur die Zutat (ohne 'frisch', 'groß', etc.).\n"
+            "- name: konkrete Zutat auf Deutsch, Singular bevorzugt und ohne Adjektive. "
+            "Frische Sortenbezeichnungen wie Cherrytomate, Cocktailtomate oder "
+            "Kirschtomate beibehalten.\n"
+            "- Tomate, Cherrytomate, Cocktailtomate und Kirschtomate werden später "
+            "für die Einkaufsliste gemeinsam als 'tomate' normalisiert. Verarbeitete "
+            "Produkte wie passierte Tomaten, Dosentomaten und Tomatenmark bleiben getrennt.\n"
             "- raw: genauer Text-Snippet aus der Beschreibung.\n"
             '- Bei keinen erkennbaren Zutaten: {"ingredients":[]}.'
         )
@@ -643,10 +648,12 @@ class OpenAIAnalyzer:
             can_sample = sorted(set(c.strip() for c in existing_canonical if c))[:120]
             if can_sample:
                 hint += (
-                    "\n\nBESTEHENDE ZUTATEN-NAMEN in der DB (wähle den Namen so dass "
-                    "er deutsch + Singular + ohne Adjektive matcht — z.B. 'Tomate' "
-                    "(nicht 'Tomaten', nicht 'frische Tomaten'); typische Form orientiert "
-                    "sich an dieser Liste):\n  "
+                    "\n\nBESTEHENDE ZUTATEN-NAMEN in der DB (wähle den Namen deutsch, "
+                    "im Singular und ohne Adjektive. Konkrete frische Sorten wie "
+                    "'Cherrytomate' oder 'Cocktailtomate' bleiben im Namen erhalten; "
+                    "sie werden später gemeinsam als 'tomate' normalisiert. Verarbeitete "
+                    "Produkte wie 'passierte Tomaten', 'Dosentomaten' und 'Tomatenmark' "
+                    "bleiben eigenständig. Orientiere dich an dieser Liste):\n  "
                     + ", ".join(can_sample)
                 )
 
@@ -679,7 +686,12 @@ class OpenAIAnalyzer:
             "- amount: Zahl oder null. Bei Bereichen ('2-3 Eier', '1-2 Bund') Mittel oder Untergrenze.\n"
             "- unit: nur aus: g, kg, ml, l, TL, EL, Stück, Prise, Bund, Zehe, Scheibe, "
             "Blatt, Pck, Dose, Tasse, Flasche, Glas. Sonst null.\n"
-            "- name: nur die Zutat selbst, deutsche Form, Singular bevorzugt (ohne 'frisch', 'groß').\n"
+            "- name: konkrete Zutat selbst, deutsche Form, Singular bevorzugt und ohne Adjektive. "
+            "Frische Sortenbezeichnungen wie Cherrytomate, Cocktailtomate oder "
+            "Kirschtomate beibehalten.\n"
+            "- Tomate, Cherrytomate, Cocktailtomate und Kirschtomate werden später "
+            "für die Einkaufsliste gemeinsam als 'tomate' normalisiert. Verarbeitete "
+            "Produkte wie passierte Tomaten, Dosentomaten und Tomatenmark bleiben getrennt.\n"
             "- raw: genauer Text-Snippet aus der Beschreibung wie es da steht.\n"
             "- Englische Zutaten-Namen ins Deutsche übersetzen (oats → Haferflocken).\n\n"
             "REGELN SCHRITTE:\n"

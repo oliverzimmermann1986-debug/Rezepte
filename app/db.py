@@ -171,6 +171,21 @@ CREATE TABLE IF NOT EXISTS shopping_exclusions (
   created_at REAL NOT NULL
 );
 
+-- meal_plan_entries: Wochenplan ohne separate Wochen-Tabelle. Das ISO-Datum
+-- reicht für Navigation und erlaubt mehrere Rezepte pro Tag.
+CREATE TABLE IF NOT EXISTS meal_plan_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  planned_for TEXT NOT NULL,                -- YYYY-MM-DD
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  planned_servings INTEGER NOT NULL DEFAULT 2,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  UNIQUE(planned_for, recipe_id)
+);
+CREATE INDEX IF NOT EXISTS idx_meal_plan_date
+  ON meal_plan_entries(planned_for, sort_order, id);
+
 -- users: Multi-User-Auth. Bcrypt-Hashes in password_hash. Die role-Spalte
 -- bleibt nur für Abwärtskompatibilität; Berechtigungen werden nicht danach
 -- unterschieden. disabled=1 → kein Login mehr,
@@ -487,6 +502,116 @@ class Database:
             "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
             (120, "admin_center_versions_search_pdf", time.time()),
         )
+
+        # Fresh tomato varieties are interchangeable on the shopping list.
+        # Keep processed tomato products (tomato paste, canned/passata) separate.
+        tomato_migration = c.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?",
+            (130,),
+        ).fetchone()
+        if tomato_migration is None:
+            from .recipes.canonical import (
+                TOMATO_CANONICAL,
+                TOMATO_CANONICAL_ALIASES,
+                TOMATO_SHOPPING_NAME,
+            )
+
+            tomato_aliases = tuple(sorted(TOMATO_CANONICAL_ALIASES))
+            alias_slots = ",".join("?" for _ in tomato_aliases)
+
+            c.execute(
+                f"UPDATE recipe_ingredients SET canonical_name=? "
+                f"WHERE lower(trim(COALESCE(canonical_name, name))) IN ({alias_slots})",
+                (TOMATO_CANONICAL, *tomato_aliases),
+            )
+
+            cart_rows = c.execute(
+                f"SELECT id, name, canonical_name, amount, unit, checked, "
+                f"added_at, source_recipe_ids FROM shopping_cart "
+                f"WHERE lower(trim(COALESCE(canonical_name, name))) IN ({alias_slots}) "
+                f"ORDER BY id",
+                tomato_aliases,
+            ).fetchall()
+            rows_by_unit: dict[Optional[str], list[tuple]] = {}
+            for row in cart_rows:
+                rows_by_unit.setdefault(row[4], []).append(row)
+
+            for rows in rows_by_unit.values():
+                target = next(
+                    (
+                        row for row in rows
+                        if str(row[2] or "").strip().lower() == TOMATO_CANONICAL
+                    ),
+                    rows[0],
+                )
+                amounts = [row[3] for row in rows if row[3] is not None]
+                merged_amount = sum(float(amount) for amount in amounts) if amounts else None
+                merged_sources: list = []
+                for row in rows:
+                    try:
+                        source_ids = json.loads(row[7] or "[]")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        source_ids = []
+                    if isinstance(source_ids, list):
+                        for source_id in source_ids:
+                            if source_id not in merged_sources:
+                                merged_sources.append(source_id)
+
+                c.execute(
+                    "UPDATE shopping_cart SET name=?, canonical_name=?, amount=?, checked=?, "
+                    "added_at=?, source_recipe_ids=? WHERE id=?",
+                    (
+                        TOMATO_SHOPPING_NAME,
+                        TOMATO_CANONICAL,
+                        merged_amount,
+                        1 if all(bool(row[5]) for row in rows) else 0,
+                        max(float(row[6]) for row in rows),
+                        json.dumps(merged_sources),
+                        target[0],
+                    ),
+                )
+                duplicate_ids = [row[0] for row in rows if row[0] != target[0]]
+                if duplicate_ids:
+                    duplicate_slots = ",".join("?" for _ in duplicate_ids)
+                    c.execute(
+                        f"DELETE FROM shopping_cart WHERE id IN ({duplicate_slots})",
+                        duplicate_ids,
+                    )
+
+            excluded_rows = c.execute(
+                f"SELECT created_at FROM shopping_exclusions "
+                f"WHERE lower(trim(canonical_name)) IN ({alias_slots})",
+                tomato_aliases,
+            ).fetchall()
+            if excluded_rows:
+                earliest = min(float(row[0]) for row in excluded_rows)
+                c.execute(
+                    "INSERT OR IGNORE INTO shopping_exclusions "
+                    "(canonical_name, created_at) VALUES (?, ?)",
+                    (TOMATO_CANONICAL, earliest),
+                )
+                c.execute(
+                    "UPDATE shopping_exclusions SET created_at=min(created_at, ?) "
+                    "WHERE canonical_name=?",
+                    (earliest, TOMATO_CANONICAL),
+                )
+                c.execute(
+                    f"DELETE FROM shopping_exclusions "
+                    f"WHERE lower(trim(canonical_name)) IN ({alias_slots}) "
+                    f"AND lower(trim(canonical_name))<>?",
+                    (*tomato_aliases, TOMATO_CANONICAL),
+                )
+
+            c.execute(
+                "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                (130, "merge_fresh_tomato_variants", time.time()),
+            )
+
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (140, "weekly_meal_plan", time.time()),
+        )
+
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
             defaults = {
                 "Hackfleisch": ["Hack", "Gehacktes", "Faschiertes"],
@@ -1364,11 +1489,13 @@ class Database:
         folder_prefix: Optional[str] = None,
         tag_ids: Optional[List[int]] = None,
         ingredient_canonical: Optional[List[str]] = None,
+        ingredient_excluded: Optional[List[str]] = None,
         search: Optional[str] = None,
         ingredients_status: Optional[str] = None,
         verified: Optional[bool] = None,
         favorite_only: bool = False,
         min_rating: int = 0,
+        needs_manual_care: Optional[bool] = None,
         include_deleted: bool = False,
         only_deleted: bool = False,
         limit: int = 200,
@@ -1382,18 +1509,22 @@ class Database:
             folder_prefix=folder_prefix,
             tag_ids=tag_ids,
             ingredient_canonical=ingredient_canonical,
+            ingredient_excluded=ingredient_excluded,
             search=search,
             ingredients_status=ingredients_status,
             verified=verified,
             favorite_only=favorite_only,
             min_rating=min_rating,
+            needs_manual_care=needs_manual_care,
             include_deleted=include_deleted,
             only_deleted=only_deleted,
         )
         select_sql = (
             "SELECT r.*, "
             "(SELECT COUNT(*) FROM recipe_ingredients ri "
-            " WHERE ri.recipe_id=r.id) AS ingredients_count"
+            " WHERE ri.recipe_id=r.id) AS ingredients_count, "
+            "(SELECT COUNT(*) FROM recipe_steps rs "
+            " WHERE rs.recipe_id=r.id) AS steps_count"
         )
         params: List[Any] = []
         if search:
@@ -1423,11 +1554,13 @@ class Database:
         folder_prefix: Optional[str] = None,
         tag_ids: Optional[List[int]] = None,
         ingredient_canonical: Optional[List[str]] = None,
+        ingredient_excluded: Optional[List[str]] = None,
         search: Optional[str] = None,
         ingredients_status: Optional[str] = None,
         verified: Optional[bool] = None,
         favorite_only: bool = False,
         min_rating: int = 0,
+        needs_manual_care: Optional[bool] = None,
         include_deleted: bool = False,
         only_deleted: bool = False,
     ) -> int:
@@ -1439,11 +1572,13 @@ class Database:
             folder_prefix=folder_prefix,
             tag_ids=tag_ids,
             ingredient_canonical=ingredient_canonical,
+            ingredient_excluded=ingredient_excluded,
             search=search,
             ingredients_status=ingredients_status,
             verified=verified,
             favorite_only=favorite_only,
             min_rating=min_rating,
+            needs_manual_care=needs_manual_care,
             include_deleted=include_deleted,
             only_deleted=only_deleted,
         )
@@ -1705,6 +1840,104 @@ class Database:
                     (canonical,),
                 )
 
+    # ─── Weekly meal plan ────────────────────────────────────────────────
+
+    def meal_plan_entries(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                """
+                SELECT mp.id, mp.planned_for, mp.recipe_id, mp.planned_servings,
+                       mp.sort_order, mp.created_at, mp.updated_at,
+                       r.name AS recipe_name, r.servings AS recipe_servings,
+                       r.thumb_filename, r.ingredients_status,
+                       (SELECT COUNT(*) FROM recipe_ingredients ri
+                        WHERE ri.recipe_id=r.id) AS ingredients_count
+                FROM meal_plan_entries mp
+                JOIN recipes r ON r.id=mp.recipe_id
+                WHERE mp.planned_for BETWEEN ? AND ?
+                  AND r.deleted_at IS NULL
+                ORDER BY mp.planned_for, mp.sort_order, mp.id
+                """,
+                (start_date, end_date),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def meal_plan_add(
+        self,
+        *,
+        planned_for: str,
+        recipe_id: int,
+        planned_servings: int,
+    ) -> Dict[str, Any]:
+        now = time.time()
+        with self.conn() as c:
+            recipe = c.execute(
+                "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL",
+                (recipe_id,),
+            ).fetchone()
+            if not recipe:
+                raise ValueError("Rezept nicht gefunden")
+            next_order = int(c.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 "
+                "FROM meal_plan_entries WHERE planned_for=?",
+                (planned_for,),
+            ).fetchone()[0])
+            c.execute(
+                """
+                INSERT INTO meal_plan_entries
+                    (planned_for, recipe_id, planned_servings, sort_order, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(planned_for, recipe_id) DO UPDATE SET
+                    planned_servings=excluded.planned_servings,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    planned_for,
+                    recipe_id,
+                    planned_servings,
+                    next_order,
+                    now,
+                    now,
+                ),
+            )
+            row = c.execute(
+                "SELECT id, planned_for, recipe_id, planned_servings, sort_order "
+                "FROM meal_plan_entries WHERE planned_for=? AND recipe_id=?",
+                (planned_for, recipe_id),
+            ).fetchone()
+            return dict(row)
+
+    def meal_plan_update(
+        self,
+        item_id: int,
+        *,
+        planned_for: Optional[str] = None,
+        planned_servings: Optional[int] = None,
+    ) -> bool:
+        sets = ["updated_at=?"]
+        params: List[Any] = [time.time()]
+        if planned_for is not None:
+            sets.append("planned_for=?")
+            params.append(planned_for)
+        if planned_servings is not None:
+            sets.append("planned_servings=?")
+            params.append(planned_servings)
+        params.append(item_id)
+        with self.conn() as c:
+            try:
+                cur = c.execute(
+                    f"UPDATE meal_plan_entries SET {', '.join(sets)} WHERE id=?",
+                    params,
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("Rezept ist für diesen Tag bereits eingeplant") from exc
+            return cur.rowcount > 0
+
+    def meal_plan_delete(self, item_id: int) -> bool:
+        with self.conn() as c:
+            cur = c.execute("DELETE FROM meal_plan_entries WHERE id=?", (item_id,))
+            return cur.rowcount > 0
+
     # ─── Steps + Servings ─────────────────────────────────────────────────
 
     def recipe_ingredient_set_calories(self, ingredient_id: int, calories) -> None:
@@ -1765,6 +1998,7 @@ class Database:
         folder_prefix: Optional[str] = None,
         tag_ids: Optional[List[int]] = None,
         ingredient_canonical: Optional[List[str]] = None,
+        ingredient_excluded: Optional[List[str]] = None,
         search: Optional[str] = None,
         ingredients_status: Optional[str] = None,
         verified: Optional[bool] = None,
@@ -1776,42 +2010,25 @@ class Database:
         """WHERE-Bedingungen + Params für Rezept-Filter (Alias r). Spiegelt die
         Logik aus recipe_count, damit die Facetten-Trefferzahlen exakt zur
         Listen-Filterung passen."""
-        params: List[Any] = []
-        where: List[str] = []
-        if type:
-            where.append("r.type = ?"); params.append(type)
-        if category:
-            where.append("r.category = ?"); params.append(category)
-        if folder_prefix:
-            where.append("r.folder_path LIKE ?"); params.append(folder_prefix + "%")
-        if search:
-            self._append_smart_search(where, params, search)
-        if tag_ids:
-            for tid in tag_ids:
-                where.append(
-                    "EXISTS (SELECT 1 FROM recipe_tags rt WHERE rt.recipe_id=r.id AND rt.tag_id=?)"
-                )
-                params.append(tid)
-        if ingredient_canonical:
-            for ing in ingredient_canonical:
-                where.append(
-                    "EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id AND ri.canonical_name=?)"
-                )
-                params.append(ing)
-        if ingredients_status:
-            where.append("r.ingredients_status = ?"); params.append(ingredients_status)
-        if verified is not None:
-            where.append("COALESCE(r.user_verified, 0) = ?")
-            params.append(1 if verified else 0)
-        if favorite_only:
-            where.append("r.is_favorite = 1")
-        if min_rating > 0:
-            where.append("r.rating >= ?"); params.append(min_rating)
-        if only_deleted:
-            where.append("r.deleted_at IS NOT NULL")
-        elif not include_deleted:
-            where.append("r.deleted_at IS NULL")
-        return where, params
+        from .recipes.query_builder import build_recipe_filters
+
+        where_sql, params = build_recipe_filters(
+            self,
+            type=type,
+            category=category,
+            folder_prefix=folder_prefix,
+            tag_ids=tag_ids,
+            ingredient_canonical=ingredient_canonical,
+            ingredient_excluded=ingredient_excluded,
+            search=search,
+            ingredients_status=ingredients_status,
+            verified=verified,
+            favorite_only=favorite_only,
+            min_rating=min_rating,
+            include_deleted=include_deleted,
+            only_deleted=only_deleted,
+        )
+        return ([where_sql.removeprefix(" WHERE ")] if where_sql else []), params
 
     def tag_facets(
         self,
@@ -1819,6 +2036,7 @@ class Database:
         type: Optional[str] = None,
         category: Optional[str] = None,
         ingredient_canonical: Optional[List[str]] = None,
+        ingredient_excluded: Optional[List[str]] = None,
         search: Optional[str] = None,
         ingredients_status: Optional[str] = None,
         verified: Optional[bool] = None,
@@ -1831,6 +2049,7 @@ class Database:
         fallen raus, die Liste schrumpft also passend mit."""
         where, params = self._recipe_where(
             type=type, category=category, ingredient_canonical=ingredient_canonical,
+            ingredient_excluded=ingredient_excluded,
             search=search, ingredients_status=ingredients_status, verified=verified,
             favorite_only=favorite_only, min_rating=min_rating,
         )
@@ -2216,6 +2435,27 @@ class Database:
                 (name, canonical_name, amount, unit, time.time(), src_json),
             )
             return int(cur.lastrowid)
+
+    def cart_replace(self, items: List[Dict[str, Any]]) -> int:
+        """Ersetzt den lokalen Warenkorb atomar durch bereits aggregierte Items."""
+        now = time.time()
+        with self.conn() as c:
+            c.execute("DELETE FROM shopping_cart")
+            for item in items:
+                c.execute(
+                    "INSERT INTO shopping_cart "
+                    "(name, canonical_name, amount, unit, checked, added_at, source_recipe_ids) "
+                    "VALUES (?, ?, ?, ?, 0, ?, ?)",
+                    (
+                        item.get("name") or "?",
+                        item.get("canonical_name"),
+                        item.get("amount"),
+                        item.get("unit"),
+                        now,
+                        json.dumps(item.get("source_recipe_ids") or []),
+                    ),
+                )
+            return len(items)
 
     def cart_update(self, item_id: int, *, amount: Optional[float] = None,
                     checked: Optional[bool] = None, name: Optional[str] = None) -> None:

@@ -276,8 +276,7 @@ async def require_auth(request: Request) -> None:
     if auth_disabled():
         return
     is_api = request.url.path.startswith("/api/")
-    token = request.cookies.get(SESSION_COOKIE, "")
-    if not token or not verify_session(token):
+    if not request_user(request):
         if is_api:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -287,6 +286,17 @@ async def require_auth(request: Request) -> None:
             status_code=status.HTTP_303_SEE_OTHER,
             headers={"Location": f"/login?next={request.url.path}"},
         )
+
+
+def request_user(request: Request) -> Optional[str]:
+    """Liest eine Sitzung aus HttpOnly-Cookie oder Bearer-Header."""
+    if auth_disabled():
+        return "local"
+    token = request.cookies.get(SESSION_COOKIE, "")
+    authorization = getattr(request, "headers", {}).get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    return session_user(token)
 
 
 async def require_admin(request: Request) -> dict:
@@ -299,8 +309,7 @@ async def require_admin(request: Request) -> dict:
     if auth_disabled():
         return {"username": "local", "disabled": False, "full_access": True}
 
-    token = request.cookies.get(SESSION_COOKIE, "")
-    username = session_user(token)
+    username = request_user(request)
     if not username:
         raise HTTPException(401, "Authentication required")
 

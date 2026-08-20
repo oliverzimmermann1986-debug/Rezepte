@@ -24,19 +24,21 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel, Field
 
-from ..auth import SESSION_COOKIE, require_auth, session_user
+from ..auth import require_auth
 from ..config_store import get_config
 from ..core.safety import resolve_directory_under, resolve_regular_file_under
 from ..db import get_db
+from ..recipes.recipe_pdf import build_recipe_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +311,30 @@ def print_recipe(recipe_id: int):
 
 
 # ════ Share-Token-Generator ════
+@print_router.get(
+    "/recipe/{recipe_id}/pdf",
+    dependencies=[Depends(require_auth)],
+)
+def recipe_pdf(recipe_id: int):
+    """Erzeugt eine echte PDF-Datei für Download und Web-Share."""
+    recipe = _load_recipe_full(recipe_id)
+    try:
+        pdf = build_recipe_pdf(recipe)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    slug = re.sub(r"[^a-z0-9]+", "-", str(recipe.get("name") or "").lower())
+    slug = slug.strip("-")[:60] or f"rezept-{recipe_id}"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{slug}.pdf"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 class ShareRequest(BaseModel):
     expires_days: int = Field(SHARE_MAX_AGE_DAYS_DEFAULT, ge=1, le=365)
 
@@ -323,7 +349,8 @@ def create_share_link(recipe_id: int, payload: ShareRequest, request: Request):
     if not recipe or recipe.get("deleted_at") is not None:
         raise HTTPException(404, "Rezept nicht gefunden")
 
-    username = session_user(request.cookies.get(SESSION_COOKIE, "")) or "anonymous"
+    from ..auth import request_user
+    username = request_user(request) or "anonymous"
     token = _serializer().dumps({
         "rid": int(recipe_id),
         "by": username,

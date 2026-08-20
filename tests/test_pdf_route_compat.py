@@ -15,13 +15,16 @@ def test_pdf_admin_routes_are_registered():
 def test_health_and_system_info_report_build_version(client):
     health = client.get("/healthz")
     assert health.status_code == 200
-    assert health.json()["version"] == "1.3.0"
+    assert health.json()["version"] == "1.4.0"
     assert "pdf-preflight" in health.json()["capabilities"]
     assert "recurring-shopping" in health.json()["capabilities"]
+    assert "weekly-meal-plan" in health.json()["capabilities"]
+    assert "weekly-meal-plan-pdf" in health.json()["capabilities"]
+    assert "recipe-pdf-export" in health.json()["capabilities"]
 
     info = client.get("/api/system/info")
     assert info.status_code == 200
-    assert info.json()["version"] == "1.3.0"
+    assert info.json()["version"] == "1.4.0"
     assert "pdf-background-jobs" in info.json()["capabilities"]
     assert "einkauf-proxy" in info.json()["capabilities"]
 

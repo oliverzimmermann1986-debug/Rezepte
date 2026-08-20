@@ -22,11 +22,13 @@ def build_recipe_filters(
     folder_prefix: Optional[str] = None,
     tag_ids: Optional[List[int]] = None,
     ingredient_canonical: Optional[List[str]] = None,
+    ingredient_excluded: Optional[List[str]] = None,
     search: Optional[str] = None,
     ingredients_status: Optional[str] = None,
     verified: Optional[bool] = None,
     favorite_only: bool = False,
     min_rating: int = 0,
+    needs_manual_care: Optional[bool] = None,
     include_deleted: bool = False,
     only_deleted: bool = False,
 ) -> Tuple[str, List[Any]]:
@@ -57,6 +59,13 @@ def build_recipe_filters(
                 "WHERE ri.recipe_id=r.id AND ri.canonical_name=?)"
             )
             params.append(ingredient)
+    if ingredient_excluded:
+        for ingredient in ingredient_excluded:
+            where.append(
+                "NOT EXISTS (SELECT 1 FROM recipe_ingredients ri "
+                "WHERE ri.recipe_id=r.id AND ri.canonical_name=?)"
+            )
+            params.append(ingredient)
     if ingredients_status:
         where.append("r.ingredients_status = ?")
         params.append(ingredients_status)
@@ -68,6 +77,22 @@ def build_recipe_filters(
     if min_rating > 0:
         where.append("r.rating >= ?")
         params.append(min_rating)
+    if needs_manual_care is not None:
+        # "Manuell pflegen" = keine Zutaten ODER keine Schritte. Dieselbe
+        # Bedingung, die die Listen-Antwort als needs_manual_care ausgibt —
+        # hier als SQL, damit Filter und `total` nicht auseinanderlaufen
+        # (vorher filterte die iOS-App erst nach dem LIMIT und zählte damit
+        # nur innerhalb der geladenen Seite).
+        empty_ingredients = (
+            "NOT EXISTS (SELECT 1 FROM recipe_ingredients mri WHERE mri.recipe_id=r.id)"
+        )
+        empty_steps = (
+            "NOT EXISTS (SELECT 1 FROM recipe_steps mrs WHERE mrs.recipe_id=r.id)"
+        )
+        if needs_manual_care:
+            where.append(f"({empty_ingredients} OR {empty_steps})")
+        else:
+            where.append(f"(NOT {empty_ingredients} AND NOT {empty_steps})")
     if only_deleted:
         where.append("r.deleted_at IS NOT NULL")
     elif not include_deleted:

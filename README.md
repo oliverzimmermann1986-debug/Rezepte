@@ -1,5 +1,11 @@
 # Rezepte
 
+## Native iPhone-App
+
+Die native SwiftUI-App liegt in [`ios-swift/`](ios-swift/README.md). Sie spielt
+keine Videos ab, öffnet Quelllinks ausschließlich extern und kennzeichnet
+Rezepte ohne Zutaten oder Zubereitungsschritte zur manuellen Pflege.
+
 Proxmox-LXC-Container für den Scraper-Job:
 
 **Rezeptbibliothek mit TikTok/Instagram-Import** — zieht Links aus zwei separaten E-Mail-Postfächern (Rezepte + Hochzeit), lädt die Videos mit `yt-dlp`, lässt sie von einer **lokalen Ollama-Instanz** klassifizieren und sortiert sie in passende Ordner.
