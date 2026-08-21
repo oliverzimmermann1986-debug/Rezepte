@@ -19,18 +19,42 @@ targets:
       - path: Rezepte
         excludes:
           - Resources/Info.plist
+      - path: Shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: de.mausbaeren.rezepte
         PRODUCT_NAME: Rezepte
         INFOPLIST_FILE: Rezepte/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Rezepte/Resources/Rezepte.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "$(IOS_APP_PROFILE_NAME)"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MACCATALYST: false
         GENERATE_INFOPLIST_FILE: false
+    dependencies:
+      - target: RezepteShare
+        embed: true
     scheme:
       testTargets:
         - RezepteTests
+  RezepteShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: RezepteShare
+        excludes:
+          - Info.plist
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.mausbaeren.rezepte.share
+        PRODUCT_NAME: Rezeptregal teilen
+        INFOPLIST_FILE: RezepteShare/Info.plist
+        CODE_SIGN_ENTITLEMENTS: RezepteShare/RezepteShare.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "$(IOS_SHARE_PROFILE_NAME)"
+        SKIP_INSTALL: true
+        GENERATE_INFOPLIST_FILE: false
+        TARGETED_DEVICE_FAMILY: "1"
   RezepteTests:
     type: bundle.unit-test
     platform: iOS

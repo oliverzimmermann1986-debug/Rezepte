@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -44,6 +45,10 @@ class ImportUrlBody(BaseModel):
     type: str = "recipe"          # 'recipe' | 'wedding'
 
 
+_UPLOAD_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+_UPLOAD_LIMIT = 25 * 1024 * 1024
+
+
 @router.post("/import-url")
 def import_url(body: ImportUrlBody) -> Dict[str, Any]:
     """Manueller Direkt-Import einer einzelnen URL (gleicher Pfad wie der
@@ -70,6 +75,45 @@ def import_url(body: ImportUrlBody) -> Dict[str, Any]:
 
     result = get_scraper_job().process_url({"url": url, "type": body.type})
     return {"ok": result.get("status") in ("auto", "pending"), **result}
+
+
+@router.post("/import-file")
+async def import_file(file: UploadFile = File(...), type: str = "recipe") -> Dict[str, Any]:
+    """Importiert ein Foto oder PDF über dieselbe Analyse wie Mail-Anhänge."""
+    if type not in ("recipe", "wedding"):
+        raise HTTPException(400, "type muss 'recipe' oder 'wedding' sein")
+    filename = Path(file.filename or "upload").name
+    ext = Path(filename).suffix.lower()
+    if ext not in _UPLOAD_EXTENSIONS:
+        raise HTTPException(415, "Erlaubt sind PDF, JPG, JPEG und PNG")
+    data = await file.read(_UPLOAD_LIMIT + 1)
+    if not data:
+        raise HTTPException(400, "Die Datei ist leer")
+    if len(data) > _UPLOAD_LIMIT:
+        raise HTTPException(413, "Die Datei ist größer als 25 MB")
+
+    synth_url = f"manual-upload://{uuid.uuid4().hex}/{filename}"
+    result = get_scraper_job().process_attachment(
+        {
+            "filename": filename,
+            "ext": ext,
+            "type": type,
+            "data": data,
+            "subject": Path(filename).stem.replace("_", " "),
+            "body_excerpt": "",
+            "default_category": "Allgemein",
+        },
+        synth_url,
+    )
+    if result.get("status") == "error":
+        raise HTTPException(422, result.get("error") or "Datei konnte nicht verarbeitet werden")
+    result["ok"] = result.get("status") in {"auto", "pending"}
+    result["message"] = (
+        "Datei wurde importiert."
+        if result.get("status") == "auto"
+        else "Datei wurde übernommen und wartet auf manuelle Prüfung."
+    )
+    return result
 
 
 class BulkSkipBody(BaseModel):
@@ -137,6 +181,10 @@ def resolve(body: ResolveBody):
 
 
 class ReanalyzeRequest(BaseModel):
+    url: str
+
+
+class FailedActionRequest(BaseModel):
     url: str
 
 
@@ -267,6 +315,20 @@ def list_failed_downloads(limit: int = 100) -> List[Dict[str, Any]]:
     - Komplett aus dem Failed-Tracking löschen
     """
     return get_db().download_failures_list(limit=limit)
+
+
+@router.post("/failed/retry")
+def retry_failed_body(body: FailedActionRequest) -> Dict[str, Any]:
+    get_db().download_failure_reset(body.url)
+    return {"ok": True, "url": body.url, "reset": True}
+
+
+@router.post("/failed/discard")
+def discard_failed_body(body: FailedActionRequest) -> Dict[str, Any]:
+    db = get_db()
+    db.history_add(body.url, content_type="recipe", name="(verworfen)")
+    db.download_failure_clear(body.url)
+    return {"ok": True, "url": body.url, "discarded": True}
 
 
 @router.post("/failed/{url:path}/retry")

@@ -519,6 +519,18 @@ class ScraperJob:
         except Exception:
             pass
 
+    def _stash_attachment_for_pending(self, data: bytes, ext: str, synth_url: str) -> str:
+        """Bewahrt einen unsicheren Dateiimport bis zur manuellen Freigabe auf."""
+        import hashlib
+        from ..core.safety import atomic_write_bytes
+
+        pending_dir = self.temp_dir / "pending"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(synth_url.encode("utf-8")).hexdigest()[:24]
+        target = pending_dir / f"attachment-{digest}{ext}"
+        atomic_write_bytes(target, data)
+        return str(target)
+
     def _extract_pdf_recipe_data(self, description: str):
         """Liest Zutaten, Schritte, Portionen und Tags direkt aus PDF-Text.
 
@@ -634,10 +646,14 @@ class ScraperJob:
                     analysis = self._analyze_recipe(description)
 
                 if analysis.needs_manual_input(self.confidence_threshold):
+                    pending_path = self._stash_attachment_for_pending(data, ext, synth_url)
                     self.db.pending_add(
                         url=synth_url, content_type="recipe",
                         description=description[:5000],
-                        video_path=None,   # kein Video bei Attachments
+                        # Das Feld heißt aus historischen Gründen video_path,
+                        # hält bei Dateiimporten aber die Originaldatei zur
+                        # späteren manuellen Freigabe.
+                        video_path=pending_path,
                         ai_suggestion={
                             "name": analysis.name, "type": analysis.type,
                             "category": analysis.category, "confidence": analysis.confidence,
@@ -703,10 +719,11 @@ class ScraperJob:
                     analysis = self._analyze_wedding(description)
 
                 if analysis.needs_manual_input(self.confidence_threshold) or self.wedding_always_pending:
+                    pending_path = self._stash_attachment_for_pending(data, ext, synth_url)
                     self.db.pending_add(
                         url=synth_url, content_type="wedding",
                         description=description[:5000],
-                        video_path=None,
+                        video_path=pending_path,
                         ai_suggestion={
                             "name": analysis.name, "category": analysis.category or default_cat,
                             "confidence": analysis.confidence,
@@ -1331,8 +1348,63 @@ class ScraperJob:
         description = entry.get("description")
 
         if not video_path or not video_path.exists():
+            return {"ok": False, "error": "Importdatei fehlt (vermutlich aufgeräumt)"}
+
+        suggestion = entry.get("ai_suggestion") or {}
+        source = str(suggestion.get("source") or "")
+        ext = video_path.suffix.lower()
+        is_attachment = source in {"mail-attachment", "manual-upload"} and ext in {
+            ".pdf", ".jpg", ".jpeg", ".png",
+        }
+
+        if is_attachment:
+            name = str(decision.get("name") or suggestion.get("name") or "Unbekannt").strip()
+            category = str(decision.get("category") or suggestion.get("category") or "Allgemein").strip()
+            if entry["content_type"] == "recipe":
+                recipe_type = str(decision.get("type") or suggestion.get("type") or "Sonstiges").strip()
+                target = self.recipe_dir / _sanitize(recipe_type) / _sanitize(category) / _sanitize(name)
+                if target.exists():
+                    target = target.parent / f"{target.name}_{datetime.now():%Y%m%d_%H%M%S}"
+                info = {
+                    "url": url, "name": name, "type": recipe_type,
+                    "category": category, "confidence": 1.0,
+                    "content_type": "recipe", "source": source,
+                    "filename": suggestion.get("filename") or video_path.name,
+                    "description": (description or "")[:5000],
+                    "timestamp": datetime.now().isoformat(),
+                }
+                payload = video_path.read_bytes()
+                self._save_attachment_file(target, payload, ext, info, description)
+                thumb_name = f"{target.name}{ext}" if ext in {".jpg", ".jpeg", ".png"} else None
+                recipe_id = self.db.recipe_upsert(
+                    url=url, name=name, type=recipe_type, category=category,
+                    folder_path=str(target), description=description,
+                    thumb_filename=thumb_name, video_filename=None,
+                    source_added_at=time.time(),
+                )
+                if ext == ".pdf":
+                    structured = self._extract_pdf_recipe_data(description or "")
+                    apply_extracted_recipe_data(
+                        self.db, recipe_id, structured, actor="manual-import",
+                        overwrite=False, create_version=False, update_description=True,
+                    )
+                self.db.history_add(url, content_type="recipe", name=name, target_dir=str(target))
+            else:
+                target = self.wedding_dir / _sanitize(category or "Sonstiges") / _sanitize(name)
+                if target.exists():
+                    target = target.parent / f"{target.name}_{datetime.now():%Y%m%d_%H%M%S}"
+                info = {
+                    "url": url, "name": name, "wedding_category": category,
+                    "confidence": 1.0, "content_type": "wedding", "source": source,
+                    "filename": suggestion.get("filename") or video_path.name,
+                    "description": (description or "")[:5000],
+                    "timestamp": datetime.now().isoformat(),
+                }
+                self._save_attachment_file(target, video_path.read_bytes(), ext, info, description)
+                self.db.history_add(url, content_type="wedding", name=name, target_dir=str(target))
             self.db.pending_resolve(url, status="resolved")
-            return {"ok": False, "error": "Video-Datei fehlt (vermutlich aufgeräumt)"}
+            self._remove_pending_files(entry)
+            return {"ok": True, "action": "saved", "target": str(target)}
 
         if entry["content_type"] == "recipe":
             r = RecipeAnalysis(

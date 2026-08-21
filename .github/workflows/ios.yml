@@ -90,6 +90,7 @@ jobs:
 
     env:
       IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID || 'de.mausbaeren.rezepte' }}
+      IOS_SHARE_BUNDLE_ID: de.mausbaeren.rezepte.share
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
       KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
@@ -116,7 +117,7 @@ jobs:
           set -euo pipefail
           required=(
             APPLE_TEAM_ID P12_PASSWORD KEYCHAIN_PASSWORD
-            ASC_KEY_ID ASC_ISSUER_ID IOS_BUNDLE_ID
+            ASC_KEY_ID ASC_ISSUER_ID IOS_BUNDLE_ID IOS_SHARE_BUNDLE_ID
           )
           for name in "${required[@]}"; do
             if [[ -z "${!name:-}" ]]; then
@@ -126,6 +127,7 @@ jobs:
           done
           if [[ -z "${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}" ||
                 -z "${{ secrets.IOS_APPSTORE_PROFILE_BASE64 }}" ||
+                -z "${{ secrets.IOS_SHARE_PROFILE_BASE64 }}" ||
                 -z "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" ]]; then
             echo "Missing one or more encoded signing files." >&2
             exit 1
@@ -138,11 +140,13 @@ jobs:
           set -euo pipefail
           CERTIFICATE_PATH="$RUNNER_TEMP/ios-distribution.p12"
           PROFILE_PATH="$RUNNER_TEMP/ios-appstore.mobileprovision"
+          SHARE_PROFILE_PATH="$RUNNER_TEMP/ios-share-appstore.mobileprovision"
           KEYCHAIN_PATH="$RUNNER_TEMP/rezepte-signing.keychain-db"
           PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
 
           echo -n "${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}" | base64 --decode > "$CERTIFICATE_PATH"
           echo -n "${{ secrets.IOS_APPSTORE_PROFILE_BASE64 }}" | base64 --decode > "$PROFILE_PATH"
+          echo -n "${{ secrets.IOS_SHARE_PROFILE_BASE64 }}" | base64 --decode > "$SHARE_PROFILE_PATH"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -171,7 +175,17 @@ jobs:
 
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
-          echo "profile_name=$PROFILE_NAME" >> "$GITHUB_OUTPUT"
+          security cms -D -i "$SHARE_PROFILE_PATH" > "$PROFILE_PLIST"
+          SHARE_PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
+          SHARE_PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")"
+          SHARE_PROFILE_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")"
+          if [[ "$SHARE_PROFILE_APP_ID" != "$APPLE_TEAM_ID.$IOS_SHARE_BUNDLE_ID" ]]; then
+            echo "Share provisioning profile is for $SHARE_PROFILE_APP_ID, expected $APPLE_TEAM_ID.$IOS_SHARE_BUNDLE_ID" >&2
+            exit 1
+          fi
+          cp "$SHARE_PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$SHARE_PROFILE_UUID.mobileprovision"
+          echo "app_profile_name=$PROFILE_NAME" >> "$GITHUB_OUTPUT"
+          echo "share_profile_name=$SHARE_PROFILE_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Create signed archive
         shell: bash
@@ -184,10 +198,10 @@ jobs:
             -destination "generic/platform=iOS" \
             -archivePath "$RUNNER_TEMP/Rezepte.xcarchive" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution" \
-            PROVISIONING_PROFILE_SPECIFIER="${{ steps.signing.outputs.profile_name }}" \
+            IOS_APP_PROFILE_NAME="${{ steps.signing.outputs.app_profile_name }}" \
+            IOS_SHARE_PROFILE_NAME="${{ steps.signing.outputs.share_profile_name }}" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
 
       - name: Export signed IPA
@@ -211,7 +225,9 @@ jobs:
             <key>provisioningProfiles</key>
             <dict>
               <key>$IOS_BUNDLE_ID</key>
-              <string>${{ steps.signing.outputs.profile_name }}</string>
+              <string>${{ steps.signing.outputs.app_profile_name }}</string>
+              <key>$IOS_SHARE_BUNDLE_ID</key>
+              <string>${{ steps.signing.outputs.share_profile_name }}</string>
             </dict>
             <key>stripSwiftSymbols</key>
             <true/>

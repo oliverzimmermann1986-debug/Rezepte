@@ -36,4 +36,30 @@ final class ModelTests: XCTestCase {
 
         XCTAssertEqual(filters.activeCount, 8)
     }
+
+    func testPendingImportDecodesEditableSuggestion() throws {
+        let json = """
+        {
+          "url": "manual-upload://abc/rezept.jpg",
+          "content_type": "recipe",
+          "description": "Erkannter Rezepttext",
+          "status": "pending",
+          "ai_suggestion": {
+            "name": "Unbekannt",
+            "type": "Hauptgericht",
+            "category": "Allgemein",
+            "confidence": 0.2,
+            "filename": "rezept.jpg",
+            "source": "manual-upload"
+          }
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let item = try decoder.decode(PendingItem.self, from: Data(json.utf8))
+
+        XCTAssertEqual(item.aiSuggestion?.filename, "rezept.jpg")
+        XCTAssertEqual(item.aiSuggestion?.category, "Allgemein")
+        XCTAssertEqual(item.displayName, "Unbekannt")
+    }
 }

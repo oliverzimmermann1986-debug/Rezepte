@@ -217,10 +217,35 @@ struct AdminCounts: Codable {
 
 struct PendingItem: Codable, Identifiable {
     let url: String
-    let name: String?
-    let type: String?
+    let contentType: String?
+    let description: String?
     let status: String?
     let reason: String?
+    let aiSuggestion: PendingSuggestion?
+
+    var id: String { url }
+    var displayName: String {
+        aiSuggestion?.name?.nilIfEmpty
+            ?? aiSuggestion?.filename?.nilIfEmpty
+            ?? "Unbenannter Import"
+    }
+}
+
+struct PendingSuggestion: Codable, Hashable {
+    let name: String?
+    let type: String?
+    let category: String?
+    let confidence: Double?
+    let filename: String?
+    let source: String?
+}
+
+struct FailedDownload: Codable, Identifiable {
+    let url: String
+    let firstSeen: Double?
+    let lastTry: Double?
+    let attempts: Int
+    let lastError: String?
 
     var id: String { url }
 }
@@ -230,4 +255,6 @@ struct APIResult: Codable {
     let message: String?
     let status: String?
     let added: Int?
+    let name: String?
+    let recipeId: Int?
 }

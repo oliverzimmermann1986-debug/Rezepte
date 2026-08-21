@@ -51,6 +51,7 @@ final class SessionStore: ObservableObject {
             let session = try await api.sessionInfo()
             username = session.username
             state = .signedIn
+            await drainSharedImports()
         } catch {
             signOut()
         }
@@ -83,6 +84,7 @@ final class SessionStore: ObservableObject {
         )
         self.username = response.username
         state = .signedIn
+        await drainSharedImports()
     }
 
     func signOut() {
@@ -107,5 +109,27 @@ final class SessionStore: ObservableObject {
             signOut()
         }
         alertMessage = error.localizedDescription
+    }
+
+    func drainSharedImports() async {
+        guard case .signedIn = state else { return }
+        let queued = SharedImportQueue.all()
+        guard !queued.isEmpty else { return }
+        var imported = 0
+        for url in queued {
+            do {
+                _ = try await api.importURL(url)
+                SharedImportQueue.remove(url)
+                imported += 1
+            } catch {
+                alertMessage = "Ein geteilter Link konnte noch nicht importiert werden: \(error.localizedDescription)"
+                break
+            }
+        }
+        if imported > 0 {
+            alertMessage = imported == 1
+                ? "Der geteilte TikTok-/Instagram-Link wurde importiert."
+                : "\(imported) geteilte Links wurden importiert."
+        }
     }
 }

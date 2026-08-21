@@ -277,11 +277,66 @@ actor APIClient {
         try await send("/api/pending")
     }
 
+    func failedDownloads() async throws -> [FailedDownload] {
+        try await send("/api/pending/failed")
+    }
+
     func importURL(_ url: String) async throws -> APIResult {
         try await send(
             "/api/pending/import-url",
             method: "POST",
             body: ImportPayload(url: url, type: "recipe")
+        )
+    }
+
+    func importFile(data: Data, filename: String, mimeType: String) async throws -> APIResult {
+        let boundary = "RezepteBoundary-\(UUID().uuidString)"
+        var body = Data()
+        body.append("--\(boundary)\r\n")
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
+        body.append("Content-Type: \(mimeType)\r\n\r\n")
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n")
+
+        var request = URLRequest(url: try endpoint("/api/pending/import-file"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 180
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        authorize(&request, includeBearer: true)
+        return try await execute(request)
+    }
+
+    func resolvePending(
+        url: String,
+        action: String,
+        name: String? = nil,
+        type: String? = nil,
+        category: String? = nil
+    ) async throws -> APIResult {
+        try await send(
+            "/api/pending",
+            method: "POST",
+            body: ResolvePendingPayload(
+                url: url, action: action, name: name, type: type, category: category
+            )
+        )
+    }
+
+    func retryFailedDownload(url: String) async throws -> APIResult {
+        try await send(
+            "/api/pending/failed/retry",
+            method: "POST",
+            body: FailedDownloadPayload(url: url)
+        )
+    }
+
+    func discardFailedDownload(url: String) async throws -> APIResult {
+        try await send(
+            "/api/pending/failed/discard",
+            method: "POST",
+            body: FailedDownloadPayload(url: url)
         )
     }
 
@@ -431,3 +486,17 @@ private struct AddMealPayload: Codable { let plannedFor: String; let recipeId: I
 private struct UpdateMealPayload: Codable { let plannedServings: Int }
 private struct WeekCartPayload: Codable { let weekStart: String }
 private struct ImportPayload: Codable { let url: String; let type: String }
+private struct ResolvePendingPayload: Codable {
+    let url: String
+    let action: String
+    let name: String?
+    let type: String?
+    let category: String?
+}
+private struct FailedDownloadPayload: Codable { let url: String }
+
+private extension Data {
+    mutating func append(_ string: String) {
+        append(Data(string.utf8))
+    }
+}

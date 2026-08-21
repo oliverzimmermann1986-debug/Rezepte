@@ -224,6 +224,27 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(facets.tags.first?.name, "nussfrei")
         XCTAssertEqual(facets.ingredients.first?.canonicalName, "salz")
     }
+
+    func testFileImportUsesAuthenticatedMultipartRequest() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "api-token")
+        MockURLProtocol.respond(json: """
+        {"ok":true,"message":"Datei wurde importiert."}
+        """)
+
+        let result = try await client.importFile(
+            data: Data("jpeg-data".utf8), filename: "rezept.jpg", mimeType: "image/jpeg"
+        )
+
+        XCTAssertEqual(result.ok, true)
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        XCTAssertEqual(MockURLProtocol.lastHeader("Authorization"), "Bearer api-token")
+        XCTAssertTrue(MockURLProtocol.lastHeader("Content-Type")?.contains("multipart/form-data") == true)
+        let body = String(data: MockURLProtocol.lastBody(), encoding: .utf8) ?? ""
+        XCTAssertTrue(body.contains("filename=\"rezept.jpg\""))
+        XCTAssertTrue(body.contains("jpeg-data"))
+    }
 }
 
 /// Fängt Requests des injizierten URLSession ab, damit der Query-Aufbau
@@ -235,6 +256,8 @@ final class MockURLProtocol: URLProtocol {
     nonisolated(unsafe) private static var statusCode = 200
     nonisolated(unsafe) private static var responseHeaders = ["Content-Type": "application/json"]
     nonisolated(unsafe) private static var responseURL: URL?
+    nonisolated(unsafe) private static var requestBody = Data()
+    nonisolated(unsafe) private static var requestMethod = ""
 
     static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
@@ -272,6 +295,9 @@ final class MockURLProtocol: URLProtocol {
         lastRequestHeaders.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
     }
 
+    static func lastBody() -> Data { requestBody }
+    static func lastMethod() -> String { requestMethod }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -279,6 +305,8 @@ final class MockURLProtocol: URLProtocol {
     override func startLoading() {
         Self.lastRequestURL = request.url
         Self.lastRequestHeaders = request.allHTTPHeaderFields ?? [:]
+        Self.requestBody = request.httpBody ?? Data()
+        Self.requestMethod = request.httpMethod ?? ""
         guard let response = HTTPURLResponse(
             url: Self.responseURL ?? request.url ?? URL(fileURLWithPath: "/"),
             statusCode: Self.statusCode,
