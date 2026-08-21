@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 # Job-Start reset, vom Cancel-Endpoint gesetzt, im run()-Loop pro URL geprüft.
 _CANCEL_EVENT = threading.Event()
 
+# Anzahl automatischer Wiederholungen, bevor ein fehlgeschlagener Download
+# ausschließlich über die manuelle Prüfung erneut angestoßen wird.
+MAX_DOWNLOAD_ATTEMPTS = 3
+
 def cancel_job() -> dict:
     """Setzt das Cancel-Flag. Der laufende Scraper bricht beim nächsten
     URL-Check ab. Nicht-blockierend - kein subprocess wird hier gekillt
