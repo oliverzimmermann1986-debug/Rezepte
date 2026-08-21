@@ -1573,7 +1573,7 @@
                   <div class="recipe-status muted" style="font-size: 11px; margin-top: 6px; display: flex; justify-content: space-between; align-items: center;">
                     <span>
                       <span x-show="r.ingredients_status === 'pending'">⏳ wartet auf KI</span>
-                      <span x-show="r.needs_manual_care">⚠ Manuell pflegen</span>
+                      <span x-show="r.needs_manual_care && !['pending','error','skipped'].includes(r.ingredients_status)">⚠ Manuell pflegen</span>
                       <span x-show="r.ingredients_status === 'ok' && !r.needs_manual_care">✓ Kochfertig</span>
                       <span x-show="r.ingredients_status === 'error'">⚠ Fehler</span>
                       <span x-show="r.ingredients_status === 'skipped'">— keine Beschreibung</span>

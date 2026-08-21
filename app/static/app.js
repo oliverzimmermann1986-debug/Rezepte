@@ -164,6 +164,7 @@ function scrapperApp() {
       addingFor: '',
       recipeOptions: [],
       optionsLoaded: false,
+      _optionsPromise: null,
       draft: { recipe_id: '', planned_servings: 2 },
     },
     trash: {
@@ -765,6 +766,19 @@ function scrapperApp() {
     },
 
     // ------------- Helpers -------------
+    apiErrorMessage(detail, fallback = 'Unbekannter Fehler') {
+      if (Array.isArray(detail)) {
+        const messages = detail
+          .map(item => item?.msg || item?.message || '')
+          .filter(Boolean);
+        return messages.length ? messages.join('; ') : fallback;
+      }
+      if (detail && typeof detail === 'object') {
+        return detail.message || detail.msg || fallback;
+      }
+      return String(detail || fallback);
+    },
+
     async api(method, url, body, options = {}) {
       const opts = { method, headers: {'Content-Type': 'application/json'} };
       if (body !== undefined) opts.body = JSON.stringify(body);
@@ -780,6 +794,7 @@ function scrapperApp() {
       if (!r.ok) {
         let detail = `${r.status}`;
         try { const j = await r.json(); detail = j.detail || detail; } catch(e){}
+        detail = this.apiErrorMessage(detail, `${r.status}`);
         if (!options.silent) this.showToast(`Fehler: ${detail}`, 'error');
         const error = new Error(detail);
         error.status = r.status;
@@ -2972,7 +2987,7 @@ function scrapperApp() {
           instruction: step.instruction.trim(),
           timer_seconds: step.timer_seconds === '' || step.timer_seconds == null
             ? null
-            : Math.max(0, Number(step.timer_seconds)),
+            : Math.max(0, Math.round(Number(step.timer_seconds))),
         }));
       this.recipeDetail.savingSteps = true;
       try {
@@ -3169,16 +3184,36 @@ function scrapperApp() {
 
     async loadMealPlanRecipeOptions() {
       if (this.mealPlan.optionsLoaded) return;
-      const result = await this.api(
-        'GET',
-        '/api/recipes?limit=500',
-        undefined,
-        { silent: true },
-      );
-      this.mealPlan.recipeOptions = (result?.items || [])
-        .slice()
-        .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'de'));
-      this.mealPlan.optionsLoaded = true;
+      if (this.mealPlan._optionsPromise) return this.mealPlan._optionsPromise;
+      this.mealPlan._optionsPromise = (async () => {
+        const pageSize = 500;
+        let offset = 0;
+        const options = [];
+        while (true) {
+          const result = await this.api(
+            'GET',
+            `/api/recipes?limit=${pageSize}&offset=${offset}`,
+            undefined,
+            { silent: true },
+          );
+          if (!result || !Array.isArray(result.items)) {
+            throw new Error('Rezepte konnten nicht geladen werden');
+          }
+          const page = result.items;
+          options.push(...page);
+          const total = Number(result.total) || options.length;
+          if (!page.length || options.length >= total || page.length < pageSize) break;
+          offset += page.length;
+        }
+        this.mealPlan.recipeOptions = options
+          .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'de'));
+        this.mealPlan.optionsLoaded = true;
+      })();
+      try {
+        return await this.mealPlan._optionsPromise;
+      } finally {
+        this.mealPlan._optionsPromise = null;
+      }
     },
 
     async openMealPlanAdd(day) {
@@ -3256,7 +3291,7 @@ function scrapperApp() {
     },
 
     changeMealPlanWeek(weekStart) {
-      if (!weekStart || this.mealPlan.loading) return;
+      if (weekStart === undefined || this.mealPlan.loading) return;
       this.closeMealPlanAdd();
       this.loadMealPlan(weekStart);
     },

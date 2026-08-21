@@ -83,6 +83,20 @@ def test_weekly_meal_plan_has_desktop_mobile_and_shopping_flow():
     assert ".meal-plan-grid { grid-template-columns: 1fr;" in css
 
 
+def test_verified_review_regressions_are_guarded_in_web_ui():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert "if (weekStart === undefined || this.mealPlan.loading) return;" in js
+    assert "Math.max(0, Math.round(Number(step.timer_seconds)))" in js
+    assert "apiErrorMessage(detail" in js
+    assert "messages.join('; ')" in js
+    assert "`/api/recipes?limit=${pageSize}&offset=${offset}`" in js
+    assert "if (!result || !Array.isArray(result.items))" in js
+    assert "this.mealPlan.optionsLoaded = true;" in js
+    assert "r.needs_manual_care && !['pending','error','skipped'].includes(r.ingredients_status)" in html
+
+
 def test_single_recipe_can_download_and_share_a_real_pdf():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     js = (STATIC / "app.js").read_text(encoding="utf-8")
