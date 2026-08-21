@@ -305,7 +305,22 @@ final class MockURLProtocol: URLProtocol {
     override func startLoading() {
         Self.lastRequestURL = request.url
         Self.lastRequestHeaders = request.allHTTPHeaderFields ?? [:]
-        Self.requestBody = request.httpBody ?? Data()
+        if let body = request.httpBody {
+            Self.requestBody = body
+        } else if let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var body = Data()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }
+                body.append(buffer, count: count)
+            }
+            Self.requestBody = body
+        } else {
+            Self.requestBody = Data()
+        }
         Self.requestMethod = request.httpMethod ?? ""
         guard let response = HTTPURLResponse(
             url: Self.responseURL ?? request.url ?? URL(fileURLWithPath: "/"),
