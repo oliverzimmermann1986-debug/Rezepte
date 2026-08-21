@@ -108,7 +108,26 @@ def test_single_recipe_can_download_and_share_a_real_pdf():
     assert "async copyRecipeShareLink()" in js
     assert "/recipe/${recipe.id}/pdf" in js
     assert "new File([blob]" in js
+    assert "async fetchPdf(url)" in js
+    assert "savePdf(blob, filename)" in js
+    assert "async sharePdf({ blob, filename, title, text, mailSubject, mailBody })" in js
+    assert "if (error?.name === 'AbortError') return 'cancelled';" in js
+    assert "this.savePdf(blob, filename);" in js
+    assert "fetchRecipePdf" not in js
+    assert "fetchMealPlanPdf" not in js
+    assert "saveRecipePdf" not in js
+    assert "saveMealPlanPdf" not in js
     assert "async shareRecipe(recipe)" not in js
+
+
+def test_dead_web_helpers_and_print_route_are_removed():
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    sharing = (ROOT / "app" / "routes" / "sharing.py").read_text(encoding="utf-8")
+
+    assert "ingredientFilterState(" not in js
+    assert "printRecipe(" not in js
+    assert "shareRecipeSourceLink(" not in js
+    assert '@print_router.get("/recipe/{recipe_id}/print"' not in sharing
 
 
 def test_no_removed_remote_sync_feature_remains_in_runtime():

@@ -2347,12 +2347,6 @@ function scrapperApp() {
       this.loadRecipes();
     },
 
-    ingredientFilterState(canonicalName) {
-      if (this.recipes.filters.ingredients.includes(canonicalName)) return 'include';
-      if (this.recipes.filters.excludedIngredients.includes(canonicalName)) return 'exclude';
-      return 'off';
-    },
-
     ingredientFilterSummary() {
       const included = this.recipes.filters.ingredients.length;
       const excluded = this.recipes.filters.excludedIngredients.length;
@@ -2904,15 +2898,6 @@ function scrapperApp() {
       }
     },
 
-    // Print-View in neuem Tab öffnen — Browser-Cmd+P speichert als PDF.
-    // Print-View ist eine eigenständige, auth-required HTML-Route mit
-    // print-optimiertem Inline-CSS (@media print).
-    printRecipe() {
-      const id = this.recipeDetail.data?.id;
-      if (!id) return;
-      window.open(`/recipe/${id}/print`, '_blank', 'noopener,noreferrer');
-    },
-
     // Signierten Share-Link erstellen + in Clipboard kopieren.
     // 30 Tage gültig. Empfänger braucht keinen Login, sieht nur das Rezept.
     async copyRecipeShareLink() {
@@ -3005,8 +2990,8 @@ function scrapperApp() {
       }
     },
 
-    async fetchRecipePdf(recipe) {
-      const response = await fetch(`/recipe/${recipe.id}/pdf`, {
+    async fetchPdf(url) {
+      const response = await fetch(url, {
         credentials: 'same-origin',
         cache: 'no-store',
       });
@@ -3018,22 +3003,51 @@ function scrapperApp() {
         let detail = `PDF konnte nicht erstellt werden (${response.status})`;
         try {
           const body = await response.json();
-          detail = body.detail || detail;
+          detail = this.apiErrorMessage(body.detail, detail);
         } catch (_) {}
         throw new Error(detail);
       }
       return response.blob();
     },
 
-    saveRecipePdf(blob, recipe) {
+    savePdf(blob, filename) {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = this.recipePdfFilename(recipe);
+      link.download = filename;
       document.body.appendChild(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+
+    async sharePdf({ blob, filename, title, text, mailSubject, mailBody }) {
+      const file = new File([blob], filename, { type: 'application/pdf' });
+      const shareData = { title, text, files: [file] };
+      let canShareFile = false;
+      try {
+        canShareFile = !!navigator.share && (
+          !navigator.canShare || navigator.canShare(shareData)
+        );
+      } catch (_) {}
+
+      if (canShareFile) {
+        try {
+          await navigator.share(shareData);
+          return 'shared';
+        } catch (error) {
+          if (error?.name === 'AbortError') return 'cancelled';
+          // Safari kann nach einem längeren PDF-Fetch die User-Activation
+          // verlieren. In diesem Fall muss der Download/Mail-Fallback greifen.
+        }
+      }
+
+      this.savePdf(blob, filename);
+      const subject = encodeURIComponent(mailSubject || title);
+      const body = encodeURIComponent(mailBody || text);
+      window.location.href = `mailto:?subject=${subject}&body=${body}`;
+      this.showToast('PDF geladen - bitte im Mail-Entwurf anhängen');
+      return 'fallback';
     },
 
     async downloadRecipePdf() {
@@ -3041,9 +3055,9 @@ function scrapperApp() {
       if (!recipe?.id || this.recipeDetail.pdfBusy) return;
       this.recipeDetail.pdfBusy = true;
       try {
-        const blob = await this.fetchRecipePdf(recipe);
+        const blob = await this.fetchPdf(`/recipe/${recipe.id}/pdf`);
         if (!blob) return;
-        this.saveRecipePdf(blob, recipe);
+        this.savePdf(blob, this.recipePdfFilename(recipe));
         this.showToast('Rezept-PDF heruntergeladen');
       } catch (error) {
         this.showToast(error?.message || 'PDF-Erstellung fehlgeschlagen', 'error');
@@ -3056,32 +3070,17 @@ function scrapperApp() {
       if (!recipe?.id || this.recipeDetail.pdfBusy) return;
       this.recipeDetail.pdfBusy = true;
       try {
-        const blob = await this.fetchRecipePdf(recipe);
+        const blob = await this.fetchPdf(`/recipe/${recipe.id}/pdf`);
         if (!blob) return;
-        const file = new File([blob], this.recipePdfFilename(recipe), {
-          type: 'application/pdf',
-        });
-        const shareData = {
+        await this.sharePdf({
+          blob,
+          filename: this.recipePdfFilename(recipe),
           title: recipe.name,
           text: `Rezept: ${recipe.name}`,
-          files: [file],
-        };
-        const canShareFile = !!navigator.share && (
-          !navigator.canShare || navigator.canShare(shareData)
-        );
-        if (canShareFile) {
-          await navigator.share(shareData);
-          return;
-        }
-
-        this.saveRecipePdf(blob, recipe);
-        const subject = encodeURIComponent(`Rezept: ${recipe.name}`);
-        const body = encodeURIComponent(
-          `Hallo,\n\nanbei das Rezept „${recipe.name}“.\n\n`
-          + 'Das PDF wurde bereits heruntergeladen und kann an diese Mail angehängt werden.',
-        );
-        window.location.href = `mailto:?subject=${subject}&body=${body}`;
-        this.showToast('PDF geladen - bitte im Mail-Entwurf anhängen');
+          mailSubject: `Rezept: ${recipe.name}`,
+          mailBody: `Hallo,\n\nanbei das Rezept „${recipe.name}“.\n\n`
+            + 'Das PDF wurde bereits heruntergeladen und kann an diese Mail angehängt werden.',
+        });
       } catch (error) {
         if (error?.name !== 'AbortError') {
           this.showToast(error?.message || 'Teilen fehlgeschlagen', 'error');
@@ -3336,44 +3335,13 @@ function scrapperApp() {
       return `wochenplan-${this.mealPlan.weekStart || 'aktuell'}.pdf`;
     },
 
-    async fetchMealPlanPdf() {
-      const response = await fetch(this.mealPlanPdfUrl(), {
-        credentials: 'same-origin',
-        cache: 'no-store',
-      });
-      if (response.status === 401) {
-        window.location = '/login';
-        return null;
-      }
-      if (!response.ok) {
-        let detail = `PDF konnte nicht erstellt werden (${response.status})`;
-        try {
-          const body = await response.json();
-          detail = body.detail || detail;
-        } catch (_) {}
-        throw new Error(detail);
-      }
-      return response.blob();
-    },
-
-    saveMealPlanPdf(blob) {
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = this.mealPlanPdfFilename();
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    },
-
     async downloadMealPlanPdf() {
       if (this.mealPlan.pdfBusy) return;
       this.mealPlan.pdfBusy = true;
       try {
-        const blob = await this.fetchMealPlanPdf();
+        const blob = await this.fetchPdf(this.mealPlanPdfUrl());
         if (!blob) return;
-        this.saveMealPlanPdf(blob);
+        this.savePdf(blob, this.mealPlanPdfFilename());
         this.showToast('Wochenplan-PDF heruntergeladen');
       } catch (error) {
         this.showToast(error?.message || 'PDF-Erstellung fehlgeschlagen', 'error');
@@ -3386,36 +3354,18 @@ function scrapperApp() {
       if (this.mealPlan.pdfBusy) return;
       this.mealPlan.pdfBusy = true;
       try {
-        const blob = await this.fetchMealPlanPdf();
+        const blob = await this.fetchPdf(this.mealPlanPdfUrl());
         if (!blob) return;
-        const file = new File([blob], this.mealPlanPdfFilename(), {
-          type: 'application/pdf',
-        });
-        const shareData = {
-          title: `Wochenplan ${this.mealPlanRangeLabel()}`,
+        const range = this.mealPlanRangeLabel();
+        await this.sharePdf({
+          blob,
+          filename: this.mealPlanPdfFilename(),
+          title: `Wochenplan ${range}`,
           text: 'Unser Wochenplan mit gemeinsamer Einkaufsliste',
-          files: [file],
-        };
-        const canShareFile = !!navigator.share && (
-          !navigator.canShare || navigator.canShare(shareData)
-        );
-        if (canShareFile) {
-          await navigator.share(shareData);
-          return;
-        }
-
-        // Browser dürfen Mail-Anhänge nicht selbst setzen. Deshalb wird das
-        // PDF gespeichert und parallel ein fertiger Mail-Entwurf geöffnet.
-        this.saveMealPlanPdf(blob);
-        const subject = encodeURIComponent(
-          `Wochenplan ${this.mealPlanRangeLabel()}`,
-        );
-        const body = encodeURIComponent(
-          'Hallo,\n\nanbei unser Wochenplan mit gemeinsamer Einkaufsliste.\n\n'
-          + 'Das PDF wurde bereits heruntergeladen und kann an diese Mail angehängt werden.',
-        );
-        window.location.href = `mailto:?subject=${subject}&body=${body}`;
-        this.showToast('PDF geladen - bitte im Mail-Entwurf anhängen');
+          mailSubject: `Wochenplan ${range}`,
+          mailBody: 'Hallo,\n\nanbei unser Wochenplan mit gemeinsamer Einkaufsliste.\n\n'
+            + 'Das PDF wurde bereits heruntergeladen und kann an diese Mail angehängt werden.',
+        });
       } catch (error) {
         if (error?.name !== 'AbortError') {
           this.showToast(error?.message || 'Teilen fehlgeschlagen', 'error');
@@ -4102,23 +4052,6 @@ function scrapperApp() {
           this.recipeDetail.data.rating = r.rating;
         }
         this.showToast(value === 0 ? 'Bewertung entfernt' : `${'★'.repeat(value)} Bewertet`);
-      }
-    },
-    // Web-Share-API: native iOS-Share-Sheet. Fallback auf Clipboard.
-    async shareRecipeSourceLink(recipe) {
-      const url = recipe.url || (window.location.origin + '/?recipe=' + recipe.id);
-      const shareData = { title: recipe.name, text: `Rezept: ${recipe.name}`, url };
-      try {
-        if (navigator.share) {
-          await navigator.share(shareData);
-        } else {
-          await navigator.clipboard.writeText(url);
-          this.showToast('🔗 Link kopiert');
-        }
-      } catch (e) {
-        if (e.name !== 'AbortError') {
-          this.showToast('Teilen fehlgeschlagen: ' + e.message, 'err');
-        }
       }
     },
 

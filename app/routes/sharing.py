@@ -1,8 +1,7 @@
 """Print-View + Public-Sharing-Links für Rezepte.
 
 Routes:
-  GET  /recipe/{id}/print          — Auth-required, print-optimierte HTML-View
-                                     (User-Browser via cmd+P → PDF)
+  GET  /recipe/{id}/pdf            — Auth-required, echte PDF-Datei
   POST /api/recipes/{id}/share     — Auth-required, generiert signiertes Token
                                      + URL. Default-Gültigkeit 7 Tage.
   GET  /share/{token}              — KEINE Auth, validiert Token, zeigt
@@ -40,7 +39,7 @@ from ..recipes.recipe_pdf import build_recipe_pdf
 
 logger = logging.getLogger(__name__)
 
-# Authenticated print-view (eingeloggte User)
+# Authenticated PDF-/Share-Routen (eingeloggte User)
 print_router = APIRouter(tags=["sharing"])
 # Public share-resolution (KEINE Auth)
 public_router = APIRouter(tags=["sharing"])
@@ -298,17 +297,7 @@ def _load_recipe_full(recipe_id: int) -> dict:
     return r
 
 
-# ════ Authenticated Print-View ════
-@print_router.get("/recipe/{recipe_id}/print", response_class=HTMLResponse,
-                   dependencies=[Depends(require_auth)])
-def print_recipe(recipe_id: int):
-    """Eigene Rezepte als Print-Layout. User druckt via Cmd+P → PDF."""
-    recipe = _load_recipe_full(recipe_id)
-    image_url = f"/api/recipes/{recipe_id}/thumb" if recipe.get("thumb_filename") else None
-    return HTMLResponse(_render_print_html(recipe, image_url=image_url, is_share=False))
-
-
-# ════ Share-Token-Generator ════
+# ════ Authenticated PDF ════
 @print_router.get(
     "/recipe/{recipe_id}/pdf",
     dependencies=[Depends(require_auth)],
