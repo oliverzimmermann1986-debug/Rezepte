@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..auth import check_credentials, create_session, request_user
+from ..auth import auth_disabled, check_credentials, create_session, request_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -17,6 +17,13 @@ class NativeLogin(BaseModel):
 @router.post("/login")
 def native_login(payload: NativeLogin) -> dict:
     username = payload.username.strip()
+    if auth_disabled():
+        return {
+            "token": "cloudflare-access",
+            "token_type": "bearer",
+            "expires_in": 60 * 60 * 24 * 14,
+            "username": "local",
+        }
     if not check_credentials(username, payload.password):
         raise HTTPException(401, "Benutzername oder Passwort falsch")
     return {
