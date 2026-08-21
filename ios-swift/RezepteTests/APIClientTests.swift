@@ -78,6 +78,79 @@ final class APIClientTests: XCTestCase {
         }
     }
 
+    func testCloudflareCredentialsRequireBothValues() throws {
+        XCTAssertNil(try CloudflareAccessCredentials(clientID: "", clientSecret: ""))
+        XCTAssertThrowsError(
+            try CloudflareAccessCredentials(clientID: "client-id", clientSecret: "")
+        ) { error in
+            guard let apiError = error as? APIError,
+                  case .incompleteCloudflareCredentials = apiError else {
+                return XCTFail("Erwartet incompleteCloudflareCredentials, war \(error)")
+            }
+        }
+    }
+
+    func testCloudflareHeadersAreSentOnNativeLogin() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        let cloudflare = try XCTUnwrap(
+            CloudflareAccessCredentials(clientID: "device.access", clientSecret: "device-secret")
+        )
+        try await client.configure(
+            server: "https://example.de",
+            token: nil,
+            cloudflareCredentials: cloudflare
+        )
+        MockURLProtocol.respond(json: """
+        {"token":"api-token","username":"oliver","expires_in":1209600}
+        """)
+
+        let response = try await client.login(username: "oliver", password: "password")
+
+        XCTAssertEqual(response.token, "api-token")
+        XCTAssertEqual(MockURLProtocol.lastHeader("CF-Access-Client-Id"), "device.access")
+        XCTAssertEqual(MockURLProtocol.lastHeader("CF-Access-Client-Secret"), "device-secret")
+        XCTAssertNil(MockURLProtocol.lastHeader("Authorization"))
+    }
+
+    func testCloudflareAndBearerHeadersAreSentTogether() async throws {
+        let client = APIClient()
+        let cloudflare = try XCTUnwrap(
+            CloudflareAccessCredentials(clientID: "device.access", clientSecret: "device-secret")
+        )
+        try await client.configure(
+            server: "https://example.de",
+            token: "api-token",
+            cloudflareCredentials: cloudflare
+        )
+
+        let request = try await client.imageRequest(recipeID: 42)
+
+        XCTAssertEqual(request.value(forHTTPHeaderField: "CF-Access-Client-Id"), "device.access")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "CF-Access-Client-Secret"), "device-secret")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer api-token")
+    }
+
+    func testCloudflareLoginPageGetsSpecificError() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: nil)
+        MockURLProtocol.respond(
+            body: "<html>Cloudflare Access</html>",
+            headers: ["Content-Type": "text/html"],
+            responseURL: URL(string: "https://team.cloudflareaccess.com/cdn-cgi/access/login/example.de")
+        )
+
+        do {
+            _ = try await client.login(username: "oliver", password: "password") as LoginResponse
+            XCTFail("Cloudflare-Loginseite darf nicht als API-Antwort gelten")
+        } catch let error as APIError {
+            guard case .cloudflareAccessRequired = error else {
+                return XCTFail("Erwartet cloudflareAccessRequired, war \(error)")
+            }
+        }
+    }
+
     func testRecipesFiltersManualCareOnServerAndPagesByOffset() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
@@ -110,6 +183,10 @@ final class APIClientTests: XCTestCase {
 final class MockURLProtocol: URLProtocol {
     nonisolated(unsafe) private static var body = Data("{}".utf8)
     nonisolated(unsafe) private static var lastRequestURL: URL?
+    nonisolated(unsafe) private static var lastRequestHeaders: [String: String] = [:]
+    nonisolated(unsafe) private static var statusCode = 200
+    nonisolated(unsafe) private static var responseHeaders = ["Content-Type": "application/json"]
+    nonisolated(unsafe) private static var responseURL: URL?
 
     static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
@@ -118,7 +195,19 @@ final class MockURLProtocol: URLProtocol {
     }
 
     static func respond(json: String) {
-        body = Data(json.utf8)
+        respond(body: json)
+    }
+
+    static func respond(
+        body responseBody: String,
+        statusCode responseStatusCode: Int = 200,
+        headers: [String: String] = ["Content-Type": "application/json"],
+        responseURL: URL? = nil
+    ) {
+        body = Data(responseBody.utf8)
+        statusCode = responseStatusCode
+        responseHeaders = headers
+        self.responseURL = responseURL
     }
 
     static func lastQueryItems() -> [String: String] {
@@ -131,17 +220,22 @@ final class MockURLProtocol: URLProtocol {
         }
     }
 
+    static func lastHeader(_ name: String) -> String? {
+        lastRequestHeaders.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+    }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
         Self.lastRequestURL = request.url
+        Self.lastRequestHeaders = request.allHTTPHeaderFields ?? [:]
         guard let response = HTTPURLResponse(
-            url: request.url ?? URL(fileURLWithPath: "/"),
-            statusCode: 200,
+            url: Self.responseURL ?? request.url ?? URL(fileURLWithPath: "/"),
+            statusCode: Self.statusCode,
             httpVersion: nil,
-            headerFields: ["Content-Type": "application/json"]
+            headerFields: Self.responseHeaders
         ) else {
             client?.urlProtocolDidFinishLoading(self)
             return

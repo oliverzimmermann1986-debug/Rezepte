@@ -388,7 +388,9 @@ widerrufbares Sitzungstoken sowie die auf dem privaten Server gespeicherten
 Rezepte, Einkaufslisten und Wochenpläne. Das Passwort wird nur zur Anmeldung
 an den gewählten Server übertragen und nicht von der App gespeichert.</p>
 <h2>Speicherung und Übertragung</h2>
-<p>Das Sitzungstoken wird im iOS-Schlüsselbund gespeichert. Die Kommunikation
+<p>Das Sitzungstoken und – falls Cloudflare Access verwendet wird – die vom
+Nutzer eingegebenen Cloudflare-Gerätezugangsdaten werden im iOS-Schlüsselbund
+gespeichert. Das eigentliche Passwort wird nicht gespeichert. Die Kommunikation
 erfolgt über HTTPS direkt mit dem eingetragenen Rezepteserver. Die App enthält
 keine Werbung, keine Telemetrie und keine Analyse-SDKs.</p>
 <h2>Externe Quellen</h2>

@@ -3,6 +3,8 @@ import Foundation
 enum APIError: LocalizedError {
     case invalidServer
     case insecureServer
+    case incompleteCloudflareCredentials
+    case cloudflareAccessRequired
     case unauthenticated
     case server(Int, String)
     case invalidResponse
@@ -13,6 +15,10 @@ enum APIError: LocalizedError {
             return "Die Serveradresse ist ungültig."
         case .insecureServer:
             return "Bitte eine HTTPS-Adresse verwenden."
+        case .incompleteCloudflareCredentials:
+            return "Für Cloudflare Access werden Client-ID und Client-Secret benötigt."
+        case .cloudflareAccessRequired:
+            return "Cloudflare Access hat den Gerätezugang abgelehnt. Bitte Client-ID und Client-Secret prüfen."
         case .unauthenticated:
             return "Die Sitzung ist abgelaufen. Bitte erneut anmelden."
         case let .server(_, message):
@@ -23,12 +29,29 @@ enum APIError: LocalizedError {
     }
 }
 
+struct CloudflareAccessCredentials: Equatable {
+    let clientID: String
+    let clientSecret: String
+
+    init?(clientID: String, clientSecret: String) throws {
+        let cleanID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanSecret = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanID.isEmpty && cleanSecret.isEmpty { return nil }
+        guard !cleanID.isEmpty, !cleanSecret.isEmpty else {
+            throw APIError.incompleteCloudflareCredentials
+        }
+        self.clientID = cleanID
+        self.clientSecret = cleanSecret
+    }
+}
+
 actor APIClient {
     /// Seitengröße der Rezeptliste (entspricht dem Server-Default).
     static let pageSize = 60
 
     private var baseURL: URL?
     private var token: String?
+    private var cloudflareCredentials: CloudflareAccessCredentials?
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -41,7 +64,11 @@ actor APIClient {
         encoder.keyEncodingStrategy = .convertToSnakeCase
     }
 
-    func configure(server: String, token: String?) throws {
+    func configure(
+        server: String,
+        token: String?,
+        cloudflareCredentials: CloudflareAccessCredentials? = nil
+    ) throws {
         guard let url = Self.normalizedServerURL(server) else {
             throw APIError.invalidServer
         }
@@ -55,6 +82,7 @@ actor APIClient {
         }
         baseURL = url
         self.token = token
+        self.cloudflareCredentials = cloudflareCredentials
     }
 
     static func normalizedServerURL(_ value: String) -> URL? {
@@ -91,7 +119,7 @@ actor APIClient {
             "/api/recipes/\(recipeID)/thumb",
             query: [URLQueryItem(name: "w", value: String(width))]
         ))
-        authorize(&request)
+        authorize(&request, includeBearer: true)
         return request
     }
 
@@ -261,7 +289,7 @@ actor APIClient {
         request.httpMethod = method
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if authenticated { authorize(&request) }
+        authorize(&request, includeBearer: authenticated)
         return try await execute(request)
     }
 
@@ -277,12 +305,22 @@ actor APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        if authenticated { authorize(&request) }
+        authorize(&request, includeBearer: authenticated)
         return try await execute(request)
     }
 
-    private func authorize(_ request: inout URLRequest) {
-        if let token, !token.isEmpty {
+    private func authorize(_ request: inout URLRequest, includeBearer: Bool) {
+        if let cloudflareCredentials {
+            request.setValue(
+                cloudflareCredentials.clientID,
+                forHTTPHeaderField: "CF-Access-Client-Id"
+            )
+            request.setValue(
+                cloudflareCredentials.clientSecret,
+                forHTTPHeaderField: "CF-Access-Client-Secret"
+            )
+        }
+        if includeBearer, let token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
     }
@@ -291,6 +329,9 @@ actor APIClient {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
+        }
+        if Self.isCloudflareAccessResponse(http) {
+            throw APIError.cloudflareAccessRequired
         }
         if http.statusCode == 401 { throw APIError.unauthenticated }
         guard (200..<300).contains(http.statusCode) else {
@@ -303,6 +344,22 @@ actor APIClient {
         } catch {
             throw APIError.invalidResponse
         }
+    }
+
+    private static func isCloudflareAccessResponse(_ response: HTTPURLResponse) -> Bool {
+        let responseHost = response.url?.host?.lowercased() ?? ""
+        if responseHost == "cloudflareaccess.com"
+            || responseHost.hasSuffix(".cloudflareaccess.com") {
+            return true
+        }
+
+        let authenticate = response.value(forHTTPHeaderField: "WWW-Authenticate")?.lowercased() ?? ""
+        if authenticate.contains("cloudflare-access") { return true }
+
+        let location = response.value(forHTTPHeaderField: "Location")?.lowercased() ?? ""
+        if location.contains("cloudflareaccess.com/cdn-cgi/access/login") { return true }
+
+        return response.value(forHTTPHeaderField: "cf-mitigated")?.lowercased() == "challenge"
     }
 }
 
