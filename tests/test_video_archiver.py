@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -60,6 +62,9 @@ def test_worker_names_video_by_recipe_id_and_writes_sidecar(
     assert metadata["recipe_id"] == 35852573
     assert metadata["source_url"] == "https://www.tiktok.com/@koch/video/123"
     assert len(metadata["sha256"]) == 64
+    if os.name != "nt":
+        assert stat.S_IMODE(video.stat().st_mode) == 0o644
+        assert stat.S_IMODE((tmp_path / "archive").stat().st_mode) == 0o755
     assert queue.events()[0]["message"] == "Archivierung abgeschlossen"
 
 

@@ -29,6 +29,12 @@ _TIKTOK_HOSTS = {
 }
 _INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com"}
 
+# Das Archiv liegt hinter einem zugriffsgeschützten SMB-Share. Verzeichnisse
+# und fertige Sidecars/Videos müssen deshalb für den Samba-Prozess lesbar sein,
+# ohne Schreibrechte an andere lokale Benutzer zu vergeben.
+_ARCHIVE_DIR_MODE = 0o755
+_ARCHIVE_FILE_MODE = 0o644
+
 
 def normalize_supported_url(value: str) -> Optional[str]:
     """Akzeptiert nur konkrete TikTok-/Instagram-Beiträge über HTTPS."""
@@ -300,7 +306,7 @@ class VideoArchiver:
             raise ValueError("Ungültiger Plattform-Link in der Queue")
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         try:
-            self.archive_dir.chmod(0o700)
+            self.archive_dir.chmod(_ARCHIVE_DIR_MODE)
         except OSError:
             pass
         final_video = self.archive_dir / f"{recipe_id}.mp4"
@@ -373,7 +379,7 @@ class VideoArchiver:
                 raise
             for item in (final_video, final_metadata):
                 try:
-                    item.chmod(0o600)
+                    item.chmod(_ARCHIVE_FILE_MODE)
                 except OSError:
                     pass
         return final_video
