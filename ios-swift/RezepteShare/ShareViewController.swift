@@ -39,7 +39,6 @@ final class ShareViewController: SLComposeServiceViewController {
                 let value = (item as? URL)?.absoluteString ?? (item as? String)
                 DispatchQueue.main.async {
                     self?.sharedURL = value
-                    self?.contentText = value
                     self?.validateContent()
                 }
             }
@@ -54,7 +53,6 @@ final class ShareViewController: SLComposeServiceViewController {
                     .first(where: { $0.hasPrefix("https://") || $0.hasPrefix("http://") })
                 DispatchQueue.main.async {
                     self?.sharedURL = value
-                    self?.contentText = value
                     self?.validateContent()
                 }
             }
