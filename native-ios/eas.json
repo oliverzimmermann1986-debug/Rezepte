@@ -1,0 +1,22 @@
+{
+  "cli": {
+    "version": "22.2.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "production": {
+      "autoIncrement": true,
+      "credentialsSource": "remote"
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascAppId": "6803595058",
+        "ascApiKeyPath": ".eas/AuthKey_GV6ZWDDMXJ.p8",
+        "ascApiKeyIssuerId": "8bb7819b-3e6b-4314-a0e6-8571ed1957c0",
+        "ascApiKeyId": "GV6ZWDDMXJ"
+      }
+    }
+  }
+}

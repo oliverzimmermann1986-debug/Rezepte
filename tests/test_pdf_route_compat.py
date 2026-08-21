@@ -29,7 +29,10 @@ def test_health_and_system_info_report_build_version(client):
     assert "einkauf-proxy" in info.json()["capabilities"]
 
 
-def test_logout_clears_browser_state_and_redirects_to_login(client):
+def test_logout_clears_browser_state_and_redirects_to_login(client, monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(main, "auth_disabled", lambda: False)
     response = client.get("/logout", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"

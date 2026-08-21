@@ -113,6 +113,41 @@ def test_list_filter_needs_manual_care_is_server_side(client, test_db):
     assert ohne_filter["total"] == 3
 
 
+def test_ingredient_verification_does_not_hide_other_manual_care(client, test_db):
+    recipe = _create_recipe(
+        test_db,
+        name="Geprüfte Zutaten ohne Schritte",
+        folder_path="/tmp/verified-without-steps",
+        description="Eine ausreichend lange Rezeptbeschreibung für den Test.",
+    )
+    test_db.recipe_set_extraction_result(
+        recipe["id"],
+        "ok",
+        [{"name": "Mehl", "canonical_name": "mehl", "amount": 200, "unit": "g"}],
+    )
+    test_db.recipe_set_verified(recipe["id"], True, "anna")
+
+    listed = client.get("/api/recipes", params={"needs_manual_care": "true"}).json()
+    assert recipe["id"] in {item["id"] for item in listed["items"]}
+
+    audit = client.get("/api/audit").json()
+    assert recipe["id"] in {item["id"] for item in audit["data_gaps"]["no_steps"]}
+    assert recipe["id"] not in {item["id"] for item in audit["data_gaps"]["unverified"]}
+
+
+def test_verify_uses_request_actor_for_bearer_sessions(client, test_db, monkeypatch):
+    import app.routes.api_recipes as api_recipes
+
+    recipe = _create_recipe(test_db, name="Attribution", folder_path="/tmp/actor")
+    monkeypatch.setattr(api_recipes, "_actor", lambda _request: "anna")
+
+    response = client.post(f"/api/recipes/{recipe['id']}/verify?verified=true")
+
+    assert response.status_code == 200
+    assert response.json()["by"] == "anna"
+    assert test_db.recipe_get(recipe["id"])["verified_by"] == "anna"
+
+
 def test_list_filter_by_type(client, test_db):
     _create_recipe(test_db, name="Suppe", folder_path="/tmp/su", type="Vorspeise")
     _create_recipe(test_db, name="Pasta", folder_path="/tmp/pa", type="Hauptgericht")

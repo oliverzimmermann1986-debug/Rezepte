@@ -136,14 +136,13 @@ def get_audit(
         # Audit zeigte nur die unverifizierten).
         if not d.get("thumb_filename"):
             no_image.append(d)
-        # Alle ANDEREN Findings überspringen verifizierte Rezepte — User-Override.
-        if d.get("user_verified"):
-            continue
         if d["ing_count"] > 0 and d["step_count"] == 0:
             no_steps.append(d)
         if not d.get("url"):
             no_url.append(d)
-        if 0 < d["ing_count"] < 3:
+        # user_verified bestätigt nur die Zutatenliste. Es darf fehlende
+        # Schritte, Quelle, Beschreibung oder Nährwerte nicht verstecken.
+        if 0 < d["ing_count"] < 3 and not d.get("user_verified"):
             few_ingredients.append(d)
         if d["desc_len"] < 20:
             no_description.append(d)
@@ -152,7 +151,7 @@ def get_audit(
         # 'unverified': Zutaten ≥1 extrahiert aber noch nicht manuell als
         # ok markiert. Damit kann User durch die Liste gehen und systematisch
         # prüfen → ✓-Button im Modal → fällt raus.
-        if d["ing_count"] >= 1:
+        if d["ing_count"] >= 1 and not d.get("user_verified"):
             unverified.append(d)
 
     # 'fs_missing': DB-folder_path zeigt auf nicht-existierenden FS-Folder.
@@ -188,16 +187,10 @@ def get_audit(
     }
     result["data_gaps"] = data_gaps
 
-    # Endgültig fehlgeschlagene Downloads (>= MAX Versuche, kein Rezept entstanden).
-    # Sichtbar machen statt still skippen — Retry setzt den Zähler zurück,
-    # Verwerfen löscht den Eintrag (URL würde beim nächsten Lauf wieder von 0 starten,
-    # solange die Mail im Postfach liegt → vorher Mail löschen).
-    from ..jobs.scraper import MAX_DOWNLOAD_ATTEMPTS
-    failed_final = [
-        f for f in db.download_failures_list(limit=100)
-        if (f.get("attempts") or 0) >= MAX_DOWNLOAD_ATTEMPTS
-    ]
-    result["failed_downloads"] = failed_final
+    # Altbestand aus der früheren Download-Pipeline. Neue Social-Imports sind
+    # Link-only und erzeugen keine Download-Fehler mehr.
+    legacy_failures = db.download_failures_list(limit=100)
+    result["failed_downloads"] = legacy_failures
 
     # Summary erweitert um die drei neuen Kategorien + Daten-Lücken
     result["summary"] = {
@@ -227,7 +220,7 @@ def get_audit(
         "no_nutrition_count": len(no_nutrition),
         "fs_missing_count": len(fs_missing),
         "unverified_count": len(unverified),
-        "failed_download_count": len(failed_final),
+        "failed_download_count": len(legacy_failures),
     }
     return result
 
@@ -402,6 +395,7 @@ def _sanitize_folder_name(name: str) -> str:
     import re
     safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', name).strip()
     safe = re.sub(r'\s+', '_', safe)
+    safe = safe.strip(" .")
     return safe or 'unnamed'
 
 
@@ -483,7 +477,17 @@ def _apply_finding_internal(finding_id: int) -> Dict[str, Any]:
         new_type, new_category = parts[0].strip(), parts[1].strip()
         if not new_type or not new_category:
             raise HTTPException(400, "Typ und Kategorie pflichtig")
-        new_path = recipe_root / new_type / new_category / old_path.name
+        safe_type = _sanitize_folder_name(new_type)
+        safe_category = _sanitize_folder_name(new_category)
+        if safe_type == "unnamed" or safe_category == "unnamed":
+            raise HTTPException(400, "Typ und Kategorie enthalten unzulässige Pfadzeichen")
+        new_path = (recipe_root / safe_type / safe_category / old_path.name).resolve()
+        try:
+            relative_new = new_path.relative_to(recipe_root)
+        except ValueError as exc:
+            raise HTTPException(400, "Vorgeschlagener Zielpfad verlässt den Recipe-Root") from exc
+        if len(relative_new.parts) != 3:
+            raise HTTPException(400, "Vorgeschlagener Zielpfad hat keine Rezeptordner-Struktur")
         if new_path.exists() and new_path != old_path:
             raise HTTPException(409, f"Ziel-Folder existiert: {new_path}")
         new_path.parent.mkdir(parents=True, exist_ok=True)
@@ -727,12 +731,31 @@ def delete_folder_by_path(payload: DeleteByPathPayload) -> Dict[str, Any]:
     recipe_root = Path(cfg.get("paths", "recipe_dir", default="/mnt/rezepte")).resolve()
     target = Path(payload.folder_path).resolve()
     try:
-        target.relative_to(recipe_root)
+        relative = target.relative_to(recipe_root)
     except ValueError:
         raise HTTPException(400, f"Pfad nicht im Recipe-Root: {target}")
+    if len(relative.parts) != 3:
+        raise HTTPException(
+            400,
+            "Nur ein einzelner Konflikt-Rezeptordner (Typ/Kategorie/Rezept) darf gelöscht werden",
+        )
+    db = get_db()
+    with db.conn() as c:
+        conflict = c.execute(
+            "SELECT 1 FROM sync_errors WHERE folder_path=?",
+            (str(target),),
+        ).fetchone()
+        indexed = c.execute(
+            "SELECT 1 FROM recipes WHERE folder_path=? AND deleted_at IS NULL",
+            (str(target),),
+        ).fetchone()
+    if not conflict:
+        raise HTTPException(409, "Ordner ist kein registrierter FS-Sync-Konflikt")
+    if indexed:
+        raise HTTPException(409, "Ordner gehört zu einem aktiven Rezept und darf hier nicht gelöscht werden")
     if not target.exists():
         # Schon weg — sync_errors-Eintrag trotzdem löschen
-        with get_db().conn() as c:
+        with db.conn() as c:
             c.execute("DELETE FROM sync_errors WHERE folder_path=?", (str(target),))
         return {"ok": True, "note": "Folder war schon weg"}
     if not target.is_dir():
@@ -742,7 +765,7 @@ def delete_folder_by_path(payload: DeleteByPathPayload) -> Dict[str, Any]:
     except Exception as e:
         raise HTTPException(500, f"Löschen fehlgeschlagen: {e}")
     # sync_errors-Entry weg
-    with get_db().conn() as c:
+    with db.conn() as c:
         c.execute("DELETE FROM sync_errors WHERE folder_path=?", (str(target),))
     logger.info(f"FS-Konflikt-Folder gelöscht: {target}")
     return {"ok": True}

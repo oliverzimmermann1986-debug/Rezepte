@@ -2285,6 +2285,16 @@ class Database:
                 (time.time(), user_id),
             )
 
+    def user_revoke_sessions(self, username: str) -> bool:
+        """Macht alle bestehenden signierten Sessions eines Benutzers ungültig."""
+        with self.conn() as c:
+            cur = c.execute(
+                "UPDATE users SET session_version=session_version+1 "
+                "WHERE username=? COLLATE NOCASE",
+                (username,),
+            )
+            return cur.rowcount > 0
+
     def user_count_active_admins(self) -> int:
         """Verhindert Lockout: vor delete/disable/role-change prüfen dass
         mindestens 1 aktiver Admin übrig bleibt."""
@@ -2457,6 +2467,69 @@ class Database:
                 )
             return len(items)
 
+    def cart_merge_many(self, items: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Fügt aggregierte Wochenplan-Zutaten atomar zum Warenkorb hinzu.
+
+        Bestehende manuelle Einträge bleiben erhalten. Gleiche Canonical-/
+        Einheiten-Paare werden summiert und erneut als offen markiert.
+        """
+        added = 0
+        merged = 0
+        now = time.time()
+        with self.conn() as c:
+            for item in items:
+                name = item.get("name") or "?"
+                canonical = item.get("canonical_name")
+                unit = item.get("unit")
+                if canonical:
+                    if unit is None:
+                        existing = c.execute(
+                            "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit IS NULL",
+                            (canonical,),
+                        ).fetchone()
+                    else:
+                        existing = c.execute(
+                            "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit=?",
+                            (canonical, unit),
+                        ).fetchone()
+                else:
+                    existing = None
+
+                source_ids = list(item.get("source_recipe_ids") or [])
+                if existing:
+                    old_amount = existing["amount"]
+                    amount = item.get("amount")
+                    new_amount = (
+                        (old_amount or 0) + (amount or 0)
+                        if amount is not None
+                        else old_amount
+                    )
+                    old_sources = json.loads(existing["source_recipe_ids"] or "[]")
+                    for recipe_id in source_ids:
+                        if recipe_id not in old_sources:
+                            old_sources.append(recipe_id)
+                    c.execute(
+                        "UPDATE shopping_cart SET amount=?, checked=0, source_recipe_ids=? WHERE id=?",
+                        (new_amount, json.dumps(old_sources), existing["id"]),
+                    )
+                    merged += 1
+                else:
+                    c.execute(
+                        "INSERT INTO shopping_cart "
+                        "(name, canonical_name, amount, unit, checked, added_at, source_recipe_ids) "
+                        "VALUES (?, ?, ?, ?, 0, ?, ?)",
+                        (
+                            name,
+                            canonical,
+                            item.get("amount"),
+                            unit,
+                            now,
+                            json.dumps(source_ids),
+                        ),
+                    )
+                    added += 1
+        return {"added": added, "merged": merged}
+
     def cart_update(self, item_id: int, *, amount: Optional[float] = None,
                     checked: Optional[bool] = None, name: Optional[str] = None) -> None:
         sets, params = [], []
@@ -2584,6 +2657,60 @@ class Database:
                 out["snapshot"] = None
             return out
 
+    def recipe_version_attach_media(self, version_id: int, media: Dict[str, Any]) -> bool:
+        """Ergänzt einen logischen Snapshot um sichere Dateisicherungs-Metadaten."""
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT snapshot_json FROM recipe_versions WHERE id=?",
+                (version_id,),
+            ).fetchone()
+            if not row:
+                return False
+            try:
+                snapshot = json.loads(row["snapshot_json"])
+            except Exception:
+                return False
+            snapshot["media"] = dict(media or {})
+            c.execute(
+                "UPDATE recipe_versions SET snapshot_json=? WHERE id=?",
+                (
+                    json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+                    version_id,
+                ),
+            )
+            return True
+
+    def _backup_thumbnail_for_version(self, recipe: Dict[str, Any], version_id: int) -> None:
+        """Sichert das aktuelle Cover im Rezeptordner und verknüpft es mit der Version."""
+        from pathlib import Path
+        from .core.safety import atomic_copy_file
+
+        folder = Path(str(recipe.get("folder_path") or "")).resolve()
+        filename = str(recipe.get("thumb_filename") or "").strip()
+        if not filename:
+            self.recipe_version_attach_media(version_id, {"thumbnail_absent": True})
+            return
+        source = (folder / filename).resolve()
+        try:
+            source.relative_to(folder)
+        except ValueError:
+            self.recipe_version_attach_media(version_id, {"thumbnail_absent": True})
+            return
+        if not source.is_file() or source.is_symlink():
+            self.recipe_version_attach_media(version_id, {"thumbnail_absent": True})
+            return
+        relative = Path(".versions") / str(version_id) / f"thumbnail{source.suffix.lower()}"
+        backup = folder / relative
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        atomic_copy_file(source, backup)
+        self.recipe_version_attach_media(
+            version_id,
+            {
+                "thumbnail_backup": relative.as_posix(),
+                "thumbnail_filename": filename,
+            },
+        )
+
     def recipe_version_restore(self, version_id: int, *, restored_by: str = "system") -> Dict[str, Any]:
         version = self.recipe_version_get(version_id)
         if not version or not version.get("snapshot"):
@@ -2592,16 +2719,29 @@ class Database:
         current = self.recipe_get(recipe_id)
         if not current:
             return {"ok": False, "error": "Rezept existiert nicht mehr"}
+        snap = version["snapshot"]
+        media = snap.get("media") or {}
+        folder = Path(str(current.get("folder_path") or "")).resolve()
+        backup: Optional[Path] = None
+        if media.get("thumbnail_backup"):
+            backup = (folder / str(media["thumbnail_backup"])).resolve()
+            try:
+                backup.relative_to(folder)
+            except ValueError:
+                return {"ok": False, "error": "Cover-Sicherung liegt außerhalb des Rezeptordners"}
+            if not backup.is_file() or backup.is_symlink():
+                return {"ok": False, "error": "Cover-Sicherung der Version fehlt"}
         # Undo-Snapshot des aktuellen Stands anlegen, bevor zurückgerollt wird.
-        self.recipe_version_create(
+        undo_version_id = self.recipe_version_create(
             recipe_id, created_by=restored_by, source="restore",
             reason=f"Stand vor Wiederherstellung von Version {version['version_no']}",
         )
-        snap = version["snapshot"]
+        if undo_version_id is not None:
+            self._backup_thumbnail_for_version(current, int(undo_version_id))
         recipe = snap.get("recipe") or {}
         allowed = [
-            "name", "type", "category", "description", "thumb_filename",
-            "video_filename", "source_added_at", "ingredients_extracted_at",
+            "name", "type", "category", "description",
+            "source_added_at", "ingredients_extracted_at",
             "ingredients_status", "servings", "calories_per_serving", "protein_g",
             "carbs_g", "fat_g", "nutrition_computed_at", "user_verified",
             "verified_at", "verified_by",
@@ -2641,7 +2781,30 @@ class Database:
                     "INSERT OR IGNORE INTO recipe_tags(recipe_id, tag_id, auto) VALUES (?, ?, ?)",
                     (recipe_id, tag_id, 1 if tag.get("auto") else 0),
                 )
-        return {"ok": True, "recipe_id": recipe_id, "restored_version": version["version_no"]}
+
+        media_restored = False
+        if media.get("thumbnail_absent"):
+            for candidate in folder.glob("thumb.*"):
+                if candidate.is_file() and not candidate.is_symlink():
+                    candidate.unlink(missing_ok=True)
+            with self.conn() as c:
+                c.execute("UPDATE recipes SET thumb_filename=NULL WHERE id=?", (recipe_id,))
+            media_restored = True
+        elif media.get("thumbnail_backup"):
+            from .core.safety import atomic_copy_file
+
+            filename = Path(str(media.get("thumbnail_filename") or "thumb.jpg")).name
+            target = folder / filename
+            atomic_copy_file(backup, target)  # type: ignore[arg-type]
+            with self.conn() as c:
+                c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?", (filename, recipe_id))
+            media_restored = True
+        return {
+            "ok": True,
+            "recipe_id": recipe_id,
+            "restored_version": version["version_no"],
+            "media_restored": media_restored,
+        }
 
     # ─── Intelligent search administration ──────────────────────────────
     def search_synonyms_list(self) -> List[Dict[str, Any]]:

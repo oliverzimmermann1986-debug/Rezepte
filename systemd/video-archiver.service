@@ -1,0 +1,35 @@
+[Unit]
+Description=Private recipe video archive worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=videoarchive
+Group=videoarchive
+WorkingDirectory=/opt/video-archiver
+Environment="HOME=/var/lib/video-archiver"
+Environment="PATH=/opt/video-archiver/venv/bin:/usr/bin:/bin"
+ExecStart=/opt/video-archiver/venv/bin/python -m video_archiver \
+  --queue /var/lib/video-archiver/queue.db run \
+  --archive /srv/video-archive \
+  --yt-dlp /opt/video-archiver/venv/bin/yt-dlp \
+  --max-size-mb 1000 \
+  --confirm-rights
+TimeoutStartSec=1800
+
+# Der Worker darf nur in Queue, Archiv und seinem temporären Bereich schreiben.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/video-archiver /srv/video-archive
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Process one private video archive request every five minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+RandomizedDelaySec=30s
+Persistent=true
+Unit=video-archiver.service
+
+[Install]
+WantedBy=timers.target

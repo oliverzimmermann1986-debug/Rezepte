@@ -103,6 +103,18 @@ def _version_before(recipe_id: int, request: Request, reason: str, source: str =
         raise HTTPException(404, "Rezept nicht gefunden")
     return int(version_id)
 
+
+def _backup_thumbnail_version(recipe: Dict[str, Any], version_id: int) -> None:
+    """Sichert vor Cover-Mutationen auch die Binärdatei zur Version."""
+    try:
+        get_db()._backup_thumbnail_for_version(recipe, version_id)
+    except Exception as exc:
+        logger.exception("Cover-Sicherung für Version #%s fehlgeschlagen", version_id)
+        raise HTTPException(
+            500,
+            "Bildänderung abgebrochen: Das bisherige Cover konnte nicht versioniert werden",
+        ) from exc
+
 _FACET_CACHE = TTLCache(ttl_seconds=5.0, max_entries=128)
 
 
@@ -221,6 +233,8 @@ def list_recipes(
             "ingredients_status": r.get("ingredients_status"),
             "is_favorite": bool(r.get("is_favorite")),
             "rating": r.get("rating") or 0,
+            "user_verified": bool(r.get("user_verified")),
+            "verified_by": r.get("verified_by"),
             "servings": r.get("servings"),
             "ingredients_count": int(r.get("ingredients_count") or 0),
             "steps_count": int(r.get("steps_count") or 0),
@@ -322,8 +336,16 @@ def get_recipe(recipe_id: int):
                       if p.is_file() and not p.is_symlink()
                       and p.suffix.lower() == ".pdf")
         r["pdf_filename"] = pdfs[0] if pdfs else None
+        original_text = folder / "description_original.txt"
+        if original_text.is_file() and not original_text.is_symlink():
+            r["description_original"] = original_text.read_text(
+                encoding="utf-8", errors="replace"
+            )[:20000]
+        else:
+            r["description_original"] = None
     except Exception:
         r["pdf_filename"] = None
+        r["description_original"] = None
     return r
 
 
@@ -665,11 +687,20 @@ def rescrape_recipe(
     new_thumb = meta.get("thumbnail_bytes")
     if new_thumb:
         staged_thumb = folder_p / f".thumb-refresh-{time.time_ns()}.img"
+        normalized_thumb = folder_p / f".thumb-refresh-{time.time_ns()}.jpg"
         try:
             from ..core.safety import atomic_write_bytes
             atomic_write_bytes(staged_thumb, bytes(new_thumb))
             target_thumb = folder_p / "thumb.jpg"
-            normalize_image(staged_thumb, target_thumb)
+            normalize_image(staged_thumb, normalized_thumb)
+            version_id = _version_before(
+                recipe_id,
+                request,
+                "Coverbild aus Quelle ersetzt",
+                source="import",
+            )
+            _backup_thumbnail_version(rec, version_id)
+            normalized_thumb.replace(target_thumb)
             with db.conn() as c:
                 c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?",
                           ("thumb.jpg", recipe_id))
@@ -690,6 +721,7 @@ def rescrape_recipe(
             logger.warning(f"Thumbnail-Copy fehler #{recipe_id}: {e}")
         finally:
             staged_thumb.unlink(missing_ok=True)
+            normalized_thumb.unlink(missing_ok=True)
 
     worker_started = False
     if extraction_queued:
@@ -714,7 +746,11 @@ def rescrape_recipe(
 
 
 @router.post("/{recipe_id}/upload-thumbnail")
-async def upload_thumbnail(recipe_id: int, file: UploadFile = File(...)) -> Dict[str, Any]:
+async def upload_thumbnail(
+    recipe_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
     """Lädt ein Bild ein, normalisiert es und tauscht das alte Thumbnail atomar."""
     import tempfile
 
@@ -722,11 +758,7 @@ async def upload_thumbnail(recipe_id: int, file: UploadFile = File(...)) -> Dict
     rec = db.recipe_get(recipe_id)
     if not rec:
         raise HTTPException(404, "Rezept nicht gefunden")
-    folder = rec.get("folder_path")
-    if not folder or not Path(folder).exists():
-        raise HTTPException(400, f"Folder fehlt: {folder}")
-
-    folder_p = Path(folder)
+    folder_p = _safe_recipe_folder(rec)
     max_size = 10 * 1024 * 1024
     size = 0
     temp_path: Optional[Path] = None
@@ -745,12 +777,17 @@ async def upload_thumbnail(recipe_id: int, file: UploadFile = File(...)) -> Dict
             raise HTTPException(400, "Leere Datei")
 
         target = folder_p / "thumb.jpg"
+        staged_target = folder_p / f".thumb-upload-{time.time_ns()}.jpg"
         try:
-            normalize_image(temp_path, target)
+            normalize_image(temp_path, staged_target)
         except HTTPException:
             raise
         except Exception as exc:
             raise HTTPException(400, f"Bild konnte nicht gelesen werden: {exc}") from exc
+
+        version_id = _version_before(recipe_id, request, "Coverbild ersetzt")
+        _backup_thumbnail_version(rec, version_id)
+        staged_target.replace(target)
 
         # Erst nach erfolgreichem atomaren Austausch alte Varianten entfernen.
         for old in folder_p.glob("thumb.*"):
@@ -765,17 +802,26 @@ async def upload_thumbnail(recipe_id: int, file: UploadFile = File(...)) -> Dict
         with db.conn() as c:
             c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?", (target.name, recipe_id))
         logger.info("thumbnail upload #%s '%s' → %s (%s B)", recipe_id, rec.get("name"), target.name, size)
-        return {"ok": True, "thumbnail": target.name, "size_bytes": size}
+        return {
+            "ok": True,
+            "thumbnail": target.name,
+            "size_bytes": size,
+            "version_id": version_id,
+        }
     finally:
         if temp_path:
             try:
                 temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+        try:
+            staged_target.unlink(missing_ok=True)
+        except (NameError, OSError):
+            pass
 
 
 @router.post("/{recipe_id}/extract-frame")
-def extract_frame(recipe_id: int, seconds: float = 2.0) -> Dict[str, Any]:
+def extract_frame(recipe_id: int, request: Request, seconds: float = 2.0) -> Dict[str, Any]:
     """Extrahiert einen Frame aus dem Video im Recipe-Folder via ffmpeg und
     setzt diesen als Thumbnail. Alternative zu rescrape wenn die URL tot
     ist aber das Video noch lokal liegt.
@@ -802,56 +848,60 @@ def extract_frame(recipe_id: int, seconds: float = 2.0) -> Dict[str, Any]:
     if not video:
         return {"ok": False, "error": "Kein Video im Folder gefunden (.mp4/.mov/.webm/.mkv)"}
 
-    # Existing thumbs entfernen
-    for old in folder_p.glob("thumb.*"):
-        try:
-            old.unlink()
-        except OSError:
-            pass
-
     target = folder_p / "thumb.jpg"
+    staged_target = folder_p / f".frame-extract-{time.time_ns()}.jpg"
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-ss", str(seconds), "-i", str(video),
         "-frames:v", "1", "-q:v", "2",
-        str(target),
+        str(staged_target),
     ]
     try:
         r = _sp.run(cmd, capture_output=True, text=True, timeout=60)
     except FileNotFoundError:
+        staged_target.unlink(missing_ok=True)
         return {"ok": False, "error": "ffmpeg nicht installiert"}
     except _sp.TimeoutExpired:
+        staged_target.unlink(missing_ok=True)
         return {"ok": False, "error": "ffmpeg Timeout (>60s)"}
-    if r.returncode != 0 or not target.exists():
+    if r.returncode != 0 or not staged_target.exists():
         # Vielleicht ist seconds > Video-Länge → Frame aus 0.5s versuchen
         cmd[cmd.index("-ss") + 1] = "0.5"
         try:
             r2 = _sp.run(cmd, capture_output=True, text=True, timeout=60)
-            if r2.returncode != 0 or not target.exists():
+            if r2.returncode != 0 or not staged_target.exists():
+                staged_target.unlink(missing_ok=True)
                 return {"ok": False,
                         "error": f"ffmpeg: {(r.stderr or r2.stderr).strip()[:200]}"}
         except Exception as e:
+            staged_target.unlink(missing_ok=True)
             return {"ok": False, "error": str(e)}
+
+    version_id = _version_before(recipe_id, request, "Coverbild aus Video ersetzt")
+    _backup_thumbnail_version(rec, version_id)
+    staged_target.replace(target)
+    for old in folder_p.glob("thumb.*"):
+        if old != target and old.is_file() and not old.is_symlink():
+            old.unlink(missing_ok=True)
+    invalidate_thumbnail_cache(folder_p)
 
     with db.conn() as c:
         c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?",
                   ("thumb.jpg", recipe_id))
     logger.info(f"frame #{recipe_id} '{rec.get('name')}' @ {seconds}s → {target.name}")
     return {"ok": True, "thumbnail": "thumb.jpg", "video": video.name,
-            "seconds": seconds, "size_bytes": target.stat().st_size}
+            "seconds": seconds, "size_bytes": target.stat().st_size,
+            "version_id": version_id}
 
 
 @router.post("/{recipe_id}/verify")
 def toggle_verify(recipe_id: int, request: Request,
                     verified: bool = Query(True)) -> Dict[str, Any]:
-    """Toggle 'manuell geprüft'-Flag. Verifizierte Rezepte werden aus den
-    Audit-Daten-Lücken-Listen ausgeschlossen — User-Override über KI-Heuristik.
-    Audit-Trail: speichert username + Timestamp."""
-    from ..auth import SESSION_COOKIE, session_user
+    """Markiert ausschließlich die Zutatenliste als manuell geprüft."""
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
-    username = session_user(request.cookies.get(SESSION_COOKIE, "")) or "?"
+    username = _actor(request)
     _version_before(recipe_id, request, "Prüfstatus geändert")
     db.recipe_set_verified(recipe_id, verified, username if verified else None)
     logger.info(f"verify #{recipe_id}: {verified} von '{username}'")

@@ -32,6 +32,8 @@ from ..core.pdf_processing import process_pdf_bytes
 from ..recipes.pdf_recipe_extract import (
     apply_extracted_recipe_data, existing_hints, extract_recipe_data,
 )
+from ..recipes.canonical import canonical_name
+from ..recipes.units import normalize_unit
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +41,6 @@ logger = logging.getLogger(__name__)
 # Cancel-Flag (modul-global, threading-safe). Wird im Web-Trigger und beim
 # Job-Start reset, vom Cancel-Endpoint gesetzt, im run()-Loop pro URL geprüft.
 _CANCEL_EVENT = threading.Event()
-
-# Max yt-dlp Versuche bevor URL als 'download_failed' in history landet
-MAX_DOWNLOAD_ATTEMPTS = 3
-
 
 def cancel_job() -> dict:
     """Setzt das Cancel-Flag. Der laufende Scraper bricht beim nächsten
@@ -298,9 +296,27 @@ class ScraperJob:
 
     # ---------------- URL-Verarbeitung ----------------
     def process_url(self, item: Dict) -> Dict:
-        url = item["url"]
-        content_type = item["type"]
+        """Speichert Social-Links zur manuellen Pflege, ohne Medien-Download.
+
+        TikTok-/Instagram-Inhalte bleiben bei der Plattform. Dadurch enthält
+        die App nur Quelle und manuell gepflegte Rezeptdaten.
+        """
+        from ..core.email_processor import normalize_content_url
+
+        raw_url = str(item.get("url") or "")
+        url = normalize_content_url(raw_url)
+        content_type = str(item.get("type") or "recipe")
+        if not url:
+            return {
+                "url": raw_url,
+                "type": content_type,
+                "status": "error",
+                "error": "ungültiger TikTok-/Instagram-Post",
+            }
         result: Dict = {"url": url, "type": content_type, "status": "error"}
+        # Frühere Versionen führten Download-Fehler. Im Link-only-Modell ist
+        # dieser Zustand nicht mehr relevant und darf den Import nicht blockieren.
+        self.db.download_failure_clear(url)
 
         existing = self.db.history_get(url)
         if (
@@ -314,89 +330,33 @@ class ScraperJob:
                 "target": existing["target_dir"],
             }
 
-        video = self.downloader.download(url)
-        if not video:
-            # Download-Fehler: Versuch zählen. Bis MAX_DOWNLOAD_ATTEMPTS wird
-            # die URL in Folgeläufen als Retry-Kandidat erneut versucht,
-            # danach erscheint sie im Audit unter 'Endgültig fehlgeschlagen'.
-            self.db.download_failure_record(url, "yt-dlp Download fehlgeschlagen",
-                                            content_type=content_type)
-            result["error"] = "download failed"
-            return result
+        existing_pending = self.db.pending_get(url)
+        if existing_pending and existing_pending.get("status") == "pending":
+            return {**result, "status": "pending", "name": "Unvollständiger Link-Import"}
 
-        # Download geklappt - falls die URL frühere Fehlversuche hatte, jetzt löschen
-        self.db.download_failure_clear(url)
-        description = self.downloader.read_description(video)
-
-        try:
-            if content_type == "recipe":
-                r = self._analyze_recipe(description)
-                if r.needs_manual_input(self.confidence_threshold):
-                    pending_video = self._stash_for_pending(video)
-                    self.db.pending_add(
-                        url=url, content_type="recipe",
-                        description=description,
-                        video_path=str(pending_video) if pending_video else None,
-                        ai_suggestion={
-                            "name": r.name, "type": r.type,
-                            "category": r.category, "confidence": r.confidence,
-                        },
-                    )
-                    result.update({"status": "pending", "name": r.name})
-                else:
-                    target = self._save_recipe(r, url, video, description)
-                    # Sofort in die DB indizieren - sonst existiert nur der Ordner
-                    # und das Rezept erscheint erst nach dem nächsten Filesystem-Sync.
-                    try:
-                        from ..recipes.indexer import _index_one
-                        _index_one(self.db, target,
-                                   target.parent.parent.name, target.parent.name)
-                    except Exception as e:
-                        from ..core.safety import quarantine_move
-                        trash_root = Path(self.cfg.get(
-                            "safety",
-                            "trash_dir",
-                            default="/opt/scrapper/data/quarantine",
-                        ))
-                        quarantine_move(
-                            target,
-                            trash_root,
-                            reason="import-index-failed",
-                            source={"url": url, "error": str(e)},
-                        )
-                        raise RuntimeError(
-                            f"Sofort-Index nach Import fehlgeschlagen: {e}"
-                        ) from e
-                    self.db.history_add(
-                        url,
-                        content_type="recipe",
-                        name=r.name,
-                        target_dir=str(target),
-                    )
-                    result.update({"status": "auto", "name": r.name, "target": str(target)})
-            else:  # wedding
-                default_cat = item.get("default_category") or "Sonstiges"
-                w = self._analyze_wedding(description)
-                if w.needs_manual_input(self.confidence_threshold) or self.wedding_always_pending:
-                    pending_video = self._stash_for_pending(video)
-                    self.db.pending_add(
-                        url=url, content_type="wedding",
-                        description=description,
-                        video_path=str(pending_video) if pending_video else None,
-                        ai_suggestion={
-                            "name": w.name, "category": w.category or default_cat,
-                            "confidence": w.confidence,
-                        },
-                    )
-                    result.update({"status": "pending", "name": w.name})
-                else:
-                    target = self._save_wedding(w, url, video, description, default_cat)
-                    self.db.history_add(url, content_type="wedding", name=w.name,
-                                         target_dir=str(target))
-                    result.update({"status": "auto", "name": w.name, "target": str(target)})
-        finally:
-            self._cleanup_temp(video)
-
+        platform = "TikTok" if "tiktok.com" in url else "Instagram"
+        suggestion = {
+            "name": f"{platform}-Rezept prüfen",
+            "type": "Sonstiges",
+            "category": "Allgemein",
+            "confidence": 0.0,
+            "source": "external-link",
+            "platform": platform,
+        }
+        self.db.pending_add(
+            url=url,
+            content_type=content_type,
+            description=None,
+            video_path=None,
+            frame_path=None,
+            ai_suggestion=suggestion,
+        )
+        result.update({
+            "status": "pending",
+            "name": suggestion["name"],
+            "platform": platform,
+            "message": "Link gespeichert. Rezeptdaten werden manuell gepflegt; der Post öffnet extern.",
+        })
         return result
 
     # ---------------- Mail-Attachments (PDF + JPG/PNG) ----------------
@@ -870,35 +830,29 @@ class ScraperJob:
 
             url = item["url"]
 
-            # yt-dlp Failed-Tracking: nach MAX_DOWNLOAD_ATTEMPTS überspringen.
-            # WICHTIG: NICHT in die History schreiben — sonst gilt die URL für
-            # immer als erledigt und ein Retry ist nur per SQL möglich (unsichtbar).
-            # Sie bleibt in download_failures und erscheint im Audit unter
-            # "Endgültig fehlgeschlagen" mit Retry-/Verwerfen-Aktion.
-            attempts = self.db.download_failure_attempts(url)
-            if attempts >= MAX_DOWNLOAD_ATTEMPTS:
-                logger.info(f"Skip {url}: {attempts} Download-Fehlversuche, aufgegeben (Audit → Retry/Verwerfen)")
-                summary["skipped_failed"] += 1
-                _mark_done(item)   # final-failed = accounted, Mail kann weg
-                continue
-
+            accounted = False
             try:
                 r = self.process_url(item)
                 if r["status"] == "auto":
                     summary["auto"] += 1
                     summary[f"{item['type']}_auto"] += 1
+                    accounted = True
                 elif r["status"] == "pending":
                     summary["pending"] += 1
                     summary[f"{item['type']}_pending"] += 1
+                    accounted = True
+                elif r["status"] == "already_processed":
+                    accounted = True
                 else:
                     summary["errors"] += 1
             except Exception as e:
                 logger.exception(f"URL fehlgeschlagen {url}: {e}")
                 summary["errors"] += 1
             finally:
-                # Jedes Outcome (auto/pending/error) ist accounted — Fehlversuche
-                # leben in download_failures weiter, nicht in der Mail.
-                _mark_done(item)
+                # Nur persistierte Outcomes erlauben das Löschen der Quellmail.
+                # Bei Fehler bleibt sie für einen späteren Lauf erhalten.
+                if accounted:
+                    _mark_done(item)
 
         # Attachments verarbeiten (PDF + JPG)
         summary["attach_auto"] = 0
@@ -915,21 +869,25 @@ class ScraperJob:
                 summary["attach_skipped"] += 1
                 _mark_done(att)
                 continue
+            accounted = False
             try:
                 r = self.process_attachment(att, synth_url)
                 if r.get("status") == "auto":
                     summary["attach_auto"] += 1
                     summary[f"{att['type']}_auto"] += 1
+                    accounted = True
                 elif r.get("status") == "pending":
                     summary["attach_pending"] += 1
                     summary[f"{att['type']}_pending"] += 1
+                    accounted = True
                 else:
                     summary["errors"] += 1
             except Exception as e:
                 logger.exception(f"Attachment fehlgeschlagen {att.get('filename')}: {e}")
                 summary["errors"] += 1
             finally:
-                _mark_done(att)
+                if accounted:
+                    _mark_done(att)
 
         # Verarbeitete Mails löschen — nur wenn der Lauf nicht abgebrochen wurde
         # und ALLE Items der Mail accounted sind. Config-gated pro Konto
@@ -1294,6 +1252,15 @@ class ScraperJob:
         if not entry:
             return {"ok": False, "error": "Pending-Eintrag nicht gefunden"}
 
+        suggestion = entry.get("ai_suggestion") or {}
+        if suggestion.get("source") == "external-link":
+            return {
+                "ok": True,
+                "action": "still_pending",
+                "analysis": suggestion,
+                "message": "Externe Links werden nicht heruntergeladen und müssen manuell gepflegt werden.",
+            }
+
         description = entry.get("description")
         video_path = Path(entry["video_path"]) if entry.get("video_path") else None
         if not video_path or not video_path.exists():
@@ -1345,13 +1312,95 @@ class ScraperJob:
             return {"ok": True, "action": "skipped"}
 
         video_path = Path(entry["video_path"]) if entry.get("video_path") else None
-        description = entry.get("description")
+        recipe_id: Optional[int] = None
+        description = (
+            decision.get("description")
+            if decision.get("description") is not None
+            else entry.get("description")
+        )
+        suggestion = entry.get("ai_suggestion") or {}
+        source = str(suggestion.get("source") or "")
+
+        if source == "external-link":
+            name = str(decision.get("name") or suggestion.get("name") or "Unbekannt").strip()
+            category = str(decision.get("category") or suggestion.get("category") or "Allgemein").strip()
+            if entry["content_type"] == "recipe":
+                recipe_type = str(decision.get("type") or suggestion.get("type") or "Sonstiges").strip()
+                target = self.recipe_dir / _sanitize(recipe_type) / _sanitize(category) / _sanitize(name)
+                if target.exists():
+                    target = target.parent / f"{target.name}_{datetime.now():%Y%m%d_%H%M%S}"
+                from ..core.safety import atomic_write_json, atomic_write_text, write_manifest
+                target.mkdir(parents=True, exist_ok=False)
+                info = {
+                    "url": url,
+                    "name": name,
+                    "type": recipe_type,
+                    "category": category,
+                    "confidence": 1.0,
+                    "content_type": "recipe",
+                    "source": "external-link",
+                    "platform": suggestion.get("platform"),
+                    "description": (description or "")[:5000],
+                    "timestamp": datetime.now().isoformat(),
+                    "is_manual": True,
+                }
+                if description:
+                    atomic_write_text(target / "description.txt", description)
+                atomic_write_json(target / "info.json", info)
+                try:
+                    write_manifest(target, source={"kind": "external-link", "url": url})
+                except Exception:
+                    pass
+                recipe_id = self.db.recipe_upsert(
+                    url=url,
+                    name=name,
+                    type=recipe_type,
+                    category=category,
+                    folder_path=str(target),
+                    description=description,
+                    thumb_filename=None,
+                    video_filename=None,
+                    source_added_at=time.time(),
+                )
+                self._apply_pending_manual_data(recipe_id, decision)
+                self.db.history_add(url, content_type="recipe", name=name, target_dir=str(target))
+            else:
+                target = self.wedding_dir / _sanitize(category or "Sonstiges") / _sanitize(name)
+                if target.exists():
+                    target = target.parent / f"{target.name}_{datetime.now():%Y%m%d_%H%M%S}"
+                from ..core.safety import atomic_write_json, atomic_write_text, write_manifest
+                target.mkdir(parents=True, exist_ok=False)
+                info = {
+                    "url": url,
+                    "name": name,
+                    "wedding_category": category,
+                    "confidence": 1.0,
+                    "content_type": "wedding",
+                    "source": "external-link",
+                    "platform": suggestion.get("platform"),
+                    "description": (description or "")[:5000],
+                    "timestamp": datetime.now().isoformat(),
+                    "is_manual": True,
+                }
+                if description:
+                    atomic_write_text(target / "description.txt", description)
+                atomic_write_json(target / "info.json", info)
+                try:
+                    write_manifest(target, source={"kind": "external-link", "url": url})
+                except Exception:
+                    pass
+                self.db.history_add(url, content_type="wedding", name=name, target_dir=str(target))
+            self.db.pending_resolve(url, status="resolved")
+            return {
+                "ok": True,
+                "action": "saved",
+                "target": str(target),
+                "recipe_id": recipe_id if entry["content_type"] == "recipe" else None,
+            }
 
         if not video_path or not video_path.exists():
             return {"ok": False, "error": "Importdatei fehlt (vermutlich aufgeräumt)"}
 
-        suggestion = entry.get("ai_suggestion") or {}
-        source = str(suggestion.get("source") or "")
         ext = video_path.suffix.lower()
         is_attachment = source in {"mail-attachment", "manual-upload"} and ext in {
             ".pdf", ".jpg", ".jpeg", ".png",
@@ -1388,6 +1437,7 @@ class ScraperJob:
                         self.db, recipe_id, structured, actor="manual-import",
                         overwrite=False, create_version=False, update_description=True,
                     )
+                self._apply_pending_manual_data(recipe_id, decision)
                 self.db.history_add(url, content_type="recipe", name=name, target_dir=str(target))
             else:
                 target = self.wedding_dir / _sanitize(category or "Sonstiges") / _sanitize(name)
@@ -1404,7 +1454,12 @@ class ScraperJob:
                 self.db.history_add(url, content_type="wedding", name=name, target_dir=str(target))
             self.db.pending_resolve(url, status="resolved")
             self._remove_pending_files(entry)
-            return {"ok": True, "action": "saved", "target": str(target)}
+            return {
+                "ok": True,
+                "action": "saved",
+                "target": str(target),
+                "recipe_id": recipe_id if entry["content_type"] == "recipe" else None,
+            }
 
         if entry["content_type"] == "recipe":
             r = RecipeAnalysis(
@@ -1415,6 +1470,12 @@ class ScraperJob:
                 is_manual=True,
             )
             target = self._save_recipe(r, url, video_path, description)
+            from ..recipes.indexer import _index_one
+            _index_one(self.db, target, target.parent.parent.name, target.parent.name)
+            recipe = self.db.recipe_get_by_folder(str(target))
+            recipe_id = int(recipe["id"]) if recipe else None
+            if recipe_id is not None:
+                self._apply_pending_manual_data(recipe_id, decision)
             self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
         else:
             w = WeddingAnalysis(
@@ -1427,7 +1488,45 @@ class ScraperJob:
             self.db.history_add(url, content_type="wedding", name=w.name, target_dir=str(target))
         self.db.pending_resolve(url, status="resolved")
         self._remove_pending_files(entry)
-        return {"ok": True, "action": "saved", "target": str(target)}
+        return {
+            "ok": True,
+            "action": "saved",
+            "target": str(target),
+            "recipe_id": recipe_id if entry["content_type"] == "recipe" else None,
+        }
+
+    def _apply_pending_manual_data(self, recipe_id: int, decision: Dict) -> None:
+        """Übernimmt Korrekturen aus der manuellen Importprüfung direkt in die DB."""
+        ingredients = decision.get("ingredients")
+        if ingredients is not None:
+            prepared = []
+            for item in ingredients:
+                name = str((item or {}).get("name") or "").strip()
+                if not name:
+                    continue
+                amount = (item or {}).get("amount")
+                try:
+                    amount = float(amount) if amount not in (None, "") else None
+                except (TypeError, ValueError):
+                    amount = None
+                prepared.append({
+                    "name": name,
+                    "canonical_name": canonical_name(name),
+                    "amount": amount,
+                    "unit": normalize_unit((item or {}).get("unit")),
+                    "raw": (item or {}).get("raw"),
+                })
+            self.db.recipe_set_extraction_result(
+                recipe_id, status="ok", ingredients=prepared,
+            )
+
+        steps = decision.get("steps")
+        if steps is not None:
+            self.db.recipe_steps_set(recipe_id, steps)
+        if decision.get("servings") is not None:
+            self.db.recipe_set_servings(recipe_id, decision.get("servings"))
+        if decision.get("verified"):
+            self.db.recipe_set_verified(recipe_id, True, "manual-import")
 
     def _remove_pending_files(self, entry: Dict) -> None:
         p = entry.get("video_path")

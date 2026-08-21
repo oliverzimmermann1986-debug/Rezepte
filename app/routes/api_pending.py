@@ -49,22 +49,35 @@ _UPLOAD_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 _UPLOAD_LIMIT = 25 * 1024 * 1024
 
 
+def _detected_upload_type(data: bytes) -> Optional[str]:
+    if data.startswith(b"%PDF-"):
+        return ".pdf"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    return None
+
+
 @router.post("/import-url")
 def import_url(body: ImportUrlBody) -> Dict[str, Any]:
-    """Manueller Direkt-Import einer einzelnen URL (gleicher Pfad wie der
-    Mail-Import: Download -> KI -> speichern, bei geringer Confidence -> Pending).
-    Läuft synchron; Downloads sind i.d.R. wenige Sekunden."""
-    from ..core.email_processor import is_content_url
+    """Speichert einen einzelnen Social-Post als externe Rezeptquelle.
 
-    url = (body.url or "").strip()
-    if not url:
+    Medien werden bewusst nicht heruntergeladen. Der Link landet zur manuellen
+    Pflege bei den unvollständigen Importen und wird später extern geöffnet.
+    """
+    from ..core.email_processor import normalize_content_url
+
+    raw_url = (body.url or "").strip()
+    if not raw_url:
         raise HTTPException(400, "URL fehlt")
     if body.type not in ("recipe", "wedding"):
         raise HTTPException(400, "type muss 'recipe' oder 'wedding' sein")
-    if not is_content_url(url):
+    url = normalize_content_url(raw_url)
+    if not url:
         raise HTTPException(
             400,
-            "Das sieht nach einem Profil-Link aus (kein einzelnes Video/Reel). "
+            "Das ist kein gültiger einzelner TikTok-/Instagram-Post. "
             "Bitte den Link zu einem konkreten Post einfügen.",
         )
 
@@ -74,7 +87,7 @@ def import_url(body: ImportUrlBody) -> Dict[str, Any]:
                 "message": "URL wurde bereits importiert"}
 
     result = get_scraper_job().process_url({"url": url, "type": body.type})
-    return {"ok": result.get("status") in ("auto", "pending"), **result}
+    return {"ok": result.get("status") in ("already_processed", "pending"), **result}
 
 
 @router.post("/import-file")
@@ -91,6 +104,12 @@ async def import_file(file: UploadFile = File(...), type: str = "recipe") -> Dic
         raise HTTPException(400, "Die Datei ist leer")
     if len(data) > _UPLOAD_LIMIT:
         raise HTTPException(413, "Die Datei ist größer als 25 MB")
+    detected = _detected_upload_type(data)
+    if not detected:
+        raise HTTPException(415, "Dateiinhalt ist kein gültiges PDF-, JPEG- oder PNG-Format")
+    expected = ".jpg" if ext in {".jpg", ".jpeg"} else ext
+    if detected != expected:
+        raise HTTPException(415, "Dateiendung und tatsächliches Dateiformat stimmen nicht überein")
 
     synth_url = f"manual-upload://{uuid.uuid4().hex}/{filename}"
     result = get_scraper_job().process_attachment(
@@ -165,6 +184,11 @@ class ResolveBody(BaseModel):
     name: Optional[str] = None
     type: Optional[str] = None    # für Rezept
     category: Optional[str] = None
+    description: Optional[str] = None
+    ingredients: Optional[List[Dict[str, Any]]] = None
+    steps: Optional[List[Dict[str, Any]]] = None
+    servings: Optional[int] = None
+    verified: bool = False
 
 
 @router.post("")
@@ -176,6 +200,11 @@ def resolve(body: ResolveBody):
         "name": body.name,
         "type": body.type,
         "category": body.category,
+        "description": body.description,
+        "ingredients": body.ingredients,
+        "steps": body.steps,
+        "servings": body.servings,
+        "verified": body.verified,
     }
     return get_scraper_job().resolve_pending(body.url, decision)
 

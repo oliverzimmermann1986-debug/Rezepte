@@ -9,7 +9,7 @@ STATIC = ROOT / "app" / "static"
 def test_only_one_application_stylesheet_exists():
     css_files = sorted(p.name for p in STATIC.glob("*.css"))
     assert css_files == ["rezepte.css"]
-    html = (STATIC / "index.html").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert '/static/rezepte.css' in html
     assert 'style.css' not in html
     assert 'mobile-first.css' not in html
@@ -18,12 +18,12 @@ def test_only_one_application_stylesheet_exists():
 
 
 def test_recipe_library_is_default_and_has_primary_navigation():
-    js = (STATIC / "app.js").read_text()
-    html = (STATIC / "index.html").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert "page: 'recipes'" in js
-    assert "new Set(['recipes','cart','admin'])" in js
+    assert "new Set(['recipes','plan','cart','admin'])" in js
     assert '<span class="nav-label">Favoriten</span>' not in html
-    assert html.count('class="nav-item nav-primary"') == 3
+    assert html.count('class="nav-item nav-primary"') == 4
     assert "Einkaufsliste" in html
     assert "Rezepte" in html
     assert "recipes-searchbar" in html
@@ -31,9 +31,9 @@ def test_recipe_library_is_default_and_has_primary_navigation():
 
 
 def test_legacy_theme_switcher_is_gone():
-    html = (STATIC / "index.html").read_text()
-    js = (STATIC / "app.js").read_text()
-    css = (STATIC / "rezepte.css").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
     combined = html + js
     assert "data-theme" not in combined
     assert "themePicker" not in combined
@@ -42,7 +42,7 @@ def test_legacy_theme_switcher_is_gone():
 
 
 def test_mobile_footer_reserves_content_space_and_is_opaque():
-    css = (STATIC / "rezepte.css").read_text()
+    css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
     assert "--mobile-nav-height" in css
     assert "padding: 14px 12px calc(var(--mobile-nav-height) + env(safe-area-inset-bottom) + 30px)" in css
     assert "background: #fffdf9" in css
@@ -51,13 +51,50 @@ def test_mobile_footer_reserves_content_space_and_is_opaque():
 
 
 def test_manifest_uses_rezepte_brand_and_butter_palette():
-    manifest = json.loads((STATIC / "manifest.json").read_text())
+    manifest = json.loads((STATIC / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["name"] == "Rezepte"
     assert manifest["theme_color"] == "#f5c84f"
     assert manifest["background_color"] == "#fffaf0"
     assert any(shortcut["url"] == "/?tab=recipes" for shortcut in manifest["shortcuts"])
     assert any(shortcut["url"] == "/?tab=cart" for shortcut in manifest["shortcuts"])
     assert not any(shortcut["url"] == "/?tab=favorites" for shortcut in manifest["shortcuts"])
+
+
+def test_weekly_meal_plan_has_desktop_mobile_and_shopping_flow():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
+    assert "page==='plan'" in html
+    assert '<span class="nav-label">Wochenplan</span>' in html
+    assert 'class="meal-plan-grid"' in html
+    assert "Woche einkaufen" in html
+    assert "Gemeinsame Einkaufsliste" in html
+    assert "updateMealPlanServings(item)" in html
+    assert "async loadMealPlan(" in js
+    assert "async createMealPlanCart()" in js
+    assert "async downloadMealPlanPdf()" in js
+    assert "async shareMealPlanPdf()" in js
+    assert "navigator.canShare" in js
+    assert "mailto:?subject=" in js
+    assert "/api/meal-plan/cart" in js
+    assert "/api/meal-plan/pdf" in js
+    assert "Teilen / Mail" in html
+    assert "grid-template-columns: repeat(4, minmax(0, 1fr))" in css
+    assert ".meal-plan-grid { grid-template-columns: 1fr;" in css
+
+
+def test_single_recipe_can_download_and_share_a_real_pdf():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert '@click="downloadRecipePdf()"' in html
+    assert '@click="shareRecipePdf(recipeDetail.data)"' in html
+    assert '@click="copyRecipeShareLink()"' in html
+    assert "async downloadRecipePdf()" in js
+    assert "async shareRecipePdf(" in js
+    assert "async copyRecipeShareLink()" in js
+    assert "/recipe/${recipe.id}/pdf" in js
+    assert "new File([blob]" in js
+    assert "async shareRecipe(recipe)" not in js
 
 
 def test_no_removed_remote_sync_feature_remains_in_runtime():
@@ -70,13 +107,13 @@ def test_no_removed_remote_sync_feature_remains_in_runtime():
     ]
     forbidden = ("rclone", "bisync", "quicksync", "backup_progress", "/per-pair")
     for path in runtime_files:
-        text = path.read_text().lower()
+        text = path.read_text(encoding="utf-8").lower()
         for token in forbidden:
             assert token not in text, f"{token!r} remains in {path}"
 
 
 def test_audit_state_is_safe_before_hidden_page_is_loaded():
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert "total_recipes: 0" in js
     assert "exact_duplicates: []" in js
     assert "data_gaps: { no_image: []" in js
@@ -84,8 +121,8 @@ def test_audit_state_is_safe_before_hidden_page_is_loaded():
 
 
 def test_pdf_auto_rotation_settings_are_exposed_with_safe_defaults():
-    html = (STATIC / "index.html").read_text()
-    js = (STATIC / "app.js").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert "PDF-Verarbeitung" in html
     assert 'x-model="config.pdf.auto_rotate"' in html
     assert 'x-model="config.pdf.use_tesseract_osd"' in html
@@ -101,7 +138,7 @@ def test_admin_center_uses_private_tile_navigation():
     for label in ("Importzentrale", "Versionen", "PDF &amp; Scan", "Suche", "Wartung"):
         assert label in html
     assert "page==='admin'" in html
-    assert "['recipes','cart','admin']" in js.replace(" ", "")
+    assert "['recipes','plan','cart','admin']" in js.replace(" ", "")
     assert "admin-home-grid" in html
     assert ".admin-home-tile" in css
     assert "Privater Admin-Bereich" in html
@@ -119,7 +156,7 @@ def test_mobile_admin_and_footer_have_reserved_space():
 def test_admin_center_has_three_item_mobile_entry_and_pdf_quality_controls():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     js = (STATIC / "app.js").read_text(encoding="utf-8")
-    assert html.count('class="nav-item nav-primary"') == 3
+    assert html.count('class="nav-item nav-primary"') == 4
     assert '<span class="nav-label">Admin</span>' in html
     assert "mobile-admin-button" not in html
     assert 'x-model="admin.pdf.sharpen_scans"' in html
@@ -140,7 +177,7 @@ def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
     assert "window.location.pathname.startsWith('/admin')" in js
     assert "params.get('tab') || routePage" in js
     assert "params.get('section')" in js
-    assert "rezepte-static-v1.3.0-mise-en-place" in sw
+    assert "rezepte-static-v1.4.0-weekly-meal-plan" in sw
     assert "caches.delete" in sw
     assert "request.mode === 'navigate'" in sw
     assert "fetch(event.request, {cache: 'no-store'})" in sw
@@ -188,7 +225,14 @@ def test_refined_recipe_filters_and_shopping_list_match_mockup():
     assert "recipes-quick-filters" in html
     assert 'aria-label="Kategorie filtern"' not in html
     assert 'aria-label="Typ filtern"' not in html
-    assert "Mehrere Zutaten möglich" in html
+    assert "1× klicken: muss enthalten sein" in html
+    assert "2×: ausschließen" in html
+    assert "recipes.filters.excludedIngredients" in html
+    assert "exclude_ingredient" in js
+    assert "ingredientFilterSummary()" in html
+    assert "if (includedIndex >= 0)" in js
+    assert "else if (excludedIndex >= 0)" in js
+    assert ".chip.exclude" in (STATIC / "rezepte.css").read_text(encoding="utf-8")
     assert "Nur Favoriten anzeigen" in html
     assert "📦 Senden" not in html
     assert "📋 Export" not in html

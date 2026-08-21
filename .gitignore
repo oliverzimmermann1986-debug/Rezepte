@@ -16,6 +16,7 @@ data/config.yaml
 logs/
 temp/
 *.log
+video-archive/
 
 # IDE
 .vscode/

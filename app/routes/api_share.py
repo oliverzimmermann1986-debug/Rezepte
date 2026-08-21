@@ -1,8 +1,8 @@
-"""TikTok-Share-Intake.
+"""TikTok-/Instagram-Share-Intake.
 
 Ein iOS-Kurzbefehl (Share-Sheet aus TikTok) POSTet eine URL hierher; sie läuft
-dann im Hintergrund durch die normale Pipeline (ScraperJob.process_url):
-Download → KI-Analyse → Auto-Save bei hoher Confidence, sonst Pending.
+dann durch die normale Link-Pipeline und landet ohne Medien-Download in der
+manuellen Prüfung.
 
 Auth: KEIN Session-Cookie (ein Kurzbefehl kann keins liefern), stattdessen ein
 statisches Token aus der Config (``web.share_token``, lazy generiert). Header
@@ -12,8 +12,8 @@ Cloudflare Access — der Kurzbefehl muss also entweder CF-Service-Token-Header
 für ``/api/share``.
 
 Sicherheit: ``share_token`` ist ein 32-Byte-urlsafe-Secret, Vergleich constant-time.
-Bei Leak könnte jemand beliebige URLs zum Download einreihen (DoS/Junk) — Token
-geheim halten; Rotation = ``web.share_token`` in der Config leeren + Neustart.
+Bei Leak könnte jemand Link-Junk einreihen — Token geheim halten; Rotation =
+``web.share_token`` in der Config leeren + Neustart.
 """
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ import secrets
 import time
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
@@ -68,35 +67,15 @@ class ShareIn(BaseModel):
 
 
 def _normalized_share_url(value: str) -> str:
-    parsed = urlsplit((value or "").strip())
-    if parsed.scheme.lower() != "https" or not parsed.hostname:
-        raise HTTPException(400, "Nur gültige HTTPS-URLs sind erlaubt")
-    if parsed.username or parsed.password:
-        raise HTTPException(400, "URL darf keine eingebetteten Zugangsdaten enthalten")
-    host = parsed.hostname.lower()
-    allowed_domains = ("tiktok.com", "instagram.com")
-    if not any(host == domain or host.endswith("." + domain)
-               for domain in allowed_domains):
+    from ..core.email_processor import normalize_content_url
+
+    normalized = normalize_content_url(value)
+    if not normalized:
         raise HTTPException(
             400,
-            "Share-Import unterstützt nur TikTok- und Instagram-URLs",
+            "Share-Import unterstützt nur einzelne TikTok- und Instagram-Posts",
         )
-    host_for_netloc = f"[{host}]" if ":" in host else host
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise HTTPException(400, "Ungültiger URL-Port") from exc
-    default_port = (parsed.scheme.lower() == "http" and port == 80) or (
-        parsed.scheme.lower() == "https" and port == 443
-    )
-    netloc = host_for_netloc + (f":{port}" if port and not default_port else "")
-    return urlunsplit((
-        parsed.scheme.lower(),
-        netloc,
-        parsed.path or "/",
-        parsed.query,
-        "",
-    ))
+    return normalized
 
 
 def run_share_ingest_task(payload: dict) -> dict:

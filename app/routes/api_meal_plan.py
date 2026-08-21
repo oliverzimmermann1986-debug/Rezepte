@@ -14,7 +14,6 @@ from ..recipes.cart_logic import (
     aggregated_cart_for_display,
 )
 from ..recipes.meal_plan_pdf import build_meal_plan_pdf
-from .api_einkauf import einkauf_configured, einkauf_request
 
 router = APIRouter(
     prefix="/api/meal-plan",
@@ -190,43 +189,12 @@ class MealPlanCartPayload(BaseModel):
     week_start: Optional[str] = None
 
 
-def _format_shopping_line(item: dict) -> str:
-    parts = []
-    amount = item.get("amount")
-    if amount is not None:
-        amount_value = float(amount)
-        parts.append(
-            str(int(amount_value))
-            if amount_value.is_integer()
-            else f"{amount_value:.2f}".rstrip("0").rstrip(".")
-        )
-    if item.get("unit"):
-        parts.append(str(item["unit"]))
-    parts.append(str(item.get("name") or "?"))
-    return " ".join(parts)[:150]
-
-
 @router.post("/cart")
 def create_week_cart(payload: MealPlanCartPayload):
     week = _week_payload(_monday(payload.week_start))
     preview = week["shopping_preview"]
     if not preview:
         raise HTTPException(400, "Für diese Woche sind keine einkaufbaren Zutaten geplant")
-
-    if einkauf_configured():
-        lines = [_format_shopping_line(item) for item in preview]
-        einkauf_request(
-            "POST",
-            "/items/bulk",
-            {"items": lines, "source": "wochenplan"},
-        )
-        einkauf_request("POST", "/consolidate")
-        return {
-            "ok": True,
-            "target": "einkauf",
-            "added": len(lines),
-            "week_start": week["week_start"],
-        }
 
     base_items = [
         {
@@ -236,11 +204,11 @@ def create_week_cart(payload: MealPlanCartPayload):
         }
         for item in preview
     ]
-    added = get_db().cart_replace(base_items)
+    result = get_db().cart_merge_many(base_items)
     return {
         "ok": True,
         "target": "local",
-        "added": added,
-        "replaced": True,
+        **result,
+        "replaced": False,
         "week_start": week["week_start"],
     }

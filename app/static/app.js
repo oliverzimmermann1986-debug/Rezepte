@@ -44,7 +44,7 @@ function scrapperApp() {
         preserveRecipeFilters = true;
         this.recipes.filters.favorite_only = true;
       }
-      const allowed = new Set(['recipes','cart','admin']);
+      const allowed = new Set(['recipes','plan','cart','admin']);
       if (!allowed.has(targetPage)) targetPage = 'recipes';
       this.page = targetPage;
       if (this.browser?.show) this.browser.show = false;
@@ -60,6 +60,7 @@ function scrapperApp() {
       switch (targetPage) {
         case 'admin':   this.selectAdminTab(this.admin.tab || 'home', { updateUrl: false }); break;
         case 'recipes': this.recipes.filters.offset = 0; this.loadRecipes(); break;
+        case 'plan':    this.loadMealPlan(); break;
         case 'cart':    this.loadCart(); break;
       }
 
@@ -72,7 +73,7 @@ function scrapperApp() {
     },
     pageLabel() {
       return ({
-        recipes: 'Alle Rezepte', cart: 'Einkaufsliste', admin: 'Admin',
+        recipes: 'Alle Rezepte', plan: 'Wochenplan', cart: 'Einkaufsliste', admin: 'Admin',
       })[this.page] || 'Rezepte';
     },
     config: {},
@@ -107,7 +108,12 @@ function scrapperApp() {
     // ── Recipe-Browser + Einkaufskorb (feat/recipe-browser-and-cart) ─────
     recipes: {
       items: [], total: 0, loading: false, loadingMore: false,
-      filters: { search: '', type: '', category: '', tag_ids: [], ingredients: [], ingredients_status: '', verified: '', favorite_only: false, min_rating: 0, limit: 60, offset: 0 },
+      filters: {
+        search: '', type: '', category: '', tag_ids: [],
+        ingredients: [], excludedIngredients: [],
+        ingredients_status: '', verified: '', favorite_only: false,
+        min_rating: 0, limit: 60, offset: 0,
+      },
       searchMeta: { corrected: false, original: '', query: '', suggestion: '' },
       filterDrawerOpen: false,  // nur auf Mobile sichtbar: Filter als Drawer statt Sidebar
       ingredientSearch: '',     // Such-Input im Zutaten-Filter-Block
@@ -141,6 +147,24 @@ function scrapperApp() {
       recSaving: false,
       recRunning: false,
       recDeleting: null,
+    },
+    mealPlan: {
+      weekStart: '',
+      weekEnd: '',
+      previousWeek: '',
+      nextWeek: '',
+      isCurrentWeek: false,
+      days: [],
+      shoppingPreview: [],
+      summary: { planned_meals: 0, planned_days: 0, shopping_items: 0 },
+      loading: false,
+      error: '',
+      saving: false,
+      pdfBusy: false,
+      addingFor: '',
+      recipeOptions: [],
+      optionsLoaded: false,
+      draft: { recipe_id: '', planned_servings: 2 },
     },
     trash: {
       items: [], totalCount: 0, loading: false, emptying: false,
@@ -216,6 +240,10 @@ function scrapperApp() {
       editingIngredients: false,
       editIngs: [],
       savingIngredients: false,
+      editingSteps: false,
+      editSteps: [],
+      savingSteps: false,
+      pdfBusy: false,
       computingNutrition: false,    // Loading-state für ⚡ Berechnen-Button
       sharing: false,                // Loading-state für 🔗 Share-Button
       verifying: false,              // Loading für 'manuell geprüft'-Toggle
@@ -236,7 +264,7 @@ function scrapperApp() {
       const routePage = document.body?.dataset?.initialPage || 'recipes';
       const requestedPage = isAdminRoute ? 'admin' : (params.get('tab') || routePage);
       const legacyFavorites = requestedPage === 'favorites';
-      const validTab = ['recipes','cart','admin'].includes(requestedPage) ? requestedPage : 'recipes';
+      const validTab = ['recipes','plan','cart','admin'].includes(requestedPage) ? requestedPage : 'recipes';
       this.page = validTab;
       if (legacyFavorites) this.recipes.filters.favorite_only = true;
       if (validTab === 'admin') {
@@ -835,6 +863,7 @@ function scrapperApp() {
     reloadCurrentPage() {
       const map = {
         recipes: () => this.loadRecipes(),
+        plan: () => this.loadMealPlan(),
         cart: () => this.loadCart(),
         admin: () => this.selectAdminTab(this.admin.tab, { updateUrl: false }),
       };
@@ -2181,6 +2210,7 @@ function scrapperApp() {
       if (f.min_rating > 0) params.set('min_rating', f.min_rating);
       f.tag_ids.forEach(id => params.append('tag_id', id));
       f.ingredients.forEach(name => params.append('ingredient', name));
+      f.excludedIngredients.forEach(name => params.append('exclude_ingredient', name));
       params.set('limit', f.limit);
       params.set('offset', f.offset);
       return params.toString();
@@ -2247,7 +2277,8 @@ function scrapperApp() {
 
     resetFilters() {
       this.recipes.filters = {
-        search: '', type: '', category: '', tag_ids: [], ingredients: [],
+        search: '', type: '', category: '', tag_ids: [],
+        ingredients: [], excludedIngredients: [],
         ingredients_status: '', verified: '', favorite_only: false, min_rating: 0,
         limit: 60, offset: 0,
       };
@@ -2276,15 +2307,45 @@ function scrapperApp() {
       if (f.min_rating > 0) n++;
       n += (f.tag_ids || []).length;
       n += (f.ingredients || []).length;
+      n += (f.excludedIngredients || []).length;
       return n;
     },
 
     toggleIngredientFilter(canonicalName) {
-      const arr = this.recipes.filters.ingredients;
-      const i = arr.indexOf(canonicalName);
-      if (i >= 0) arr.splice(i, 1); else arr.push(canonicalName);
+      const included = this.recipes.filters.ingredients;
+      const excluded = this.recipes.filters.excludedIngredients;
+      const includedIndex = included.indexOf(canonicalName);
+      const excludedIndex = excluded.indexOf(canonicalName);
+
+      // 1. Klick: muss enthalten sein
+      // 2. Klick: darf nicht enthalten sein
+      // 3. Klick: Filter für diese Zutat aus
+      if (includedIndex >= 0) {
+        included.splice(includedIndex, 1);
+        if (excludedIndex < 0) excluded.push(canonicalName);
+      } else if (excludedIndex >= 0) {
+        excluded.splice(excludedIndex, 1);
+      } else {
+        included.push(canonicalName);
+      }
       this.recipes.filters.offset = 0;
       this.loadRecipes();
+    },
+
+    ingredientFilterState(canonicalName) {
+      if (this.recipes.filters.ingredients.includes(canonicalName)) return 'include';
+      if (this.recipes.filters.excludedIngredients.includes(canonicalName)) return 'exclude';
+      return 'off';
+    },
+
+    ingredientFilterSummary() {
+      const included = this.recipes.filters.ingredients.length;
+      const excluded = this.recipes.filters.excludedIngredients.length;
+      if (!included && !excluded) return '';
+      const parts = [];
+      if (included) parts.push(`${included} drin`);
+      if (excluded) parts.push(`${excluded} raus`);
+      return `(${parts.join(' · ')})`;
     },
 
     // Zutaten-Chip-Liste filtern: Suche im Display-Name, Limit 60
@@ -2292,7 +2353,10 @@ function scrapperApp() {
     // Bereits ausgewählte werden eh oben separat angezeigt, hier ausschließen.
     filteredIngredientFacets() {
       const all = this.recipes.facets.ingredients || [];
-      const selected = new Set(this.recipes.filters.ingredients);
+      const selected = new Set([
+        ...this.recipes.filters.ingredients,
+        ...this.recipes.filters.excludedIngredients,
+      ]);
       const q = (this.recipes.ingredientSearch || '').toLowerCase().trim();
       let filtered = all.filter(i => !selected.has(i.canonical_name));
       if (q) {
@@ -2460,6 +2524,9 @@ function scrapperApp() {
       this.recipeDetail.editingIngredients = false;
       this.recipeDetail.editIngs = [];
       this.recipeDetail.savingIngredients = false;
+      this.recipeDetail.editingSteps = false;
+      this.recipeDetail.editSteps = [];
+      this.recipeDetail.savingSteps = false;
       this.recipeDetail.extracting = false;
       this.recipeDetail.verifying = false;
       this.recipeDetail.rescraping = false;
@@ -2833,7 +2900,7 @@ function scrapperApp() {
 
     // Signierten Share-Link erstellen + in Clipboard kopieren.
     // 30 Tage gültig. Empfänger braucht keinen Login, sieht nur das Rezept.
-    async shareRecipe() {
+    async copyRecipeShareLink() {
       const id = this.recipeDetail.data?.id;
       if (!id || this.recipeDetail.sharing) return;
       this.recipeDetail.sharing = true;
@@ -2859,6 +2926,156 @@ function scrapperApp() {
     // den Audit-Daten-Lücken (kein Bild / wenige Zutaten / etc). Audit-Trail:
     // Username + Timestamp werden mitgespeichert. Unchecken setzt beides
     // zurück auf NULL.
+    recipePdfFilename(recipe) {
+      const slug = String(recipe?.name || `rezept-${recipe?.id || ''}`)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 60);
+      return `${slug || `rezept-${recipe?.id || 'export'}`}.pdf`;
+    },
+
+    startEditSteps() {
+      const current = this.recipeDetail.data?.steps || [];
+      this.recipeDetail.editSteps = current.map(step => ({
+        instruction: step.instruction || '',
+        timer_seconds: step.timer_seconds ?? null,
+      }));
+      if (!this.recipeDetail.editSteps.length) {
+        this.recipeDetail.editSteps.push({ instruction: '', timer_seconds: null });
+      }
+      this.recipeDetail.editingSteps = true;
+    },
+
+    addStepRow() {
+      this.recipeDetail.editSteps.push({ instruction: '', timer_seconds: null });
+    },
+
+    removeStepRow(idx) {
+      this.recipeDetail.editSteps.splice(idx, 1);
+    },
+
+    cancelEditSteps() {
+      this.recipeDetail.editingSteps = false;
+      this.recipeDetail.editSteps = [];
+    },
+
+    async saveSteps() {
+      if (this.recipeDetail.savingSteps) return;
+      const context = this._detailContext();
+      if (!context.id) return;
+      const steps = this.recipeDetail.editSteps
+        .filter(step => (step.instruction || '').trim())
+        .map(step => ({
+          instruction: step.instruction.trim(),
+          timer_seconds: step.timer_seconds === '' || step.timer_seconds == null
+            ? null
+            : Math.max(0, Number(step.timer_seconds)),
+        }));
+      this.recipeDetail.savingSteps = true;
+      try {
+        const result = await this.api('PUT', `/api/recipes/${context.id}/steps`, { steps });
+        if (result?.ok && this._detailOwns(context)) {
+          const fresh = await this.api('GET', `/api/recipes/${context.id}`);
+          if (fresh && this._detailOwns(context)) this.recipeDetail.data = fresh;
+          this.recipeDetail.editingSteps = false;
+          this.recipeDetail.editSteps = [];
+          this.showToast(`✓ ${steps.length} Schritte gespeichert`);
+          await this.loadRecipes();
+        }
+      } finally {
+        if (this._detailOwns(context)) this.recipeDetail.savingSteps = false;
+      }
+    },
+
+    async fetchRecipePdf(recipe) {
+      const response = await fetch(`/recipe/${recipe.id}/pdf`, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+      if (response.status === 401) {
+        window.location = '/login';
+        return null;
+      }
+      if (!response.ok) {
+        let detail = `PDF konnte nicht erstellt werden (${response.status})`;
+        try {
+          const body = await response.json();
+          detail = body.detail || detail;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+      return response.blob();
+    },
+
+    saveRecipePdf(blob, recipe) {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = this.recipePdfFilename(recipe);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+
+    async downloadRecipePdf() {
+      const recipe = this.recipeDetail.data;
+      if (!recipe?.id || this.recipeDetail.pdfBusy) return;
+      this.recipeDetail.pdfBusy = true;
+      try {
+        const blob = await this.fetchRecipePdf(recipe);
+        if (!blob) return;
+        this.saveRecipePdf(blob, recipe);
+        this.showToast('Rezept-PDF heruntergeladen');
+      } catch (error) {
+        this.showToast(error?.message || 'PDF-Erstellung fehlgeschlagen', 'error');
+      } finally {
+        this.recipeDetail.pdfBusy = false;
+      }
+    },
+
+    async shareRecipePdf(recipe = this.recipeDetail.data) {
+      if (!recipe?.id || this.recipeDetail.pdfBusy) return;
+      this.recipeDetail.pdfBusy = true;
+      try {
+        const blob = await this.fetchRecipePdf(recipe);
+        if (!blob) return;
+        const file = new File([blob], this.recipePdfFilename(recipe), {
+          type: 'application/pdf',
+        });
+        const shareData = {
+          title: recipe.name,
+          text: `Rezept: ${recipe.name}`,
+          files: [file],
+        };
+        const canShareFile = !!navigator.share && (
+          !navigator.canShare || navigator.canShare(shareData)
+        );
+        if (canShareFile) {
+          await navigator.share(shareData);
+          return;
+        }
+
+        this.saveRecipePdf(blob, recipe);
+        const subject = encodeURIComponent(`Rezept: ${recipe.name}`);
+        const body = encodeURIComponent(
+          `Hallo,\n\nanbei das Rezept „${recipe.name}“.\n\n`
+          + 'Das PDF wurde bereits heruntergeladen und kann an diese Mail angehängt werden.',
+        );
+        window.location.href = `mailto:?subject=${subject}&body=${body}`;
+        this.showToast('PDF geladen - bitte im Mail-Entwurf anhängen');
+      } catch (error) {
+        if (error?.name !== 'AbortError') {
+          this.showToast(error?.message || 'Teilen fehlgeschlagen', 'error');
+        }
+      } finally {
+        this.recipeDetail.pdfBusy = false;
+      }
+    },
+
     async toggleVerified(verified) {
       const context = this._detailContext();
       if (!context.id || this.recipeDetail.verifying) return;
@@ -2913,6 +3130,294 @@ function scrapperApp() {
     },
 
     // ── Einkaufskorb ──────────────────────────────────────────────────
+    async loadMealPlan(weekStart = '') {
+      this.mealPlan.loading = true;
+      this.mealPlan.error = '';
+      try {
+        const query = weekStart ? `?week_start=${encodeURIComponent(weekStart)}` : '';
+        const result = await this.api(
+          'GET',
+          `/api/meal-plan${query}`,
+          undefined,
+          { silent: true },
+        );
+        if (!result) return;
+        this.mealPlan = {
+          ...this.mealPlan,
+          weekStart: result.week_start,
+          weekEnd: result.week_end,
+          previousWeek: result.previous_week,
+          nextWeek: result.next_week,
+          isCurrentWeek: !!result.is_current_week,
+          days: result.days || [],
+          shoppingPreview: result.shopping_preview || [],
+          summary: result.summary || {
+            planned_meals: 0,
+            planned_days: 0,
+            shopping_items: 0,
+          },
+          loading: false,
+          error: '',
+        };
+      } catch (error) {
+        this.mealPlan.error =
+          error?.detail || 'Der Wochenplan konnte nicht geladen werden.';
+      } finally {
+        this.mealPlan.loading = false;
+      }
+    },
+
+    async loadMealPlanRecipeOptions() {
+      if (this.mealPlan.optionsLoaded) return;
+      const result = await this.api(
+        'GET',
+        '/api/recipes?limit=500',
+        undefined,
+        { silent: true },
+      );
+      this.mealPlan.recipeOptions = (result?.items || [])
+        .slice()
+        .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'de'));
+      this.mealPlan.optionsLoaded = true;
+    },
+
+    async openMealPlanAdd(day) {
+      this.mealPlan.addingFor = day.date;
+      this.mealPlan.draft = { recipe_id: '', planned_servings: 2 };
+      try {
+        await this.loadMealPlanRecipeOptions();
+      } catch (error) {
+        this.showToast(
+          error?.detail || 'Rezepte konnten nicht geladen werden',
+          'error',
+        );
+      }
+      this.$nextTick(() => this.$refs.mealPlanRecipeSelect?.focus());
+    },
+
+    closeMealPlanAdd() {
+      this.mealPlan.addingFor = '';
+      this.mealPlan.draft = { recipe_id: '', planned_servings: 2 };
+    },
+
+    mealPlanRecipeChanged() {
+      const selected = this.mealPlan.recipeOptions.find(
+        item => Number(item.id) === Number(this.mealPlan.draft.recipe_id),
+      );
+      this.mealPlan.draft.planned_servings = Number(selected?.servings) || 2;
+    },
+
+    async addMealPlanItem() {
+      const recipeId = Number(this.mealPlan.draft.recipe_id);
+      const servings = Number(this.mealPlan.draft.planned_servings);
+      if (!recipeId) {
+        this.showToast('Bitte ein Rezept auswählen', 'error');
+        return;
+      }
+      this.mealPlan.saving = true;
+      try {
+        await this.api('POST', '/api/meal-plan/items', {
+          planned_for: this.mealPlan.addingFor,
+          recipe_id: recipeId,
+          planned_servings: servings || 2,
+        });
+        this.closeMealPlanAdd();
+        await this.loadMealPlan(this.mealPlan.weekStart);
+        this.showToast('Rezept eingeplant');
+      } finally {
+        this.mealPlan.saving = false;
+      }
+    },
+
+    async updateMealPlanServings(item) {
+      const servings = Math.max(1, Math.min(24, Number(item.planned_servings) || 1));
+      item.planned_servings = servings;
+      this.mealPlan.saving = true;
+      try {
+        await this.api('PATCH', `/api/meal-plan/items/${item.id}`, {
+          planned_servings: servings,
+        });
+        await this.loadMealPlan(this.mealPlan.weekStart);
+      } finally {
+        this.mealPlan.saving = false;
+      }
+    },
+
+    async removeMealPlanItem(item) {
+      if (!confirm(`„${item.recipe_name}“ aus dem Wochenplan entfernen?`)) return;
+      this.mealPlan.saving = true;
+      try {
+        await this.api('DELETE', `/api/meal-plan/items/${item.id}`);
+        await this.loadMealPlan(this.mealPlan.weekStart);
+        this.showToast('Aus dem Wochenplan entfernt');
+      } finally {
+        this.mealPlan.saving = false;
+      }
+    },
+
+    changeMealPlanWeek(weekStart) {
+      if (!weekStart || this.mealPlan.loading) return;
+      this.closeMealPlanAdd();
+      this.loadMealPlan(weekStart);
+    },
+
+    mealPlanRangeLabel() {
+      if (!this.mealPlan.weekStart || !this.mealPlan.weekEnd) return '';
+      const formatter = new Intl.DateTimeFormat('de-DE', {
+        day: '2-digit',
+        month: 'short',
+      });
+      const start = formatter.format(new Date(`${this.mealPlan.weekStart}T12:00:00`));
+      const end = formatter.format(new Date(`${this.mealPlan.weekEnd}T12:00:00`));
+      return `${start} – ${end}`;
+    },
+
+    mealPlanDayDate(value) {
+      if (!value) return '';
+      return new Intl.DateTimeFormat('de-DE', {
+        day: '2-digit',
+        month: '2-digit',
+      }).format(new Date(`${value}T12:00:00`));
+    },
+
+    mealPlanAmount(item) {
+      const amount = item?.amount;
+      if (amount === null || amount === undefined) return item?.unit || '';
+      const value = Number(amount);
+      const formatted = Number.isInteger(value)
+        ? String(value)
+        : value.toLocaleString('de-DE', { maximumFractionDigits: 2 });
+      return [formatted, item?.unit].filter(Boolean).join(' ');
+    },
+
+    mealPlanPdfUrl() {
+      const query = this.mealPlan.weekStart
+        ? `?week_start=${encodeURIComponent(this.mealPlan.weekStart)}`
+        : '';
+      return `/api/meal-plan/pdf${query}`;
+    },
+
+    mealPlanPdfFilename() {
+      return `wochenplan-${this.mealPlan.weekStart || 'aktuell'}.pdf`;
+    },
+
+    async fetchMealPlanPdf() {
+      const response = await fetch(this.mealPlanPdfUrl(), {
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+      if (response.status === 401) {
+        window.location = '/login';
+        return null;
+      }
+      if (!response.ok) {
+        let detail = `PDF konnte nicht erstellt werden (${response.status})`;
+        try {
+          const body = await response.json();
+          detail = body.detail || detail;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+      return response.blob();
+    },
+
+    saveMealPlanPdf(blob) {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = this.mealPlanPdfFilename();
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+
+    async downloadMealPlanPdf() {
+      if (this.mealPlan.pdfBusy) return;
+      this.mealPlan.pdfBusy = true;
+      try {
+        const blob = await this.fetchMealPlanPdf();
+        if (!blob) return;
+        this.saveMealPlanPdf(blob);
+        this.showToast('Wochenplan-PDF heruntergeladen');
+      } catch (error) {
+        this.showToast(error?.message || 'PDF-Erstellung fehlgeschlagen', 'error');
+      } finally {
+        this.mealPlan.pdfBusy = false;
+      }
+    },
+
+    async shareMealPlanPdf() {
+      if (this.mealPlan.pdfBusy) return;
+      this.mealPlan.pdfBusy = true;
+      try {
+        const blob = await this.fetchMealPlanPdf();
+        if (!blob) return;
+        const file = new File([blob], this.mealPlanPdfFilename(), {
+          type: 'application/pdf',
+        });
+        const shareData = {
+          title: `Wochenplan ${this.mealPlanRangeLabel()}`,
+          text: 'Unser Wochenplan mit gemeinsamer Einkaufsliste',
+          files: [file],
+        };
+        const canShareFile = !!navigator.share && (
+          !navigator.canShare || navigator.canShare(shareData)
+        );
+        if (canShareFile) {
+          await navigator.share(shareData);
+          return;
+        }
+
+        // Browser dürfen Mail-Anhänge nicht selbst setzen. Deshalb wird das
+        // PDF gespeichert und parallel ein fertiger Mail-Entwurf geöffnet.
+        this.saveMealPlanPdf(blob);
+        const subject = encodeURIComponent(
+          `Wochenplan ${this.mealPlanRangeLabel()}`,
+        );
+        const body = encodeURIComponent(
+          'Hallo,\n\nanbei unser Wochenplan mit gemeinsamer Einkaufsliste.\n\n'
+          + 'Das PDF wurde bereits heruntergeladen und kann an diese Mail angehängt werden.',
+        );
+        window.location.href = `mailto:?subject=${subject}&body=${body}`;
+        this.showToast('PDF geladen - bitte im Mail-Entwurf anhängen');
+      } catch (error) {
+        if (error?.name !== 'AbortError') {
+          this.showToast(error?.message || 'Teilen fehlgeschlagen', 'error');
+        }
+      } finally {
+        this.mealPlan.pdfBusy = false;
+      }
+    },
+
+    async createMealPlanCart() {
+      if (!this.mealPlan.summary.shopping_items) {
+        this.showToast('Diese Woche enthält noch keine einkaufbaren Zutaten', 'error');
+        return;
+      }
+      await this.loadCart();
+      const currentCount = this.cart.external ? this.cart.total : this.cart.items.length;
+      const prompt = this.cart.external
+        ? 'Die Wochenliste wird zur gemeinsamen Einkaufsliste hinzugefügt. Fortfahren?'
+        : currentCount
+          ? `Die aktuelle Einkaufsliste mit ${currentCount} Artikel(n) wird durch diese Woche ersetzt. Fortfahren?`
+          : 'Einkaufsliste aus dieser Woche erstellen?';
+      if (!confirm(prompt)) return;
+      this.mealPlan.saving = true;
+      try {
+        const result = await this.api('POST', '/api/meal-plan/cart', {
+          week_start: this.mealPlan.weekStart,
+        });
+        await this.loadCart();
+        this.showToast(
+          `${result?.added || 0} Zutaten in die Einkaufsliste übernommen`,
+        );
+        this.navTo('cart');
+      } finally {
+        this.mealPlan.saving = false;
+      }
+    },
+
     async loadCart() {
       this.cart.loading = true;
       this.cart.connectionError = '';
@@ -3565,7 +4070,7 @@ function scrapperApp() {
       }
     },
     // Web-Share-API: native iOS-Share-Sheet. Fallback auf Clipboard.
-    async shareRecipe(recipe) {
+    async shareRecipeSourceLink(recipe) {
       const url = recipe.url || (window.location.origin + '/?recipe=' + recipe.id);
       const shareData = { title: recipe.name, text: `Rezept: ${recipe.name}`, url };
       try {

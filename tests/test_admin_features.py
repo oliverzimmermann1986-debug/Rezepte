@@ -1,6 +1,8 @@
 from pathlib import Path
+from io import BytesIO
 
 import pymupdf
+from PIL import Image
 
 from app.auth import require_admin
 from app.core.pdf_processing import analyze_pdf_bytes, process_pdf_bytes, process_pdf_path
@@ -48,6 +50,55 @@ def test_recipe_version_restore_is_atomic_and_keeps_personal_state(test_db: Data
     assert test_db.recipe_steps_get(recipe_id)[0]["instruction"] == "Alles verrühren"
     assert [t["name"] for t in test_db.recipe_tags_get(recipe_id)] == ["schnell"]
     assert len(test_db.recipe_versions_list(recipe_id=recipe_id)) == 2  # Snapshot + Undo-Snapshot
+
+
+def test_uploaded_cover_is_versioned_and_can_be_restored(client, test_db: Database, tmp_path: Path, monkeypatch):
+    import app.routes.api_recipes as api_recipes
+
+    folder = tmp_path / "cover-version"
+    folder.mkdir()
+    monkeypatch.setattr(api_recipes, "_recipe_root", lambda: tmp_path)
+    old_cover = folder / "thumb.jpg"
+    Image.new("RGB", (40, 40), "red").save(old_cover, format="JPEG")
+    old_bytes = old_cover.read_bytes()
+    recipe_id = test_db.recipe_upsert(
+        url="https://example.test/cover",
+        name="Cover Version",
+        type="Hauptgericht",
+        category="Test",
+        folder_path=str(folder),
+        description="Test",
+        thumb_filename="thumb.jpg",
+        video_filename=None,
+        source_added_at=1.0,
+    )
+    upload = BytesIO()
+    Image.new("RGB", (80, 60), "blue").save(upload, format="PNG")
+
+    response = client.post(
+        f"/api/recipes/{recipe_id}/upload-thumbnail",
+        files={"file": ("neu.png", upload.getvalue(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    version_id = response.json()["version_id"]
+    new_bytes = old_cover.read_bytes()
+    assert new_bytes != old_bytes
+    snapshot = test_db.recipe_version_get(version_id)["snapshot"]
+    assert snapshot["media"]["thumbnail_backup"].startswith(".versions/")
+
+    restored = test_db.recipe_version_restore(version_id, restored_by="tester")
+    assert restored["ok"] is True
+    assert restored["media_restored"] is True
+    assert old_cover.read_bytes() == old_bytes
+
+    undo = next(
+        item for item in test_db.recipe_versions_list(recipe_id=recipe_id)
+        if item["id"] != version_id
+    )
+    redone = test_db.recipe_version_restore(undo["id"], restored_by="tester")
+    assert redone["ok"] is True
+    assert old_cover.read_bytes() == new_bytes
 
 
 def test_smart_search_synonyms_exclusions_and_unicode(test_db: Database, tmp_path: Path):
@@ -320,6 +371,7 @@ def test_every_active_user_has_admin_compat_access(test_db: Database, monkeypatc
 
     test_db.user_create("mitglied", "not-used", role="user")
     monkeypatch.setattr(auth, "session_user", lambda token: "mitglied")
+    monkeypatch.setattr(auth, "auth_disabled", lambda: False)
 
     class Request:
         cookies = {auth.SESSION_COOKIE: "valid"}

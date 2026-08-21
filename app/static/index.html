@@ -86,6 +86,11 @@
       <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="M8 4v16M4 9h16"/></svg></span><span class="nav-label">Rezepte</span>
       <span class="badge" x-show="recipes.extractionPending > 0" x-text="recipes.extractionPending" title="Zutaten werden extrahiert"></span>
     </button>
+    <button type="button" class="nav-item nav-primary" :class="page==='plan' && 'active'" @click="navTo('plan')" title="Wochenplan">
+      <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg></span>
+      <span class="nav-label">Wochenplan</span>
+      <span class="badge" x-show="mealPlan.summary.planned_meals > 0" x-text="mealPlan.summary.planned_meals"></span>
+    </button>
     <button type="button" class="nav-item nav-primary" :class="page==='cart' && 'active'" @click="navTo('cart')" title="Einkaufsliste">
       <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h2l2.4 11.2a2 2 0 0 0 2 1.6h7.8a2 2 0 0 0 2-1.6L21 7H6"/><circle cx="10" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg></span><span class="nav-label">Einkaufsliste</span>
       <span class="badge"
@@ -103,7 +108,7 @@
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
-        <span x-text="'v' + (systemInfo.version || '1.3.0')"></span>
+        <span x-text="'v' + (systemInfo.version || '1.4.0')"></span>
         <form method="get" action="/logout" class="logout-form">
           <button type="submit" class="sidebar-logout-button">Abmelden</button>
         </form>
@@ -227,11 +232,10 @@
                     x-text="formatAge(item.created_at)"></span>
             </div>
             <div class="preview">
-              <video :src="'/api/pending/video?url=' + encodeURIComponent(item.url)"
-                     preload="metadata" controls muted playsinline
-                     style="width:100%; height:100%; object-fit:cover; background:#000"
-                     @error="$el.style.display='none'; $el.nextElementSibling.style.display='flex'"></video>
-              <div class="placeholder" style="display:none">Video nicht verfügbar</div>
+              <div class="placeholder pending-source-placeholder" style="display:flex">
+                <span>Quellenlink gespeichert</span>
+                <small>Kein Video in der App</small>
+              </div>
               <span class="type-badge"
                     :class="item.content_type"
                     x-text="item.content_type === 'recipe' ? 'Rezept' : 'Hochzeit'"></span>
@@ -1305,24 +1309,44 @@
           </div>
 
           <div class="filter-block">
-            <label>Zutaten <span class="muted" x-text="recipes.filters.ingredients.length ? '('+recipes.filters.ingredients.length+' aktiv)' : ''"></span></label>
+            <label>Zutaten <span class="muted" x-text="ingredientFilterSummary()"></span></label>
             <input type="text" x-model="recipes.ingredientSearch"
                    placeholder="🔍 Zutat suchen…"
                    style="width:100%; margin-bottom:8px; padding:6px 10px;
                            background:var(--bg); border:1px solid var(--border);
                            border-radius:5px; color:var(--fg); font-size:13px;">
-            <div class="filter-helper">Mehrere Zutaten möglich · alle ausgewählten Zutaten müssen enthalten sein</div>
+            <div class="filter-helper">
+              1× klicken: muss enthalten sein · 2×: ausschließen · 3×: Filter aus
+            </div>
             <div class="chip-list">
-              <!-- Ausgewählte immer zuerst, durchstreichbar -->
+              <!-- Eingeschlossene und ausgeschlossene Zutaten immer zuerst -->
               <template x-for="canonical in recipes.filters.ingredients" :key="'sel-'+canonical">
-                <span class="chip on" @click="toggleIngredientFilter(canonical)">
+                <span class="chip on ingredient-filter-chip" role="button" tabindex="0"
+                      :aria-label="((recipes.facets.ingredients.find(i => i.canonical_name === canonical) || {}).display_name || canonical) + ': enthalten; erneut klicken zum Ausschließen'"
+                      @click="toggleIngredientFilter(canonical)"
+                      @keydown.enter.prevent="toggleIngredientFilter(canonical)"
+                      @keydown.space.prevent="toggleIngredientFilter(canonical)">
                   <span x-text="(recipes.facets.ingredients.find(i => i.canonical_name === canonical) || {}).display_name || canonical"></span>
-                  <span style="margin-left:4px;">✗</span>
+                  <span class="ingredient-filter-state" aria-hidden="true">✓ drin</span>
+                </span>
+              </template>
+              <template x-for="canonical in recipes.filters.excludedIngredients" :key="'exc-'+canonical">
+                <span class="chip exclude ingredient-filter-chip" role="button" tabindex="0"
+                      :aria-label="((recipes.facets.ingredients.find(i => i.canonical_name === canonical) || {}).display_name || canonical) + ': ausgeschlossen; erneut klicken zum Aufheben'"
+                      @click="toggleIngredientFilter(canonical)"
+                      @keydown.enter.prevent="toggleIngredientFilter(canonical)"
+                      @keydown.space.prevent="toggleIngredientFilter(canonical)">
+                  <span x-text="(recipes.facets.ingredients.find(i => i.canonical_name === canonical) || {}).display_name || canonical"></span>
+                  <span class="ingredient-filter-state" aria-hidden="true">− raus</span>
                 </span>
               </template>
               <!-- Restliche Facets, gefiltert + auf 60 begrenzt -->
               <template x-for="i in filteredIngredientFacets()" :key="i.canonical_name">
-                <span class="chip" @click="toggleIngredientFilter(i.canonical_name)">
+                <span class="chip ingredient-filter-chip" role="button" tabindex="0"
+                      :aria-label="i.display_name + ': ungefiltert; klicken zum Einschließen'"
+                      @click="toggleIngredientFilter(i.canonical_name)"
+                      @keydown.enter.prevent="toggleIngredientFilter(i.canonical_name)"
+                      @keydown.space.prevent="toggleIngredientFilter(i.canonical_name)">
                   <span x-text="i.display_name"></span>
                   <span class="muted">·<span x-text="i.n"></span></span>
                 </span>
@@ -1549,7 +1573,8 @@
                   <div class="recipe-status muted" style="font-size: 11px; margin-top: 6px; display: flex; justify-content: space-between; align-items: center;">
                     <span>
                       <span x-show="r.ingredients_status === 'pending'">⏳ wartet auf KI</span>
-                      <span x-show="r.ingredients_status === 'ok'">✓ Zutaten</span>
+                      <span x-show="r.needs_manual_care">⚠ Manuell pflegen</span>
+                      <span x-show="r.ingredients_status === 'ok' && !r.needs_manual_care">✓ Kochfertig</span>
                       <span x-show="r.ingredients_status === 'error'">⚠ Fehler</span>
                       <span x-show="r.ingredients_status === 'skipped'">— keine Beschreibung</span>
                     </span>
@@ -1593,11 +1618,7 @@
               </div>
 
               <div class="today-media">
-                <video x-show="recipes.items[0]?.video_filename" controls preload="metadata"
-                       :src="recipes.items[0] ? '/api/recipes/'+recipes.items[0].id+'/video' : ''"
-                       :poster="recipes.items[0] ? '/api/recipes/'+recipes.items[0].id+'/thumb?w=900' : ''"></video>
-                <img x-show="!recipes.items[0]?.video_filename"
-                     :src="recipes.items[0] ? '/api/recipes/'+recipes.items[0].id+'/thumb?w=900' : ''"
+                <img :src="recipes.items[0] ? '/api/recipes/'+recipes.items[0].id+'/thumb?w=900' : ''"
                      alt="" @error="$el.style.display='none'">
               </div>
 
@@ -1660,6 +1681,191 @@
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- ========== WOCHENPLAN ========== -->
+    <section x-show="page==='plan'" class="meal-plan-page">
+      <header class="meal-plan-hero">
+        <div class="meal-plan-title">
+          <span class="meal-plan-eyebrow">Gemeinsam planen</span>
+          <h1>Wochenplan</h1>
+          <p>Rezepte verteilen, Portionen festlegen und alles gesammelt einkaufen.</p>
+        </div>
+        <div class="meal-plan-hero-actions">
+          <div class="meal-plan-week-nav" aria-label="Woche wechseln">
+            <button type="button" class="btn btn-icon"
+                    @click="changeMealPlanWeek(mealPlan.previousWeek)"
+                    :disabled="mealPlan.loading" aria-label="Vorherige Woche">←</button>
+            <div class="meal-plan-week-label">
+              <strong x-text="mealPlanRangeLabel() || 'Woche wird geladen'"></strong>
+              <span x-text="mealPlan.isCurrentWeek ? 'Diese Woche' : 'Geplante Woche'"></span>
+            </div>
+            <button type="button" class="btn btn-icon"
+                    @click="changeMealPlanWeek(mealPlan.nextWeek)"
+                    :disabled="mealPlan.loading" aria-label="Nächste Woche">→</button>
+          </div>
+          <button type="button" class="btn btn-secondary meal-plan-today"
+                  x-show="!mealPlan.isCurrentWeek"
+                  @click="changeMealPlanWeek('')" :disabled="mealPlan.loading">
+            Heute
+          </button>
+          <button type="button" class="btn btn-secondary meal-plan-pdf-action"
+                  @click="downloadMealPlanPdf()"
+                  :disabled="mealPlan.pdfBusy || mealPlan.loading">
+            ↓ PDF
+          </button>
+          <button type="button" class="btn btn-secondary meal-plan-share-action"
+                  @click="shareMealPlanPdf()"
+                  :disabled="mealPlan.pdfBusy || mealPlan.loading">
+            Teilen / Mail
+          </button>
+          <button type="button" class="btn btn-primary meal-plan-cart-action"
+                  @click="createMealPlanCart()"
+                  :disabled="mealPlan.saving || mealPlan.summary.shopping_items===0">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h2l2.4 11.2a2 2 0 0 0 2 1.6h7.8a2 2 0 0 0 2-1.6L21 7H6"/><circle cx="10" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg>
+            Woche einkaufen
+          </button>
+        </div>
+      </header>
+
+      <div class="meal-plan-stats" aria-label="Wochenübersicht">
+        <div><strong x-text="mealPlan.summary.planned_meals"></strong><span>Gerichte</span></div>
+        <div><strong x-text="mealPlan.summary.planned_days"></strong><span>beplante Tage</span></div>
+        <div><strong x-text="mealPlan.summary.shopping_items"></strong><span>Einkaufspositionen</span></div>
+      </div>
+
+      <div class="meal-plan-alert meal-plan-alert-error" x-show="mealPlan.error">
+        <span x-text="mealPlan.error"></span>
+        <button type="button" class="btn btn-sm" @click="loadMealPlan(mealPlan.weekStart)">Erneut laden</button>
+      </div>
+
+      <div class="meal-plan-loading" x-show="mealPlan.loading" aria-live="polite">
+        <span class="meal-plan-spinner"></span>
+        Wochenplan wird vorbereitet …
+      </div>
+
+      <form class="meal-plan-add-panel"
+            x-show="mealPlan.addingFor"
+            @submit.prevent="addMealPlanItem()">
+        <div class="meal-plan-add-copy">
+          <span class="meal-plan-eyebrow">Gericht hinzufügen</span>
+          <strong x-text="mealPlanDayDate(mealPlan.addingFor)"></strong>
+        </div>
+        <label class="meal-plan-recipe-field">
+          <span>Rezept</span>
+          <select x-ref="mealPlanRecipeSelect"
+                  x-model="mealPlan.draft.recipe_id"
+                  @change="mealPlanRecipeChanged()" required>
+            <option value="">Rezept auswählen …</option>
+            <template x-for="option in mealPlan.recipeOptions" :key="option.id">
+              <option :value="option.id" x-text="option.name"></option>
+            </template>
+          </select>
+        </label>
+        <label class="meal-plan-servings-field">
+          <span>Portionen</span>
+          <input type="number" min="1" max="24" inputmode="numeric"
+                 x-model.number="mealPlan.draft.planned_servings" required>
+        </label>
+        <div class="meal-plan-add-actions">
+          <button type="button" class="btn btn-secondary" @click="closeMealPlanAdd()">Abbrechen</button>
+          <button type="submit" class="btn btn-primary"
+                  :disabled="mealPlan.saving || !mealPlan.draft.recipe_id">
+            Einplanen
+          </button>
+        </div>
+      </form>
+
+      <div class="meal-plan-empty-intro"
+           x-show="!mealPlan.loading && !mealPlan.error && mealPlan.summary.planned_meals===0">
+        <span class="meal-plan-empty-icon" aria-hidden="true">7</span>
+        <div>
+          <strong>Die Woche ist noch frei.</strong>
+          <p>Füge an einem Tag dein erstes Rezept hinzu. Die Einkaufsliste entsteht automatisch.</p>
+        </div>
+      </div>
+
+      <div class="meal-plan-grid" x-show="!mealPlan.loading && !mealPlan.error">
+        <template x-for="day in mealPlan.days" :key="day.date">
+          <article class="meal-plan-day" :class="day.is_today && 'is-today'">
+            <header class="meal-plan-day-head">
+              <div>
+                <span x-text="day.label"></span>
+                <strong x-text="day.day_number"></strong>
+              </div>
+              <span class="meal-plan-today-pill" x-show="day.is_today">Heute</span>
+            </header>
+
+            <div class="meal-plan-day-items">
+              <template x-for="item in day.items" :key="item.id">
+                <div class="meal-plan-recipe">
+                  <button type="button" class="meal-plan-recipe-open"
+                          @click="openRecipe(item.recipe_id)"
+                          :aria-label="'Rezept öffnen: '+item.recipe_name">
+                    <img :src="item.thumb_url+'?w=240'" alt="" loading="lazy"
+                         @error="$el.style.visibility='hidden'">
+                    <span class="meal-plan-recipe-fallback"
+                          x-text="recipeEmoji({name:item.recipe_name})"></span>
+                  </button>
+                  <div class="meal-plan-recipe-copy">
+                    <button type="button" class="meal-plan-recipe-name"
+                            @click="openRecipe(item.recipe_id)"
+                            x-text="item.recipe_name"></button>
+                    <label class="meal-plan-inline-servings">
+                      <span>Portionen</span>
+                      <input type="number" min="1" max="24" inputmode="numeric"
+                             x-model.number="item.planned_servings"
+                             @change="updateMealPlanServings(item)"
+                             :disabled="mealPlan.saving">
+                    </label>
+                    <small x-show="item.scalable"
+                           x-text="'Mengen × '+Number(item.multiplier).toLocaleString('de-DE', {maximumFractionDigits:2})"></small>
+                    <small x-show="!item.scalable">Originalmengen</small>
+                  </div>
+                  <button type="button" class="meal-plan-remove"
+                          @click="removeMealPlanItem(item)"
+                          :disabled="mealPlan.saving"
+                          :aria-label="'Entfernen: '+item.recipe_name">×</button>
+                </div>
+              </template>
+              <p class="meal-plan-day-empty" x-show="day.items.length===0">Noch nichts geplant</p>
+            </div>
+
+            <button type="button" class="meal-plan-add-button"
+                    @click="openMealPlanAdd(day)"
+                    :disabled="mealPlan.saving">
+              <span aria-hidden="true">＋</span> Rezept hinzufügen
+            </button>
+          </article>
+        </template>
+      </div>
+
+      <section class="meal-plan-shopping">
+        <header class="meal-plan-shopping-head">
+          <div>
+            <span class="meal-plan-eyebrow">Automatisch zusammengeführt</span>
+            <h2>Gemeinsame Einkaufsliste</h2>
+            <p>Gleiche Zutaten und Einheiten werden addiert. Als „nicht einkaufen“ markierte Zutaten fehlen bewusst.</p>
+          </div>
+          <button type="button" class="btn btn-primary"
+                  @click="createMealPlanCart()"
+                  :disabled="mealPlan.saving || mealPlan.summary.shopping_items===0">
+            Liste erstellen
+          </button>
+        </header>
+        <div class="meal-plan-shopping-list" x-show="mealPlan.shoppingPreview.length">
+          <template x-for="item in mealPlan.shoppingPreview" :key="item.canonical_name+'-'+(item.unit || '')">
+            <div class="meal-plan-shopping-item">
+              <span class="meal-plan-shopping-check" aria-hidden="true"></span>
+              <strong x-text="item.name"></strong>
+              <span x-text="mealPlanAmount(item)"></span>
+            </div>
+          </template>
+        </div>
+        <div class="meal-plan-shopping-empty" x-show="!mealPlan.shoppingPreview.length">
+          Sobald Rezepte eingeplant sind, erscheint hier die gemeinsame Einkaufsliste.
+        </div>
+      </section>
     </section>
 
     <!-- ========== EINKAUFSLISTE ========== -->
@@ -2947,14 +3153,15 @@
           <!-- Drucken / PDF: öffnet print-View in neuem Tab, Browser-cmd+P → PDF -->
           <button class="btn btn-secondary btn-sm"
                   x-show="!recipeDetail.cookMode"
-                  @click="printRecipe()"
-                  title="Print-View öffnen — Browser Cmd+P → Als PDF speichern">
+                  @click="downloadRecipePdf()"
+                  :disabled="recipeDetail.pdfBusy"
+                  title="Rezept als PDF herunterladen">
             📄
           </button>
           <!-- Teilen: signierten Share-Link erstellen + in Clipboard -->
           <button class="btn btn-secondary btn-sm"
                   x-show="!recipeDetail.cookMode"
-                  @click="shareRecipe()"
+                  @click="copyRecipeShareLink()"
                   :disabled="recipeDetail.sharing"
                   title="Read-only-Link erstellen (30 Tage gültig)">
             <span x-show="!recipeDetail.sharing">🔗</span>
@@ -2973,8 +3180,9 @@
             <span x-text="recipeDetail.data?.is_favorite ? '⭐' : '☆'"
                   :style="recipeDetail.data?.is_favorite ? 'color: var(--accent); font-size: 20px;' : 'font-size: 20px;'"></span>
           </button>
-          <button class="btn-icon" @click="shareRecipe(recipeDetail.data)"
-                  title="Teilen (Mail, iMessage, WhatsApp…)">📤</button>
+          <button class="btn-icon" @click="shareRecipePdf(recipeDetail.data)"
+                  :disabled="recipeDetail.pdfBusy"
+                  title="Rezept-PDF teilen oder per Mail senden">📤</button>
           <label class="btn-icon" title="Eigenes Bild hochladen" style="cursor:pointer;">
             🖼
             <input type="file" accept="image/jpeg,image/png,image/webp"
@@ -3013,26 +3221,29 @@
           🥕 Zutaten <span class="detail-tab-count" x-show="recipeDetail.data?.ingredients?.length" x-text="recipeDetail.data?.ingredients?.length"></span>
         </button>
         <button class="detail-tab" :class="recipeDetail.tab === 'steps' && 'active'"
-                @click="recipeDetail.tab = 'steps'"
-                x-show="(recipeDetail.data?.steps?.length || 0) > 0">
-          👨‍🍳 Schritte <span class="detail-tab-count" x-text="recipeDetail.data?.steps?.length"></span>
+                @click="recipeDetail.tab = 'steps'">
+          👨‍🍳 Schritte <span class="detail-tab-count" x-text="recipeDetail.data?.steps?.length || 0"></span>
         </button>
       </div>
       <div class="modal-body recipe-detail-body" x-show="recipeDetail.data">
+        <div class="manual-care-alert" x-show="recipeDetail.data?.needs_manual_care">
+          <div>
+            <strong>Manuelle Pflege erforderlich</strong>
+            <span x-text="(recipeDetail.data?.manual_care_reasons || []).join(' · ')"></span>
+          </div>
+          <a x-show="recipeDetail.data?.url"
+             :href="safeExternalUrl(recipeDetail.data?.url)"
+             target="_blank" rel="noopener noreferrer">TikTok-Quelle öffnen ↗</a>
+        </div>
         <div class="recipe-detail-grid" :class="recipeDetail.tab !== 'info' && 'single-col'">
           <div class="recipe-detail-video" x-show="recipeDetail.tab === 'info'">
-            <video x-show="recipeDetail.data?.video_filename" controls preload="metadata"
-                   :src="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/video' : ''"
-                   :poster="recipeDetail.data?.thumb_filename ? '/api/recipes/'+recipeDetail.data.id+'/thumb?w=800' : ''"
-                   style="max-width: 100%; background: #000; border-radius: 8px; display: block; margin: 0 auto;"></video>
-            <!-- Fallback: Thumbnail wenn kein Video aber Bild vorhanden -->
-            <img x-show="!recipeDetail.data?.video_filename && recipeDetail.data?.thumb_filename"
+            <img x-show="recipeDetail.data?.thumb_filename"
                  :src="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/thumb' : ''"
                  alt=""
                  style="max-width: 100%; max-height: 60vh; object-fit: contain; background: #000; border-radius: 4px;"
                  @error="$el.style.display='none'" />
-            <div x-show="!recipeDetail.data?.video_filename && !recipeDetail.data?.thumb_filename"
-                 class="muted">Kein Video, kein Bild.</div>
+            <div x-show="!recipeDetail.data?.thumb_filename"
+                 class="muted">Kein Rezeptbild vorhanden.</div>
             <div class="recipe-detail-meta muted" style="margin-top: 8px; font-size: 12px; min-width: 0; overflow: hidden;">
               <a x-show="recipeDetail.data?.pdf_filename"
                  :href="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/pdf' : '#'"
@@ -3294,12 +3505,15 @@
             </div>
 
             <!-- Zubereitung -->
-            <div class="recipe-detail-section steps-section" x-show="(recipeDetail.tab === 'steps' || recipeDetail.cookMode) && (recipeDetail.data?.steps?.length || 0) > 0">
+            <div class="recipe-detail-section steps-section" x-show="recipeDetail.tab === 'steps' || recipeDetail.cookMode">
               <h4>
                 Zubereitung
                 <span class="muted" x-text="'('+(recipeDetail.data?.steps?.length || 0)+' Schritte)'"></span>
+                <button x-show="!recipeDetail.cookMode && !recipeDetail.editingSteps"
+                        class="btn btn-secondary btn-sm" style="float:right"
+                        @click="startEditSteps()">Bearbeiten</button>
               </h4>
-              <ol class="step-list">
+              <ol class="step-list" x-show="!recipeDetail.editingSteps">
                 <template x-for="(step, idx) in recipeDetail.data?.steps || []" :key="idx">
                   <li class="step-item" :class="timers[step.id]?.running && 'step-running'">
                     <div class="step-text" x-text="step.instruction"></div>
@@ -3320,6 +3534,29 @@
                   </li>
                 </template>
               </ol>
+              <div class="muted" x-show="!recipeDetail.editingSteps && !(recipeDetail.data?.steps?.length)">
+                Keine Zubereitungsschritte vorhanden. Bitte manuell ergänzen.
+              </div>
+              <div class="step-edit-list" x-show="recipeDetail.editingSteps">
+                <template x-for="(step, idx) in recipeDetail.editSteps" :key="idx">
+                  <div class="step-edit-row">
+                    <span class="step-edit-number" x-text="idx + 1"></span>
+                    <textarea x-model="step.instruction" rows="3"
+                              placeholder="Zubereitungsschritt beschreiben"></textarea>
+                    <input type="number" min="0" step="30" x-model.number="step.timer_seconds"
+                           placeholder="Timer in Sekunden" aria-label="Timer in Sekunden">
+                    <button class="btn-icon" @click="removeStepRow(idx)" title="Schritt entfernen">✕</button>
+                  </div>
+                </template>
+                <button class="btn btn-secondary btn-sm" @click="addStepRow()">+ Schritt</button>
+                <div class="step-edit-actions">
+                  <button class="btn btn-secondary" @click="cancelEditSteps()">Abbrechen</button>
+                  <button class="btn btn-primary" @click="saveSteps()" :disabled="recipeDetail.savingSteps">
+                    <span x-show="!recipeDetail.savingSteps">Schritte speichern</span>
+                    <span x-show="recipeDetail.savingSteps">…</span>
+                  </button>
+                </div>
+              </div>
             </div>
 
             <!-- Beschreibung mit Rich-Rendering (Hashtags, Mentions, URLs) -->

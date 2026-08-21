@@ -15,31 +15,63 @@ import time
 from contextlib import contextmanager
 from email.header import decode_header
 from typing import Iterable, List, Dict, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
 URL_PATTERN = re.compile(
-    r"https?://(?:www\.|vm\.)?(?:tiktok\.com|instagram\.com)/\S+",
+    r"https://(?:www\.|m\.|vm\.|vt\.)?(?:tiktok\.com|instagram\.com)/\S+",
     re.IGNORECASE,
 )
 
 
-def is_content_url(url: str) -> bool:
-    """True nur, wenn die URL auf einen EINZELNEN Post zeigt (kein Profil).
+_TIKTOK_HOSTS = {
+    "tiktok.com", "www.tiktok.com", "m.tiktok.com",
+    "vm.tiktok.com", "vt.tiktok.com",
+}
+_INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com"}
+
+
+def normalize_content_url(url: str) -> Optional[str]:
+    """Validiert und normalisiert einen einzelnen TikTok-/Instagram-Post.
 
     Profil-Links wie ``tiktok.com/@chefkoch`` oder ``instagram.com/handle`` lassen
-    yt-dlp das ganze Konto auflösen -> Timeout/Hänger, nie ein Rezept, und werden
-    sonst jeden Lauf erneut versucht. Kurzlinks (vm./vt.tiktok.com) zeigen auf genau
-    einen Clip und sind daher ok.
+    wir nicht als Rezeptquelle zu. Exakte Host-Prüfung verhindert Verwechslungen
+    wie ``instagram.com.evil.example`` oder eingebettete Zugangsdaten. Tracking-
+    Parameter und Fragmente werden nicht gespeichert.
     """
-    u = (url or "").lower()
-    if "vm.tiktok.com/" in u or "vt.tiktok.com/" in u:
-        return True
-    if "tiktok.com/" in u:
-        return "/video/" in u or "/photo/" in u
-    if "instagram.com/" in u:
-        return "/reel/" in u or "/p/" in u or "/tv/" in u
-    return False
+    try:
+        parsed = urlsplit((url or "").strip())
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            return None
+        if parsed.username or parsed.password:
+            return None
+        if parsed.port not in (None, 443):
+            return None
+    except ValueError:
+        return None
+
+    host = parsed.hostname.lower().rstrip(".")
+    path = parsed.path or "/"
+    path_lower = path.lower()
+    if host in {"vm.tiktok.com", "vt.tiktok.com"}:
+        if path == "/":
+            return None
+    elif host in _TIKTOK_HOSTS:
+        if "/video/" not in path_lower and "/photo/" not in path_lower:
+            return None
+    elif host in _INSTAGRAM_HOSTS:
+        if not any(marker in path_lower for marker in ("/reel/", "/p/", "/tv/")):
+            return None
+    else:
+        return None
+
+    return urlunsplit(("https", host, path, "", ""))
+
+
+def is_content_url(url: str) -> bool:
+    """Kompatibilitätshelfer für bestehende Aufrufer."""
+    return normalize_content_url(url) is not None
 
 # Attachment-Filename-Endungen die wir verarbeiten. Alles andere wird
 # ignoriert (PDFs für Rezept-Karten/Hochzeitspläne, JPGs für Fotos).
@@ -216,12 +248,13 @@ class MailAccount:
                     # 1. URLs aus Body
                     for url in URL_PATTERN.findall(full):
                         url = url.rstrip(".,);]>'\"")
+                        url = normalize_content_url(url)
+                        if not url:
+                            logger.info(f"[{self.name}] Profil-/Nicht-Post-URL übersprungen")
+                            continue
                         if url in seen_urls:
                             continue
                         seen_urls.add(url)
-                        if not is_content_url(url):
-                            logger.info(f"[{self.name}] Profil-/Nicht-Video-URL übersprungen: {url}")
-                            continue
                         urls.append({
                             "url": url,
                             "type": self.content_type,

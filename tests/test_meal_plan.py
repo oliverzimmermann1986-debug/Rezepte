@@ -135,14 +135,10 @@ def test_update_delete_and_duplicate_day_recipe_are_deterministic(
     assert client.delete(f"/api/meal-plan/items/{item_id}").status_code == 404
 
 
-def test_week_cart_replaces_local_list_atomically(
+def test_week_cart_merges_into_the_one_local_list(
     client,
     test_db: Database,
-    monkeypatch,
 ):
-    from app.routes import api_meal_plan
-
-    monkeypatch.setattr(api_meal_plan, "einkauf_configured", lambda: False)
     recipe_id = _meal_recipe(
         test_db,
         name="Wochenpasta",
@@ -176,14 +172,25 @@ def test_week_cart_replaces_local_list_atomically(
         "ok": True,
         "target": "local",
         "added": 1,
-        "replaced": True,
+        "merged": 0,
+        "replaced": False,
         "week_start": "2026-07-27",
     }
     cart = test_db.cart_list()
-    assert len(cart) == 1
-    assert cart[0]["canonical_name"] == "nudeln"
-    assert cart[0]["amount"] == 500
-    assert cart[0]["unit"] == "g"
+    assert len(cart) == 2
+    by_canonical = {item["canonical_name"]: item for item in cart}
+    assert by_canonical["alt"]["amount"] == 1
+    assert by_canonical["nudeln"]["amount"] == 500
+    assert by_canonical["nudeln"]["unit"] == "g"
+
+    repeated = client.post(
+        "/api/meal-plan/cart",
+        json={"week_start": "2026-07-27"},
+    )
+    assert repeated.json()["added"] == 0
+    assert repeated.json()["merged"] == 1
+    by_canonical = {item["canonical_name"]: item for item in test_db.cart_list()}
+    assert by_canonical["nudeln"]["amount"] == 1000
 
 
 def test_meal_plan_rejects_invalid_input(client):

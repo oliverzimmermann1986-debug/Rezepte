@@ -4,19 +4,17 @@ Routes:
   GET  /recipe/{id}/print          — Auth-required, print-optimierte HTML-View
                                      (User-Browser via cmd+P → PDF)
   POST /api/recipes/{id}/share     — Auth-required, generiert signiertes Token
-                                     + URL. Default-Gültigkeit 30 Tage.
+                                     + URL. Default-Gültigkeit 7 Tage.
   GET  /share/{token}              — KEINE Auth, validiert Token, zeigt
                                      Print-View für den Empfänger
   GET  /share/{token}/thumb        — Public-Thumbnail-Endpoint (gleiche
                                      Token-Validation)
 
-Token sind stateless (URLSafeTimedSerializer mit web.secret_key), keine
-DB-Tabelle nötig. Revocation gibt es nicht — Workaround: secret_key
-rotieren invalidet alle Links auf einmal. Default-Expiration 30 Tage.
+Token sind stateless (URLSafeTimedSerializer mit web.secret_key). Neue Links
+sind standardmäßig 7 Tage gültig und enthalten keinen Benutzernamen.
 
 DSGVO-Hinweise:
-- Share-Link enthält nur Rezept-Daten + optional 'geteilt von <username>'
-  als Footer (audit-trail), keine sensiblen Daten
+- Share-Link enthält nur Rezept-ID und Ablaufzeit
 - Token ist HMAC-signiert, kein Bruteforce möglich
 - Tokens werden NICHT in Logs ausgegeben (nur recipe_id)
 """
@@ -51,7 +49,7 @@ share_api_router = APIRouter(prefix="/api/recipes", tags=["sharing"],
                               dependencies=[Depends(require_auth)])
 
 SHARE_SALT = "recipe-share-v1"
-SHARE_MAX_AGE_DAYS_DEFAULT = 30
+SHARE_MAX_AGE_DAYS_DEFAULT = 7
 
 
 def _serializer() -> URLSafeTimedSerializer:
@@ -336,32 +334,26 @@ def recipe_pdf(recipe_id: int):
 
 
 class ShareRequest(BaseModel):
-    expires_days: int = Field(SHARE_MAX_AGE_DAYS_DEFAULT, ge=1, le=365)
+    expires_days: int = Field(SHARE_MAX_AGE_DAYS_DEFAULT, ge=1, le=30)
 
 
 @share_api_router.post("/{recipe_id}/share")
 def create_share_link(recipe_id: int, payload: ShareRequest, request: Request):
-    """Generiert signiertes Token + Share-URL. Token enthält rid + erzeuger.
-    Default-Gültigkeit 30 Tage (max 365). Stateless — Revocation via
-    secret_key-Rotation."""
+    """Generiert einen kurzlebigen öffentlichen Link ohne Benutzername."""
     db = get_db()
     recipe = db.recipe_get(recipe_id)
     if not recipe or recipe.get("deleted_at") is not None:
         raise HTTPException(404, "Rezept nicht gefunden")
 
-    from ..auth import request_user
-    username = request_user(request) or "anonymous"
     token = _serializer().dumps({
         "rid": int(recipe_id),
-        "by": username,
         "exp": time.time() + payload.expires_days * 86400,
     })
 
     # base_url respektiert X-Forwarded-Proto + Host bei Reverse-Proxy
     base = str(request.base_url).rstrip("/")
     url = f"{base}/share/{token}"
-    logger.info(f"Share-Link für Rezept #{recipe_id} erstellt von '{username}' "
-                f"(gültig {payload.expires_days}d)")
+    logger.info(f"Share-Link für Rezept #{recipe_id} erstellt (gültig {payload.expires_days}d)")
     return {
         "ok": True,
         "url": url,

@@ -24,10 +24,9 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from ..auth import require_auth
-from ..config_store import get_config
 from ..db import get_db
 from ..recipes.cart_logic import add_recipe_to_cart, cart_for_display, prepare_for_cart
-from .api_einkauf import einkauf_configured, einkauf_request
+from ..config_store import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -83,62 +82,13 @@ class CookPayload(BaseModel):
     multiplier: float = 1.0
 
 
-def _ingredient_line(ingredient: dict, multiplier: float) -> Optional[str]:
-    """Freitext-Zeile für die verbundene Einkaufsliste bauen."""
-    name = (ingredient.get("name") or "").strip()
-    if not name:
-        return None
-    amount = ingredient.get("amount")
-    try:
-        if amount is not None:
-            amount = float(amount) * float(multiplier)
-    except (TypeError, ValueError):
-        pass
-    unit = (ingredient.get("unit") or "").strip()
-    parts = []
-    if amount is not None:
-        parts.append("%g" % amount if isinstance(amount, (int, float)) else str(amount))
-    if unit:
-        parts.append(unit)
-    parts.append(name)
-    return " ".join(parts).strip()[:150]
-
-
 @router.post("/cook/{recipe_id}")
 def cook_recipe(recipe_id: int, payload: Optional[CookPayload] = None):
-    """Lädt alle Zutaten des Rezepts in den Einkaufskorb (mit Smart-Merge).
-    Bei verbundener Einkaufsliste schreibt der Endpunkt direkt dorthin;
-    andernfalls bleibt der lokale Warenkorb als sicherer Fallback aktiv."""
+    """Lädt Zutaten in die eine kanonische, lokale Einkaufsliste."""
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
     multiplier = payload.multiplier if payload else 1.0
-
-    if einkauf_configured():
-        excluded = db.shopping_excluded_canonicals()
-        lines = [
-            line
-            for ingredient in db.recipe_ingredients_get(recipe_id)
-            if (
-                (ingredient.get("canonical_name") or "").strip().lower()
-                not in excluded
-            )
-            if (line := _ingredient_line(ingredient, multiplier))
-        ]
-        if not lines:
-            return {"ok": True, "added": 0, "multiplier": multiplier, "target": "einkauf"}
-        einkauf_request(
-            "POST",
-            "/items/bulk",
-            {"items": lines, "source": "rezept"},
-        )
-        einkauf_request("POST", "/consolidate")
-        return {
-            "ok": True,
-            "added": len(lines),
-            "multiplier": multiplier,
-            "target": "einkauf",
-        }
 
     counters = add_recipe_to_cart(db, recipe_id, multiplier=multiplier)
     return {"ok": True, "multiplier": multiplier, "target": "local", **counters}

@@ -1,5 +1,5 @@
 [Unit]
-Description=Scrapper Job (E-Mail + TikTok Download)
+Description=Scrapper Job (E-Mail + Link-Import)
 After=network-online.target scrapper-web.service
 
 [Service]

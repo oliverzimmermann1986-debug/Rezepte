@@ -2,13 +2,17 @@
 
 ## Native iPhone-App
 
-Die native SwiftUI-App liegt in [`ios-swift/`](ios-swift/README.md). Sie spielt
-keine Videos ab, öffnet Quelllinks ausschließlich extern und kennzeichnet
-Rezepte ohne Zutaten oder Zubereitungsschritte zur manuellen Pflege.
+Die native TypeScript-/Expo-App liegt in [`native-ios/`](native-ios/README.md).
+Sie lädt keine Plattformvideos, öffnet Quelllinks ausschließlich extern und
+kennzeichnet Rezepte ohne Zutaten oder Zubereitungsschritte zur manuellen
+Pflege. `ios-swift/` ist nur noch Altbestand und kein Releasepfad.
 
 Proxmox-LXC-Container für den Scraper-Job:
 
-**Rezeptbibliothek mit TikTok/Instagram-Import** — zieht Links aus zwei separaten E-Mail-Postfächern (Rezepte + Hochzeit), lädt die Videos mit `yt-dlp`, lässt sie von einer **lokalen Ollama-Instanz** klassifizieren und sortiert sie in passende Ordner.
+**Rezeptbibliothek mit TikTok/Instagram-Linkimport** — übernimmt Links aus zwei
+separaten E-Mail-Postfächern (Rezepte + Hochzeit). Plattformmedien werden nicht
+heruntergeladen. Unvollständige Eingänge bleiben mit ihrem Original-Link zur
+manuellen Bearbeitung erhalten.
 
 Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Starten, Pending-Auflösung, Logs, Historie). Externe Erreichbarkeit ist explizit für **Cloudflare-Tunnel + Cloudflare Access** (MFA-Layer) ausgelegt.
 
@@ -30,25 +34,16 @@ Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Sta
 ## Architektur auf einen Blick
 
 ```
-E-Mail-Inbox (Recipe)  ─┐
-E-Mail-Inbox (Wedding) ─┤
-                        ▼
-                  ┌─────────────┐         ┌──────────────────┐
-                  │  IMAP-Fetch │ ──URLs─►│  yt-dlp Download │
-                  └─────────────┘         └─────────┬────────┘
-                                                    ▼
-                                          ┌─────────────────────┐
-                                          │   Ollama-Cascade    │
-                                          │  fast → fallback    │
-                                          └────────┬────────────┘
-                                                   ▼
-                          ┌───────────────────────┴────────────────────┐
-                          │                                            │
-                          ▼ Auto: Confidence hoch                      ▼ Pending: User entscheidet im Web-UI
-                  ┌──────────────────┐                         ┌──────────────────┐
-                  │ FS: recipe_dir/  │                         │  SQLite pending  │
-                  │     wedding_dir/ │                         │  + video in temp │
-                  └──────────────────┘                         └──────────────────┘
+E-Mail-Inbox / App
+        │
+        ▼
+  strikte Linkprüfung
+        │
+        ▼
+SQLite Pending ──► manuelle Pflege ──► Rezept mit Original-Link
+
+Optional und vollständig getrennt:
+private SQLite-Queue ──► video_archiver ──► privates ID-basiertes Archiv
 ```
 
 Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Button im Web-UI. File-Locks verhindern doppelte Läufe zwischen Web und CLI.
@@ -84,7 +79,7 @@ Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Butto
 **Robustheit**
 - File-Lock (`fcntl.flock`) zwischen Web-Trigger und systemd-CLI
 - Log-Rotation aller Job-Logs (älter als 30 Tage werden bei jedem Job-Start aufgeräumt)
-- yt-dlp Failed-Tracking: nach 3 fehlgeschlagenen Versuchen wird die URL als „aufgegeben" gespeichert und nicht mehr probiert
+- Link-only-Import ohne Plattformmedien oder versteckte Videodateien
 - IMAP-Retry mit Backoff (3 Versuche, 1s/4s)
 - Ollama-Health-Check beim Job-Start (bricht ab statt 50 sinnlose Pending-Items zu erzeugen)
 - Thread-safe Cancel für laufende Import- und Analysejobs
@@ -97,7 +92,7 @@ Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Butto
 
 Der Reiter **Admin** ist für alle angemeldeten Benutzer sichtbar. Er bündelt bewusst alle technischen und qualitätssichernden Funktionen, damit die normale Rezeptansicht übersichtlich bleibt.
 
-- **Importzentrale:** offene Prüfungen, fehlgeschlagene Downloads, laufende Jobs und letzte Importe
+- **Importzentrale:** offene Prüfungen, verbliebene Altfehler, laufende Jobs und letzte Importe
 - **Qualität:** bestehende KI-Prüfungen, Duplikate und Qualitätsfunde
 - **Versionen:** Snapshot, Vergleich und Wiederherstellung eines Rezeptstands
 - **PDF & Scan:** Stapelverarbeitung, OCR sowie Seiten drehen, sortieren oder löschen
@@ -328,23 +323,22 @@ sudo chmod 600 /opt/scrapper/data/config.yaml
 
 ### 3. Was nicht im Backup ist
 
-- **yt-dlp Cookies-Datei** (falls konfiguriert)
-- **Bereits einsortierte Videos** in den Recipe/Wedding-Folders (liegen in den konfigurierten Rezept-/Hochzeitsverzeichnissen und müssen separat gesichert werden)
+- **Cookies und Dateien des optionalen Video-Archivers** (liegen bewusst außerhalb der Anwendung)
 - **systemd-Customizations** (falls du die Unit-Files manuell angepasst hast - normalerweise nicht nötig da `cp systemd/* /etc/systemd/system/` reicht)
 
-### 4. Failed-Email-Recovery
+### 4. Unvollständige Linkimporte
 
-Wenn yt-dlp eine URL nicht runterladen kann, wird der Versuch in der DB
-getrackt. Nach `MAX_DOWNLOAD_ATTEMPTS=3` Fehlversuchen wird die URL beim
-nächsten Mail-Sync übersprungen.
+Ein gültiger TikTok-/Instagram-Beitragslink wird ohne Medienabruf gespeichert.
+Fehlen Zutaten oder Schritte, bleibt er unter **Manuelle Prüfung** sichtbar und
+kann dort ergänzt werden. Alte Downloadfehler werden beim erneuten Linkimport
+in einen normalen offenen Eingang umgewandelt.
 
-Im UI unter **Pending → Wiederholbare Fehler** siehst du diese URLs mit
-Versuchszahl + letztem Fehler. Reset-Button setzt den Counter zurück -
-beim nächsten Mail-Sync wird die URL nochmal versucht (sofern noch in
-einer Email vorhanden). Häufige Ursachen für Failures:
-- Video privat/gelöscht → Cookies-Datei kann helfen (siehe yt-dlp-Config)
-- yt-dlp veraltet → `pip install -U yt-dlp` im scrapper-venv
-- Cloudflare-Block → User-Agent ändern oder Cookies setzen
+### 5. Optionales privates Videoarchiv
+
+Der eigenständige Worker unter [`video_archiver/`](video_archiver/README.md)
+verarbeitet eine separate SQLite-Queue und speichert berechtigte Inhalte als
+`<Rezept-ID>.mp4` plus Prüfsummen-Sidecar. Er ist kein Bestandteil der App oder
+Rezepte-API und sein Archiv darf nicht öffentlich bereitgestellt werden.
 
 ## Monitoring
 

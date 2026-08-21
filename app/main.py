@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import html
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -362,7 +363,7 @@ def _safe_next(value: str) -> str:
 def login_page(next: str = "/"):
     if auth_disabled():
         return RedirectResponse(url="/", status_code=303)
-    return LOGIN_HTML.format(error="", next=_safe_next(next))
+    return LOGIN_HTML.format(error="", next=html.escape(_safe_next(next), quote=True))
 
 
 @app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
@@ -394,14 +395,19 @@ gespeichert. Das eigentliche Passwort wird nicht gespeichert. Die Kommunikation
 erfolgt über HTTPS direkt mit dem eingetragenen Rezepteserver. Die App enthält
 keine Werbung, keine Telemetrie und keine Analyse-SDKs.</p>
 <h2>Externe Quellen</h2>
-<p>TikTok- und Instagram-Links werden nicht automatisch aufgerufen. Erst wenn
+<p>TikTok- und Instagram-Medien werden nicht heruntergeladen. Erst wenn
 ein Nutzer den Quellenlink antippt, wird er an die jeweilige externe App oder
 Website übergeben; dann gelten deren Datenschutzbestimmungen.</p>
+<h2>Öffentliche Rezeptlinks</h2>
+<p>Nur nach ausdrücklicher Bestätigung kann die App einen öffentlichen Link
+erstellen. Jeder mit diesem Link kann das ausgewählte Rezept einschließlich
+Cover sehen. In der iPhone-App sind neue Links sieben Tage gültig und enthalten
+keinen Benutzernamen.</p>
 <h2>Löschung und Auskunft</h2>
 <p>Rezepte und Kontodaten werden vom Betreiber des privaten Servers verwaltet.
-Anfragen zu Auskunft, Berichtigung oder Löschung sind an diesen Betreiber zu
-richten. Durch Abmelden wird das Sitzungstoken vom iPhone entfernt.</p>
-<p><small>Stand: 30. Juli 2026</small></p>
+richten. Durch Abmelden werden Sitzungstoken, Cloudflare-Zugangsdaten und private
+Bildcaches vom iPhone entfernt; die Serversitzung wird widerrufen.</p>
+<p><small>Stand: 21. August 2026</small></p>
 </main></body></html>"""
     )
 
@@ -421,7 +427,7 @@ def login(
             LOGIN_HTML.format(
                 error=f'<p class="error">⛔ Zu viele Fehlversuche. '
                       f'Erneut probieren in {remaining // 60 + 1} min.</p>',
-                next=_safe_next(next),
+                next=html.escape(_safe_next(next), quote=True),
             ),
             status_code=429,
         )
@@ -432,7 +438,7 @@ def login(
         return HTMLResponse(
             LOGIN_HTML.format(
                 error='<p class="error">❌ Login fehlgeschlagen</p>',
-                next=_safe_next(next),
+                next=html.escape(_safe_next(next), quote=True),
             ),
             status_code=401,
         )
@@ -447,7 +453,7 @@ def login(
         return HTMLResponse(
             LOGIN_HTML.format(
                 error='<p class="error">❌ Konto ist nicht mehr aktiv</p>',
-                next=_safe_next(next),
+                next=html.escape(_safe_next(next), quote=True),
             ),
             status_code=401,
         )
@@ -548,7 +554,11 @@ def home(request: Request):
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == status.HTTP_303_SEE_OTHER and "Location" in (exc.headers or {}):
         return RedirectResponse(url=exc.headers["Location"], status_code=303)
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=exc.headers,
+    )
 
 
 @app.get("/healthz")
