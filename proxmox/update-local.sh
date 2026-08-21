@@ -116,7 +116,7 @@ for _ in {1..30}; do
   sleep 1
 done
 
-EXPECTED_VERSION="$(sed -n 's/^APP_VERSION = "\([^"]*\)"/\1/p' "$APP_DIR/app/main.py" | head -n 1)"
+EXPECTED_VERSION="$(sed -n 's/^APP_VERSION = "\([^"]*\)"/\1/p' "$APP_DIR/app/main.py" | head -n 1 | tr -d '\r')"
 HEALTH_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version", ""))' /tmp/rezepte-health.json 2>/dev/null || true)"
 if [[ -z "$EXPECTED_VERSION" || "$HEALTH_VERSION" != "$EXPECTED_VERSION" ]]; then
   echo "Fehler: Erwartete Version '$EXPECTED_VERSION', Dienst meldet '$HEALTH_VERSION'." >&2
