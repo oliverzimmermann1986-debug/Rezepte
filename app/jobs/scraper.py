@@ -31,7 +31,9 @@ from ..core.email_processor import MailAccount, EmailRouter
 from ..core.pdf_processing import process_pdf_bytes
 from ..recipes.pdf_recipe_extract import (
     apply_extracted_recipe_data, existing_hints, extract_recipe_data,
+    prepare_recipe_ingredients,
 )
+from ..recipes.auto_tags import refresh_diet_auto_tags
 from ..recipes.canonical import canonical_name
 from ..recipes.units import normalize_unit
 
@@ -1313,11 +1315,8 @@ class ScraperJob:
 
         video_path = Path(entry["video_path"]) if entry.get("video_path") else None
         recipe_id: Optional[int] = None
-        description = (
-            decision.get("description")
-            if decision.get("description") is not None
-            else entry.get("description")
-        )
+        manual_description = str(decision.get("description") or "").strip()
+        description = manual_description or entry.get("description")
         suggestion = entry.get("ai_suggestion") or {}
         source = str(suggestion.get("source") or "")
 
@@ -1498,31 +1497,31 @@ class ScraperJob:
     def _apply_pending_manual_data(self, recipe_id: int, decision: Dict) -> None:
         """Übernimmt Korrekturen aus der manuellen Importprüfung direkt in die DB."""
         ingredients = decision.get("ingredients")
-        if ingredients is not None:
-            prepared = []
-            for item in ingredients:
-                name = str((item or {}).get("name") or "").strip()
-                if not name:
-                    continue
-                amount = (item or {}).get("amount")
-                try:
-                    amount = float(amount) if amount not in (None, "") else None
-                except (TypeError, ValueError):
-                    amount = None
-                prepared.append({
-                    "name": name,
-                    "canonical_name": canonical_name(name),
-                    "amount": amount,
-                    "unit": normalize_unit((item or {}).get("unit")),
-                    "raw": (item or {}).get("raw"),
-                })
+        prepared = prepare_recipe_ingredients(ingredients or [])
+        if prepared:
             self.db.recipe_set_extraction_result(
                 recipe_id, status="ok", ingredients=prepared,
             )
+            try:
+                refresh_diet_auto_tags(
+                    self.db,
+                    recipe_id,
+                    [item["canonical_name"] for item in prepared],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Rezept #%s: diet-tag-recompute failed: %s",
+                    recipe_id,
+                    exc,
+                )
 
         steps = decision.get("steps")
-        if steps is not None:
-            self.db.recipe_steps_set(recipe_id, steps)
+        prepared_steps = [
+            step for step in (steps or [])
+            if str((step or {}).get("instruction") or "").strip()
+        ]
+        if prepared_steps:
+            self.db.recipe_steps_set(recipe_id, prepared_steps)
         if decision.get("servings") is not None:
             self.db.recipe_set_servings(recipe_id, decision.get("servings"))
         if decision.get("verified"):

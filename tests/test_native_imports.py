@@ -209,3 +209,119 @@ def test_pending_social_link_can_be_completed_without_media(test_db, tmp_path):
     assert recipe["video_filename"] is None
     assert Path(recipe["folder_path"], "info.json").is_file()
     assert test_db.pending_get(url)["status"] == "resolved"
+
+
+def test_empty_native_arrays_preserve_extracted_ingredients_and_steps(test_db, tmp_path):
+    recipe_id = test_db.recipe_upsert(
+        url="manual-upload://preserve/extracted.pdf",
+        name="Extrahiertes Rezept",
+        type="Hauptgericht",
+        category="Allgemein",
+        folder_path=str(tmp_path / "recipe"),
+        description="Extrahierter Quelltext",
+        thumb_filename=None,
+        video_filename=None,
+        source_added_at=None,
+    )
+    test_db.recipe_set_extraction_result(
+        recipe_id,
+        status="ok",
+        ingredients=[{
+            "name": "Tomaten",
+            "canonical_name": "tomate",
+            "amount": 4,
+            "unit": "Stück",
+            "raw": "4 Tomaten",
+        }],
+    )
+    test_db.recipe_steps_set(
+        recipe_id,
+        [{"instruction": "Tomaten einkochen", "timer_seconds": 600}],
+    )
+
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job._apply_pending_manual_data(
+        recipe_id,
+        {"ingredients": [], "steps": [], "servings": None, "verified": False},
+    )
+
+    assert [item["name"] for item in test_db.recipe_ingredients_get(recipe_id)] == ["Tomaten"]
+    assert test_db.recipe_steps_get(recipe_id)[0]["instruction"] == "Tomaten einkochen"
+
+
+def test_empty_native_description_preserves_pending_source_text(test_db, tmp_path):
+    source = tmp_path / "pending" / "scan.jpg"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"image-data")
+    url = "manual-upload://preserve/scan.jpg"
+    test_db.pending_add(
+        url=url,
+        content_type="recipe",
+        description="OCR-Quelltext mit Zutaten",
+        video_path=str(source),
+        ai_suggestion={
+            "name": "Scan prüfen",
+            "type": "Hauptgericht",
+            "category": "Allgemein",
+            "source": "manual-upload",
+            "filename": "scan.jpg",
+        },
+    )
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.recipe_dir = tmp_path / "recipes"
+    job.wedding_dir = tmp_path / "wedding"
+    job.temp_dir = tmp_path / "pending"
+
+    result = job.resolve_pending(
+        url,
+        {
+            "action": "save",
+            "name": "Geretteter Scan",
+            "type": "Hauptgericht",
+            "category": "Allgemein",
+            "description": "",
+            "ingredients": [],
+            "steps": [],
+            "verified": False,
+        },
+    )
+
+    recipe = test_db.recipe_get(result["recipe_id"])
+    assert recipe["description"] == "OCR-Quelltext mit Zutaten"
+    assert Path(recipe["folder_path"], "description.txt").read_text(encoding="utf-8") == (
+        "OCR-Quelltext mit Zutaten"
+    )
+
+
+def test_manual_pending_ingredients_refresh_diet_tags(test_db, tmp_path):
+    recipe_id = test_db.recipe_upsert(
+        url="manual-upload://tags/recipe.jpg",
+        name="Tag-Rezept",
+        type="Hauptgericht",
+        category="Allgemein",
+        folder_path=str(tmp_path / "recipe"),
+        description="",
+        thumb_filename=None,
+        video_filename=None,
+        source_added_at=None,
+    )
+    test_db.recipe_auto_tags_set(recipe_id, ["schnell"])
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+
+    job._apply_pending_manual_data(
+        recipe_id,
+        {
+            "ingredients": [
+                {"name": "Tomate", "amount": 2, "unit": "Stück"},
+                {"name": "Zwiebel", "amount": 1, "unit": "Stück"},
+            ],
+            "steps": [],
+            "verified": False,
+        },
+    )
+
+    tags = {tag["name"] for tag in test_db.recipe_tags_get(recipe_id)}
+    assert tags == {"schnell", "vegan"}

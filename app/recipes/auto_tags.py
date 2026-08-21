@@ -20,7 +20,7 @@ ohne erkennbare Zutaten).
 """
 from __future__ import annotations
 
-from typing import List, Optional, Set
+from typing import Any, List, Set
 
 # Forbidden-Listen pro Tag — wenn EINE dieser Zutaten in der Liste ist,
 # kann der Tag NICHT gesetzt werden. canonical_names sind lowercase.
@@ -143,3 +143,22 @@ def compute_diet_tags(canonical_ingredients: List[str]) -> List[str]:
 DIET_TAGS: frozenset = frozenset({
     "vegan", "vegetarisch", "laktosefrei", "glutenfrei", "eifrei", "nussfrei",
 })
+
+
+def refresh_diet_auto_tags(
+    db: Any,
+    recipe_id: int,
+    canonical_ingredients: List[str],
+) -> List[str]:
+    """Ersetzt nur Diät-Auto-Tags und bewahrt stilistische KI-Tags."""
+    current_tags = db.recipe_tags_get(recipe_id)
+    non_diet_auto = [
+        tag["name"]
+        for tag in current_tags
+        if tag.get("auto") == 1 and tag["name"] not in DIET_TAGS
+    ]
+    merged = sorted(
+        set(non_diet_auto) | set(compute_diet_tags(canonical_ingredients))
+    )
+    db.recipe_auto_tags_set(recipe_id, merged)
+    return merged

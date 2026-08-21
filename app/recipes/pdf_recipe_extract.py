@@ -189,7 +189,7 @@ def parse_ingredient_lines(text: str) -> List[Dict[str, Any]]:
     return result[:120]
 
 
-def _prepare_ai_ingredients(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def prepare_recipe_ingredients(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     prepared: List[Dict[str, Any]] = []
     for item in items or []:
         name = str(item.get("name") or "").strip()
@@ -248,7 +248,7 @@ def extract_recipe_data(text: str, *, analyzer=None,
         result.warnings.append("KI lieferte keine strukturierten Rezeptdaten")
         return result
 
-    ai_ingredients = _prepare_ai_ingredients(content.get("ingredients") or [])
+    ai_ingredients = prepare_recipe_ingredients(content.get("ingredients") or [])
     if ai_ingredients:
         result.ingredients = ai_ingredients
         result.method = "ai+local" if local else "ai"

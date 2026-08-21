@@ -410,7 +410,7 @@ def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Requ
     die alten Tags wären dann falsch. KI-Stil-Tags (italienisch, schnell,
     pasta) bleiben unangetastet weil die aus der Description kommen, die
     sich nicht geändert hat."""
-    from ..recipes.auto_tags import compute_diet_tags, DIET_TAGS
+    from ..recipes.auto_tags import refresh_diet_auto_tags
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
@@ -432,14 +432,11 @@ def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Requ
     # sind (das sind die KI-Stil-Tags wie 'pasta', 'schnell') und merge sie
     # mit den frisch berechneten Diät-Tags aus der neuen Zutatenliste.
     try:
-        current_tags = db.recipe_tags_get(recipe_id)
-        non_diet_auto = [
-            t["name"] for t in current_tags
-            if t.get("auto") == 1 and t["name"] not in DIET_TAGS
-        ]
-        new_diet = compute_diet_tags([p["canonical_name"] for p in prepared])
-        merged = sorted(set(non_diet_auto) | set(new_diet))
-        db.recipe_auto_tags_set(recipe_id, merged)
+        refresh_diet_auto_tags(
+            db,
+            recipe_id,
+            [p["canonical_name"] for p in prepared],
+        )
     except Exception as e:
         # Diät-Tag-Recompute ist nice-to-have — bei Fehler nur loggen,
         # Save selbst ist erfolgreich.
