@@ -16,6 +16,51 @@ struct RecipeListResponse: Codable {
     let items: [RecipeSummary]
 }
 
+struct RecipeFilters: Equatable, Sendable {
+    var type = ""
+    var category = ""
+    var tagIDs: Set<Int> = []
+    var includedIngredients: Set<String> = []
+    var excludedIngredients: Set<String> = []
+    var favoriteOnly = false
+    var minRating = 0
+    var manualOnly = false
+
+    var activeCount: Int {
+        (type.isEmpty ? 0 : 1)
+            + (category.isEmpty ? 0 : 1)
+            + tagIDs.count
+            + includedIngredients.count
+            + excludedIngredients.count
+            + (favoriteOnly ? 1 : 0)
+            + (minRating > 0 ? 1 : 0)
+            + (manualOnly ? 1 : 0)
+    }
+}
+
+struct RecipeFacets: Codable, Sendable {
+    let types: [String]
+    let categories: [String]
+    let tags: [TagFacet]
+    let ingredients: [IngredientFacet]
+
+    static let empty = RecipeFacets(types: [], categories: [], tags: [], ingredients: [])
+}
+
+struct TagFacet: Codable, Identifiable, Hashable, Sendable {
+    let id: Int
+    let name: String
+    let n: Int
+}
+
+struct IngredientFacet: Codable, Identifiable, Hashable, Sendable {
+    let canonicalName: String
+    let displayName: String
+    let n: Int
+
+    var id: String { canonicalName }
+}
+
 struct RecipeSummary: Codable, Identifiable, Hashable {
     let id: Int
     let name: String

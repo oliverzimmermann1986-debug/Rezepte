@@ -5,7 +5,9 @@ struct RecipesView: View {
     @State private var recipes: [RecipeSummary] = []
     @State private var total = 0
     @State private var search = ""
-    @State private var manualOnly = false
+    @State private var filters = RecipeFilters()
+    @State private var facets = RecipeFacets.empty
+    @State private var showFilters = false
     @State private var isLoading = true
     @State private var isLoadingMore = false
     @State private var errorMessage: String?
@@ -23,10 +25,10 @@ struct RecipesView: View {
                     }
                 } else if recipes.isEmpty {
                     EmptyState(
-                        icon: manualOnly ? "checkmark.seal" : "fork.knife",
-                        title: manualOnly ? "Alles vollständig" : "Keine Rezepte",
-                        message: manualOnly
-                            ? "Aktuell muss kein Rezept manuell gepflegt werden."
+                        icon: filters.activeCount > 0 ? "line.3.horizontal.decrease.circle" : "fork.knife",
+                        title: filters.activeCount > 0 ? "Keine Treffer" : "Keine Rezepte",
+                        message: filters.activeCount > 0
+                            ? "Passe die aktiven Filter an."
                             : "Passe die Suche an oder importiere ein Rezept."
                     )
                 } else {
@@ -66,20 +68,34 @@ struct RecipesView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        manualOnly.toggle()
-                        Task { await load() }
+                        showFilters = true
                     } label: {
                         Label(
-                            "Manuell pflegen",
-                            systemImage: manualOnly
-                                ? "exclamationmark.triangle.fill"
-                                : "exclamationmark.triangle"
+                            filters.activeCount > 0
+                                ? "Filter, \(filters.activeCount) aktiv"
+                                : "Filter",
+                            systemImage: filters.activeCount > 0
+                                ? "line.3.horizontal.decrease.circle.fill"
+                                : "line.3.horizontal.decrease.circle"
                         )
                     }
-                    .accessibilityValue(manualOnly ? "Filter aktiv" : "Filter inaktiv")
+                    .accessibilityValue("\(filters.activeCount) aktiv")
                 }
             }
-            .task { await load() }
+            .sheet(isPresented: $showFilters) {
+                RecipeFiltersView(filters: filters, facets: facets) { updated in
+                    filters = updated
+                    showFilters = false
+                    Task {
+                        await load()
+                        await loadFacets()
+                    }
+                }
+            }
+            .task {
+                await load()
+                await loadFacets()
+            }
             .onChange(of: search) { _, newValue in
                 if newValue.isEmpty { Task { await load() } }
             }
@@ -93,7 +109,7 @@ struct RecipesView: View {
         do {
             let response = try await session.api.recipes(
                 search: search,
-                manualOnly: manualOnly
+                filters: filters
             )
             recipes = response.items
             total = response.total
@@ -112,7 +128,7 @@ struct RecipesView: View {
         do {
             let response = try await session.api.recipes(
                 search: search,
-                manualOnly: manualOnly,
+                filters: filters,
                 offset: recipes.count
             )
             total = response.total
@@ -127,6 +143,15 @@ struct RecipesView: View {
         } catch {
             errorMessage = error.localizedDescription
             session.handle(error)
+        }
+    }
+
+    private func loadFacets() async {
+        do {
+            facets = try await session.api.recipeFacets(search: search, filters: filters)
+        } catch {
+            // Die Liste bleibt nutzbar, selbst wenn nur die Filtervorschläge
+            // vorübergehend nicht geladen werden können.
         }
     }
 }
@@ -175,4 +200,3 @@ private struct RecipeRow: View {
         .contentShape(Rectangle())
     }
 }
-

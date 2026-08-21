@@ -11,6 +11,7 @@ struct RecipeDetailView: View {
     @State private var showIngredientsEditor = false
     @State private var showStepsEditor = false
     @State private var cartConfirmation = false
+    @State private var showOriginalText = false
 
     var body: some View {
         Group {
@@ -30,10 +31,6 @@ struct RecipeDetailView: View {
                             Text(recipe.name)
                                 .font(.largeTitle.bold())
                                 .foregroundStyle(AppTheme.cocoa)
-                            if let description = recipe.description, !description.isEmpty {
-                                Text(description)
-                                    .foregroundStyle(.secondary)
-                            }
                         }
 
                         if recipe.needsManualCare {
@@ -58,6 +55,8 @@ struct RecipeDetailView: View {
                                 .buttonStyle(.bordered)
                             }
                         }
+
+                        originalTextSection(recipe)
                     }
                     .padding()
                 }
@@ -184,12 +183,45 @@ struct RecipeDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func originalTextSection(_ recipe: Recipe) -> some View {
+        if let description = recipe.description?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !description.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Button {
+                    withAnimation(.snappy) { showOriginalText.toggle() }
+                } label: {
+                    HStack {
+                        Label(
+                            showOriginalText ? "Originaltext ausblenden" : "Originaltext anzeigen",
+                            systemImage: "text.quote"
+                        )
+                        Spacer()
+                        Image(systemName: showOriginalText ? "chevron.up" : "chevron.down")
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
+
+                if showOriginalText {
+                    Text(description)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .cardSurface()
+        }
+    }
+
     private func load() async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
             recipe = try await session.api.recipe(id: recipeID)
+            showOriginalText = false
         } catch {
             errorMessage = error.localizedDescription
             session.handle(error)

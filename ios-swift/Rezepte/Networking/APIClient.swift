@@ -146,6 +146,7 @@ actor APIClient {
     func recipes(
         search: String = "",
         manualOnly: Bool = false,
+        filters: RecipeFilters = RecipeFilters(),
         limit: Int = APIClient.pageSize,
         offset: Int = 0
     ) async throws -> RecipeListResponse {
@@ -153,13 +154,22 @@ actor APIClient {
             URLQueryItem(name: "limit", value: String(limit)),
             URLQueryItem(name: "offset", value: String(offset)),
         ]
-        if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            query.append(URLQueryItem(name: "search", value: search))
-        }
-        if manualOnly {
-            query.append(URLQueryItem(name: "needs_manual_care", value: "true"))
-        }
+        query.append(contentsOf: recipeFilterQuery(
+            search: search,
+            filters: filters,
+            forceManualOnly: manualOnly
+        ))
         return try await send("/api/recipes", query: query)
+    }
+
+    func recipeFacets(
+        search: String = "",
+        filters: RecipeFilters = RecipeFilters()
+    ) async throws -> RecipeFacets {
+        try await send(
+            "/api/recipes/facets",
+            query: recipeFilterQuery(search: search, filters: filters)
+        )
     }
 
     func recipe(id: Int) async throws -> Recipe {
@@ -323,6 +333,43 @@ actor APIClient {
         if includeBearer, let token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
+    }
+
+    private func recipeFilterQuery(
+        search: String,
+        filters: RecipeFilters,
+        forceManualOnly: Bool = false
+    ) -> [URLQueryItem] {
+        var query: [URLQueryItem] = []
+        let cleanSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanSearch.isEmpty {
+            query.append(URLQueryItem(name: "search", value: cleanSearch))
+        }
+        if !filters.type.isEmpty {
+            query.append(URLQueryItem(name: "type", value: filters.type))
+        }
+        if !filters.category.isEmpty {
+            query.append(URLQueryItem(name: "category", value: filters.category))
+        }
+        if filters.favoriteOnly {
+            query.append(URLQueryItem(name: "favorite_only", value: "true"))
+        }
+        if filters.minRating > 0 {
+            query.append(URLQueryItem(name: "min_rating", value: String(filters.minRating)))
+        }
+        if filters.manualOnly || forceManualOnly {
+            query.append(URLQueryItem(name: "needs_manual_care", value: "true"))
+        }
+        for id in filters.tagIDs.sorted() {
+            query.append(URLQueryItem(name: "tag_id", value: String(id)))
+        }
+        for ingredient in filters.includedIngredients.sorted() {
+            query.append(URLQueryItem(name: "ingredient", value: ingredient))
+        }
+        for ingredient in filters.excludedIngredients.sorted() {
+            query.append(URLQueryItem(name: "exclude_ingredient", value: ingredient))
+        }
+        return query
     }
 
     private func execute<Response: Decodable>(_ request: URLRequest) async throws -> Response {

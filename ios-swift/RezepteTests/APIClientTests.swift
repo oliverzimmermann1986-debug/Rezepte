@@ -176,6 +176,54 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(secondQuery["search"], "pasta")
         XCTAssertNil(secondQuery["needs_manual_care"])
     }
+
+    func testRecipesSendsNativeFilterSelection() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: """
+        {"total": 0, "items": []}
+        """)
+
+        var filters = RecipeFilters()
+        filters.type = "Hauptgericht"
+        filters.category = "Pasta"
+        filters.tagIDs = [8, 2]
+        filters.includedIngredients = ["knoblauch"]
+        filters.excludedIngredients = ["zwiebel"]
+        filters.favoriteOnly = true
+        filters.minRating = 4
+        filters.manualOnly = true
+
+        _ = try await client.recipes(filters: filters)
+        let query = MockURLProtocol.lastQueryItems()
+
+        XCTAssertEqual(query["type"], "Hauptgericht")
+        XCTAssertEqual(query["category"], "Pasta")
+        XCTAssertEqual(query["ingredient"], "knoblauch")
+        XCTAssertEqual(query["exclude_ingredient"], "zwiebel")
+        XCTAssertEqual(query["favorite_only"], "true")
+        XCTAssertEqual(query["min_rating"], "4")
+        XCTAssertEqual(query["needs_manual_care"], "true")
+    }
+
+    func testRecipeFacetsDecodeServerResponse() throws {
+        let json = """
+        {
+          "types": ["Hauptgericht"],
+          "categories": ["Pasta"],
+          "tags": [{"id": 8, "name": "nussfrei", "n": 12}],
+          "ingredients": [{"canonical_name": "salz", "display_name": "Salz", "n": 9}]
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let facets = try decoder.decode(RecipeFacets.self, from: Data(json.utf8))
+
+        XCTAssertEqual(facets.tags.first?.name, "nussfrei")
+        XCTAssertEqual(facets.ingredients.first?.canonicalName, "salz")
+    }
 }
 
 /// Fängt Requests des injizierten URLSession ab, damit der Query-Aufbau

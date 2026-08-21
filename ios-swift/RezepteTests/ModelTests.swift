@@ -23,5 +23,17 @@ final class ModelTests: XCTestCase {
         )
         XCTAssertEqual(ingredient.displayText, "2 Stück Tomaten")
     }
-}
 
+    func testRecipeFilterCountsEveryActiveSelection() {
+        var filters = RecipeFilters()
+        filters.type = "Hauptgericht"
+        filters.tagIDs = [1, 2]
+        filters.includedIngredients = ["tomate"]
+        filters.excludedIngredients = ["zwiebel"]
+        filters.favoriteOnly = true
+        filters.minRating = 3
+        filters.manualOnly = true
+
+        XCTAssertEqual(filters.activeCount, 8)
+    }
+}
