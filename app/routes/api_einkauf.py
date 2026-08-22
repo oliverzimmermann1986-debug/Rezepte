@@ -7,7 +7,9 @@ Cloudflare-Tokens bleiben dadurch ausschließlich auf dem Server.
 from __future__ import annotations
 
 import logging
+import posixpath
 from typing import Any
+from urllib.parse import unquote
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -39,6 +41,37 @@ _ALLOWED = {
     "recurring",
     "templates",
 }
+
+
+def _validated_proxy_path(path: str) -> str:
+    """Normalisiert vor der Allowlist-Prüfung und blockiert Traversal.
+
+    ``requests`` normalisiert ``..`` beim Senden. Eine Prüfung nur des ersten
+    Rohsegments würde deshalb z.B. ``items/../admin`` als ``items`` freigeben,
+    am Zieldienst aber ``/admin`` aufrufen.
+    """
+    candidate = (path or "").strip().lstrip("/")
+    if not candidate or "\\" in candidate or "\x00" in candidate:
+        raise HTTPException(400, "Ungültiger Einkauf-Pfad")
+    decoded = candidate
+    for _ in range(3):
+        next_value = unquote(decoded)
+        if next_value == decoded:
+            break
+        decoded = next_value
+    segments = decoded.split("/")
+    normalized = posixpath.normpath(decoded)
+    if (
+        any(segment in {"", ".", ".."} for segment in segments)
+        or normalized != decoded
+        or normalized.startswith("../")
+        or normalized.startswith("/")
+    ):
+        raise HTTPException(400, "Pfadnavigation ist nicht erlaubt")
+    top = normalized.split("/", 1)[0]
+    if top not in _ALLOWED:
+        raise HTTPException(404, f"Pfad nicht freigegeben: {top}")
+    return normalized
 
 
 def _configured_base_url() -> str:
@@ -100,10 +133,11 @@ def einkauf_request(
     timeout: tuple[int, int] = (5, 30),
 ) -> Any:
     """Server-seitiger Einkauf-Aufruf für interne Rezepte-Endpunkte."""
+    safe_path = _validated_proxy_path(path)
     try:
         response = requests.request(
             method,
-            f"{_base_url()}/{path.lstrip('/')}",
+            f"{_base_url()}/{safe_path}",
             json=json,
             headers=_auth_headers(),
             timeout=timeout,
@@ -120,11 +154,8 @@ def einkauf_request(
 
 @router.api_route("/{path:path}", methods=["GET", "POST", "PATCH", "DELETE"])
 async def proxy(path: str, request: Request) -> Response:
-    top = path.split("/", 1)[0]
-    if top not in _ALLOWED:
-        raise HTTPException(404, f"Pfad nicht freigegeben: {top}")
-
-    url = f"{_base_url()}/{path}"
+    safe_path = _validated_proxy_path(path)
+    url = f"{_base_url()}/{safe_path}"
     headers = _auth_headers()
     content_type = request.headers.get("content-type")
     if content_type:
@@ -149,7 +180,7 @@ async def proxy(path: str, request: Request) -> Response:
         logger.warning(
             "Einkauf-Proxy %s %s fehlgeschlagen: %s",
             request.method,
-            path,
+            safe_path,
             exc,
         )
         raise HTTPException(502, f"Einkaufsliste nicht erreichbar: {exc}") from exc

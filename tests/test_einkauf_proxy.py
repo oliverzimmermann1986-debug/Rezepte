@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from urllib.parse import quote
 
 from app.routes import api_einkauf
+from fastapi import HTTPException
+import pytest
 
 
 class StubConfig:
@@ -75,6 +77,29 @@ def test_routes_are_registered(client):
     paths = {getattr(route, "path", "") for route in client.app.routes}
     assert "/api/einkauf/status" in paths
     assert "/api/einkauf/{path:path}" in paths
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "items/../admin",
+        "items/%2e%2e/admin",
+        "items/%252e%252e/admin",
+        "items\\..\\admin",
+        "items//admin",
+    ],
+)
+def test_proxy_path_rejects_normalization_bypasses(path):
+    with pytest.raises(HTTPException) as exc:
+        api_einkauf._validated_proxy_path(path)
+    assert exc.value.status_code == 400
+
+
+def test_proxy_path_allows_only_normalized_public_areas():
+    assert api_einkauf._validated_proxy_path("items/17") == "items/17"
+    with pytest.raises(HTTPException) as exc:
+        api_einkauf._validated_proxy_path("admin/restore")
+    assert exc.value.status_code == 404
 
 
 def test_failed_import_can_be_permanently_discarded(client, test_db):
