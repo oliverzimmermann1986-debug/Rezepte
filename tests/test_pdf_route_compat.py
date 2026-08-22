@@ -41,6 +41,26 @@ def test_logout_clears_browser_state_and_redirects_to_login(client, monkeypatch)
     assert "Max-Age=0" in response.headers["set-cookie"]
 
 
+def test_browser_logout_revokes_server_sessions(client, monkeypatch):
+    import app.main as main
+
+    revoked = []
+
+    class FakeDb:
+        def user_revoke_sessions(self, username):
+            revoked.append(username)
+            return True
+
+    monkeypatch.setattr(main, "auth_disabled", lambda: False)
+    monkeypatch.setattr(main, "request_user", lambda _request: "anna")
+    monkeypatch.setattr(main, "get_db", lambda: FakeDb())
+
+    response = client.get("/logout", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert revoked == ["anna"]
+
+
 def test_logout_delegates_to_cloudflare_when_internal_auth_is_disabled(
     client, monkeypatch
 ):
@@ -51,6 +71,14 @@ def test_logout_delegates_to_cloudflare_when_internal_auth_is_disabled(
     assert response.status_code == 303
     assert response.headers["location"] == "/cdn-cgi/access/logout"
     assert response.headers["clear-site-data"] == '"cache", "storage"'
+
+
+def test_deep_health_route_requires_authentication():
+    from app.auth import require_auth
+    from app.main import app
+
+    route = next(route for route in app.routes if getattr(route, "path", "") == "/healthz/deep")
+    assert any(dependency.call is require_auth for dependency in route.dependant.dependencies)
 
 
 def test_frontend_has_legacy_pdf_fallback():

@@ -1382,19 +1382,28 @@ class Database:
         """SQLite-Speicher reclaimen nach vielen Deletes. Schreibt die DB neu
         und nimmt nur die genutzten Seiten - kann je nach Auslese 10-30%
         kleiner werden. Sollte gelegentlich (z.B. 1x pro Woche) laufen."""
-        try:
-            with self.conn() as c:
-                size_before = self.path.stat().st_size
-                c.execute("VACUUM")
-                size_after = self.path.stat().st_size
-            return {
-                "ok": True,
-                "size_before": size_before,
-                "size_after": size_after,
-                "reclaimed_bytes": max(0, size_before - size_after),
-            }
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        from .jobs.locks import file_lock_or_none
+
+        with file_lock_or_none("vacuum") as lock:
+            if lock is None:
+                return {
+                    "ok": False,
+                    "busy": True,
+                    "error": "Eine Datenbank-Bereinigung läuft bereits",
+                }
+            try:
+                with self.conn() as c:
+                    size_before = self.path.stat().st_size
+                    c.execute("VACUUM")
+                    size_after = self.path.stat().st_size
+                return {
+                    "ok": True,
+                    "size_before": size_before,
+                    "size_after": size_after,
+                    "reclaimed_bytes": max(0, size_before - size_after),
+                }
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
 
     # ════════════════════════════════════════════════════════════════════════
     # Recipes (feat/recipe-browser-and-cart)

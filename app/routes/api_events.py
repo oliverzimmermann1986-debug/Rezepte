@@ -24,6 +24,7 @@ from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from ..auth import require_auth
 from ..db import get_db
@@ -49,11 +50,12 @@ def _format(event: str, data) -> str:
 async def _stream(request: Request) -> AsyncIterator[bytes]:
     db = get_db()
     last_heartbeat = 0.0
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     # Initial-Snapshot sofort senden damit das UI nicht 2 s warten muss
     try:
-        yield _format("status", _status_snapshot(db)).encode()
+        initial = await run_in_threadpool(_status_snapshot, db)
+        yield _format("status", initial).encode()
     except Exception:
         pass
 
@@ -64,13 +66,13 @@ async def _stream(request: Request) -> AsyncIterator[bytes]:
             return
 
         try:
-            snapshot = _status_snapshot(db)
+            snapshot = await run_in_threadpool(_status_snapshot, db)
             yield _format("status", snapshot).encode()
 
             # Progress-Events nur wenn was läuft
             if snapshot.get("scraper") or snapshot.get("reanalyze"):
                 try:
-                    p = api_jobs.scraper_progress()
+                    p = await run_in_threadpool(api_jobs.scraper_progress)
                     yield _format("scraper_progress", p).encode()
                 except Exception as e:
                     logger.debug(f"scraper_progress fail: {e}")

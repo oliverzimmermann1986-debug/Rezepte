@@ -796,5 +796,7 @@ def run_maintenance(kind: str, request: Request) -> Dict[str, Any]:
         result = {"ok": False, "error": str(exc)}
     db.maintenance_finish(run_id, ok=bool(result.get("ok")), result=result)
     if not result.get("ok") and kind not in {"media_scan", "integrity"}:
+        if result.get("busy"):
+            raise HTTPException(409, result.get("error") or "Wartung läuft bereits")
         raise HTTPException(500, result.get("error") or "Wartung fehlgeschlagen")
     return result

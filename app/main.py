@@ -10,7 +10,7 @@ import html
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Form, Request, status
+from fastapi import Depends, FastAPI, Form, Request, status
 from fastapi.exceptions import HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,7 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, auth_disabled, check_credentials,
                     create_session, migrate_security, migrate_users_to_db,
-                    verify_session)
+                    request_user, require_auth, verify_session)
 from .config_store import get_config, migrate_pdf_quality_defaults
 from .db import get_db
 from .routes import (api_admin, api_audit, api_auth, api_browse, api_config, api_einkauf, api_events, api_hdd,
@@ -295,7 +295,27 @@ app.add_middleware(SecurityHeadersMiddleware)
 # unkomprimiert (Overhead lohnt sich nicht). Bilder (JPEG/PNG) werden nicht
 # komprimiert weil sie schon komprimiert sind.
 from fastapi.middleware.gzip import GZipMiddleware
-app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=5)
+
+
+class SelectiveGZipMiddleware:
+    """Komprimiert normale Antworten, lässt Live-SSE ungepuffert passieren."""
+
+    def __init__(self, app, minimum_size: int = 500, compresslevel: int = 5):
+        self.app = app
+        self.gzip = GZipMiddleware(
+            app,
+            minimum_size=minimum_size,
+            compresslevel=compresslevel,
+        )
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/api/events":
+            await self.app(scope, receive, send)
+            return
+        await self.gzip(scope, receive, send)
+
+
+app.add_middleware(SelectiveGZipMiddleware, minimum_size=500, compresslevel=5)
 
 # Statisch (Frontend)
 STATIC_DIR = Path(__file__).parent / "static"
@@ -524,7 +544,16 @@ def _logout_target() -> str:
 
 
 @app.get("/logout")
-def logout():
+def logout(request: Request):
+    if not auth_disabled():
+        username = request_user(request)
+        if username:
+            try:
+                get_db().user_revoke_sessions(username)
+            except Exception:
+                # Cookie lokal trotzdem entfernen. Ein DB-Ausfall darf den
+                # Nutzer nicht in einer scheinbar unlösbaren Sitzung halten.
+                logger.exception("Serversitzung beim Browser-Logout nicht widerrufen")
     resp = RedirectResponse(url=_logout_target(), status_code=303)
     resp.delete_cookie(SESSION_COOKIE, path="/")
     # Löscht insbesondere Cache Storage alter Service-Worker-Versionen. Private
@@ -620,7 +649,7 @@ def system_info():
             "capabilities": APP_CAPABILITIES}
 
 
-@app.get("/healthz/deep")
+@app.get("/healthz/deep", dependencies=[Depends(require_auth)])
 def healthz_deep():
     """Tiefer Check: DB + OpenAI + IMAP + Disk-Space.
     Status-Code immer 200, Details im Body. Wir wollen nicht dass eine
