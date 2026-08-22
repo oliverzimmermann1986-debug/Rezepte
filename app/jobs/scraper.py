@@ -762,19 +762,18 @@ class ScraperJob:
             "wedding_auto": 0, "wedding_pending": 0,
         }
 
-        # AI-Health-Check vor dem Loop. Wenn der Analyzer tot ist landen sonst
-        # ALLE URLs in Pending (weil analyze_* leer zurückkommt) - das wollen
-        # wir verhindern und stattdessen den Job sofort als 'error' beenden,
-        # damit keine 50 Pending-Items entstehen und keine Videos sinnlos
-        # gedownloaded werden.
+        # Link-Imports sind seit der Link-only-Umstellung KI-frei. Ein Ausfall
+        # des optionalen Analyzers darf deshalb weder das Mail-Abrufen noch das
+        # persistente Ablegen solcher Links blockieren. Attachment-Parser
+        # behandeln ihren jeweiligen KI-Fehler weiterhin pro Element.
         if self.analyzer_enabled and self.analyzer and not self.analyzer.health():
             msg = (f"OpenAI nicht erreichbar oder Modell '{self.analyzer.model}' nicht verfügbar - "
-                   f"Details im Server-Log (api_key gültig? Internet vom Container? Billing aktiv?). "
-                   f"Job abgebrochen damit nicht alle URLs in Pending landen")
-            logger.error(msg)
-            summary["error"] = msg
-            summary["duration_sec"] = round(time.time() - start, 1)
-            raise RuntimeError(msg)
+                   f"KI-abhängige Anhänge können fehlschlagen; Link-Import läuft weiter")
+            logger.warning(msg)
+            summary["ai_available"] = False
+            summary["warning"] = msg
+        else:
+            summary["ai_available"] = bool(self.analyzer_enabled and self.analyzer)
 
         # Mails holen: URLs + Attachments in einem Pass
         fetched = self.router.fetch_all_with_attachments()
