@@ -22,6 +22,7 @@ import logging
 import re
 import sqlite3
 import sys
+import time
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
@@ -68,7 +69,9 @@ def load_recipes(db_or_path: Union["Database", Path, str]) -> List[Dict[str, Any
     # Duck-typing: hat ein conn()-Context-Manager → es ist die Database
     if hasattr(db_or_path, "conn"):
         with db_or_path.conn() as c:
-            rows = c.execute("SELECT * FROM recipes ORDER BY id").fetchall()
+            rows = c.execute(
+                "SELECT * FROM recipes WHERE deleted_at IS NULL ORDER BY id"
+            ).fetchall()
             return [_normalize(dict(r)) for r in rows]
     # Sonst: Path/str → read-only sqlite-Direktzugriff
     db_path = Path(db_or_path)
@@ -86,7 +89,9 @@ def load_recipes(db_or_path: Union["Database", Path, str]) -> List[Dict[str, Any
                 "'recipes'-Tabelle fehlt. Erst im Web-UI den Tab 'Rezepte' öffnen, "
                 "damit der lazy FS-Sync läuft."
             )
-        rows = conn.execute("SELECT * FROM recipes ORDER BY id").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM recipes WHERE deleted_at IS NULL ORDER BY id"
+        ).fetchall()
         return [_normalize(dict(r)) for r in rows]
     finally:
         conn.close()
@@ -137,6 +142,7 @@ def find_folder_duplicates(recipes: List[Dict]) -> Dict[str, List[Dict]]:
 
 
 def find_similar_names(recipes: List[Dict], threshold: float = SIMILARITY_THRESHOLD,
+                       timeout_seconds: float = 2.0,
                       ) -> List[List[Dict]]:
     """Findet Cluster mit ähnlichen Namen (difflib + Union-Find).
 
@@ -171,9 +177,16 @@ def find_similar_names(recipes: List[Dict], threshold: float = SIMILARITY_THRESH
         if ra != rb:
             parent[ra] = rb
 
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+    timed_out = False
+    compared = 0
     for i in range(len(candidates)):
         name_i = candidates[i][1]
         for j in range(i + 1, len(candidates)):
+            if compared % 500 == 0 and time.monotonic() >= deadline:
+                timed_out = True
+                break
+            compared += 1
             name_j = candidates[j][1]
             if abs(len(name_i) - len(name_j)) > max(3, len(name_i) // 3):
                 continue
@@ -182,12 +195,22 @@ def find_similar_names(recipes: List[Dict], threshold: float = SIMILARITY_THRESH
             ratio = SequenceMatcher(None, name_i, name_j).ratio()
             if ratio >= threshold:
                 union(i, j)
+        if timed_out:
+            break
 
     clusters: Dict[int, List[Dict]] = {}
     for i, (r, _) in enumerate(candidates):
         root = find(i)
         clusters.setdefault(root, []).append(r)
-    return [c for c in clusters.values() if len(c) >= 2]
+    result = [c for c in clusters.values() if len(c) >= 2]
+    if timed_out:
+        result.append([{
+            "_warning": (
+                f"Ähnlichkeitssuche nach {timeout_seconds:g}s beendet; "
+                f"{compared} Kandidatenpaare geprüft. Exakte Dubletten sind vollständig."
+            )
+        }])
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -307,6 +330,7 @@ def run_audit(
     db_or_path,
     *,
     similarity_threshold: float = SIMILARITY_THRESHOLD,
+    similarity_timeout_seconds: float = 2.0,
     openai_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Führt alle Audit-Suchen aus und liefert ein strukturiertes Dict.
@@ -331,7 +355,11 @@ def run_audit(
     exact = find_exact_duplicates(recipes)
     url_dups = find_url_duplicates(recipes)
     folder_dups = find_folder_duplicates(recipes)
-    similar = find_similar_names(recipes, threshold=similarity_threshold)
+    similar = find_similar_names(
+        recipes,
+        threshold=similarity_threshold,
+        timeout_seconds=similarity_timeout_seconds,
+    )
     bad = find_bad_names(recipes)
 
     ai_suggestions: Dict[int, str] = {}

@@ -11,6 +11,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import copy
 import threading
 import time
 from pathlib import Path
@@ -45,6 +46,23 @@ _ai_sanity_lock = threading.Lock()
 _ai_sanity_stop = threading.Event()
 _ai_sanity_thread: Optional[threading.Thread] = None
 
+_audit_cache_lock = threading.Lock()
+_audit_cache: Dict[tuple, tuple[float, Dict[str, Any]]] = {}
+_AUDIT_CACHE_TTL_SECONDS = 30.0
+_FS_AUDIT_BUDGET_SECONDS = 2.0
+
+
+def _audit_db_revision(db) -> tuple:
+    """Billiger Cache-Buster für DB- und WAL-Schreibvorgänge."""
+    revision = []
+    for path in (db.path, Path(str(db.path) + "-wal")):
+        try:
+            stat = path.stat()
+            revision.extend((stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            revision.extend((0, 0))
+    return tuple(revision)
+
 
 def _openai_config_for_audit() -> Optional[Dict[str, Any]]:
     """Holt OpenAI-Cfg aus der App-Config. Returnt None wenn kein Key da
@@ -67,6 +85,7 @@ def get_audit(
     with_ai: bool = Query(False, description="OpenAI-Namensvorschläge anfordern"),
     similarity: float = Query(0.85, ge=0.5, le=0.99,
                               description="Schwelle für Ähnlichkeits-Cluster"),
+    refresh: bool = Query(False, description="Kurzzeitcache bewusst umgehen"),
 ) -> Dict[str, Any]:
     """Vollständiger Audit-Lauf. Synchron, blockiert bei großen Beständen
     + with_ai mehrere Sekunden — Frontend zeigt Spinner.
@@ -74,8 +93,26 @@ def get_audit(
     Liefert zusätzlich FS-Konflikte (UNIQUE-Crashes vom letzten Sync) und
     bestehende KI-Sanity-Findings (vom letzten POST /audit/ai-sanity-Lauf)."""
     db = get_db()
+    cache_key = (
+        bool(with_ai),
+        round(float(similarity), 4),
+        _audit_db_revision(db),
+    )
+    if not refresh:
+        with _audit_cache_lock:
+            cached = _audit_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < _AUDIT_CACHE_TTL_SECONDS:
+                response = copy.deepcopy(cached[1])
+                response.setdefault("audit_meta", {})["cached"] = True
+                return response
+
     openai_cfg = _openai_config_for_audit() if with_ai else None
-    result = run_audit(db, similarity_threshold=similarity, openai_cfg=openai_cfg)
+    result = run_audit(
+        db,
+        similarity_threshold=similarity,
+        similarity_timeout_seconds=2.0,
+        openai_cfg=openai_cfg,
+    )
 
     # FS-Konflikte (kommen vom letzten sync_filesystem-Run)
     sync_errors = db.sync_errors_list()
@@ -125,6 +162,7 @@ def get_audit(
                    (SELECT COUNT(*) FROM recipe_ingredients WHERE recipe_id=r.id) as ing_count,
                    (SELECT COUNT(*) FROM recipe_steps WHERE recipe_id=r.id) as step_count
             FROM recipes r
+            WHERE r.deleted_at IS NULL
         """).fetchall()
 
     no_image, no_steps, no_url, few_ingredients, no_description, no_nutrition = [], [], [], [], [], []
@@ -160,17 +198,29 @@ def get_audit(
     # Häufige Ursache: User hat manuell umbenannt, oder Sync ist out-of-sync.
     # Smart-Resolver kann oft helfen (Underscore↔Space, Case).
     fs_missing = []
+    fs_scan_truncated = False
+    fs_scan_checked = 0
+    fs_deadline = time.monotonic() + _FS_AUDIT_BUDGET_SECONDS
     cfg = get_config()
-    recipe_root_str = str(cfg.get("paths", "recipe_dir", default="/mnt/rezepte"))
+    recipe_root = Path(
+        str(cfg.get("paths", "recipe_dir", default="/mnt/rezepte"))
+    ).resolve()
     for row in all_rows:
+        if time.monotonic() >= fs_deadline:
+            fs_scan_truncated = True
+            break
         d = dict(row)
         fp = d.get("folder_path")
         if not fp:
             continue
-        # Nur prüfen wenn unter recipe_root (sonst rumstreunend)
-        if not fp.startswith(recipe_root_str):
+        path = Path(fp).resolve()
+        # Nur prüfen wenn wirklich unter recipe_root (kein String-Präfix wie
+        # /rezepte-alt, keine relativen Papierkorb-Platzhalter).
+        try:
+            path.relative_to(recipe_root)
+        except ValueError:
             continue
-        path = Path(fp)
+        fs_scan_checked += 1
         if path.exists():
             continue
         resolved = _resolve_folder_by_name(path)
@@ -188,6 +238,15 @@ def get_audit(
         "unverified": unverified[:100],
     }
     result["data_gaps"] = data_gaps
+    result["audit_meta"] = {
+        "cached": False,
+        "cache_ttl_seconds": int(_AUDIT_CACHE_TTL_SECONDS),
+        "fs_scan_checked": fs_scan_checked,
+        "fs_scan_truncated": fs_scan_truncated,
+        "similarity_partial": any(
+            "warning" in cluster for cluster in result.get("similar_clusters", [])
+        ),
+    }
 
     # Altbestand aus der früheren Download-Pipeline. Neue Social-Imports sind
     # Link-only und erzeugen keine Download-Fehler mehr.
@@ -224,6 +283,18 @@ def get_audit(
         "unverified_count": len(unverified),
         "failed_download_count": len(legacy_failures),
     }
+    with _audit_cache_lock:
+        _audit_cache[cache_key] = (time.monotonic(), copy.deepcopy(result))
+        # Die Key-Anzahl bleibt klein, trotzdem abgelaufene Varianten entfernen.
+        expired = [
+            key for key, (created, _) in _audit_cache.items()
+            if time.monotonic() - created >= _AUDIT_CACHE_TTL_SECONDS
+        ]
+        for key in expired:
+            _audit_cache.pop(key, None)
+        while len(_audit_cache) > 16:
+            oldest = min(_audit_cache, key=lambda key: _audit_cache[key][0])
+            _audit_cache.pop(oldest, None)
     return result
 
 
