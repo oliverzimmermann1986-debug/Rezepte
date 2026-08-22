@@ -138,16 +138,16 @@ async function main() {
     throw new Error(`TestFlight build ${buildNumber} is already expired.`);
   }
 
-  const relationshipPath = `/v1/builds/${encodeURIComponent(build.id)}/relationships/betaGroups`;
+  const relationshipPath = `/v1/betaGroups/${encodeURIComponent(groupId)}/relationships/builds`;
   const relationshipPayload = await request(`${relationshipPath}?limit=200`);
-  let assigned = relationshipPayload?.data?.some((item) => item.id === groupId) ?? false;
+  let assigned = relationshipPayload?.data?.some((item) => item.id === build.id) ?? false;
   if (!assigned) {
     await request(relationshipPath, {
       method: "POST",
-      body: JSON.stringify({ data: [{ type: "betaGroups", id: groupId }] }),
+      body: JSON.stringify({ data: [{ type: "builds", id: build.id }] }),
     });
     const verificationPayload = await request(`${relationshipPath}?limit=200`);
-    assigned = verificationPayload?.data?.some((item) => item.id === groupId) ?? false;
+    assigned = verificationPayload?.data?.some((item) => item.id === build.id) ?? false;
   }
   if (!assigned) {
     throw new Error(`Build ${buildNumber} could not be assigned to TestFlight group ${group.attributes.name}.`);
