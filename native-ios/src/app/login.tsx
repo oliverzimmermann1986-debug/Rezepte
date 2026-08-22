@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   KeyboardAvoidingView,
-  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -16,6 +15,7 @@ import { PrimaryButton } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { openExternalUrl } from '@/lib/external-links';
 
 export default function LoginScreen() {
   const {
@@ -51,7 +51,7 @@ export default function LoginScreen() {
     try {
       const parsed = new URL(server.trim());
       if (parsed.protocol !== 'https:') throw new Error();
-      await Linking.openURL(`${parsed.origin}/privacy`);
+      await openExternalUrl(`${parsed.origin}/privacy`);
     } catch {
       setError('Für den Datenschutz-Link wird eine gültige HTTPS-Serveradresse benötigt.');
     }

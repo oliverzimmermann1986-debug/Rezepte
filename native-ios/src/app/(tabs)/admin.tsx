@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
-import { Alert, Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
 import { AdminTrash } from '@/components/admin-trash';
@@ -10,6 +10,7 @@ import { PrimaryButton, Screen, StateView, sharedStyles } from '@/components/ui'
 import { colors, radii, space } from '@/constants/design';
 import { api, deleteCachedFile, uploadFile } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { openExternalUrl } from '@/lib/external-links';
 import { pickEditedJpeg } from '@/lib/image-picker';
 import { FailedDownload, PendingItem } from '@/lib/types';
 
@@ -66,6 +67,14 @@ export default function AdminScreen() {
   useFocusEffect(useCallback(() => {
     void load();
   }, [load]));
+
+  async function openPrivacy() {
+    try {
+      await openExternalUrl(`${serverUrl}/privacy`);
+    } catch (reason) {
+      Alert.alert('Datenschutz nicht geöffnet', reason instanceof Error ? reason.message : 'Bitte erneut versuchen.');
+    }
+  }
 
   async function importUrl() {
     const source = url.trim();
@@ -239,7 +248,7 @@ export default function AdminScreen() {
             <Text style={sharedStyles.sectionTitle}>Konto</Text>
             <Text style={styles.account}>Angemeldet als {username || 'lokal'}</Text>
             <Text style={styles.server} numberOfLines={2}>{serverUrl}</Text>
-            <PrimaryButton label="Datenschutz" onPress={() => Linking.openURL(`${serverUrl}/privacy`)} />
+            <PrimaryButton label="Datenschutz" onPress={() => void openPrivacy()} />
             <PrimaryButton label="Abmelden" onPress={signOut} destructive />
           </View>
         </>

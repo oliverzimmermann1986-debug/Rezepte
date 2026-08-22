@@ -3,7 +3,7 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { SymbolView } from 'expo-symbols';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Linking, Pressable, Share, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, Share, StyleSheet, Text, View } from 'react-native';
 
 import { RecipeEditor } from '@/components/recipe-editor';
 import { RecipeMetadataEditor } from '@/components/recipe-metadata-editor';
@@ -13,6 +13,7 @@ import { ManualCareBanner, PrimaryButton, Screen, StateView, sharedStyles } from
 import { colors, radii, space } from '@/constants/design';
 import { absoluteApiUrl, api, apiAuthHeaders, deleteCachedFile, downloadFileToCache, uploadFile } from '@/lib/api';
 import { apiCached } from '@/lib/cache';
+import { externalSourceLabel, openExternalUrl } from '@/lib/external-links';
 import { pickEditedJpeg } from '@/lib/image-picker';
 import { RecipeDetail } from '@/lib/types';
 
@@ -96,9 +97,13 @@ export default function RecipeDetailScreen() {
     }
   }
 
-  function openSource() {
-    if (!recipe?.url || !/^https:\/\//i.test(recipe.url)) return;
-    Linking.openURL(recipe.url);
+  async function openSource() {
+    if (!recipe?.url) return;
+    try {
+      await openExternalUrl(recipe.url);
+    } catch (reason) {
+      Alert.alert('Quelle nicht geöffnet', reason instanceof Error ? reason.message : 'Bitte erneut versuchen.');
+    }
   }
 
   function shareRecipe() {
@@ -207,11 +212,7 @@ export default function RecipeDetailScreen() {
   }
   if (!recipe) return null;
 
-  const sourcePlatform = recipe.url?.includes('instagram.com')
-    ? 'Instagram'
-    : recipe.url?.includes('tiktok.com')
-      ? 'TikTok'
-      : 'Quelle';
+  const sourcePlatform = externalSourceLabel(recipe.url);
 
   return (
     <>

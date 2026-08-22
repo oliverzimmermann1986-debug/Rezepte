@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
-  Linking,
   Modal,
   Platform,
   Pressable,
@@ -23,6 +22,7 @@ import {
   EditableIngredient,
   EditableStep,
 } from '@/lib/editor-rows';
+import { normalizedExternalUrl, openExternalUrl } from '@/lib/external-links';
 import { optionalInteger, optionalNumber } from '@/lib/numbers';
 import { PendingItem } from '@/lib/types';
 import { normalizeUnit } from '@/lib/units';
@@ -100,8 +100,16 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
     }
   }
 
-  const externalSource = item?.url && /^https:\/\//i.test(item.url) ? item.url : null;
+  const externalSource = normalizedExternalUrl(item?.url);
   const hasIngredients = ingredients.some(value => value.name.trim());
+
+  async function openSource() {
+    try {
+      await openExternalUrl(externalSource);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Quelle konnte nicht geöffnet werden');
+    }
+  }
 
   return (
     <Modal visible={item !== null} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -197,7 +205,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
             </Pressable>
 
             {!!externalSource && (
-              <Pressable accessibilityRole="link" onPress={() => Linking.openURL(externalSource)}>
+              <Pressable accessibilityRole="link" onPress={() => void openSource()}>
                 <Text style={styles.source} numberOfLines={2}>Original bei {item?.ai_suggestion?.platform || 'der Plattform'} öffnen ↗</Text>
               </Pressable>
             )}

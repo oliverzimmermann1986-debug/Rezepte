@@ -41,3 +41,23 @@ def test_recurring_date_uses_local_calendar_and_strict_validation():
     assert "toISOString().slice(0, 10)" not in cart
     assert "value.getFullYear()" in date_input
     assert "new Date(year, month, 0).getDate()" in date_input
+
+
+def test_external_links_are_validated_and_fail_visibly():
+    helper = (NATIVE / "lib" / "external-links.ts").read_text(encoding="utf-8")
+    sources = [
+        NATIVE / "app" / "recipe" / "[id].tsx",
+        NATIVE / "components" / "pending-editor.tsx",
+        NATIVE / "app" / "(tabs)" / "admin.tsx",
+        NATIVE / "app" / "login.tsx",
+    ]
+
+    assert "parsed.protocol !== 'https:'" in helper
+    assert "parsed.username || parsed.password" in helper
+    assert "await Linking.openURL(normalized)" in helper
+    assert "host.endsWith('.instagram.com')" in helper
+    assert "host.endsWith('.tiktok.com')" in helper
+    for source in sources:
+        code = source.read_text(encoding="utf-8")
+        assert "Linking.openURL" not in code
+        assert "openExternalUrl" in code
