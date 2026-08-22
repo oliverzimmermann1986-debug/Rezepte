@@ -3,6 +3,8 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Alert, Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
+import { AdminTrash } from '@/components/admin-trash';
+import { AdminVersions } from '@/components/admin-versions';
 import { PendingEditor } from '@/components/pending-editor';
 import { PrimaryButton, Screen, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
@@ -30,6 +32,8 @@ export default function AdminScreen() {
   const [pending, setPending] = useState<PendingItem[]>([]);
   const [failed, setFailed] = useState<FailedDownload[]>([]);
   const [selectedPending, setSelectedPending] = useState<PendingItem | null>(null);
+  const [showVersions, setShowVersions] = useState(false);
+  const [showTrash, setShowTrash] = useState(false);
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -174,6 +178,8 @@ export default function AdminScreen() {
             <Kpi value={overview?.counts.pending || 0} label="Offene Importe" warning />
             <Kpi value={overview?.counts.failed_downloads || 0} label="Fehlgeschlagen" warning />
             <Kpi value={overview?.pdf_count || 0} label="PDFs" />
+            <Kpi value={overview?.counts.versions || 0} label="Versionen" onPress={() => setShowVersions(true)} />
+            <Kpi value={overview?.counts.trash || 0} label="Papierkorb" warning onPress={() => setShowTrash(true)} />
           </View>
 
           <View style={sharedStyles.card}>
@@ -246,17 +252,22 @@ export default function AdminScreen() {
           await load();
         }}
       />
+      <AdminVersions visible={showVersions} onClose={() => setShowVersions(false)} onChanged={() => void load()} />
+      <AdminTrash visible={showTrash} onClose={() => setShowTrash(false)} onChanged={() => void load()} />
     </Screen>
   );
 }
 
-function Kpi({ value, label, warning }: { value: number; label: string; warning?: boolean }) {
-  return (
-    <View style={[styles.kpi, warning && value > 0 && styles.kpiWarning]}>
+function Kpi({ value, label, warning, onPress }: { value: number; label: string; warning?: boolean; onPress?: () => void }) {
+  const content = (
+    <>
       <Text style={styles.kpiValue}>{value}</Text>
       <Text style={styles.kpiLabel}>{label}</Text>
-    </View>
+    </>
   );
+  return onPress ? (
+    <Pressable accessibilityRole="button" onPress={onPress} style={[styles.kpi, warning && value > 0 && styles.kpiWarning]}>{content}</Pressable>
+  ) : <View style={[styles.kpi, warning && value > 0 && styles.kpiWarning]}>{content}</View>;
 }
 
 const styles = StyleSheet.create({
