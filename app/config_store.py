@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Dict
 
@@ -25,13 +26,19 @@ class ConfigStore:
     def _load(self) -> None:
         if not self.path.exists():
             if DEFAULT_CONFIG_PATH.exists():
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                self.path.write_text(DEFAULT_CONFIG_PATH.read_text())
+                with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as source:
+                    self._data = yaml.safe_load(source) or {}
+                self.save()
+                return
             else:
                 self._data = {}
                 return
         with open(self.path, "r", encoding="utf-8") as f:
             self._data = yaml.safe_load(f) or {}
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
 
     def reload(self) -> None:
         with self._lock:
@@ -88,16 +95,35 @@ class ConfigStore:
     def save(self) -> None:
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                yaml.safe_dump(
-                    self._data, f, allow_unicode=True, sort_keys=False, default_flow_style=False
-                )
-            tmp.replace(self.path)
+            tmp = self.path.parent / (
+                f".{self.path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:10]}"
+            )
             try:
+                fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    yaml.safe_dump(
+                        self._data, f, allow_unicode=True, sort_keys=False,
+                        default_flow_style=False,
+                    )
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self.path)
                 os.chmod(self.path, 0o600)
+                try:
+                    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                    dir_fd = os.open(str(self.path.parent), dir_flags)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+                except OSError:
+                    pass
             except Exception:
-                pass
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
 
     @staticmethod
     def _deepcopy(obj):

@@ -32,7 +32,10 @@ def update_config(payload: Dict[str, Any], request: Request):
     # Key-Maske stehen lassen und den geheimen Key über /api/test/openai an
     # seinen Host senden.
     current_base = str(_get(current, ("ai", "openai", "base_url")) or "").rstrip("/")
-    incoming_base = str(_get(payload, ("ai", "openai", "base_url")) or "").rstrip("/")
+    incoming_base_value = _get(payload, ("ai", "openai", "base_url"))
+    incoming_base = str(
+        current_base if incoming_base_value is None else incoming_base_value or ""
+    ).rstrip("/")
     current_key = _get(current, ("ai", "openai", "api_key"))
     incoming_key = _get(payload, ("ai", "openai", "api_key"))
     if (
@@ -45,7 +48,11 @@ def update_config(payload: Dict[str, Any], request: Request):
             "Bei Änderung der OpenAI Base-URL muss der API-Key neu eingegeben werden",
         )
 
-    merged = _unmask(payload, current)
+    # PUT bleibt aus Kompatibilitätsgründen erhalten, verhält sich aber wie
+    # ein rekursiver Patch. Mobile/ältere Clients senden oft nur eine Sektion;
+    # nicht mitgesendete Secrets, Mail-Konten oder Pfade dürfen dabei nicht
+    # verschwinden.
+    merged = _unmask(_deep_merge(current, payload), current)
     # Web-Passwort, falls Klartext, immer bcrypt-hashen
     incoming_password = _get(payload, ("web", "password"))
     new_password_hash = None
@@ -119,6 +126,18 @@ def _set(d: dict, path: tuple, value: Any) -> None:
             cur[k] = {}
         cur = cur[k]
     cur[path[-1]] = value
+
+
+def _deep_merge(current: dict, incoming: dict) -> dict:
+    """Rekursiver Config-Patch; Listen und Skalare werden bewusst ersetzt."""
+    import copy
+    out = copy.deepcopy(current)
+    for key, value in incoming.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
 
 
 def _mask(cfg: dict) -> dict:
