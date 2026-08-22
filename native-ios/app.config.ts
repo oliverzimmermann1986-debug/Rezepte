@@ -1,7 +1,4 @@
-import type { ExpoConfig } from 'expo/config';
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const base = require('./app.json').expo as ExpoConfig;
+import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 type AppVariant = 'development' | 'preview' | 'production';
 
@@ -11,16 +8,18 @@ function appVariant(): AppVariant {
   return 'production';
 }
 
-export default (): ExpoConfig => {
+export default ({ config: base }: ConfigContext): ExpoConfig => {
   const variant = appVariant();
   const suffix = variant === 'production' ? '' : `.${variant === 'development' ? 'dev' : 'preview'}`;
   const bundleIdentifier = `de.mausbaeren.rezepte${suffix}`;
+  const baseName = base.name || 'Rezepte';
 
   return {
     ...base,
+    slug: base.slug || 'rezepte-ios',
     name: variant === 'production'
-      ? base.name
-      : `${base.name} ${variant === 'development' ? 'Dev' : 'Preview'}`,
+      ? baseName
+      : `${baseName} ${variant === 'development' ? 'Dev' : 'Preview'}`,
     ios: {
       ...base.ios,
       bundleIdentifier,
