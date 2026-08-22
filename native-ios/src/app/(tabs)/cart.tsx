@@ -21,6 +21,7 @@ import { UnitPicker } from '@/components/unit-picker';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
 import { apiCached } from '@/lib/cache';
+import { isValidDateInput, localDateInput } from '@/lib/date-input';
 import { CartItem, RecurringCartItem } from '@/lib/types';
 import { normalizeUnit } from '@/lib/units';
 
@@ -42,7 +43,7 @@ const emptyRecurringForm = (): RecurringForm => ({
   unit: '',
   category: '',
   interval: '7',
-  nextDueOn: new Date().toISOString().slice(0, 10),
+  nextDueOn: localDateInput(),
   active: true,
 });
 
@@ -188,8 +189,8 @@ export default function CartScreen() {
       Alert.alert('Menge ungültig', 'Die Menge muss größer als 0 sein.');
       return;
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(editor.nextDueOn)) {
-      Alert.alert('Datum ungültig', 'Bitte das Datum als JJJJ-MM-TT eintragen.');
+    if (!isValidDateInput(editor.nextDueOn)) {
+      Alert.alert('Datum ungültig', 'Bitte ein echtes Kalenderdatum als JJJJ-MM-TT eintragen.');
       return;
     }
     setSaving(true);
