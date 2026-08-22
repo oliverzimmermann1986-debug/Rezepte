@@ -5,6 +5,8 @@ let authToken: string | null = null;
 let configuredUrl = '';
 let cloudflareClientId = '';
 let cloudflareClientSecret = '';
+let unauthorizedHandler: (() => void | Promise<void>) | null = null;
+let unauthorizedHandling = false;
 const REQUEST_TIMEOUT_MS = 20_000;
 const UPLOAD_TIMEOUT_MS = 90_000;
 
@@ -26,6 +28,20 @@ export function configureApi(
   authToken = token;
   cloudflareClientId = cloudflare?.clientId.trim() || '';
   cloudflareClientSecret = cloudflare?.clientSecret.trim() || '';
+}
+
+export function setUnauthorizedHandler(handler: (() => void | Promise<void>) | null) {
+  unauthorizedHandler = handler;
+}
+
+async function notifyUnauthorized() {
+  if (!unauthorizedHandler || unauthorizedHandling) return;
+  unauthorizedHandling = true;
+  try {
+    await unauthorizedHandler();
+  } finally {
+    unauthorizedHandling = false;
+  }
 }
 
 export function apiBaseUrl() {
@@ -117,6 +133,7 @@ export async function api<T>(
     signal,
     REQUEST_TIMEOUT_MS,
   );
+  if (response.status === 401 && path !== '/api/auth/login') await notifyUnauthorized();
   return readResponse<T>(response);
 }
 
@@ -144,6 +161,7 @@ export async function uploadFile<T>(
     undefined,
     UPLOAD_TIMEOUT_MS,
   );
+  if (response.status === 401) await notifyUnauthorized();
   return readResponse<T>(response);
 }
 

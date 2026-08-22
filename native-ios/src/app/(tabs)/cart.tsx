@@ -19,6 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PrimaryButton, StateView } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { apiCached } from '@/lib/cache';
 import { CartItem, RecurringCartItem } from '@/lib/types';
 
 type RecurringForm = {
@@ -60,7 +61,7 @@ export default function CartScreen() {
     if (refresh) setRefreshing(true); else setLoading(true);
     setError('');
     try {
-      const result = await api<{ items: CartItem[] }>('/api/cart');
+      const result = await apiCached<{ items: CartItem[] }>('cart', '/api/cart');
       setItems(result.items);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Einkaufsliste konnte nicht geladen werden');
@@ -74,7 +75,7 @@ export default function CartScreen() {
     if (refresh) setRefreshing(true); else setLoading(true);
     setError('');
     try {
-      const result = await api<{ items: RecurringCartItem[] }>('/api/cart/recurring');
+      const result = await apiCached<{ items: RecurringCartItem[] }>('recurring-cart', '/api/cart/recurring');
       setRecurring(result.items);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Wiederkehrende Einkäufe konnten nicht geladen werden');

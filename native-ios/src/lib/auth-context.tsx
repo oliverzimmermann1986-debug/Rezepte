@@ -5,12 +5,14 @@ import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import React, { createContext, PropsWithChildren, useContext, useEffect, useState } from 'react';
 
-import { ApiError, api, configureApi } from './api';
+import { ApiError, api, configureApi, setUnauthorizedHandler } from './api';
+import { clearApiCache } from './cache';
 
 const TOKEN_KEY = 'api-token';
 const SERVER_KEY = 'rezepte.server';
 const CLOUDFLARE_CLIENT_ID_KEY = 'cloudflare-client-id';
 const CLOUDFLARE_CLIENT_SECRET_KEY = 'cloudflare-client-secret';
+const USERNAME_KEY = 'rezepte.username';
 const INSTALL_MARKER = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}.rezepte-install-v1`
   : null;
@@ -23,6 +25,7 @@ const AUTH_KEYS = [
   SERVER_KEY,
   CLOUDFLARE_CLIENT_ID_KEY,
   CLOUDFLARE_CLIENT_SECRET_KEY,
+  USERNAME_KEY,
 ] as const;
 
 const secureStorage = {
@@ -86,6 +89,7 @@ type AuthContextValue = {
   username: string;
   cloudflareClientId: string;
   cloudflareClientSecret: string;
+  sessionWarning: string;
   signIn: (
     serverUrl: string,
     username: string,
@@ -105,6 +109,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [username, setUsername] = useState('');
   const [cloudflareClientId, setCloudflareClientId] = useState('');
   const [cloudflareClientSecret, setCloudflareClientSecret] = useState('');
+  const [sessionWarning, setSessionWarning] = useState('');
 
   useEffect(() => {
     prepareSecureStorage()
@@ -113,8 +118,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
         secureStorage.get(SERVER_KEY),
         secureStorage.get(CLOUDFLARE_CLIENT_ID_KEY),
         secureStorage.get(CLOUDFLARE_CLIENT_SECRET_KEY),
+        secureStorage.get(USERNAME_KEY),
       ]))
-      .then(async ([storedToken, storedServer, storedClientId, storedClientSecret]) => {
+      .then(async ([storedToken, storedServer, storedClientId, storedClientSecret, storedUsername]) => {
         const server = storedServer || DEFAULT_SERVER;
         const cloudflare = storedClientId && storedClientSecret
           ? { clientId: storedClientId, clientSecret: storedClientSecret }
@@ -124,17 +130,26 @@ export function AuthProvider({ children }: PropsWithChildren) {
         setServerUrl(server);
         setCloudflareClientId(storedClientId || '');
         setCloudflareClientSecret(storedClientSecret || '');
+        setUsername(storedUsername || '');
         if (storedToken && server) {
           try {
             const session = await api<{ username: string }>('/api/auth/session');
             setUsername(session.username);
-          } catch {
-            await purgeStoredAuth();
-            configureApi('', null, null);
-            setToken(null);
-            setServerUrl(DEFAULT_SERVER);
-            setCloudflareClientId('');
-            setCloudflareClientSecret('');
+            await secureStorage.set(USERNAME_KEY, session.username);
+          } catch (reason) {
+            if (reason instanceof ApiError && [401, 403].includes(reason.status)) {
+              await purgeStoredAuth();
+              configureApi('', null, null);
+              setToken(null);
+              setUsername('');
+              setServerUrl(DEFAULT_SERVER);
+              setCloudflareClientId('');
+              setCloudflareClientSecret('');
+            } else {
+              // Kein Netz/5xx ist keine Abmeldung. Gecachte Rezepte bleiben
+              // lesbar und die Session wird beim nächsten Request erneut geprüft.
+              setSessionWarning('Server gerade nicht erreichbar – gespeicherte Inhalte werden angezeigt.');
+            }
           }
         }
       })
@@ -148,6 +163,22 @@ export function AuthProvider({ children }: PropsWithChildren) {
         setCloudflareClientSecret('');
       })
       .finally(() => setReady(true));
+  }, []);
+
+  useEffect(() => {
+    setUnauthorizedHandler(async () => {
+      await purgeStoredAuth();
+      await clearApiCache();
+      configureApi('', null, null);
+      setToken(null);
+      setUsername('');
+      setServerUrl(DEFAULT_SERVER);
+      setCloudflareClientId('');
+      setCloudflareClientSecret('');
+      setSessionWarning('Deine Sitzung ist abgelaufen. Bitte erneut anmelden.');
+      router.replace('/login');
+    });
+    return () => setUnauthorizedHandler(null);
   }, []);
 
   async function signIn(
@@ -172,12 +203,14 @@ export function AuthProvider({ children }: PropsWithChildren) {
       body: JSON.stringify({ username: nextUsername.trim(), password }),
     });
     try {
+      await clearApiCache();
       await secureStorage.set(SERVER_KEY, normalizedServer);
       if (normalizedClientId) await secureStorage.set(CLOUDFLARE_CLIENT_ID_KEY, normalizedClientId);
       else await secureStorage.delete(CLOUDFLARE_CLIENT_ID_KEY);
       if (normalizedClientSecret) await secureStorage.set(CLOUDFLARE_CLIENT_SECRET_KEY, normalizedClientSecret);
       else await secureStorage.delete(CLOUDFLARE_CLIENT_SECRET_KEY);
       await secureStorage.set(TOKEN_KEY, result.token);
+      await secureStorage.set(USERNAME_KEY, result.username);
     } catch (reason) {
       await purgeStoredAuth();
       configureApi('', null, null);
@@ -189,6 +222,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setCloudflareClientSecret(normalizedClientSecret);
     setToken(result.token);
     setUsername(result.username);
+    setSessionWarning('');
     router.replace('/(tabs)');
   }
 
@@ -199,6 +233,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       // Lokales Abmelden muss auch bei fehlendem Netzwerk immer funktionieren.
     } finally {
       await purgeStoredAuth();
+      await clearApiCache();
       await Promise.allSettled([Image.clearMemoryCache(), Image.clearDiskCache()]);
       configureApi('', null, null);
       setToken(null);
@@ -217,6 +252,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     username,
     cloudflareClientId,
     cloudflareClientSecret,
+    sessionWarning,
     signIn,
     signOut,
   };

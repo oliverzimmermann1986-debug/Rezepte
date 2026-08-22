@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   Alert,
   FlatList,
@@ -15,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PrimaryButton, StateView } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { apiCached } from '@/lib/cache';
 import { MealPlan, MealPlanDay, MealPlanItem, RecipeListItem } from '@/lib/types';
 
 export default function PlanScreen() {
@@ -37,7 +39,11 @@ export default function PlanScreen() {
     setError('');
     try {
       const suffix = week ? `?week_start=${encodeURIComponent(week)}` : '';
-      const result = await api<MealPlan>(`/api/meal-plan${suffix}`, {}, controller.signal);
+      const result = await apiCached<MealPlan>(
+        `meal-plan:${week || 'current'}`,
+        `/api/meal-plan${suffix}`,
+        controller.signal,
+      );
       if (generation !== loadGeneration.current) return;
       setPlan(result);
       setWeekStart(result.week_start);
@@ -53,6 +59,10 @@ export default function PlanScreen() {
   }, []);
 
   useEffect(() => { load(''); }, [load]);
+  useFocusEffect(useCallback(() => {
+    if (weekStart) void load(weekStart);
+    return () => activeLoad.current?.abort();
+  }, [load, weekStart]));
 
   async function remove(item: MealPlanItem) {
     if (mutating.current.has(item.id)) return;

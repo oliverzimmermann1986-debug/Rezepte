@@ -10,6 +10,7 @@ import { StepTimer } from '@/components/step-timer';
 import { ManualCareBanner, PrimaryButton, Screen, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { absoluteApiUrl, api, apiAuthHeaders, deleteCachedFile, downloadFileToCache, uploadFile } from '@/lib/api';
+import { apiCached } from '@/lib/cache';
 import { pickEditedJpeg } from '@/lib/image-picker';
 import { RecipeDetail } from '@/lib/types';
 
@@ -56,7 +57,7 @@ export default function RecipeDetailScreen() {
     setLoading(true);
     setError('');
     try {
-      setRecipe(await api<RecipeDetail>(`/api/recipes/${recipeId}`));
+      setRecipe(await apiCached<RecipeDetail>(`recipe:${recipeId}`, `/api/recipes/${recipeId}`));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Rezept konnte nicht geladen werden');
     } finally {

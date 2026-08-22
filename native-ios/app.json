@@ -54,7 +54,8 @@
             "NSExtensionActivationSupportsWebPageWithMaxCount": 1
           }
         }
-      ]
+      ],
+      "expo-font"
     ],
     "extra": {
       "apiUrl": "https://rezepte.mausbaeren.me",
