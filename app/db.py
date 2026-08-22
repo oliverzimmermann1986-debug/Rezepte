@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS background_tasks (
   ended_at REAL,
   attempts INTEGER NOT NULL DEFAULT 0,
   result_json TEXT,
-  error TEXT
+  error TEXT,
+  next_attempt_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_background_tasks_queue
   ON background_tasks(status, created_at);
@@ -488,6 +489,8 @@ class Database:
         }
         if "dedupe_key" not in task_cols:
             c.execute("ALTER TABLE background_tasks ADD COLUMN dedupe_key TEXT")
+        if "next_attempt_at" not in task_cols:
+            c.execute("ALTER TABLE background_tasks ADD COLUMN next_attempt_at REAL")
         c.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_background_tasks_active_dedupe "
             "ON background_tasks(kind, dedupe_key) "
@@ -1149,7 +1152,9 @@ class Database:
             c.execute("BEGIN IMMEDIATE")
             row = c.execute(
                 "SELECT * FROM background_tasks WHERE status='queued' "
-                "ORDER BY created_at, id LIMIT 1"
+                "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
+                "ORDER BY created_at, id LIMIT 1",
+                (time.time(),),
             ).fetchone()
             if not row:
                 return None
@@ -1171,13 +1176,37 @@ class Database:
             task["payload"] = {}
         return task
 
+    def background_task_retry(
+        self,
+        task_id: int,
+        *,
+        delay_seconds: float,
+        error: str,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Legt einen laufenden Task mit persistentem Backoff erneut vor."""
+        next_attempt = time.time() + max(0.0, float(delay_seconds))
+        with self.conn() as c:
+            c.execute(
+                "UPDATE background_tasks SET status='queued', started_at=NULL, "
+                "ended_at=NULL, next_attempt_at=?, result_json=?, error=? "
+                "WHERE id=? AND status='running'",
+                (
+                    next_attempt,
+                    json.dumps(result or {}, ensure_ascii=False, default=str),
+                    error,
+                    int(task_id),
+                ),
+            )
+
     def background_task_finish(
         self, task_id: int, *, ok: bool, result: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
     ) -> None:
         with self.conn() as c:
             c.execute(
-                "UPDATE background_tasks SET status=?, ended_at=?, result_json=?, error=? WHERE id=?",
+                "UPDATE background_tasks SET status=?, ended_at=?, next_attempt_at=NULL, "
+                "result_json=?, error=? WHERE id=?",
                 (
                     "ok" if ok else "error",
                     time.time(),
@@ -1221,7 +1250,8 @@ class Database:
         """Nach Neustart laufende Tasks erneut einreihen; Endlosschleifen begrenzen."""
         with self.conn() as c:
             retry = c.execute(
-                "UPDATE background_tasks SET status='queued', started_at=NULL, error=NULL "
+                "UPDATE background_tasks SET status='queued', started_at=NULL, "
+                "next_attempt_at=NULL, error=NULL "
                 "WHERE status='running' AND attempts < ?",
                 (max_attempts,),
             ).rowcount or 0

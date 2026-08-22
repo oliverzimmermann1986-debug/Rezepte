@@ -74,6 +74,35 @@ def test_background_tasks_are_claimed_and_recovered(test_db):
     assert done["result"] == {"saved": True}
 
 
+def test_background_task_retry_waits_until_next_attempt(test_db):
+    task_id = test_db.background_task_enqueue(
+        "share_ingest",
+        {"url": "https://example.test/retry"},
+    )
+    claimed = test_db.background_task_claim_next()
+    assert claimed["id"] == task_id
+
+    test_db.background_task_retry(
+        task_id,
+        delay_seconds=60,
+        error="Scraper belegt",
+        result={"retry": True},
+    )
+
+    assert test_db.background_task_claim_next() is None
+    waiting = test_db.background_task_get(task_id)
+    assert waiting["status"] == "queued"
+    assert waiting["next_attempt_at"] is not None
+    with test_db.conn() as connection:
+        connection.execute(
+            "UPDATE background_tasks SET next_attempt_at=0 WHERE id=?",
+            (task_id,),
+        )
+    retried = test_db.background_task_claim_next()
+    assert retried["id"] == task_id
+    assert retried["attempts"] == 2
+
+
 def test_thumbnail_cache_is_atomic_and_reused(tmp_path: Path):
     source = tmp_path / "source.png"
     Image.new("RGBA", (1200, 800), (255, 0, 0, 180)).save(source)

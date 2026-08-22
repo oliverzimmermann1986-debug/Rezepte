@@ -63,6 +63,27 @@ def _worker_loop() -> None:
         task_id = int(task["id"])
         try:
             result = _dispatch(task["kind"], task.get("payload") or {})
+            if isinstance(result, dict) and result.get("retry"):
+                attempts = int(task.get("attempts") or 1)
+                if attempts < 12:
+                    delay = min(300, 5 * (2 ** min(attempts, 6)))
+                    get_db().background_task_retry(
+                        task_id,
+                        delay_seconds=delay,
+                        error=str(result.get("error") or "Vorübergehend nicht verfügbar"),
+                        result=result,
+                    )
+                    logger.info(
+                        "Background-Task #%s in %ss erneut (Versuch %s/12)",
+                        task_id, delay, attempts,
+                    )
+                    continue
+                result = {
+                    **result,
+                    "retry": False,
+                    "error": str(result.get("error") or "Vorübergehend nicht verfügbar")
+                    + " — maximale Wiederholungen erreicht",
+                }
             ok = bool(result.get("ok", True)) if isinstance(result, dict) else True
             get_db().background_task_finish(
                 task_id,

@@ -168,6 +168,26 @@ def test_share_intake_only_accepts_supported_https_hosts():
         _normalized_share_url("https://127.0.0.1/internal")
 
 
+def test_busy_share_ingest_stays_retryable(test_db, monkeypatch):
+    from contextlib import contextmanager
+    from app.routes import api_share
+
+    @contextmanager
+    def busy(_name):
+        yield None
+
+    monkeypatch.setattr(api_share, "file_lock_or_none", busy)
+
+    result = api_share.run_share_ingest_task({
+        "url": "https://www.tiktok.com/@cook/video/123",
+        "type": "recipe",
+    })
+
+    assert result["ok"] is False
+    assert result["retry"] is True
+    assert "belegt" in result["error"]
+
+
 def test_soft_delete_with_files_can_restore_quarantine(
     test_db: Database,
     tmp_path: Path,

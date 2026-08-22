@@ -20,7 +20,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -95,17 +94,19 @@ def run_share_ingest_task(payload: dict) -> dict:
             "status": "already_processed",
             "target": existing["target_dir"],
         }
-    deadline = time.monotonic() + 90
-    while time.monotonic() < deadline:
-        with file_lock_or_none("scraper") as flock:
-            if flock is not None:
-                result = scraper_job.get_scraper_job().process_url(
-                    {"url": url, "type": content_type}
-                )
-                logger.info("Share-Intake %s → %s", url, result.get("status"))
-                return {"ok": result.get("status") != "error", "url": url, **result}
-        time.sleep(2)
-    return {"ok": False, "url": url, "error": "Scraper länger als 90s belegt"}
+    with file_lock_or_none("scraper") as flock:
+        if flock is None:
+            return {
+                "ok": False,
+                "retry": True,
+                "url": url,
+                "error": "Scraper ist momentan belegt",
+            }
+        result = scraper_job.get_scraper_job().process_url(
+            {"url": url, "type": content_type}
+        )
+        logger.info("Share-Intake %s → %s", url, result.get("status"))
+        return {"ok": result.get("status") != "error", "url": url, **result}
 
 
 @router.post("")
