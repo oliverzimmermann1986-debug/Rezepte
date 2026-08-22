@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -163,6 +164,26 @@ CREATE TABLE IF NOT EXISTS shopping_cart (
 );
 CREATE INDEX IF NOT EXISTS idx_cart_canonical ON shopping_cart(canonical_name, unit);
 CREATE INDEX IF NOT EXISTS idx_cart_added     ON shopping_cart(added_at DESC);
+
+-- Wiederkehrende Einkäufe gehören zur selben lokalen Einkaufsliste. Beim
+-- Fälligwerden wird die Regel atomar in shopping_cart gemerged und auf den
+-- nächsten Termin weitergeschoben.
+CREATE TABLE IF NOT EXISTS shopping_recurring (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  canonical_name TEXT,
+  amount REAL,
+  unit TEXT,
+  category TEXT,
+  interval_days INTEGER NOT NULL CHECK(interval_days BETWEEN 1 AND 3650),
+  next_due_on TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  last_added_at REAL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recurring_due
+  ON shopping_recurring(active, next_due_on);
 
 -- shopping_exclusions: globale Zutaten, die beim Kochen nicht auf die
 -- Einkaufsliste übernommen werden sollen (z.B. Salz, Wasser, Pfeffer).
@@ -2426,8 +2447,23 @@ class Database:
         """Insert oder Merge basierend auf canonical_name+unit.
         Die eigentliche Einheiten-Konvertierung passiert vor diesem Call in
         cart_logic.add_to_cart() — hier wird nur summiert wenn unit gleich ist."""
-        existing = self.cart_find_mergeable(canonical_name or name.lower(), unit) if canonical_name else None
         with self.conn() as c:
+            # Lesen und Schreiben müssen in derselben Write-Transaction liegen.
+            # Sonst können zwei schnelle Adds beide "nicht vorhanden" sehen und
+            # doppelte Zeilen erzeugen bzw. Mengen verlieren.
+            c.execute("BEGIN IMMEDIATE")
+            existing = None
+            if canonical_name:
+                if unit is None:
+                    existing = c.execute(
+                        "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit IS NULL",
+                        (canonical_name,),
+                    ).fetchone()
+                else:
+                    existing = c.execute(
+                        "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit=?",
+                        (canonical_name, unit),
+                    ).fetchone()
             if existing:
                 new_amount = (existing.get("amount") or 0) + (amount or 0) if amount is not None else existing.get("amount")
                 src_ids = json.loads(existing.get("source_recipe_ids") or "[]")
@@ -2445,6 +2481,160 @@ class Database:
                 (name, canonical_name, amount, unit, time.time(), src_json),
             )
             return int(cur.lastrowid)
+
+    # ─── Wiederkehrende Einkäufe ────────────────────────────────────
+    def recurring_list(self) -> List[Dict[str, Any]]:
+        from .recipes.cart_logic import display_amount
+
+        today = date.today()
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM shopping_recurring ORDER BY active DESC, next_due_on, name COLLATE NOCASE"
+            ).fetchall()
+        result: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["due_in_days"] = (date.fromisoformat(item["next_due_on"]) - today).days
+            except (TypeError, ValueError):
+                item["due_in_days"] = 0
+            item["active"] = bool(item["active"])
+            item["amount_base"] = item.get("amount")
+            item["unit_base"] = item.get("unit")
+            display_value, display_unit = display_amount(item.get("amount"), item.get("unit"))
+            item["amount"] = display_value
+            item["unit"] = display_unit
+            # Kompatibler Feldname für bestehende Web- und Native-Clients.
+            item["default_unit"] = display_unit
+            result.append(item)
+        return result
+
+    def recurring_create(
+        self,
+        *,
+        name: str,
+        canonical_name: Optional[str],
+        amount: Optional[float],
+        unit: Optional[str],
+        category: Optional[str],
+        interval_days: int,
+        next_due_on: str,
+        active: bool,
+    ) -> int:
+        now = time.time()
+        with self.conn() as c:
+            cur = c.execute(
+                "INSERT INTO shopping_recurring "
+                "(name, canonical_name, amount, unit, category, interval_days, next_due_on, "
+                "active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    name, canonical_name, amount, unit, category, int(interval_days),
+                    next_due_on, 1 if active else 0, now, now,
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def recurring_get(self, item_id: int) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT * FROM shopping_recurring WHERE id=?", (int(item_id),)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def recurring_update(self, item_id: int, values: Dict[str, Any]) -> bool:
+        allowed = {
+            "name", "canonical_name", "amount", "unit", "category",
+            "interval_days", "next_due_on", "active",
+        }
+        sets: List[str] = []
+        params: List[Any] = []
+        for key, value in values.items():
+            if key not in allowed:
+                continue
+            sets.append(f"{key}=?")
+            params.append(1 if key == "active" and value else 0 if key == "active" else value)
+        if not sets:
+            return self.recurring_get(item_id) is not None
+        sets.append("updated_at=?")
+        params.extend((time.time(), int(item_id)))
+        with self.conn() as c:
+            cur = c.execute(
+                f"UPDATE shopping_recurring SET {', '.join(sets)} WHERE id=?", params
+            )
+            return bool(cur.rowcount)
+
+    def recurring_delete(self, item_id: int) -> bool:
+        with self.conn() as c:
+            cur = c.execute("DELETE FROM shopping_recurring WHERE id=?", (int(item_id),))
+            return bool(cur.rowcount)
+
+    def recurring_run_due(self, *, due_on: Optional[date] = None) -> List[Dict[str, Any]]:
+        """Fällige Regeln und Cart-Merge als eine atomare Operation.
+
+        ``next_due_on`` wird so oft um das Intervall erhöht, bis es nach dem
+        Lauftag liegt. Dadurch erzeugt ein verspäteter Lauf keinen Stapel aus
+        identischen Artikeln und ein wiederholter Aufruf am selben Tag ist
+        idempotent.
+        """
+        run_day = due_on or date.today()
+        now = time.time()
+        added: List[Dict[str, Any]] = []
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            rows = c.execute(
+                "SELECT * FROM shopping_recurring "
+                "WHERE active=1 AND next_due_on<=? ORDER BY next_due_on, id",
+                (run_day.isoformat(),),
+            ).fetchall()
+            for row in rows:
+                canonical = row["canonical_name"]
+                unit = row["unit"]
+                existing = None
+                if canonical:
+                    if unit is None:
+                        existing = c.execute(
+                            "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit IS NULL",
+                            (canonical,),
+                        ).fetchone()
+                    else:
+                        existing = c.execute(
+                            "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit=?",
+                            (canonical, unit),
+                        ).fetchone()
+                if existing:
+                    amount = row["amount"]
+                    old_amount = existing["amount"]
+                    new_amount = (
+                        (old_amount or 0) + (amount or 0)
+                        if amount is not None else old_amount
+                    )
+                    c.execute(
+                        "UPDATE shopping_cart SET amount=?, checked=0, added_at=? WHERE id=?",
+                        (new_amount, now, existing["id"]),
+                    )
+                    cart_id = int(existing["id"])
+                else:
+                    cur = c.execute(
+                        "INSERT INTO shopping_cart "
+                        "(name, canonical_name, amount, unit, checked, added_at, source_recipe_ids) "
+                        "VALUES (?, ?, ?, ?, 0, ?, '[]')",
+                        (row["name"], canonical, row["amount"], unit, now),
+                    )
+                    cart_id = int(cur.lastrowid)
+
+                try:
+                    next_due = date.fromisoformat(row["next_due_on"])
+                except (TypeError, ValueError):
+                    next_due = run_day
+                interval = timedelta(days=max(1, int(row["interval_days"])))
+                while next_due <= run_day:
+                    next_due += interval
+                c.execute(
+                    "UPDATE shopping_recurring SET next_due_on=?, last_added_at=?, updated_at=? WHERE id=?",
+                    (next_due.isoformat(), now, now, row["id"]),
+                )
+                added.append({"id": int(row["id"]), "cart_id": cart_id, "name": row["name"]})
+        return added
 
     def cart_replace(self, items: List[Dict[str, Any]]) -> int:
         """Ersetzt den lokalen Warenkorb atomar durch bereits aggregierte Items."""

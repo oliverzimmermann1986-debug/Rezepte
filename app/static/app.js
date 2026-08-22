@@ -3528,25 +3528,21 @@ function scrapperApp() {
 
     cartTab(tab) {
       this.cart.tab = tab;
-      if (tab === 'recurring' && this.cart.external) this.loadRecurring();
+      if (tab === 'recurring') this.loadRecurring();
       if (tab === 'list') this.loadCart();
     },
 
     async loadRecurring() {
-      if (!this.cart.external) {
-        this.cart.recurring = [];
-        return;
-      }
       this.cart.recLoading = true;
       this.cart.connectionError = '';
       try {
-        this.cart.recurring =
-          await this.api(
+        const result = await this.api(
             'GET',
-            '/api/einkauf/recurring',
+            '/api/cart/recurring',
             undefined,
             { silent: true }
-          ) || [];
+          );
+        this.cart.recurring = result?.items || [];
       } catch (error) {
         this.cart.recurring = [];
         this.cart.connectionError =
@@ -3602,10 +3598,10 @@ function scrapperApp() {
       this.cart.recSaving = true;
       try {
         if (form.id) {
-          await this.api('PATCH', '/api/einkauf/recurring/' + form.id, body);
+          await this.api('PATCH', '/api/cart/recurring/' + form.id, body);
           this.showToast('Wiederkehrender Artikel aktualisiert');
         } else {
-          await this.api('POST', '/api/einkauf/recurring', body);
+          await this.api('POST', '/api/cart/recurring', body);
           this.showToast('Wiederkehrender Artikel angelegt');
         }
         this.recReset();
@@ -3622,7 +3618,7 @@ function scrapperApp() {
       ) return;
       this.cart.recDeleting = rule.id;
       try {
-        await this.api('DELETE', '/api/einkauf/recurring/' + rule.id);
+        await this.api('DELETE', '/api/cart/recurring/' + rule.id);
         this.showToast('Wiederkehrender Artikel gelöscht');
         if (this.cart.recForm.id === rule.id) this.recReset();
         await this.loadRecurring();
@@ -3635,7 +3631,7 @@ function scrapperApp() {
       if (this.cart.recRunning) return;
       this.cart.recRunning = true;
       try {
-        const result = await this.api('POST', '/api/einkauf/recurring/run', {});
+        const result = await this.api('POST', '/api/cart/recurring/run', {});
         const count = result?.added?.length || 0;
         this.showToast(
           count === 1

@@ -288,7 +288,7 @@ def test_failed_imports_can_be_discarded_from_import_center():
     assert "download_failure_clear(url)" in pending_api
 
 
-def test_external_shopping_and_recurring_ui_are_available():
+def test_external_shopping_and_local_recurring_ui_are_available():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     js = (STATIC / "app.js").read_text(encoding="utf-8")
     css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
@@ -300,7 +300,8 @@ def test_external_shopping_and_recurring_ui_are_available():
     assert "Fällige jetzt eintragen" in html
     assert 'x-model="config.einkauf.api_url"' in html
     assert 'x-model="config.einkauf.app_token"' in html
-    assert "/api/einkauf/recurring" in js
+    assert "/api/cart/recurring" in js
+    assert "Wiederkehrende Einkäufe werden vom bestehenden Einkauf-Dienst" not in html
     assert "async recSave()" in js
     assert "async recRunNow()" in js
     assert ".recurring-form" in css

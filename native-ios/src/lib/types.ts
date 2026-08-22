@@ -81,6 +81,18 @@ export type CartItem = {
   checked: boolean;
 };
 
+export type RecurringCartItem = {
+  id: number;
+  name: string;
+  amount?: number | null;
+  default_unit?: string | null;
+  category?: string | null;
+  interval_days: number;
+  next_due_on: string;
+  due_in_days: number;
+  active: boolean;
+};
+
 export type MealPlanItem = {
   id: number;
   recipe_id: number;

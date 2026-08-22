@@ -17,11 +17,12 @@ gespeichert, in Display-Einheit zurückgegeben).
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth import require_auth
 from ..db import get_db
@@ -37,7 +38,9 @@ router = APIRouter(prefix="/api/cart", tags=["cart"], dependencies=[Depends(requ
 
 @router.get("")
 def get_cart():
-    return {"items": cart_for_display(get_db())}
+    db = get_db()
+    materialized = db.recurring_run_due()
+    return {"items": cart_for_display(db), "recurring_added": len(materialized)}
 
 
 @router.get("/export.txt", response_class=PlainTextResponse)
@@ -116,6 +119,100 @@ def add_item(payload: AddItem):
         source_recipe_id=None,
     )
     return {"ok": True, "id": item_id}
+
+
+# ── Wiederkehrende Einkäufe ─────────────────────────────────────────────
+
+class RecurringCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    amount: Optional[float] = Field(default=None, gt=0)
+    default_unit: Optional[str] = Field(default=None, max_length=40)
+    category: Optional[str] = Field(default=None, max_length=100)
+    interval_days: int = Field(default=7, ge=1, le=3650)
+    next_due_on: Optional[date] = None
+    active: bool = True
+
+
+class RecurringUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    amount: Optional[float] = Field(default=None, gt=0)
+    default_unit: Optional[str] = Field(default=None, max_length=40)
+    category: Optional[str] = Field(default=None, max_length=100)
+    interval_days: Optional[int] = Field(default=None, ge=1, le=3650)
+    next_due_on: Optional[date] = None
+    active: Optional[bool] = None
+
+
+@router.get("/recurring")
+def list_recurring():
+    return {"items": get_db().recurring_list()}
+
+
+@router.post("/recurring")
+def create_recurring(payload: RecurringCreate):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "name fehlt")
+    prepared = prepare_for_cart(name, payload.amount, payload.default_unit)
+    item_id = get_db().recurring_create(
+        name=prepared["name"],
+        canonical_name=prepared["canonical_name"],
+        amount=prepared["amount"],
+        unit=prepared["unit"],
+        category=(payload.category or "").strip() or None,
+        interval_days=payload.interval_days,
+        next_due_on=(payload.next_due_on or date.today()).isoformat(),
+        active=payload.active,
+    )
+    return {"ok": True, "id": item_id}
+
+
+@router.patch("/recurring/{item_id}")
+def update_recurring(item_id: int, payload: RecurringUpdate):
+    db = get_db()
+    current = db.recurring_get(item_id)
+    if not current:
+        raise HTTPException(404, "Wiederkehrender Artikel nicht gefunden")
+    fields = payload.model_fields_set
+    values: dict = {}
+    if fields & {"name", "amount", "default_unit"}:
+        name = (payload.name if "name" in fields else current["name"] or "").strip()
+        if not name:
+            raise HTTPException(400, "name fehlt")
+        amount = payload.amount if "amount" in fields else current["amount"]
+        unit = payload.default_unit if "default_unit" in fields else current["unit"]
+        prepared = prepare_for_cart(name, amount, unit)
+        values.update(
+            name=prepared["name"],
+            canonical_name=prepared["canonical_name"],
+            amount=prepared["amount"],
+            unit=prepared["unit"],
+        )
+    if "category" in fields:
+        values["category"] = (payload.category or "").strip() or None
+    if "interval_days" in fields:
+        values["interval_days"] = payload.interval_days
+    if "next_due_on" in fields:
+        if payload.next_due_on is None:
+            raise HTTPException(400, "next_due_on darf nicht leer sein")
+        values["next_due_on"] = payload.next_due_on.isoformat()
+    if "active" in fields:
+        values["active"] = payload.active
+    db.recurring_update(item_id, values)
+    return {"ok": True}
+
+
+@router.delete("/recurring/{item_id}")
+def delete_recurring(item_id: int):
+    if not get_db().recurring_delete(item_id):
+        raise HTTPException(404, "Wiederkehrender Artikel nicht gefunden")
+    return {"ok": True}
+
+
+@router.post("/recurring/run")
+def run_recurring():
+    added = get_db().recurring_run_due()
+    return {"ok": True, "added": added, "count": len(added)}
 
 
 # ── Update / Delete ─────────────────────────────────────────────────────

@@ -2028,19 +2028,7 @@
 
         <!-- Wiederkehrende Einkäufe -->
         <div x-show="cart.tab === 'recurring'">
-          <div class="recurring-unconfigured" x-show="!cart.external">
-            <strong>Einkaufsliste noch nicht verbunden</strong>
-            <p>
-              Wiederkehrende Einkäufe werden vom bestehenden Einkauf-Dienst verwaltet.
-              Verbinde ihn einmal in den Einstellungen.
-            </p>
-            <button type="button" class="btn btn-primary"
-                    @click="navTo('admin'); selectAdminTab('settings')">
-              Verbindung einrichten
-            </button>
-          </div>
-
-          <div x-show="cart.external">
+          <div>
             <form class="recurring-form" @submit.prevent="recSave()">
               <div class="field recurring-name">
                 <label for="recurring-name">Artikel</label>
