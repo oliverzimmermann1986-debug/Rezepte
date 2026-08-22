@@ -81,6 +81,22 @@ def test_native_file_upload_rejects_renamed_or_mismatched_content(client):
     assert mismatched.status_code == 415
 
 
+def test_native_file_upload_rejects_when_work_disk_is_full(client, monkeypatch):
+    import app.routes.api_pending as api_pending
+
+    class Usage:
+        free = 1
+
+    monkeypatch.setattr(api_pending.shutil, "disk_usage", lambda _path: Usage())
+    response = client.post(
+        "/api/pending/import-file",
+        files={"file": ("rezept.jpg", b"\xff\xd8\xffjpeg-data", "image/jpeg")},
+    )
+
+    assert response.status_code == 507
+    assert "Zu wenig freier Speicher" in response.json()["detail"]
+
+
 def test_failed_download_can_be_retried_and_discarded_with_json_body(client, test_db):
     url = "https://www.tiktok.com/@koch/video/123"
     test_db.download_failure_record(url, "Download fehlgeschlagen")

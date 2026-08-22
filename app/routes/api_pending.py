@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -49,6 +50,7 @@ class ImportUrlBody(BaseModel):
 
 _UPLOAD_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 _UPLOAD_LIMIT = 25 * 1024 * 1024
+_UPLOAD_FREE_RESERVE = 512 * 1024 * 1024
 
 
 def _detected_upload_type(data: bytes) -> Optional[str]:
@@ -59,6 +61,26 @@ def _detected_upload_type(data: bytes) -> Optional[str]:
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return ".png"
     return None
+
+
+def _assert_upload_capacity(payload_size: int) -> None:
+    """Reserviert Platz für OCR-Raster, PDF-Kopien und atomare Zieldateien."""
+    cfg = get_config()
+    temp_root = Path(cfg.get("paths", "temp_dir", default="/opt/scrapper/temp"))
+    try:
+        temp_root.mkdir(parents=True, exist_ok=True)
+        free_bytes = shutil.disk_usage(temp_root).free
+    except OSError as exc:
+        logger.error("Freien Temp-Speicher nicht ermittelbar: %s", exc)
+        raise HTTPException(503, "Temporärer Upload-Speicher ist nicht verfügbar") from exc
+    reserve_mb = int(cfg.get("paths", "upload_free_reserve_mb", default=512) or 512)
+    required = payload_size + max(_UPLOAD_FREE_RESERVE, reserve_mb * 1024 * 1024)
+    if free_bytes < required:
+        raise HTTPException(
+            507,
+            "Zu wenig freier Speicher für die sichere Verarbeitung. "
+            "Bitte Speicher freigeben und den Upload erneut versuchen.",
+        )
 
 
 @router.post("/import-url")
@@ -115,6 +137,7 @@ async def import_file(file: UploadFile = File(...), type: str = "recipe") -> Dic
     expected = ".jpg" if ext in {".jpg", ".jpeg"} else ext
     if detected != expected:
         raise HTTPException(415, "Dateiendung und tatsächliches Dateiformat stimmen nicht überein")
+    _assert_upload_capacity(len(data))
 
     synth_url = f"manual-upload://{uuid.uuid4().hex}/{filename}"
     attachment = {

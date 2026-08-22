@@ -848,6 +848,20 @@ class Database:
             ).fetchone()
             return int(row["n"]) if row else 0
 
+    def pending_file_paths(self, status: str = "pending") -> List[str]:
+        """Liefert alle noch benötigten Stash-Dateien eines Pending-Status."""
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT video_path, frame_path FROM pending WHERE status=?",
+                (status,),
+            ).fetchall()
+        return [
+            str(value)
+            for row in rows
+            for value in (row["video_path"], row["frame_path"])
+            if value
+        ]
+
     # ---------------- Download-Failures ----------------
     def download_failure_record(self, url: str, error: str,
                                 content_type: str = "recipe") -> int:

@@ -76,6 +76,24 @@ def is_content_url(url: str) -> bool:
 # Attachment-Filename-Endungen die wir verarbeiten. Alles andere wird
 # ignoriert (PDFs für Rezept-Karten/Hochzeitspläne, JPGs für Fotos).
 ATTACHMENT_EXTS = {".pdf", ".jpg", ".jpeg", ".png"}
+DEFAULT_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+
+
+def _decode_attachment_payload(part, max_bytes: int) -> Optional[bytes]:
+    """Dekodiert einen MIME-Part nur, wenn er innerhalb des Limits liegt."""
+    raw = part.get_payload(decode=False)
+    transfer_encoding = (part.get("Content-Transfer-Encoding") or "").lower()
+    if transfer_encoding == "base64" and isinstance(raw, (str, bytes)):
+        non_whitespace = sum(
+            1 for char in raw
+            if not (char.isspace() if isinstance(char, str) else chr(char).isspace())
+        )
+        if non_whitespace > ((max_bytes + 2) * 4 // 3 + 4):
+            return None
+    payload = part.get_payload(decode=True)
+    if not payload or len(payload) > max_bytes:
+        return None
+    return payload
 
 
 def _decode_filename(part) -> str:
@@ -172,6 +190,8 @@ class MailAccount:
         self.password = cfg.get("password", "")
         self.folder = cfg.get("folder", "INBOX")
         self.max_mails = int(cfg.get("max_mails", 20))
+        max_attachment_mb = int(cfg.get("attachment_max_mb", 25) or 25)
+        self.attachment_max_bytes = max(1, min(100, max_attachment_mb)) * 1024 * 1024
         self.default_category = default_category or cfg.get("default_category")
         self.enabled = bool(cfg.get("enabled", True))
         # Verarbeitete Mails nach dem Lauf löschen (\Deleted + EXPUNGE).
@@ -277,14 +297,20 @@ class MailAccount:
                             ext = "." + fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
                             if ext not in ATTACHMENT_EXTS:
                                 continue
-                            payload = part.get_payload(decode=True)
-                            if not payload:
-                                continue
                             # Dedupe via msg_id+filename
                             dedupe_key = f"{msg_id}::{fname}"
                             if dedupe_key in seen_attach:
                                 continue
                             seen_attach.add(dedupe_key)
+                            payload = _decode_attachment_payload(
+                                part, self.attachment_max_bytes,
+                            )
+                            if not payload:
+                                logger.warning(
+                                    "[%s] Anhang %s ist leer oder größer als %s MB und wird übersprungen",
+                                    self.name, fname, self.attachment_max_bytes // (1024 * 1024),
+                                )
+                                continue
                             attachments.append({
                                 "msg_id": msg_id,
                                 "filename": fname,

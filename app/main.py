@@ -98,6 +98,16 @@ def _initialize_runtime_state():
     pending_skipped = _db.auto_skip_old_pending(days=30)
     if pending_skipped:
         logger.info("DB-Cleanup: %s alte Pending-Items übersprungen", pending_skipped)
+    from .core.temp_cleanup import cleanup_temp_files
+    temp_root = Path(get_config().get("paths", "temp_dir", default="/opt/scrapper/temp"))
+    temp_result = cleanup_temp_files(temp_root, _db.pending_file_paths())
+    if temp_result["removed"]:
+        logger.info(
+            "Temp-Cleanup: %s veraltete Einträge (%s Bytes) entfernt",
+            temp_result["removed"], temp_result["bytes_removed"],
+        )
+    if temp_result["errors"]:
+        logger.warning("Temp-Cleanup unvollständig: %s", temp_result["errors"])
     return _db
 
 

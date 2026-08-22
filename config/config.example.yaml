@@ -40,6 +40,8 @@ paths:
   recipe_dir: /opt/scrapper/files/rezepte
   wedding_dir: /opt/scrapper/files/hochzeit
   temp_dir: /opt/scrapper/temp
+  # Mindestreserve zusätzlich zur Uploadgröße für OCR/PDF-Zwischendateien.
+  upload_free_reserve_mb: 512
   logs_dir: /opt/scrapper/logs
   # Log-Files älter als N Tage werden täglich (via Timer) gelöscht.
   # 0 = nie löschen.
@@ -56,6 +58,7 @@ mail:
     password: app-passwort-hier
     folder: INBOX
     max_mails: 20
+    attachment_max_mb: 25
 
   # Konto für Hochzeit
   wedding:
@@ -66,6 +69,7 @@ mail:
     password: app-passwort-hier
     folder: INBOX
     max_mails: 20
+    attachment_max_mb: 25
     # Default-Kategorie wenn KI keine Zuordnung findet
     default_category: Sonstiges
     # Wenn true: ALLE Hochzeits-Items landen IMMER in Pending (kein Auto-Sortieren)

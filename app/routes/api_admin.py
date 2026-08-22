@@ -783,19 +783,8 @@ def run_maintenance(kind: str, request: Request) -> Dict[str, Any]:
             result = _media_scan()
         elif kind == "cleanup_temp":
             temp_root = Path(cfg.get("paths", "temp_dir", default="/opt/scrapper/temp")).resolve()
-            removed = 0; bytes_removed = 0; cutoff = time.time() - 7 * 86400
-            if temp_root.is_dir():
-                for child in temp_root.iterdir():
-                    try:
-                        if child.name == "pending" or child.stat().st_mtime >= cutoff:
-                            continue
-                        size = sum(p.stat().st_size for p in child.rglob("*") if p.is_file()) if child.is_dir() else child.stat().st_size
-                        if child.is_dir(): shutil.rmtree(child)
-                        else: child.unlink()
-                        removed += 1; bytes_removed += size
-                    except Exception:
-                        continue
-            result = {"ok": True, "removed": removed, "bytes_removed": bytes_removed}
+            from ..core.temp_cleanup import cleanup_temp_files
+            result = cleanup_temp_files(temp_root, db.pending_file_paths())
         elif kind == "rebuild_fts":
             with db.conn() as c:
                 c.execute("INSERT INTO recipes_fts(recipes_fts) VALUES('rebuild')")
