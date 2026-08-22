@@ -17,3 +17,19 @@ ExecStart=/opt/scrapper/venv/bin/python -m app.cli log-cleanup
 #    feuert täglich, aber VACUUM einmal pro Woche reicht)
 ExecStart=/bin/bash -c '[ "$(date +%%u)" = "7" ] && /opt/scrapper/venv/bin/python -m app.cli db-vacuum || true'
 TimeoutStartSec=600
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/scrapper /mnt
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+RestrictSUIDSGID=true
+MemoryHigh=768M
+MemoryMax=1G
+CPUQuota=100%
+TasksMax=64

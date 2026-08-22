@@ -24,6 +24,7 @@ apt-get install -y --no-install-recommends \
   tesseract-ocr tesseract-ocr-osd tesseract-ocr-deu tesseract-ocr-eng \
   sqlite3 \
   cron \
+  policykit-1 \
   sudo \
   tzdata
 
@@ -61,10 +62,7 @@ python3 -m venv "$APP_DIR/venv"
 PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/playwright-browsers" \
   "$APP_DIR/venv/bin/python" -m playwright install --with-deps chromium
 
-# 6. yt-dlp via pip (immer aktuelle Version)
-"$APP_DIR/venv/bin/pip" install -U yt-dlp
-
-# 7. Verzeichnisse anlegen.
+# 6. Verzeichnisse anlegen.
 # Default-Ablage für sortierte Videos liegt INNERHALB des Containers
 # unter /opt/scrapper/files/. Wenn du z.B. einen Bind-Mount willst,
 # editier nach der Installation einfach data/config.yaml -> paths:
@@ -73,7 +71,7 @@ mkdir -p "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" \
          "$APP_DIR/files/rezepte" "$APP_DIR/files/hochzeit"
 chown -R $APP_USER:$APP_USER "$APP_DIR"
 
-# 8. Default-Config erstellen wenn fehlt
+# 7. Default-Config erstellen wenn fehlt
 if [[ ! -f "$APP_DIR/data/config.yaml" ]]; then
   echo "📝 Erstelle Default-Config mit zufälligem Passwort + Secret..."
   cp "$APP_DIR/config/config.example.yaml" "$APP_DIR/data/config.yaml"
@@ -98,7 +96,7 @@ if [[ ! -f "$APP_DIR/data/config.yaml" ]]; then
   INITIAL_PASSWORD="$GEN_PASS"
 fi
 
-# 9. systemd Services installieren
+# 8. systemd Services installieren
 echo "⚙️  Installiere systemd Units..."
 cp "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/
 cp "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/
@@ -106,18 +104,22 @@ cp "$APP_DIR/systemd/scrapper-job.timer"   /etc/systemd/system/
 cp "$APP_DIR/systemd/scrapper-db-backup.service" /etc/systemd/system/
 cp "$APP_DIR/systemd/scrapper-db-backup.timer"   /etc/systemd/system/
 
-# sudoers-Eintrag damit scrapper Timer-Files schreiben + systemd neuladen darf
-install -m 0440 "$APP_DIR/systemd/sudoers-scrapper" /etc/sudoers.d/scrapper
+# Polkit erlaubt nur daemon-reload und die Verwaltung von scrapper-job.timer.
+# Die Timerdatei selbst bleibt die einzige unter /etc für den Webdienst
+# beschreibbare Datei (siehe ReadWritePaths in scrapper-web.service).
+install -m 0644 "$APP_DIR/systemd/49-scrapper-systemctl.rules" \
+  /etc/polkit-1/rules.d/49-scrapper-systemctl.rules
+rm -f /etc/sudoers.d/scrapper
 chgrp $APP_USER /etc/systemd/system/scrapper-job.timer
 chmod 0664 /etc/systemd/system/scrapper-job.timer
 
 systemctl daemon-reload
 
-# 10. Web-Service starten + enablen
+# 9. Web-Service starten + enablen
 systemctl enable --now scrapper-web.service
 systemctl enable --now scrapper-job.timer
 systemctl enable --now scrapper-db-backup.timer
-# 11. Status anzeigen
+# 10. Status anzeigen
 sleep 2
 echo ""
 echo "─────────────────────────────────────────────"

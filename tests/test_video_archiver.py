@@ -1,7 +1,9 @@
 import json
 import os
+import sqlite3
 import stat
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -63,8 +65,8 @@ def test_worker_names_video_by_recipe_id_and_writes_sidecar(
     assert metadata["source_url"] == "https://www.tiktok.com/@koch/video/123"
     assert len(metadata["sha256"]) == 64
     if os.name != "nt":
-        assert stat.S_IMODE(video.stat().st_mode) == 0o644
-        assert stat.S_IMODE((tmp_path / "archive").stat().st_mode) == 0o755
+        assert stat.S_IMODE(video.stat().st_mode) == 0o640
+        assert stat.S_IMODE((tmp_path / "archive").stat().st_mode) == 0o750
     assert queue.events()[0]["message"] == "Archivierung abgeschlossen"
 
 
@@ -95,3 +97,51 @@ def test_worker_never_overwrites_a_conflicting_archive(
     assert result and result["status"] == "failed"
     assert (archive / "7.mp4").read_bytes() == b"existing"
     assert queue.get(7)["status"] == "failed"
+
+
+def test_claim_marks_exhausted_stale_download_as_failed(tmp_path: Path):
+    queue = ArchiveQueue(tmp_path / "queue.db")
+    queue.enqueue(9, "https://www.tiktok.com/@koch/video/123")
+    with sqlite3.connect(queue.path) as connection:
+        connection.execute(
+            """
+            UPDATE archive_jobs
+               SET status='downloading', attempts=3, updated_at=0
+             WHERE recipe_id=9
+            """
+        )
+
+    assert queue.claim(max_attempts=3, stale_after=60) is None
+    failed = queue.get(9)
+    assert failed["status"] == "failed"
+    assert "maximale Versuche" in failed["error"]
+    assert queue.events()[0]["level"] == "error"
+
+
+def test_worker_refuses_download_when_archive_space_is_too_low(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    executable = tmp_path / "yt-dlp.exe"
+    executable.write_bytes(b"fake")
+    queue = ArchiveQueue(tmp_path / "queue.db")
+    queue.enqueue(11, "https://www.tiktok.com/@koch/video/123")
+    monkeypatch.setattr(
+        "video_archiver.worker.shutil.disk_usage",
+        lambda _path: SimpleNamespace(total=100, used=99, free=1),
+    )
+    monkeypatch.setattr(
+        "video_archiver.worker.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("Download darf ohne Speicherreserve nicht starten"),
+    )
+
+    result = VideoArchiver(
+        queue,
+        tmp_path / "archive",
+        str(executable),
+        max_attempts=1,
+        max_bytes=10,
+        free_space_reserve_bytes=10,
+    ).process_one()
+
+    assert result and result["status"] == "failed"
+    assert "Zu wenig freier Speicher" in result["error"]

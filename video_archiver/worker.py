@@ -32,8 +32,8 @@ _INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com"}
 # Das Archiv liegt hinter einem zugriffsgeschützten SMB-Share. Verzeichnisse
 # und fertige Sidecars/Videos müssen deshalb für den Samba-Prozess lesbar sein,
 # ohne Schreibrechte an andere lokale Benutzer zu vergeben.
-_ARCHIVE_DIR_MODE = 0o755
-_ARCHIVE_FILE_MODE = 0o644
+_ARCHIVE_DIR_MODE = 0o750
+_ARCHIVE_FILE_MODE = 0o640
 
 
 def normalize_supported_url(value: str) -> Optional[str]:
@@ -162,8 +162,33 @@ class ArchiveQueue:
 
     def claim(self, *, max_attempts: int = 3, stale_after: int = 3600) -> Optional[dict[str, Any]]:
         now = time.time()
+        stale_before = now - max(60, int(stale_after))
         with _connect(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            exhausted = connection.execute(
+                """
+                SELECT recipe_id FROM archive_jobs
+                 WHERE status='downloading' AND updated_at < ? AND attempts >= ?
+                """,
+                (stale_before, int(max_attempts)),
+            ).fetchall()
+            connection.execute(
+                """
+                UPDATE archive_jobs
+                   SET status='failed', error='Download abgebrochen; maximale Versuche erreicht',
+                       next_attempt_at=0, updated_at=?
+                 WHERE status='downloading' AND updated_at < ? AND attempts >= ?
+                """,
+                (now, stale_before, int(max_attempts)),
+            )
+            for stale in exhausted:
+                connection.execute(
+                    """
+                    INSERT INTO archive_events(recipe_id, level, message, created_at)
+                    VALUES (?, 'error', 'Festgefahrener Download endgültig fehlgeschlagen', ?)
+                    """,
+                    (int(stale["recipe_id"]), now),
+                )
             connection.execute(
                 """
                 UPDATE archive_jobs
@@ -171,7 +196,7 @@ class ArchiveQueue:
                        next_attempt_at=0, updated_at=?
                  WHERE status='downloading' AND updated_at < ? AND attempts < ?
                 """,
-                (now, now - max(60, int(stale_after)), int(max_attempts)),
+                (now, stale_before, int(max_attempts)),
             )
             row = connection.execute(
                 """
@@ -268,6 +293,7 @@ class VideoArchiver:
     timeout_seconds: int = 900
     max_attempts: int = 3
     max_bytes: int = 1_000_000_000
+    free_space_reserve_bytes: int = 512 * 1024 * 1024
 
     def __post_init__(self) -> None:
         archive = Path(self.archive_dir).expanduser().resolve()
@@ -285,6 +311,8 @@ class VideoArchiver:
         object.__setattr__(self, "ytdlp_path", executable)
         if int(self.max_bytes) <= 0:
             raise ValueError("max_bytes muss größer als 0 sein")
+        if int(self.free_space_reserve_bytes) < 0:
+            raise ValueError("free_space_reserve_bytes darf nicht negativ sein")
 
     def process_one(self) -> Optional[dict[str, Any]]:
         job = self.queue.claim(max_attempts=self.max_attempts)
@@ -314,8 +342,22 @@ class VideoArchiver:
         if final_video.exists() or final_metadata.exists():
             return self._accept_existing(recipe_id, normalized, final_video, final_metadata)
 
+        # Während der MP4-Rekodierung können Quelldatei und Ziel gleichzeitig
+        # existieren. Vor dem Start genug Platz für beides plus Reserve sichern.
+        required_free = (2 * int(self.max_bytes)) + int(self.free_space_reserve_bytes)
+        available_free = shutil.disk_usage(self.archive_dir).free
+        if available_free < required_free:
+            raise RuntimeError(
+                "Zu wenig freier Speicher für Videoarchivierung "
+                f"({available_free} verfügbar, {required_free} benötigt)"
+            )
+
         work_root = self.archive_dir / ".work"
         work_root.mkdir(parents=True, exist_ok=True)
+        try:
+            work_root.chmod(0o700)
+        except OSError:
+            pass
         with tempfile.TemporaryDirectory(prefix=f"{recipe_id}-", dir=work_root) as temp_name:
             temp_dir = Path(temp_name)
             output_template = temp_dir / "download.%(ext)s"

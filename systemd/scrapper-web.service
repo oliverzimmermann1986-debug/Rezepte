@@ -43,7 +43,7 @@ ProtectSystem=strict
 # /home/scrapper/. ProtectHome=true wäre komplett unsichtbar - mit
 # 'read-only' kann gelesen, aber nicht geschrieben werden.
 ProtectHome=read-only
-ReadWritePaths=/opt/scrapper /mnt
+ReadWritePaths=/opt/scrapper /mnt /etc/systemd/system/scrapper-job.timer
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
@@ -53,6 +53,10 @@ LockPersonality=true
 # Browser-Abruf langer TikTok-Captions.
 MemoryDenyWriteExecute=false
 RestrictSUIDSGID=true
+MemoryHigh=1536M
+MemoryMax=2G
+CPUQuota=200%
+TasksMax=512
 
 [Install]
 WantedBy=multi-user.target

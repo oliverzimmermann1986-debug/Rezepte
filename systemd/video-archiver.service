@@ -17,6 +17,7 @@ ExecStart=/opt/video-archiver/venv/bin/python -m video_archiver \
   --max-size-mb 1000 \
   --confirm-rights
 TimeoutStartSec=1800
+UMask=0027
 
 # Der Worker darf nur in Queue, Archiv und seinem temporären Bereich schreiben.
 NoNewPrivileges=true
@@ -30,6 +31,10 @@ ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=true
 RestrictSUIDSGID=true
+MemoryHigh=1536M
+MemoryMax=2G
+CPUQuota=200%
+TasksMax=128
 
 [Install]
 WantedBy=multi-user.target

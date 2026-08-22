@@ -33,6 +33,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout", type=int, default=900)
     run.add_argument("--max-attempts", type=int, default=3)
     run.add_argument("--max-size-mb", type=int, default=1000)
+    run.add_argument("--min-free-mb", type=int, default=512)
     run.add_argument(
         "--confirm-rights",
         action="store_true",
@@ -62,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout_seconds=args.timeout,
                 max_attempts=args.max_attempts,
                 max_bytes=args.max_size_mb * 1024 * 1024,
+                free_space_reserve_bytes=args.min_free_mb * 1024 * 1024,
             )
             result = worker.process_one() or {"status": "idle"}
         else:  # pragma: no cover - argparse verhindert diesen Zustand
