@@ -16,11 +16,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PrimaryButton, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import {
+  createIngredientRow,
+  createStepRow,
+  EditableIngredient,
+  EditableStep,
+} from '@/lib/editor-rows';
 import { optionalInteger, optionalNumber } from '@/lib/numbers';
-import { Ingredient, PendingItem, RecipeStep } from '@/lib/types';
-
-type EditableIngredient = Omit<Ingredient, 'amount'> & { amount?: number | string | null };
-type EditableStep = Omit<RecipeStep, 'timer_seconds'> & { timer_seconds?: number | string | null };
+import { PendingItem } from '@/lib/types';
 
 type Props = {
   item: PendingItem | null;
@@ -48,8 +51,8 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
     setCategory(suggestion.category?.trim() || 'Allgemein');
     setDescription(item.description || '');
     setServings(suggestion.servings ? String(suggestion.servings) : '');
-    setIngredients(suggestion.ingredients?.length ? suggestion.ingredients.map(value => ({ ...value, amount: value.amount == null ? '' : String(value.amount) })) : [{ name: '' }]);
-    setSteps(suggestion.steps?.length ? suggestion.steps.map(value => ({ ...value, timer_seconds: value.timer_seconds == null ? '' : String(value.timer_seconds) })) : [{ instruction: '' }]);
+    setIngredients(suggestion.ingredients?.length ? suggestion.ingredients.map(createIngredientRow) : [createIngredientRow()]);
+    setSteps(suggestion.steps?.length ? suggestion.steps.map(createStepRow) : [createStepRow()]);
     setVerified(false);
     setError('');
   }, [item]);
@@ -122,12 +125,12 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
             <View style={styles.section}>
               <Text style={sharedStyles.sectionTitle}>Zutaten</Text>
               {ingredients.map((ingredient, index) => (
-                <View key={index} style={styles.rowCard}>
+                <View key={ingredient.clientKey} style={styles.rowCard}>
                   <TextInput
                     placeholder={`Zutat ${index + 1}`}
                     placeholderTextColor={colors.muted}
                     value={ingredient.name}
-                    onChangeText={value => setIngredients(rows => rows.map((row, i) => i === index ? { ...row, name: value } : row))}
+                    onChangeText={value => setIngredients(rows => rows.map(row => row.clientKey === ingredient.clientKey ? { ...row, name: value } : row))}
                     style={sharedStyles.input}
                   />
                   <View style={styles.twoColumns}>
@@ -136,33 +139,33 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
                       placeholderTextColor={colors.muted}
                       keyboardType="decimal-pad"
                       value={ingredient.amount == null ? '' : String(ingredient.amount)}
-                      onChangeText={value => setIngredients(rows => rows.map((row, i) => i === index ? { ...row, amount: value } : row))}
+                      onChangeText={value => setIngredients(rows => rows.map(row => row.clientKey === ingredient.clientKey ? { ...row, amount: value } : row))}
                       style={[sharedStyles.input, styles.flex]}
                     />
                     <TextInput
                       placeholder="Einheit"
                       placeholderTextColor={colors.muted}
                       value={ingredient.unit || ''}
-                      onChangeText={value => setIngredients(rows => rows.map((row, i) => i === index ? { ...row, unit: value } : row))}
+                      onChangeText={value => setIngredients(rows => rows.map(row => row.clientKey === ingredient.clientKey ? { ...row, unit: value } : row))}
                       style={[sharedStyles.input, styles.flex]}
                     />
                   </View>
-                  <Pressable onPress={() => setIngredients(rows => rows.filter((_, i) => i !== index))}><Text style={styles.remove}>Entfernen</Text></Pressable>
+                  <Pressable onPress={() => setIngredients(rows => rows.filter(row => row.clientKey !== ingredient.clientKey))}><Text style={styles.remove}>Entfernen</Text></Pressable>
                 </View>
               ))}
-              <PrimaryButton label="+ Zutat" onPress={() => setIngredients(rows => [...rows, { name: '' }])} />
+              <PrimaryButton label="+ Zutat" onPress={() => setIngredients(rows => [...rows, createIngredientRow()])} />
             </View>
 
             <View style={styles.section}>
               <Text style={sharedStyles.sectionTitle}>Zubereitung</Text>
               {steps.map((step, index) => (
-                <View key={index} style={styles.rowCard}>
+                <View key={step.clientKey} style={styles.rowCard}>
                   <TextInput
                     multiline
                     placeholder={`Schritt ${index + 1}`}
                     placeholderTextColor={colors.muted}
                     value={step.instruction}
-                    onChangeText={value => setSteps(rows => rows.map((row, i) => i === index ? { ...row, instruction: value } : row))}
+                    onChangeText={value => setSteps(rows => rows.map(row => row.clientKey === step.clientKey ? { ...row, instruction: value } : row))}
                     style={[sharedStyles.input, styles.stepInput]}
                   />
                   <TextInput
@@ -170,13 +173,13 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
                     placeholderTextColor={colors.muted}
                     keyboardType="number-pad"
                     value={step.timer_seconds == null ? '' : String(step.timer_seconds)}
-                    onChangeText={value => setSteps(rows => rows.map((row, i) => i === index ? { ...row, timer_seconds: value } : row))}
+                    onChangeText={value => setSteps(rows => rows.map(row => row.clientKey === step.clientKey ? { ...row, timer_seconds: value } : row))}
                     style={sharedStyles.input}
                   />
-                  <Pressable onPress={() => setSteps(rows => rows.filter((_, i) => i !== index))}><Text style={styles.remove}>Entfernen</Text></Pressable>
+                  <Pressable onPress={() => setSteps(rows => rows.filter(row => row.clientKey !== step.clientKey))}><Text style={styles.remove}>Entfernen</Text></Pressable>
                 </View>
               ))}
-              <PrimaryButton label="+ Schritt" onPress={() => setSteps(rows => [...rows, { instruction: '' }])} />
+              <PrimaryButton label="+ Schritt" onPress={() => setSteps(rows => [...rows, createStepRow()])} />
             </View>
 
             <Pressable

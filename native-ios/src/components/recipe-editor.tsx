@@ -15,11 +15,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PrimaryButton } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import {
+  createIngredientRow,
+  createStepRow,
+  EditableIngredient,
+  EditableStep,
+} from '@/lib/editor-rows';
 import { optionalInteger, optionalNumber } from '@/lib/numbers';
 import { Ingredient, RecipeStep } from '@/lib/types';
-
-type EditableIngredient = Omit<Ingredient, 'amount'> & { amount?: number | string | null };
-type EditableStep = Omit<RecipeStep, 'timer_seconds'> & { timer_seconds?: number | string | null };
 
 type Props = {
   recipeId: number;
@@ -39,8 +42,8 @@ export function RecipeEditor({ recipeId, kind, ingredients, steps, visible, onCl
 
   useEffect(() => {
     if (!visible) return;
-    setIngredientRows(ingredients.length ? ingredients.map(item => ({ ...item, amount: item.amount == null ? '' : String(item.amount) })) : [{ name: '' }]);
-    setStepRows(steps.length ? steps.map(item => ({ ...item, timer_seconds: item.timer_seconds == null ? '' : String(item.timer_seconds) })) : [{ instruction: '' }]);
+    setIngredientRows(ingredients.length ? ingredients.map(createIngredientRow) : [createIngredientRow()]);
+    setStepRows(steps.length ? steps.map(createStepRow) : [createStepRow()]);
     setError('');
   }, [ingredients, steps, visible]);
 
@@ -94,13 +97,13 @@ export function RecipeEditor({ recipeId, kind, ingredients, steps, visible, onCl
             {kind === 'ingredients' ? (
               <>
                 {ingredientRows.map((item, index) => (
-                  <View key={index} style={styles.rowCard}>
+                  <View key={item.clientKey} style={styles.rowCard}>
                     <Text style={styles.number}>{index + 1}</Text>
                     <TextInput
                       placeholder="Zutat"
                       placeholderTextColor={colors.muted}
                       value={item.name}
-                      onChangeText={name => setIngredientRows(rows => rows.map((row, i) => i === index ? { ...row, name } : row))}
+                      onChangeText={name => setIngredientRows(rows => rows.map(row => row.clientKey === item.clientKey ? { ...row, name } : row))}
                       style={[styles.input, styles.nameInput]}
                     />
                     <View style={styles.amountRow}>
@@ -109,37 +112,37 @@ export function RecipeEditor({ recipeId, kind, ingredients, steps, visible, onCl
                         placeholderTextColor={colors.muted}
                         keyboardType="decimal-pad"
                         value={item.amount == null ? '' : String(item.amount)}
-                        onChangeText={value => setIngredientRows(rows => rows.map((row, i) => i === index ? { ...row, amount: value } : row))}
+                        onChangeText={value => setIngredientRows(rows => rows.map(row => row.clientKey === item.clientKey ? { ...row, amount: value } : row))}
                         style={[styles.input, styles.flex]}
                       />
                       <TextInput
                         placeholder="Einheit"
                         placeholderTextColor={colors.muted}
                         value={item.unit || ''}
-                        onChangeText={unit => setIngredientRows(rows => rows.map((row, i) => i === index ? { ...row, unit } : row))}
+                        onChangeText={unit => setIngredientRows(rows => rows.map(row => row.clientKey === item.clientKey ? { ...row, unit } : row))}
                         style={[styles.input, styles.flex]}
                       />
                     </View>
                     <Pressable
-                      onPress={() => setIngredientRows(rows => rows.filter((_, i) => i !== index))}
+                      onPress={() => setIngredientRows(rows => rows.filter(row => row.clientKey !== item.clientKey))}
                       hitSlop={8}>
                       <Text style={styles.remove}>Entfernen</Text>
                     </Pressable>
                   </View>
                 ))}
-                <PrimaryButton label="+ Zutat" onPress={() => setIngredientRows(rows => [...rows, { name: '' }])} />
+                <PrimaryButton label="+ Zutat" onPress={() => setIngredientRows(rows => [...rows, createIngredientRow()])} />
               </>
             ) : (
               <>
                 {stepRows.map((item, index) => (
-                  <View key={index} style={styles.rowCard}>
+                  <View key={item.clientKey} style={styles.rowCard}>
                     <Text style={styles.number}>Schritt {index + 1}</Text>
                     <TextInput
                       multiline
                       placeholder="Zubereitung beschreiben"
                       placeholderTextColor={colors.muted}
                       value={item.instruction}
-                      onChangeText={instruction => setStepRows(rows => rows.map((row, i) => i === index ? { ...row, instruction } : row))}
+                      onChangeText={instruction => setStepRows(rows => rows.map(row => row.clientKey === item.clientKey ? { ...row, instruction } : row))}
                       style={[styles.input, styles.multiline]}
                     />
                     <TextInput
@@ -147,15 +150,15 @@ export function RecipeEditor({ recipeId, kind, ingredients, steps, visible, onCl
                       placeholderTextColor={colors.muted}
                       keyboardType="number-pad"
                       value={item.timer_seconds == null ? '' : String(item.timer_seconds)}
-                      onChangeText={value => setStepRows(rows => rows.map((row, i) => i === index ? { ...row, timer_seconds: value } : row))}
+                      onChangeText={value => setStepRows(rows => rows.map(row => row.clientKey === item.clientKey ? { ...row, timer_seconds: value } : row))}
                       style={styles.input}
                     />
-                    <Pressable onPress={() => setStepRows(rows => rows.filter((_, i) => i !== index))} hitSlop={8}>
+                    <Pressable onPress={() => setStepRows(rows => rows.filter(row => row.clientKey !== item.clientKey))} hitSlop={8}>
                       <Text style={styles.remove}>Entfernen</Text>
                     </Pressable>
                   </View>
                 ))}
-                <PrimaryButton label="+ Schritt" onPress={() => setStepRows(rows => [...rows, { instruction: '' }])} />
+                <PrimaryButton label="+ Schritt" onPress={() => setStepRows(rows => [...rows, createStepRow()])} />
               </>
             )}
             {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
