@@ -498,9 +498,9 @@ def _apply_finding_internal(finding_id: int) -> Dict[str, Any]:
     """Wendet einen KI-Vorschlag tatsächlich an. Wird vom HTTP-Endpoint
     /finding/{id}/apply UND vom Bulk-Endpoint /findings/apply-all genutzt.
     Raised HTTPException bei Fehler (HTTP-Routes propagieren; Bulk fängt ab)."""
-    import json as _json
-    import shutil as _sh
     from pathlib import Path
+    from ..recipes.manage import safe_update_recipe_metadata
+
     db = get_db()
 
     with db.conn() as c:
@@ -548,22 +548,23 @@ def _apply_finding_internal(finding_id: int) -> Dict[str, Any]:
     if not suggested:
         raise HTTPException(400, "Vorschlag leer — nichts anzuwenden")
 
-    new_path: Path
-    db_updates: Dict[str, Any] = {}
+    recipe = db.recipe_get(int(finding["recipe_id"]))
+    if not recipe:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    next_name = str(recipe.get("name") or "").strip()
+    next_type = str(recipe.get("type") or "").strip()
+    next_category = str(recipe.get("category") or "").strip()
+    target_folder_override: Optional[str] = None
 
     if ftype == "name_mismatch":
-        safe = _sanitize_folder_name(suggested)
-        new_path = old_path.parent / safe
-        if new_path.exists() and new_path != old_path:
-            raise HTTPException(409, f"Ziel-Folder existiert: {new_path}")
-        db_updates = {"name": suggested, "folder_path": str(new_path)}
+        next_name = suggested
 
     elif ftype == "folder_mismatch":
         safe = _sanitize_folder_name(suggested)
         new_path = old_path.parent / safe
         if new_path.exists() and new_path != old_path:
             raise HTTPException(409, f"Ziel-Folder existiert: {new_path}")
-        db_updates = {"folder_path": str(new_path)}
+        target_folder_override = str(new_path)
 
     elif ftype == "category_mismatch":
         parts = suggested.split("/", 1)
@@ -585,36 +586,42 @@ def _apply_finding_internal(finding_id: int) -> Dict[str, Any]:
             raise HTTPException(400, "Vorgeschlagener Zielpfad hat keine Rezeptordner-Struktur")
         if new_path.exists() and new_path != old_path:
             raise HTTPException(409, f"Ziel-Folder existiert: {new_path}")
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-        db_updates = {
-            "type": new_type, "category": new_category, "folder_path": str(new_path),
-        }
+        next_type = new_type
+        next_category = new_category
     else:
         raise HTTPException(400, f"Unbekannter finding_type: {ftype}")
 
-    # FS-Move
-    if new_path != old_path:
-        try:
-            _sh.move(str(old_path), str(new_path))
-        except Exception as e:
-            raise HTTPException(500, f"FS-Move failed: {e}")
+    # Auch automatisch angewendete KI-Vorschläge sind rückgängig zu machen.
+    try:
+        version_id = db.recipe_version_create(
+            int(finding["recipe_id"]),
+            created_by="system",
+            source="audit",
+            reason=f"Audit-Vorschlag angewendet: {ftype}",
+        )
+    except Exception as exc:
+        logger.exception("Audit-Snapshot für Finding #%s fehlgeschlagen", finding_id)
+        raise HTTPException(500, "Änderung abgebrochen: Snapshot fehlgeschlagen") from exc
+    if version_id is None:
+        raise HTTPException(404, "Rezept nicht gefunden")
 
-    set_clause = ", ".join(f"{k}=?" for k in db_updates.keys())
-    params = list(db_updates.values()) + [finding["recipe_id"]]
-    with db.conn() as c:
-        c.execute(f"UPDATE recipes SET {set_clause} WHERE id=?", params)
-
-    if ftype == "name_mismatch":
-        info_file = new_path / "info.json"
-        if info_file.exists():
-            try:
-                info = _json.loads(info_file.read_text(encoding="utf-8"))
-                info["name"] = suggested
-                info_file.write_text(
-                    _json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-            except Exception as e:
-                logger.warning(f"info.json-Update failed für #{finding['recipe_id']}: {e}")
+    try:
+        result = safe_update_recipe_metadata(
+            db,
+            int(finding["recipe_id"]),
+            name=next_name,
+            recipe_type=next_type,
+            category=next_category,
+            description=str(recipe.get("description") or ""),
+            servings=recipe.get("servings"),
+            url=recipe.get("url"),
+            target_folder_override=target_folder_override,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    new_path = Path(str(result.get("folder_path") or old_path))
 
     db.audit_ai_finding_resolve(finding_id)
     logger.info(

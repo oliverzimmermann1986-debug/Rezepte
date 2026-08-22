@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from tests.conftest import _create_recipe
 
 
@@ -86,3 +89,50 @@ def test_category_finding_cannot_escape_recipe_root(
     assert response.status_code == 400
     assert folder.is_dir()
     assert not (tmp_path / "Ausbruch").exists()
+
+
+def test_name_finding_uses_versioned_consistent_metadata_update(
+    client, test_db, tmp_path, monkeypatch
+):
+    from app.routes import api_audit
+    from app.recipes import manage
+
+    root = tmp_path / "recipes"
+    folder = root / "Hauptgericht" / "Pasta" / "Alter_Name"
+    folder.mkdir(parents=True)
+    (folder / "info.json").write_text(
+        json.dumps({"name": "Alter Name", "type": "Hauptgericht", "category": "Pasta"}),
+        encoding="utf-8",
+    )
+    recipe = _create_recipe(
+        test_db,
+        name="Alter Name",
+        folder_path=str(folder.resolve()),
+        type="Hauptgericht",
+        category="Pasta",
+        description="Beschreibung",
+    )
+    test_db.audit_ai_finding_set(
+        recipe["id"],
+        "name_mismatch",
+        "Alter Name",
+        "Neuer Name",
+        "Test",
+    )
+    finding = test_db.audit_ai_findings_list("name_mismatch")[0]
+    monkeypatch.setattr(api_audit, "get_config", lambda: _RecipeRootConfig(root))
+    monkeypatch.setattr(manage, "get_config", lambda: _RecipeRootConfig(root))
+
+    response = client.post(f"/api/audit/finding/{finding['id']}/apply")
+
+    assert response.status_code == 200, response.text
+    target = root / "Hauptgericht" / "Pasta" / "Neuer_Name"
+    assert target.is_dir()
+    assert not folder.exists()
+    updated = test_db.recipe_get(recipe["id"])
+    assert updated["name"] == "Neuer Name"
+    assert Path(updated["folder_path"]) == target.resolve()
+    assert json.loads((target / "info.json").read_text(encoding="utf-8"))["name"] == "Neuer Name"
+    versions = test_db.recipe_versions_list(recipe_id=recipe["id"])
+    assert len(versions) == 1
+    assert versions[0]["source"] == "audit"
