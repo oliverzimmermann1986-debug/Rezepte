@@ -1199,8 +1199,8 @@ class ScraperJob:
                 else:
                     info["wedding_category"] = new_category
                 info["edited_at"] = datetime.now().isoformat()
-                with open(info_file, "w", encoding="utf-8") as f:
-                    json.dump(info, f, indent=2, ensure_ascii=False)
+                from ..core.safety import atomic_write_json
+                atomic_write_json(info_file, info)
             except Exception as e:
                 logger.warning(f"info.json update: {e}")
 

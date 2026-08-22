@@ -136,7 +136,7 @@ def sync_filesystem(db: Optional[Database] = None) -> dict:
     return counters
 
 
-def _safe_iterdir(p: Path):
+def _safe_iterdir_checked(p: Path):
     """Sicheres ``iterdir`` ohne Symlink-Folgen.
 
     Der Rezeptbaum ist ein Datenimport-Grenzbereich. Ein dort platzierter
@@ -150,10 +150,15 @@ def _safe_iterdir(p: Path):
                 logger.warning("Indexer überspringt Symlink: %s", child)
                 continue
             items.append(child)
-        return items
+        return items, True
     except (PermissionError, FileNotFoundError, OSError) as e:
         logger.warning(f"iterdir({p}): {e}")
-        return []
+        return [], False
+
+
+def _safe_iterdir(p: Path):
+    items, _ok = _safe_iterdir_checked(p)
+    return items
 
 
 def _try_media_extract(folder: Path, analyzer) -> Optional[str]:
@@ -217,12 +222,14 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
     info_file = folder / "info.json"
     desc_file = folder / "description.txt"
 
+    preserve_existing = set()
     info = {}
     if info_file.exists():
         try:
             info = json.loads(info_file.read_text(encoding="utf-8"))
         except Exception as e:
             logger.warning(f"info.json kaputt in {folder}: {e}")
+            preserve_existing.update(("name", "url"))
 
     description = None
     if desc_file.exists():
@@ -230,6 +237,11 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
             description = desc_file.read_text(encoding="utf-8").strip()
         except Exception as e:
             logger.warning(f"description.txt unlesbar in {folder}: {e}")
+            preserve_existing.add("description")
+
+    folder_items, folder_scan_ok = _safe_iterdir_checked(folder)
+    if not folder_scan_ok:
+        preserve_existing.update(("description", "thumb_filename", "video_filename"))
 
     # Fallback: wenn description.txt fehlt oder leer ist, prüfe ob es eine
     # andere .txt-Datei im Folder gibt. Häufige Fälle:
@@ -242,7 +254,7 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
     # Backup vom Original, der deutsche Pfad steckt schon in description.txt.
     if not description:
         candidates = [
-            f for f in _safe_iterdir(folder)
+            f for f in folder_items
             if f.is_file() and f.suffix.lower() == ".txt"
             and f.name not in ("description.txt", "description_original.txt")
         ]
@@ -273,7 +285,7 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
     # Thumb + Video raussuchen — Pattern: gleicher Stamm wie folder.name
     thumb = None
     video = None
-    for f in _safe_iterdir(folder):
+    for f in folder_items:
         if not f.is_file():
             continue
         suffix = f.suffix.lower()
@@ -307,6 +319,7 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
         thumb_filename=thumb,
         video_filename=video,
         source_added_at=source_added_at,
+        preserve_existing=preserve_existing,
     )
     return "updated" if existed else "added"
 

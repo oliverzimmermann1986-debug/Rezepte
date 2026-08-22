@@ -1327,6 +1327,7 @@ class Database:
         thumb_filename: Optional[str],
         video_filename: Optional[str],
         source_added_at: Optional[float],
+        preserve_existing: Iterable[str] = (),
     ) -> int:
         """Legt einen Recipe-Eintrag an oder aktualisiert ihn (Key: folder_path).
         Zutaten-Status wird NICHT überschrieben — ein bereits extrahiertes
@@ -1339,6 +1340,7 @@ class Database:
                 (folder_path,),
             ).fetchone()
             if existing:
+                preserve = set(preserve_existing)
                 # Wenn der vorherige Sweep das Rezept auf 'skipped' gesetzt hat
                 # (weil keine description gefunden wurde) und JETZT eine
                 # description da ist (z.B. Fallback-Read findet caption.txt),
@@ -1349,8 +1351,19 @@ class Database:
                     description and len(description.strip()) >= 20
                     and existing["ingredients_status"] == "skipped"
                 )
-                sql = ("UPDATE recipes SET url=?, name=?, type=?, category=?, "
-                       "description=?, thumb_filename=?, video_filename=?, "
+                assignments = []
+                update_params: List[Any] = []
+                for field, value in (
+                    ("url", url), ("name", name), ("type", type),
+                    ("category", category), ("description", description),
+                    ("thumb_filename", thumb_filename),
+                    ("video_filename", video_filename),
+                ):
+                    if field in preserve:
+                        continue
+                    assignments.append(f"{field}=?")
+                    update_params.append(value)
+                sql = ("UPDATE recipes SET " + ", ".join(assignments) + ", "
                        "source_added_at=COALESCE(?, source_added_at)"
                        + (
                            ", ingredients_status='pending', "
@@ -1359,11 +1372,7 @@ class Database:
                            if reset_status else ""
                        )
                        + " WHERE id=?")
-                c.execute(sql,
-                    (url, name, type, category, description,
-                     thumb_filename, video_filename, source_added_at,
-                     existing["id"]),
-                )
+                c.execute(sql, (*update_params, source_added_at, existing["id"]))
                 return int(existing["id"])
             cur = c.execute(
                 "INSERT INTO recipes (url, name, type, category, folder_path, "

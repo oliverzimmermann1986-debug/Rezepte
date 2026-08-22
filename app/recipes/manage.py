@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..config_store import get_config
+from ..core.safety import atomic_write_json
 from ..db import Database
 
 logger = logging.getLogger(__name__)
@@ -123,9 +124,21 @@ def safe_rename_recipe(
     }
 
     if not rename_folder:
-        # Nur Display-Name. info.json bleibt unangetastet — dort steht
-        # der Original-Name beim Scrape. Das ist OK; der User wollte
-        # eben NICHT den Folder umbenennen.
+        # Der Ordnername bleibt unverändert, der Display-Name muss aber auch
+        # im Sidecar stehen. Sonst setzt der nächste FS-Sync den User-Edit
+        # wieder auf den alten importierten Namen zurück.
+        if old_folder:
+            info_file = Path(old_folder) / "info.json"
+            if info_file.parent.exists():
+                try:
+                    info = (
+                        json.loads(info_file.read_text(encoding="utf-8"))
+                        if info_file.exists() else {}
+                    )
+                    info["name"] = new_name
+                    atomic_write_json(info_file, info)
+                except Exception as e:
+                    raise RuntimeError(f"info.json konnte nicht aktualisiert werden: {e}") from e
         with db.conn() as c:
             c.execute("UPDATE recipes SET name=? WHERE id=?", (new_name, recipe_id))
         logger.info(f"Recipe #{recipe_id}: name '{old_name}' → '{new_name}' (FS unverändert)")
@@ -188,10 +201,7 @@ def safe_rename_recipe(
         try:
             info = json.loads(info_file.read_text(encoding="utf-8"))
             info["name"] = new_name
-            info_file.write_text(
-                json.dumps(info, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            atomic_write_json(info_file, info)
         except Exception as e:
             logger.warning(f"Recipe #{recipe_id}: info.json update failed: {e}")
 
