@@ -110,9 +110,23 @@ def _run_scraper_thread(job_id: int):
 def run_scraper():
     if not _locks["scraper"].acquire(blocking=False):
         raise HTTPException(409, "Scraper läuft bereits")
-    job_id = get_db().job_start("scraper")
-    t = threading.Thread(target=_run_scraper_thread, args=(job_id,), daemon=True)
-    t.start()
+    job_id = None
+    try:
+        job_id = get_db().job_start("scraper")
+        t = threading.Thread(target=_run_scraper_thread, args=(job_id,), daemon=True)
+        t.start()
+    except Exception as exc:
+        # Der Worker kann den In-Process-Lock erst in seinem finally lösen,
+        # wenn er tatsächlich gestartet wurde. Fehler davor dürfen keinen
+        # dauerhaften 409 bis zum nächsten Prozessneustart hinterlassen.
+        if job_id is not None:
+            try:
+                get_db().job_finish(job_id, "error", {"error": f"start failed: {exc}"})
+            except Exception:
+                pass
+        _locks["scraper"].release()
+        logger.exception("Scraper-Thread konnte nicht gestartet werden")
+        raise HTTPException(500, "Scraper konnte nicht gestartet werden") from exc
     return {"ok": True, "job_id": job_id}
 
 

@@ -90,13 +90,25 @@ def request_sync(
             "run_id": int(_state.get("run_id") or 0) + 1,
         })
         run_id = int(_state["run_id"])
-        _thread = threading.Thread(
-            target=_run_sync,
-            kwargs={"run_id": run_id, "db": db},
-            name=f"recipe-fs-sync-{run_id}",
-            daemon=True,
-        )
-        _thread.start()
+        try:
+            _thread = threading.Thread(
+                target=_run_sync,
+                kwargs={"run_id": run_id, "db": db},
+                name=f"recipe-fs-sync-{run_id}",
+                daemon=True,
+            )
+            _thread.start()
+        except Exception as exc:
+            _thread = None
+            _state.update({
+                "running": False,
+                "queued": False,
+                "finished_at": time.time(),
+                "result": None,
+                "error": f"thread start failed: {type(exc).__name__}: {exc}",
+            })
+            logger.exception("recipe filesystem sync thread could not start")
+            raise
         state = deepcopy(_state)
         state.update({"accepted": True, "already_running": False, "skipped": False})
         return state
