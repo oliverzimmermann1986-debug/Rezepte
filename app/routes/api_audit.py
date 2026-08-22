@@ -283,8 +283,17 @@ def get_audit(
         "unverified_count": len(unverified),
         "failed_download_count": len(legacy_failures),
     }
+    # SQLite kann beim ersten Öffnen/Schließen einer WAL-Verbindung bereits
+    # Dateimetadaten ändern. Deshalb den fertigen Read-Snapshot unter der
+    # Revision NACH dem Audit ablegen; der unmittelbar folgende Read trifft
+    # dann denselben Schlüssel, echte spätere Writes invalidieren weiterhin.
+    completed_cache_key = (
+        bool(with_ai),
+        round(float(similarity), 4),
+        _audit_db_revision(db),
+    )
     with _audit_cache_lock:
-        _audit_cache[cache_key] = (time.monotonic(), copy.deepcopy(result))
+        _audit_cache[completed_cache_key] = (time.monotonic(), copy.deepcopy(result))
         # Die Key-Anzahl bleibt klein, trotzdem abgelaufene Varianten entfernen.
         expired = [
             key for key, (created, _) in _audit_cache.items()
