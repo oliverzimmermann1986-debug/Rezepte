@@ -12,6 +12,12 @@ WorkingDirectory=/opt/scrapper
 Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
 Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
 Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/scrapper/playwright-browsers"
+# Sicherer Default: nur ein lokaler Reverse-Proxy darf Uvicorns Forwarded-
+# Header auswerten. Bei einem separaten cloudflared-LXC exakt dessen IP in
+# /opt/scrapper/data/web.env setzen, z.B.
+# SCRAPPER_FORWARDED_ALLOW_IPS=192.168.1.31
+Environment="SCRAPPER_FORWARDED_ALLOW_IPS=127.0.0.1"
+EnvironmentFile=-/opt/scrapper/data/web.env
 # Begrenzung pro OCR-Prozess; verhindert CPU-/RAM-Spitzen bei PDF-Bestandsläufen.
 Environment="OMP_THREAD_LIMIT=1"
 # Bind-Adresse:
@@ -23,7 +29,7 @@ Environment="OMP_THREAD_LIMIT=1"
 # eine LAN-Firewall die Port 8000 nur für die cloudflared-Container-IP öffnet.
 # --proxy-headers + --forwarded-allow-ips lässt FastAPI dem CF-Tunnel die echte
 # Client-IP via X-Forwarded-For/CF-Connecting-IP zuordnen.
-ExecStart=/opt/scrapper/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*
+ExecStart=/opt/scrapper/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=${SCRAPPER_FORWARDED_ALLOW_IPS}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
