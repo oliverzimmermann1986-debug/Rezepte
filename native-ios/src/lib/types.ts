@@ -112,8 +112,10 @@ export type MealPlanDay = {
 
 export type MealPlan = {
   week_start: string;
+  week_end?: string;
   previous_week: string;
   next_week: string;
+  is_current_week?: boolean;
   days: MealPlanDay[];
   summary: { planned_meals: number; planned_days: number; shopping_items: number };
 };

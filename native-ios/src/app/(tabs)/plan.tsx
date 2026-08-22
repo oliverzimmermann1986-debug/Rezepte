@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
+import * as Sharing from 'expo-sharing';
 import {
   ActivityIndicator,
   Alert,
@@ -16,7 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrimaryButton, StateView } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
-import { api } from '@/lib/api';
+import { api, deleteCachedFile, downloadFileToCache } from '@/lib/api';
 import { apiCached } from '@/lib/cache';
 import { MealPlan, MealPlanDay, MealPlanItem, RecipeListItem } from '@/lib/types';
 
@@ -28,6 +29,7 @@ export default function PlanScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [selectedDay, setSelectedDay] = useState<MealPlanDay | null>(null);
   const activeLoad = useRef<AbortController | null>(null);
   const loadGeneration = useRef(0);
@@ -110,6 +112,29 @@ export default function PlanScreen() {
     }
   }
 
+  async function sharePlanPdf() {
+    if (!plan) return;
+    setPdfBusy(true);
+    let localUri = '';
+    try {
+      localUri = await downloadFileToCache(
+        `/api/meal-plan/pdf?week_start=${encodeURIComponent(plan.week_start)}`,
+        `wochenplan-${plan.week_start}.pdf`,
+      );
+      if (!await Sharing.isAvailableAsync()) throw new Error('Teilen ist auf diesem Gerät nicht verfügbar.');
+      await Sharing.shareAsync(localUri, {
+        mimeType: 'application/pdf',
+        UTI: 'com.adobe.pdf',
+        dialogTitle: `Wochenplan ab ${plan.week_start}`,
+      });
+    } catch (reason) {
+      Alert.alert('PDF nicht geteilt', reason instanceof Error ? reason.message : 'Download fehlgeschlagen');
+    } finally {
+      if (localUri) await deleteCachedFile(localUri).catch(() => undefined);
+      setPdfBusy(false);
+    }
+  }
+
   if (loading && !plan) {
     return <SafeAreaView style={styles.safe}><StateView title="Wochenplan wird geladen" loading /></SafeAreaView>;
   }
@@ -135,6 +160,11 @@ export default function PlanScreen() {
           <Text style={styles.navText}>Nächste ›</Text>
         </Pressable>
       </View>
+      {!plan?.is_current_week && (
+        <Pressable accessibilityRole="button" disabled={loading} onPress={() => load('')} style={styles.todayButton}>
+          <Text style={styles.todayText}>Zur aktuellen Woche</Text>
+        </Pressable>
+      )}
       <FlatList
         data={plan?.days || []}
         keyExtractor={day => day.date}
@@ -175,6 +205,11 @@ export default function PlanScreen() {
               label="Wocheneinkauf erstellen"
               onPress={createCart}
               disabled={!plan?.summary.shopping_items}
+            />
+            <PrimaryButton
+              label={pdfBusy ? 'PDF wird vorbereitet …' : 'Wochenplan als PDF teilen'}
+              onPress={sharePlanPdf}
+              disabled={pdfBusy || !plan?.summary.planned_meals}
             />
           </View>
         }
@@ -343,6 +378,8 @@ const styles = StyleSheet.create({
   navButton: { minHeight: 44, justifyContent: 'center' },
   navText: { color: colors.text, fontWeight: '700' },
   weekText: { color: colors.muted, fontSize: 13 },
+  todayButton: { minHeight: 44, alignSelf: 'center', justifyContent: 'center', paddingHorizontal: space.md },
+  todayText: { color: colors.text, fontSize: 13, fontWeight: '800' },
   list: { padding: space.md, paddingTop: 6, paddingBottom: 120 },
   day: {
     padding: 14,

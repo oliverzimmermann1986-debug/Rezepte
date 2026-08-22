@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -43,6 +44,16 @@ export default function LoginScreen() {
       setError(reason instanceof ApiError ? reason.message : 'Verbindung zum Server fehlgeschlagen.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function openPrivacy() {
+    try {
+      const parsed = new URL(server.trim());
+      if (parsed.protocol !== 'https:') throw new Error();
+      await Linking.openURL(`${parsed.origin}/privacy`);
+    } catch {
+      setError('Für den Datenschutz-Link wird eine gültige HTTPS-Serveradresse benötigt.');
     }
   }
 
@@ -135,6 +146,9 @@ export default function LoginScreen() {
             disabled={busy || !server.trim() || !username.trim() || !password}
           />
           <Text style={styles.privacy}>Passwort wird nicht gespeichert. Sitzung und Gerätezugang liegen im iOS-Schlüsselbund.</Text>
+          <Pressable accessibilityRole="link" onPress={() => void openPrivacy()} style={styles.privacyLinkButton}>
+            <Text style={styles.privacyLink}>Datenschutzhinweise ansehen</Text>
+          </Pressable>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -187,4 +201,6 @@ const styles = StyleSheet.create({
   cloudflareHint: { color: colors.muted, fontSize: 12, lineHeight: 17 },
   error: { color: colors.danger, lineHeight: 20 },
   privacy: { color: colors.muted, textAlign: 'center', fontSize: 12, lineHeight: 17 },
+  privacyLinkButton: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  privacyLink: { color: colors.text, fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' },
 });
