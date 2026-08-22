@@ -8,6 +8,11 @@ on:
         required: false
         default: false
         type: boolean
+      verify_build_number:
+        description: "Vorhandenen TestFlight-Build prüfen und interner Gruppe zuordnen"
+        required: false
+        default: ""
+        type: string
   push:
     paths:
       - "native-ios/**"
@@ -127,6 +132,80 @@ jobs:
 
       - name: Build and submit to TestFlight
         run: npx eas-cli@22.2.0 build --platform ios --profile production --non-interactive --wait --auto-submit
+
+      - name: Resolve submitted build number
+        id: submitted-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          builds="$(npx eas-cli@22.2.0 build:list --platform ios --status finished --limit 20 --json --non-interactive)"
+          build_number="$(printf '%s' "$builds" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const builds = JSON.parse(input);
+              const match = builds.find(build =>
+                build.gitCommitHash === process.env.GITHUB_SHA &&
+                build.buildProfile === "production" &&
+                build.appBuildVersion
+              );
+              if (!match) process.exit(1);
+              process.stdout.write(String(match.appBuildVersion));
+            });
+          ')"
+          echo "number=$build_number" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Apple processing and internal TestFlight access
+        env:
+          ASC_API_ISSUER_ID: "8bb7819b-3e6b-4314-a0e6-8571ed1957c0"
+          ASC_API_KEY_ID: "GV6ZWDDMXJ"
+          ASC_API_KEY_PATH: ".eas/AuthKey_GV6ZWDDMXJ.p8"
+          ASC_APP_ID: "6803595058"
+          ASC_BETA_GROUP_ID: ${{ vars.ASC_BETA_GROUP_ID || '5b41ef54-1e4f-4c3b-98e6-294d6db16233' }}
+          ASC_BUILD_NUMBER: ${{ steps.submitted-build.outputs.number }}
+        run: node scripts/testflight-ensure.mjs
+
+      - name: Remove temporary signing files
+        if: always()
+        shell: bash
+        run: rm -f .eas/AuthKey_GV6ZWDDMXJ.p8
+
+  verify-existing-testflight-build:
+    name: Verify existing TestFlight build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_build_number != '' }}
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: testflight
+    defaults:
+      run:
+        working-directory: native-ios
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.4
+
+      - name: Prepare temporary App Store Connect key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .eas
+          echo -n "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" | base64 --decode > .eas/AuthKey_GV6ZWDDMXJ.p8
+          chmod 600 .eas/AuthKey_GV6ZWDDMXJ.p8
+
+      - name: Verify Apple processing and internal TestFlight access
+        env:
+          ASC_API_ISSUER_ID: "8bb7819b-3e6b-4314-a0e6-8571ed1957c0"
+          ASC_API_KEY_ID: "GV6ZWDDMXJ"
+          ASC_API_KEY_PATH: ".eas/AuthKey_GV6ZWDDMXJ.p8"
+          ASC_APP_ID: "6803595058"
+          ASC_BETA_GROUP_ID: ${{ vars.ASC_BETA_GROUP_ID || '5b41ef54-1e4f-4c3b-98e6-294d6db16233' }}
+          ASC_BUILD_NUMBER: ${{ inputs.verify_build_number }}
+        run: node scripts/testflight-ensure.mjs
 
       - name: Remove temporary signing files
         if: always()
