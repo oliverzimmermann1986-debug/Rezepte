@@ -96,6 +96,11 @@ install -m 0644 "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/scra
 install -m 0644 "$APP_DIR/systemd/scrapper-job.timer" /etc/systemd/system/scrapper-job.timer
 install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.service" /etc/systemd/system/scrapper-db-backup.service
 install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.timer" /etc/systemd/system/scrapper-db-backup.timer
+install -m 0644 "$APP_DIR/systemd/49-scrapper-systemctl.rules" \
+  /etc/polkit-1/rules.d/49-scrapper-systemctl.rules
+rm -f /etc/sudoers.d/scrapper
+chgrp "$APP_USER" /etc/systemd/system/scrapper-job.timer
+chmod 0664 /etc/systemd/system/scrapper-job.timer
 
 mkdir -p "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" "$APP_DIR/files/rezepte"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" "$APP_DIR/files"
