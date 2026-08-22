@@ -7,10 +7,10 @@ set -euo pipefail
 
 APP_DIR="/opt/scrapper"
 APP_USER="scrapper"
-REPO_URL="${REPO_URL:-https://github.com/appear7240/Scrappercontainer.git}"
+REPO_URL="${REPO_URL:-https://github.com/oliverzimmermann1986-debug/Rezepte.git}"
 BRANCH="${BRANCH:-main}"
 
-echo "▶️  Scrapper Installation startet..."
+echo "▶️  Rezepte-Installation startet..."
 
 # 1. System aktualisieren
 echo "📦 System Update..."

@@ -119,7 +119,7 @@ Default: unprivileged LXC, Debian 12, 2 GB RAM, 16 GB Disk. Du wirst nach Contai
 
 ```bash
 pct enter <ctid>
-cd /opt && git clone https://github.com/appear7240/Scrappercontainer.git scrapper
+cd /opt && git clone https://github.com/oliverzimmermann1986-debug/Rezepte.git scrapper
 cd scrapper
 bash proxmox/install.sh
 ```
@@ -300,7 +300,7 @@ Wenn der Container weg ist und du in einer neuen Umgebung neu aufbauen musst:
 pct create <neuer-ctid> ... (siehe Setup-Block oben)
 pct enter <neuer-ctid>
 cd /opt
-git clone https://github.com/appear7240/Scrappercontainer.git scrapper
+git clone https://github.com/oliverzimmermann1986-debug/Rezepte.git scrapper
 cd scrapper
 bash proxmox/install.sh
 
