@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
+  ActivityIndicator,
   Alert,
   FlatList,
   Modal,
@@ -18,6 +19,8 @@ import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
 import { apiCached } from '@/lib/cache';
 import { MealPlan, MealPlanDay, MealPlanItem, RecipeListItem } from '@/lib/types';
+
+const RECIPE_PAGE_SIZE = 60;
 
 export default function PlanScreen() {
   const [plan, setPlan] = useState<MealPlan | null>(null);
@@ -198,23 +201,76 @@ function RecipePicker({
   onAdded: () => void;
 }) {
   const [recipes, setRecipes] = useState<RecipeListItem[]>([]);
+  const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [addingId, setAddingId] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const activeRequest = useRef<AbortController | null>(null);
+  const requestGeneration = useRef(0);
+  const recipesRef = useRef<RecipeListItem[]>([]);
+  const loadingMoreRef = useRef(false);
+
+  useEffect(() => { recipesRef.current = recipes; }, [recipes]);
+
+  const loadRecipes = useCallback(async (search: string, append = false) => {
+    if (append && loadingMoreRef.current) return;
+    const generation = ++requestGeneration.current;
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    if (append) {
+      loadingMoreRef.current = true;
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+    }
+    setError('');
+    try {
+      const params = new URLSearchParams({
+        limit: String(RECIPE_PAGE_SIZE),
+        offset: String(append ? recipesRef.current.length : 0),
+        needs_manual_care: 'false',
+      });
+      if (search.trim()) params.set('search', search.trim());
+      const result = await api<{ total: number; items: RecipeListItem[] }>(
+        `/api/recipes?${params}`,
+        {},
+        controller.signal,
+      );
+      if (generation !== requestGeneration.current) return;
+      setTotal(result.total);
+      setRecipes(current => append ? [...current, ...result.items.filter(item => !current.some(known => known.id === item.id))] : result.items);
+    } catch (reason) {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Rezepte konnten nicht geladen werden');
+    } finally {
+      if (generation === requestGeneration.current) {
+        setLoading(false);
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      }
+    }
+  }, []);
 
   useEffect(() => {
-    if (!day) return;
-    setLoading(true);
-    setError('');
-    api<{ items: RecipeListItem[] }>('/api/recipes?limit=200')
-      .then(result => setRecipes(result.items.filter(item => !item.needs_manual_care)))
-      .catch(reason => setError(reason instanceof Error ? reason.message : 'Rezepte konnten nicht geladen werden'))
-      .finally(() => setLoading(false));
-  }, [day]);
+    if (!day) {
+      activeRequest.current?.abort();
+      setQuery('');
+      setRecipes([]);
+      setTotal(0);
+      return;
+    }
+    const timer = setTimeout(() => void loadRecipes(query), 250);
+    return () => {
+      clearTimeout(timer);
+      activeRequest.current?.abort();
+    };
+  }, [day, loadRecipes, query]);
 
   async function add(recipe: RecipeListItem) {
     if (!day) return;
-    setLoading(true);
+    setAddingId(recipe.id);
     setError('');
     try {
       await api('/api/meal-plan/items', {
@@ -225,11 +281,9 @@ function RecipePicker({
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Rezept konnte nicht eingeplant werden');
     } finally {
-      setLoading(false);
+      setAddingId(null);
     }
   }
-
-  const visible = recipes.filter(recipe => recipe.name.toLocaleLowerCase('de').includes(query.toLocaleLowerCase('de')));
 
   return (
     <Modal visible={!!day} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -249,16 +303,22 @@ function RecipePicker({
         {!!error && <Text accessibilityRole="alert" style={styles.pickerError}>{error}</Text>}
         {loading ? <StateView title="Rezepte werden geladen" loading /> : (
           <FlatList
-            data={visible}
+            data={recipes}
             keyExtractor={item => String(item.id)}
             contentContainerStyle={styles.pickerList}
             renderItem={({ item }) => (
-              <Pressable onPress={() => add(item)} style={styles.pickerItem}>
+              <Pressable disabled={addingId !== null} onPress={() => add(item)} style={styles.pickerItem}>
                 <Text style={styles.pickerName}>{item.name}</Text>
-                <Text style={styles.chevron}>›</Text>
+                {addingId === item.id ? <ActivityIndicator color={colors.text} /> : <Text style={styles.chevron}>›</Text>}
               </Pressable>
             )}
             ItemSeparatorComponent={() => <View style={styles.line} />}
+            onEndReachedThreshold={0.4}
+            onEndReached={() => {
+              if (!loadingMore && recipes.length < total) void loadRecipes(query, true);
+            }}
+            ListFooterComponent={loadingMore ? <ActivityIndicator color={colors.text} style={styles.pickerLoader} /> : null}
+            ListEmptyComponent={<StateView title="Kein kochfertiges Rezept gefunden" message="Versuche einen anderen Suchbegriff." />}
           />
         )}
       </SafeAreaView>
@@ -329,6 +389,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   pickerList: { paddingHorizontal: space.md, paddingBottom: 40 },
+  pickerLoader: { paddingVertical: space.lg },
   pickerItem: { minHeight: 58, flexDirection: 'row', alignItems: 'center' },
   pickerName: { flex: 1, color: colors.text, fontSize: 17, fontWeight: '600' },
   chevron: { color: colors.muted, fontSize: 26 },

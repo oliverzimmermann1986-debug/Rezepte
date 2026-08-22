@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import { Alert, Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
@@ -24,7 +25,7 @@ type Overview = {
 };
 
 export default function AdminScreen() {
-  const { username, serverUrl, signOut } = useAuth();
+  const { username, serverUrl, sessionWarning, signOut } = useAuth();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [pending, setPending] = useState<PendingItem[]>([]);
   const [failed, setFailed] = useState<FailedDownload[]>([]);
@@ -58,7 +59,9 @@ export default function AdminScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useFocusEffect(useCallback(() => {
+    void load();
+  }, [load]));
 
   async function importUrl() {
     const source = url.trim();
@@ -158,6 +161,8 @@ export default function AdminScreen() {
         </View>
         <Pressable onPress={() => load()} style={styles.refresh}><Text style={styles.refreshText}>↻</Text></Pressable>
       </View>
+
+      {!!sessionWarning && <Text accessibilityRole="alert" style={styles.warning}>{sessionWarning}</Text>}
 
       {loading && !overview && !pending.length && !failed.length ? (
         <StateView title="Status wird geladen" loading />
@@ -305,4 +310,5 @@ const styles = StyleSheet.create({
   account: { color: colors.text, fontSize: 16, fontWeight: '700' },
   server: { color: colors.muted, fontSize: 13 },
   error: { color: colors.danger, lineHeight: 20, padding: 12, borderRadius: radii.sm, backgroundColor: '#FCE8E5' },
+  warning: { color: colors.text, lineHeight: 20, padding: 12, borderRadius: radii.sm, backgroundColor: colors.warningSurface },
 });

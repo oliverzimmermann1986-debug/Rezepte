@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import { SymbolView } from 'expo-symbols';
 import {
+  ActivityIndicator,
   FlatList,
   Modal,
   Pressable,
@@ -17,6 +19,7 @@ import { RecipeCard } from '@/components/recipe-card';
 import { StateView } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { apiCached } from '@/lib/cache';
 import { RecipeListItem } from '@/lib/types';
 
 type RecipeResponse = { total: number; items: RecipeListItem[] };
@@ -47,6 +50,7 @@ const EMPTY_FILTERS: RecipeFilters = {
   manualOnly: false,
   minRating: 0,
 };
+const PAGE_SIZE = 60;
 
 function FilterChip({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
   return (
@@ -73,46 +77,96 @@ export default function RecipesScreen() {
   const [ingredientQuery, setIngredientQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const request = useRef<AbortController | null>(null);
+  const requestGeneration = useRef(0);
+  const recipesRef = useRef<RecipeListItem[]>([]);
+  const filtersRef = useRef(filters);
+  const queryRef = useRef(query);
+  const initialLoadDone = useRef(false);
+  const loadingMoreRef = useRef(false);
 
-  const load = useCallback(async (search = query, refresh = false) => {
+  useEffect(() => { recipesRef.current = recipes; }, [recipes]);
+  useEffect(() => { filtersRef.current = filters; }, [filters]);
+  useEffect(() => { queryRef.current = query; }, [query]);
+
+  const load = useCallback(async ({
+    search = queryRef.current,
+    refresh = false,
+    append = false,
+  }: { search?: string; refresh?: boolean; append?: boolean } = {}) => {
+    if (append && loadingMoreRef.current) return;
+    const generation = ++requestGeneration.current;
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
-    if (refresh) setRefreshing(true); else setLoading(true);
+    if (append) {
+      loadingMoreRef.current = true;
+      setLoadingMore(true);
+    } else if (refresh) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError('');
     try {
-      const params = new URLSearchParams({ limit: '200' });
+      const active = filtersRef.current;
+      const params = new URLSearchParams({
+        limit: String(PAGE_SIZE),
+        offset: String(append ? recipesRef.current.length : 0),
+      });
       if (search.trim()) params.set('search', search.trim());
-      if (filters.type) params.set('type', filters.type);
-      if (filters.category) params.set('category', filters.category);
-      if (filters.favoriteOnly) params.set('favorite_only', 'true');
-      if (filters.manualOnly) params.set('needs_manual_care', 'true');
-      if (filters.minRating) params.set('min_rating', String(filters.minRating));
-      filters.tagIds.forEach(value => params.append('tag_id', String(value)));
-      filters.includedIngredients.forEach(value => params.append('ingredient', value));
-      filters.excludedIngredients.forEach(value => params.append('exclude_ingredient', value));
-      const result = await api<RecipeResponse>(`/api/recipes?${params}`, {}, controller.signal);
-      setRecipes(result.items);
+      if (active.type) params.set('type', active.type);
+      if (active.category) params.set('category', active.category);
+      if (active.favoriteOnly) params.set('favorite_only', 'true');
+      if (active.manualOnly) params.set('needs_manual_care', 'true');
+      if (active.minRating) params.set('min_rating', String(active.minRating));
+      active.tagIds.forEach(value => params.append('tag_id', String(value)));
+      active.includedIngredients.forEach(value => params.append('ingredient', value));
+      active.excludedIngredients.forEach(value => params.append('exclude_ingredient', value));
+      const path = `/api/recipes?${params}`;
+      const result = append
+        ? await api<RecipeResponse>(path, {}, controller.signal)
+        : await apiCached<RecipeResponse>(`recipes:${params}`, path, controller.signal);
+      if (generation !== requestGeneration.current) return;
+      if (append) {
+        setRecipes(current => {
+          const known = new Set(current.map(item => item.id));
+          return [...current, ...result.items.filter(item => !known.has(item.id))];
+        });
+      } else {
+        setRecipes(result.items);
+      }
       setTotal(result.total);
     } catch (reason) {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Laden fehlgeschlagen');
     } finally {
-      if (!controller.signal.aborted) {
+      if (generation === requestGeneration.current) {
         setLoading(false);
         setRefreshing(false);
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+        initialLoadDone.current = true;
       }
     }
-  }, [filters, query]);
+  }, []);
 
   useEffect(() => {
-    const timer = setTimeout(() => load(query), 250);
+    const timer = setTimeout(() => load({ search: query }), 250);
     return () => {
       clearTimeout(timer);
       request.current?.abort();
     };
-  }, [load, query]);
+  }, [filters, load, query]);
+
+  useFocusEffect(useCallback(() => {
+    if (initialLoadDone.current) {
+      setFacets(null);
+      void load({ refresh: recipesRef.current.length > 0 });
+    }
+    return () => request.current?.abort();
+  }, [load]));
 
   const activeFilterCount = [
     Boolean(filters.type),
@@ -133,7 +187,7 @@ export default function RecipesScreen() {
     setFacetsLoading(true);
     setFacetsError('');
     try {
-      setFacets(await api<RecipeFacets>('/api/recipes/facets'));
+      setFacets(await apiCached<RecipeFacets>('recipe-facets', '/api/recipes/facets'));
     } catch (reason) {
       setFacetsError(reason instanceof Error ? reason.message : 'Filter konnten nicht geladen werden');
     } finally {
@@ -220,8 +274,15 @@ export default function RecipesScreen() {
           contentContainerStyle={styles.list}
           ItemSeparatorComponent={() => <View style={{ height: space.md }} />}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={() => load(query, true)} tintColor={colors.text} />
+            <RefreshControl refreshing={refreshing} onRefresh={() => load({ search: query, refresh: true })} tintColor={colors.text} />
           }
+          onEndReachedThreshold={0.4}
+          onEndReached={() => {
+            if (!loading && !refreshing && !loadingMore && recipes.length < total) {
+              void load({ append: true });
+            }
+          }}
+          ListFooterComponent={loadingMore ? <ActivityIndicator color={colors.text} style={styles.pageLoader} /> : null}
           ListEmptyComponent={
             <StateView
               title={filters.manualOnly ? 'Alles gepflegt' : 'Keine Rezepte gefunden'}
@@ -413,6 +474,7 @@ const styles = StyleSheet.create({
   filterCount: { minWidth: 20, height: 20, paddingTop: 2, borderRadius: 10, overflow: 'hidden', color: colors.surface, backgroundColor: colors.text, fontSize: 12, fontWeight: '900', textAlign: 'center' },
   pressed: { opacity: 0.7 },
   list: { padding: space.md, paddingTop: 4, paddingBottom: 120 },
+  pageLoader: { paddingVertical: space.lg },
   sheetSafe: { flex: 1, backgroundColor: colors.cream },
   sheetHeader: { minHeight: 58, paddingHorizontal: space.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
   sheetHeaderAction: { minWidth: 82, minHeight: 44, justifyContent: 'center' },
