@@ -61,3 +61,11 @@ def test_external_links_are_validated_and_fail_visibly():
         code = source.read_text(encoding="utf-8")
         assert "Linking.openURL" not in code
         assert "openExternalUrl" in code
+
+
+def test_favorite_toggle_reports_network_errors():
+    detail = (NATIVE / "app" / "recipe" / "[id].tsx").read_text(encoding="utf-8")
+
+    favorite = detail[detail.index("async function toggleFavorite"):detail.index("async function addToCart")]
+    assert "catch (reason)" in favorite
+    assert "Favorit nicht geändert" in favorite

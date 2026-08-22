@@ -78,6 +78,8 @@ export default function RecipeDetailScreen() {
     try {
       const result = await api<{ is_favorite: boolean }>(`/api/recipes/${recipe.id}/favorite`, { method: 'POST' });
       setRecipe({ ...recipe, is_favorite: result.is_favorite });
+    } catch (reason) {
+      Alert.alert('Favorit nicht geändert', reason instanceof Error ? reason.message : 'Bitte erneut versuchen.');
     } finally {
       setBusy(false);
     }
