@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.db import Database
 
 
@@ -81,3 +83,102 @@ def test_canonical_rename_keeps_shopping_exclusion(
     )
     assert response.status_code == 200
     assert test_db.shopping_excluded_canonicals() == {"meersalz"}
+
+
+def test_cook_scales_ingredients_to_selected_servings(
+    client,
+    test_db: Database,
+    tmp_path: Path,
+):
+    recipe_id = _recipe_with_ingredients(test_db, tmp_path)
+    test_db.recipe_set_servings(recipe_id, 4)
+
+    response = client.post(
+        f"/api/cart/cook/{recipe_id}",
+        json={"servings": 6, "multiplier": 1.5},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["servings"] == 6
+    assert response.json()["multiplier"] == 1.5
+    cart = {item["canonical_name"]: item for item in test_db.cart_list()}
+    assert cart["pasta"]["amount"] == 375
+    assert cart["salz"]["amount"] == 1.5
+
+
+def test_cook_with_servings_requires_recipe_base_servings(
+    client,
+    test_db: Database,
+    tmp_path: Path,
+):
+    recipe_id = _recipe_with_ingredients(test_db, tmp_path)
+
+    response = client.post(
+        f"/api/cart/cook/{recipe_id}",
+        json={"servings": 3},
+    )
+
+    assert response.status_code == 409
+    assert "Portionszahl im Rezept fehlt" in response.json()["detail"]
+    assert test_db.cart_list() == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"servings": 0},
+        {"servings": 51},
+        {"multiplier": 0},
+        {"multiplier": 101},
+    ],
+)
+def test_cook_rejects_invalid_scaling(
+    client,
+    test_db: Database,
+    tmp_path: Path,
+    payload: dict,
+):
+    recipe_id = _recipe_with_ingredients(test_db, tmp_path)
+    test_db.recipe_set_servings(recipe_id, 4)
+
+    response = client.post(f"/api/cart/cook/{recipe_id}", json=payload)
+
+    assert response.status_code == 422
+    assert test_db.cart_list() == []
+
+
+def test_cook_rejects_ambiguous_scaling_payload(
+    client,
+    test_db: Database,
+    tmp_path: Path,
+):
+    recipe_id = _recipe_with_ingredients(test_db, tmp_path)
+    test_db.recipe_set_servings(recipe_id, 4)
+
+    response = client.post(
+        f"/api/cart/cook/{recipe_id}",
+        json={"servings": 6, "multiplier": 2},
+    )
+
+    assert response.status_code == 400
+    assert "passen nicht zusammen" in response.json()["detail"]
+    assert test_db.cart_list() == []
+
+
+def test_cook_keeps_legacy_multiplier_support(
+    client,
+    test_db: Database,
+    tmp_path: Path,
+):
+    recipe_id = _recipe_with_ingredients(test_db, tmp_path)
+
+    response = client.post(
+        f"/api/cart/cook/{recipe_id}",
+        json={"multiplier": 0.5},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["servings"] is None
+    assert response.json()["multiplier"] == 0.5
+    cart = {item["canonical_name"]: item for item in test_db.cart_list()}
+    assert cart["pasta"]["amount"] == 125

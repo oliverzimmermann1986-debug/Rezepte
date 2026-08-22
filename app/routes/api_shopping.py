@@ -80,21 +80,56 @@ def _format_line(item: dict) -> str:
 # ── Kochen-Button ───────────────────────────────────────────────────────
 
 class CookPayload(BaseModel):
-    """Optional. Wenn nichts geschickt wird, ist multiplier=1.0 (original).
-    Frontend schickt z.B. {multiplier: 2.0} um die Mengen zu verdoppeln."""
-    multiplier: float = 1.0
+    """Skaliert entweder über eine konkrete Portionszahl oder einen Faktor.
+
+    ``multiplier`` bleibt für bestehende Web-Clients kompatibel. Native Clients
+    dürfen für gestaffelte App-/Server-Rollouts beide Werte schicken; der Server
+    berechnet den Faktor aus ``servings`` und prüft die Übereinstimmung.
+    """
+    multiplier: Optional[float] = Field(default=None, gt=0, le=100)
+    servings: Optional[int] = Field(default=None, ge=1, le=50)
 
 
 @router.post("/cook/{recipe_id}")
 def cook_recipe(recipe_id: int, payload: Optional[CookPayload] = None):
     """Lädt Zutaten in die eine kanonische, lokale Einkaufsliste."""
     db = get_db()
-    if not db.recipe_get(recipe_id):
+    recipe = db.recipe_get(recipe_id)
+    if not recipe:
         raise HTTPException(404, "Rezept nicht gefunden")
-    multiplier = payload.multiplier if payload else 1.0
+
+    selected_servings = payload.servings if payload else None
+    if selected_servings is not None:
+        try:
+            recipe_servings = int(recipe.get("servings"))
+        except (TypeError, ValueError):
+            recipe_servings = 0
+        if recipe_servings < 1:
+            raise HTTPException(
+                409,
+                "Portionszahl im Rezept fehlt; bitte zuerst im Rezept ergänzen",
+            )
+        multiplier = selected_servings / recipe_servings
+        if (
+            payload
+            and payload.multiplier is not None
+            and abs(payload.multiplier - multiplier) > 1e-6
+        ):
+            raise HTTPException(
+                400,
+                "servings und multiplier passen nicht zusammen",
+            )
+    else:
+        multiplier = payload.multiplier if payload and payload.multiplier is not None else 1.0
 
     counters = add_recipe_to_cart(db, recipe_id, multiplier=multiplier)
-    return {"ok": True, "multiplier": multiplier, "target": "local", **counters}
+    return {
+        "ok": True,
+        "multiplier": multiplier,
+        "servings": selected_servings,
+        "target": "local",
+        **counters,
+    }
 
 
 # ── Manuelles Hinzufügen ────────────────────────────────────────────────

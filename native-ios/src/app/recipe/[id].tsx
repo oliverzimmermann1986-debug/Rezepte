@@ -20,6 +20,24 @@ import { RecipeDetail } from '@/lib/types';
 type Tab = 'info' | 'ingredients' | 'steps';
 type SymbolName = React.ComponentProps<typeof SymbolView>['name'];
 
+const MIN_COOK_SERVINGS = 1;
+const MAX_COOK_SERVINGS = 50;
+
+function normalizedServings(value?: number | null) {
+  if (!value || !Number.isFinite(value) || value < MIN_COOK_SERVINGS) return null;
+  return Math.min(MAX_COOK_SERVINGS, Math.round(value));
+}
+
+function portionLabel(value: number) {
+  return `${value} ${value === 1 ? 'Portion' : 'Portionen'}`;
+}
+
+function formatScaledAmount(value: number | null | undefined, multiplier: number) {
+  if (value === null || value === undefined) return '–';
+  const rounded = Math.round(value * multiplier * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace('.', ',');
+}
+
 function CompactAction({
   label,
   symbol,
@@ -44,6 +62,63 @@ function CompactAction({
   );
 }
 
+function ServingSelector({
+  value,
+  original,
+  disabled,
+  onChange,
+}: {
+  value: number;
+  original: number;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+}) {
+  const decreaseDisabled = disabled || value <= MIN_COOK_SERVINGS;
+  const increaseDisabled = disabled || value >= MAX_COOK_SERVINGS;
+
+  return (
+    <View style={styles.servingCard}>
+      <View style={styles.servingCopy}>
+        <Text style={styles.servingTitle}>Kochen für</Text>
+        <Text style={styles.servingHint}>
+          {value === original ? `Originalrezept · ${portionLabel(original)}` : `Original ${original} · Mengen × ${(value / original).toFixed(2).replace(/0+$/, '').replace(/[.,]$/, '').replace('.', ',')}`}
+        </Text>
+      </View>
+      <View style={styles.servingStepper}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Eine Portion weniger"
+          disabled={decreaseDisabled}
+          onPress={() => onChange(value - 1)}
+          style={({ pressed }) => [styles.servingButton, pressed && styles.actionPressed, decreaseDisabled && styles.disabled]}>
+          <SymbolView name="minus" size={18} weight="bold" tintColor={colors.text} />
+        </Pressable>
+        <View
+          accessibilityRole="adjustable"
+          accessibilityLabel="Anzahl Portionen"
+          accessibilityValue={{ min: MIN_COOK_SERVINGS, max: MAX_COOK_SERVINGS, now: value, text: portionLabel(value) }}
+          accessibilityActions={[{ name: 'decrement', label: 'Eine Portion weniger' }, { name: 'increment', label: 'Eine Portion mehr' }]}
+          onAccessibilityAction={({ nativeEvent }) => {
+            if (nativeEvent.actionName === 'decrement' && !decreaseDisabled) onChange(value - 1);
+            if (nativeEvent.actionName === 'increment' && !increaseDisabled) onChange(value + 1);
+          }}
+          style={styles.servingValue}>
+          <Text style={styles.servingNumber}>{value}</Text>
+          <Text style={styles.servingUnit}>{value === 1 ? 'Portion' : 'Portionen'}</Text>
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Eine Portion mehr"
+          disabled={increaseDisabled}
+          onPress={() => onChange(value + 1)}
+          style={({ pressed }) => [styles.servingButton, pressed && styles.actionPressed, increaseDisabled && styles.disabled]}>
+          <SymbolView name="plus" size={18} weight="bold" tintColor={colors.text} />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 export default function RecipeDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const recipeId = Number(id);
@@ -57,6 +132,7 @@ export default function RecipeDetailScreen() {
   const [busy, setBusy] = useState(false);
   const [imageVersion, setImageVersion] = useState(0);
   const [showOriginal, setShowOriginal] = useState(false);
+  const [cookServings, setCookServings] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -71,6 +147,10 @@ export default function RecipeDetailScreen() {
   }, [recipeId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    setCookServings(normalizedServings(recipe?.servings));
+  }, [recipe?.id, recipe?.servings]);
 
   async function toggleFavorite() {
     if (!recipe) return;
@@ -87,11 +167,20 @@ export default function RecipeDetailScreen() {
 
   async function addToCart() {
     if (!recipe) return;
+    const originalServings = normalizedServings(recipe.servings);
+    const selectedServings = originalServings ? (cookServings || originalServings) : null;
+    const multiplier = originalServings && selectedServings ? selectedServings / originalServings : 1;
     setBusy(true);
     try {
-      const result = await api<{ added: number; merged: number; skipped: number }>(`/api/cart/cook/${recipe.id}`, { method: 'POST', body: JSON.stringify({ multiplier: 1 }) });
+      const result = await api<{ added: number; merged: number; skipped: number }>(`/api/cart/cook/${recipe.id}`, {
+        method: 'POST',
+        // Der Faktor hält die App während eines gestaffelten Rollouts mit dem
+        // bisherigen Backend kompatibel; der neue Server prüft beide Werte.
+        body: JSON.stringify(selectedServings ? { servings: selectedServings, multiplier } : { multiplier: 1 }),
+      });
       const changed = result.added + result.merged;
-      Alert.alert('Zum Einkauf hinzugefügt', `${changed} Artikel übernommen${result.skipped ? ` · ${result.skipped} ausgeschlossen` : ''}.`);
+      const scope = selectedServings ? ` für ${portionLabel(selectedServings)}` : ' in Originalmenge';
+      Alert.alert('Zum Einkauf hinzugefügt', `${changed} Artikel${scope} übernommen${result.skipped ? ` · ${result.skipped} ausgeschlossen` : ''}.`);
     } catch (reason) {
       Alert.alert('Nicht möglich', reason instanceof Error ? reason.message : 'Hinzufügen fehlgeschlagen');
     } finally {
@@ -215,6 +304,9 @@ export default function RecipeDetailScreen() {
   if (!recipe) return null;
 
   const sourcePlatform = externalSourceLabel(recipe.url);
+  const originalServings = normalizedServings(recipe.servings);
+  const selectedServings = originalServings ? (cookServings || originalServings) : null;
+  const cookMultiplier = originalServings && selectedServings ? selectedServings / originalServings : 1;
 
   return (
     <>
@@ -284,6 +376,30 @@ export default function RecipeDetailScreen() {
           <ManualCareBanner reasons={recipe.manual_care_reasons} onOpenSource={recipe.url ? openSource : undefined} />
         )}
 
+        {originalServings && selectedServings ? (
+          <ServingSelector
+            value={selectedServings}
+            original={originalServings}
+            disabled={busy}
+            onChange={setCookServings}
+          />
+        ) : (
+          <View style={styles.servingCard}>
+            <View style={styles.servingCopy}>
+              <Text style={styles.servingTitle}>Kochen für</Text>
+              <Text style={styles.servingHint}>Portionszahl fehlt – zum Skalieren bitte ergänzen.</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Portionszahl im Rezept ergänzen"
+              disabled={busy}
+              onPress={() => setMetadataEditor(true)}
+              style={({ pressed }) => [styles.servingMissingAction, pressed && styles.actionPressed, busy && styles.disabled]}>
+              <Text style={styles.servingMissingText}>Ergänzen</Text>
+            </Pressable>
+          </View>
+        )}
+
         <View style={styles.tabs}>
           {([
             ['steps', 'Zubereitung'],
@@ -340,7 +456,7 @@ export default function RecipeDetailScreen() {
             {recipe.ingredients.length ? recipe.ingredients.map((ingredient, index) => (
               <View key={ingredient.id || `${ingredient.name}-${index}`} style={styles.ingredient}>
                 <Text style={styles.amount}>
-                  {ingredient.amount ?? '–'}{ingredient.unit ? ` ${ingredient.unit}` : ''}
+                  {formatScaledAmount(ingredient.amount, cookMultiplier)}{ingredient.unit ? ` ${ingredient.unit}` : ''}
                 </Text>
                 <Text style={styles.ingredientName}>{ingredient.name}</Text>
               </View>
@@ -360,7 +476,7 @@ export default function RecipeDetailScreen() {
               </View>
             </Pressable>
             <PrimaryButton
-              label={busy ? 'Wird hinzugefügt …' : 'Zutaten zum Einkauf'}
+              label={busy ? 'Wird hinzugefügt …' : selectedServings ? `Für ${portionLabel(selectedServings)} einkaufen` : 'Originalmenge einkaufen'}
               onPress={addToCart}
               disabled={busy || !recipe.ingredients.length}
             />
@@ -440,6 +556,29 @@ const styles = StyleSheet.create({
   compactAction: { minHeight: 44, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, borderWidth: 1, borderColor: colors.border, borderRadius: 22, backgroundColor: colors.surface },
   compactActionText: { color: colors.text, fontSize: 14, fontWeight: '800' },
   actionPressed: { opacity: 0.72, transform: [{ scale: 0.97 }] },
+  servingCard: {
+    minHeight: 76,
+    padding: 12,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
+  },
+  servingCopy: { flex: 1, minWidth: 150, gap: 3 },
+  servingTitle: { color: colors.text, fontSize: 16, fontWeight: '800' },
+  servingHint: { color: colors.muted, fontSize: 12, lineHeight: 17 },
+  servingStepper: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: 'hidden' },
+  servingButton: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.cream },
+  servingValue: { minWidth: 76, height: 48, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, borderLeftWidth: StyleSheet.hairlineWidth, borderRightWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.white },
+  servingNumber: { color: colors.text, fontSize: 19, lineHeight: 21, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  servingUnit: { color: colors.muted, fontSize: 10, lineHeight: 13 },
+  servingMissingAction: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 14, borderRadius: radii.sm, backgroundColor: colors.butter },
+  servingMissingText: { color: colors.text, fontSize: 14, fontWeight: '800' },
   tabs: { flexDirection: 'row', padding: 4, borderRadius: radii.md, backgroundColor: '#EEE4D6' },
   tab: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: radii.sm },
   tabActive: { backgroundColor: colors.surface },
