@@ -1,6 +1,7 @@
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
+import { SymbolView } from 'expo-symbols';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Linking, Pressable, Share, StyleSheet, Text, View } from 'react-native';
 
@@ -13,12 +14,37 @@ import { pickEditedJpeg } from '@/lib/image-picker';
 import { RecipeDetail } from '@/lib/types';
 
 type Tab = 'info' | 'ingredients' | 'steps';
+type SymbolName = React.ComponentProps<typeof SymbolView>['name'];
+
+function CompactAction({
+  label,
+  symbol,
+  onPress,
+  disabled,
+}: {
+  label: string;
+  symbol: SymbolName;
+  onPress: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [styles.compactAction, pressed && styles.actionPressed, disabled && styles.disabled]}>
+      <SymbolView name={symbol} size={18} weight="semibold" tintColor={colors.text} />
+      <Text style={styles.compactActionText}>{label}</Text>
+    </Pressable>
+  );
+}
 
 export default function RecipeDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const recipeId = Number(id);
   const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
-  const [tab, setTab] = useState<Tab>('info');
+  const [tab, setTab] = useState<Tab>('steps');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editor, setEditor] = useState<'ingredients' | 'steps' | null>(null);
@@ -185,13 +211,23 @@ export default function RecipeDetailScreen() {
     <>
       <Stack.Screen options={{ title: recipe.name }} />
       <Screen contentStyle={styles.content}>
-        <Image
-          source={{ uri: absoluteApiUrl(`/api/recipes/${recipe.id}/thumb?w=1000&v=${imageVersion}`), headers: apiAuthHeaders() }}
-          style={styles.hero}
-          contentFit="cover"
-          cachePolicy="memory"
-          transition={150}
-        />
+        <View style={styles.heroWrap}>
+          <Image
+            source={{ uri: absoluteApiUrl(`/api/recipes/${recipe.id}/thumb?w=1000&v=${imageVersion}`), headers: apiAuthHeaders() }}
+            style={styles.hero}
+            contentFit="cover"
+            cachePolicy="memory"
+            transition={150}
+          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Rezeptbild ändern"
+            disabled={busy}
+            onPress={changeImage}
+            style={({ pressed }) => [styles.imageEdit, pressed && styles.imageEditPressed, busy && styles.disabled]}>
+            <SymbolView name="pencil" size={20} weight="bold" tintColor={colors.text} />
+          </Pressable>
+        </View>
         <View style={styles.titleRow}>
           <View style={styles.titleText}>
             <Text style={styles.title}>{recipe.name}</Text>
@@ -225,15 +261,25 @@ export default function RecipeDetailScreen() {
           </View>
         </View>
 
+        <View style={styles.actionRow}>
+          {!!recipe.url && (
+            <CompactAction label={sourcePlatform} symbol="arrow.up.right.square" onPress={openSource} disabled={busy} />
+          )}
+          {!!recipe.pdf_filename && (
+            <CompactAction label="PDF" symbol="doc" onPress={openPdf} disabled={busy} />
+          )}
+          <CompactAction label="Teilen" symbol="square.and.arrow.up" onPress={shareRecipe} disabled={busy} />
+        </View>
+
         {recipe.needs_manual_care && (
           <ManualCareBanner reasons={recipe.manual_care_reasons} onOpenSource={recipe.url ? openSource : undefined} />
         )}
 
         <View style={styles.tabs}>
           {([
+            ['steps', 'Zubereitung'],
+            ['ingredients', 'Zutaten'],
             ['info', 'Info'],
-            ['ingredients', `Zutaten ${recipe.ingredients.length}`],
-            ['steps', `Schritte ${recipe.steps.length}`],
           ] as [Tab, string][]).map(([value, label]) => (
             <Pressable
               key={value}
@@ -252,14 +298,6 @@ export default function RecipeDetailScreen() {
             <View style={styles.tagRow}>
               {recipe.tags.map(tag => <Text key={tag.id} style={styles.tag}>{tag.name}</Text>)}
             </View>
-            {!!recipe.url && (
-              <PrimaryButton label={`${sourcePlatform} extern öffnen ↗`} onPress={openSource} />
-            )}
-            {!!recipe.pdf_filename && (
-              <PrimaryButton label="Original-PDF öffnen" onPress={openPdf} disabled={busy} />
-            )}
-            <PrimaryButton label="Bild ändern & zuschneiden" onPress={changeImage} disabled={busy} />
-            <PrimaryButton label="Rezept teilen" onPress={shareRecipe} disabled={busy} />
             <Text style={styles.noVideo}>Videos werden in der App bewusst nicht geladen oder abgespielt.</Text>
             {!!recipe.description_original && (
               <View style={styles.originalBlock}>
@@ -351,7 +389,10 @@ export default function RecipeDetailScreen() {
 
 const styles = StyleSheet.create({
   content: { gap: space.md },
+  heroWrap: { position: 'relative' },
   hero: { width: '100%', aspectRatio: 16 / 10, borderRadius: radii.lg, backgroundColor: colors.border },
+  imageEdit: { position: 'absolute', right: 12, bottom: 12, width: 48, height: 48, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: colors.surface, borderRadius: 24, backgroundColor: colors.butter, shadowColor: '#433427', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.2, shadowRadius: 7 },
+  imageEditPressed: { transform: [{ scale: 0.94 }], backgroundColor: colors.butterPressed },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   titleText: { flex: 1, gap: 4 },
   title: { color: colors.text, fontSize: 30, lineHeight: 34, letterSpacing: -0.7, fontWeight: '900' },
@@ -363,8 +404,12 @@ const styles = StyleSheet.create({
   starActive: { color: colors.butterPressed },
   favorite: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
   favoriteText: { color: colors.text, fontSize: 30 },
+  actionRow: { minHeight: 48, flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  compactAction: { minHeight: 44, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, borderWidth: 1, borderColor: colors.border, borderRadius: 22, backgroundColor: colors.surface },
+  compactActionText: { color: colors.text, fontSize: 14, fontWeight: '800' },
+  actionPressed: { opacity: 0.72, transform: [{ scale: 0.97 }] },
   tabs: { flexDirection: 'row', padding: 4, borderRadius: radii.md, backgroundColor: '#EEE4D6' },
-  tab: { flex: 1, minHeight: 42, alignItems: 'center', justifyContent: 'center', borderRadius: radii.sm },
+  tab: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: radii.sm },
   tabActive: { backgroundColor: colors.surface },
   tabText: { color: colors.muted, fontSize: 13, fontWeight: '700' },
   tabTextActive: { color: colors.text },
