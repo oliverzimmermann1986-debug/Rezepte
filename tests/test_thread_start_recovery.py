@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from app.recipes import sync_manager
 from app.routes import api_jobs
+from app import main
 
 
 class _BrokenThread:
@@ -55,3 +56,11 @@ def test_scraper_route_releases_lock_when_thread_start_fails(monkeypatch):
     assert lock.acquire(blocking=False) is True
     lock.release()
 
+
+def test_trash_cleanup_thread_can_be_stopped_without_waiting_for_daily_sleep():
+    main._stop_trash_cleanup_thread(timeout=1)
+    main._start_trash_cleanup_thread()
+    assert main._trash_cleanup_thread is not None
+    assert main._trash_cleanup_thread.is_alive()
+    assert main._stop_trash_cleanup_thread(timeout=1) is True
+    assert main._trash_cleanup_thread_started is False

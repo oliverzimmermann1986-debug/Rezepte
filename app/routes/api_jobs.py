@@ -25,6 +25,7 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(requ
 _locks: Dict[str, threading.Lock] = {
     "scraper": threading.Lock(),
 }
+_scraper_thread: Optional[threading.Thread] = None
 
 
 def _rotate_old_logs(log_dir: Path, days: int = 30) -> None:
@@ -108,13 +109,19 @@ def _run_scraper_thread(job_id: int):
 
 @router.post("/scraper/run")
 def run_scraper():
+    global _scraper_thread
     if not _locks["scraper"].acquire(blocking=False):
         raise HTTPException(409, "Scraper läuft bereits")
     job_id = None
     try:
         job_id = get_db().job_start("scraper")
-        t = threading.Thread(target=_run_scraper_thread, args=(job_id,), daemon=True)
-        t.start()
+        _scraper_thread = threading.Thread(
+            target=_run_scraper_thread,
+            args=(job_id,),
+            name=f"scraper-job-{job_id}",
+            daemon=True,
+        )
+        _scraper_thread.start()
     except Exception as exc:
         # Der Worker kann den In-Process-Lock erst in seinem finally lösen,
         # wenn er tatsächlich gestartet wurde. Fehler davor dürfen keinen
@@ -125,9 +132,19 @@ def run_scraper():
             except Exception:
                 pass
         _locks["scraper"].release()
+        _scraper_thread = None
         logger.exception("Scraper-Thread konnte nicht gestartet werden")
         raise HTTPException(500, "Scraper konnte nicht gestartet werden") from exc
     return {"ok": True, "job_id": job_id}
+
+
+def stop_scraper_thread(timeout: float = 20.0) -> bool:
+    """Fordert Abbruch zwischen URLs an und wartet begrenzt auf DB/FS-Abschluss."""
+    scraper_job.cancel_job()
+    thread = _scraper_thread
+    if thread and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=max(0.0, timeout))
+    return not bool(thread and thread.is_alive())
 
 
 @router.post("/scraper/cancel")

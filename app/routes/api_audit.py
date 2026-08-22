@@ -42,6 +42,8 @@ _ai_sanity_state = {
     "error": None,
 }
 _ai_sanity_lock = threading.Lock()
+_ai_sanity_stop = threading.Event()
+_ai_sanity_thread: Optional[threading.Thread] = None
 
 
 def _openai_config_for_audit() -> Optional[Dict[str, Any]]:
@@ -251,10 +253,18 @@ def start_ai_sanity_check() -> Dict[str, Any]:
             "running": True, "total": total, "processed": 0, "findings": 0,
             "started_at": time.time(), "error": None,
         })
-        threading.Thread(
+        global _ai_sanity_thread
+        _ai_sanity_stop.clear()
+        _ai_sanity_thread = threading.Thread(
             target=_ai_sanity_worker, args=(openai_cfg,),
             name="audit-ai-sanity", daemon=True,
-        ).start()
+        )
+        try:
+            _ai_sanity_thread.start()
+        except Exception:
+            _ai_sanity_thread = None
+            _ai_sanity_state.update({"running": False, "error": "Thread-Start fehlgeschlagen"})
+            raise
     return {"ok": True, "total": total}
 
 
@@ -297,6 +307,8 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
 
         def _check_one(r: dict) -> int:
             """Returnt Anzahl neuer Findings für dieses Rezept (0-3)."""
+            if _ai_sanity_stop.is_set():
+                return 0
             folder_name = _P(r["folder_path"]).name if r.get("folder_path") else None
             local = 0
             try:
@@ -334,6 +346,10 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
         with ThreadPoolExecutor(max_workers=3, thread_name_prefix="sanity") as ex:
             futures = {ex.submit(_check_one, r): r for r in recipes}
             for f in as_completed(futures):
+                if _ai_sanity_stop.is_set():
+                    for pending in futures:
+                        pending.cancel()
+                    break
                 processed += 1
                 try:
                     findings_count += f.result()
@@ -352,6 +368,14 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
         logger.exception("ai-sanity worker crash")
         with _ai_sanity_lock:
             _ai_sanity_state.update({"running": False, "error": str(e)})
+
+
+def stop_ai_sanity_thread(timeout: float = 20.0) -> bool:
+    _ai_sanity_stop.set()
+    thread = _ai_sanity_thread
+    if thread and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=max(0.0, timeout))
+    return not bool(thread and thread.is_alive())
 
 
 @router.post("/finding/{finding_id}/resolve")

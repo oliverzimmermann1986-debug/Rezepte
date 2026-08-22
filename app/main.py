@@ -122,30 +122,51 @@ from contextlib import asynccontextmanager
 
 
 _trash_cleanup_thread_started = False
+_trash_cleanup_thread = None
+_trash_cleanup_stop = None
 
 
 def _start_trash_cleanup_thread():
     """Spawnt einen Daemon-Thread der einmal pro Tag den Papierkorb auf
     Items > 30 Tage prüft und sie endgültig löscht. Idempotent — wird
     bei Re-Start des FastAPI-Lifespans nicht doppelt gestartet."""
-    global _trash_cleanup_thread_started
+    global _trash_cleanup_thread_started, _trash_cleanup_thread, _trash_cleanup_stop
     if _trash_cleanup_thread_started:
         return
     _trash_cleanup_thread_started = True
-    import threading, time as _t
+    import threading
+    _trash_cleanup_stop = threading.Event()
     def _loop():
         # Erste Iteration nach 60s, dann alle 24h. So sieht der Job auch
         # Items die durch laufende Tests/Sessions reingekommen sind ohne
         # gleich beim Boot auf DB-Locks zu kollidieren.
-        _t.sleep(60)
-        while True:
+        if _trash_cleanup_stop.wait(60):
+            return
+        while not _trash_cleanup_stop.is_set():
             try:
                 _purge_old_trash_items()
             except Exception as e:
                 logger.exception(f"trash cleanup loop fail: {e}")
-            _t.sleep(24 * 3600)
-    threading.Thread(target=_loop, name="trash-cleanup", daemon=True).start()
+            if _trash_cleanup_stop.wait(24 * 3600):
+                return
+    _trash_cleanup_thread = threading.Thread(target=_loop, name="trash-cleanup", daemon=True)
+    _trash_cleanup_thread.start()
     logger.info("Trash-cleanup-thread started (24h interval, >30d purge)")
+
+
+def _stop_trash_cleanup_thread(timeout: float = 5.0) -> bool:
+    global _trash_cleanup_thread_started, _trash_cleanup_thread, _trash_cleanup_stop
+    if _trash_cleanup_stop is not None:
+        _trash_cleanup_stop.set()
+    thread = _trash_cleanup_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=max(0.0, timeout))
+    stopped = not bool(thread and thread.is_alive())
+    if stopped:
+        _trash_cleanup_thread = None
+        _trash_cleanup_stop = None
+        _trash_cleanup_thread_started = False
+    return stopped
 
 
 def _purge_old_trash_items(days: int = 30):
@@ -189,22 +210,29 @@ async def _lifespan(app):
         _sd_notify("STOPPING=1")
         from .jobs.task_queue import stop_worker
         from .recipes.sync_manager import wait_for_sync
+        from .routes.api_audit import stop_ai_sanity_thread
+        from .routes.api_jobs import stop_scraper_thread
+        _stop_trash_cleanup_thread(timeout=2.0)
         stop_worker()
-        wait_for_sync(timeout=10.0)
+        wait_for_sync(timeout=5.0)
+        if not stop_scraper_thread(timeout=15.0):
+            logger.warning("Scraper-Thread nach 15s noch aktiv")
+        if not stop_ai_sanity_thread(timeout=15.0):
+            logger.warning("Audit-KI-Thread nach 15s noch aktiv")
         # Sauberes Shutdown: Worker-Thread stoppen damit keine FTS-Transaktion
         # mitten im Schreiben abreißt (SQLite-Korruption-Risiko bei SIGKILL).
-        # Wir warten max 25s — systemd-Default TimeoutStopSec ist 90s, lässt
-        # also Puffer. Bei längerem worker-loop wird nach 25s zu SIGKILL eskaliert,
-        # aber WAL-Mode macht das Crash-safe.
+        # Wir warten max 15s — zusammen mit den anderen Workern bleibt der
+        # gesamte Shutdown unter systemd TimeoutStopSec=90s. Bei einem noch
+        # länger laufenden Einzelaufruf bleibt WAL-Mode der letzte Crash-Schutz.
         try:
             from .recipes.indexer import stop_extraction, is_extraction_running
             stop_extraction()
             import asyncio as _aio, time as _t
-            deadline = _t.time() + 25
+            deadline = _t.time() + 15
             while is_extraction_running() and _t.time() < deadline:
                 await _aio.sleep(0.5)
             if is_extraction_running():
-                logger.warning("Worker nach 25s noch aktiv — wird gekillt")
+                logger.warning("Worker nach 15s noch aktiv — wird gekillt")
             else:
                 logger.info("Worker sauber beendet")
 
