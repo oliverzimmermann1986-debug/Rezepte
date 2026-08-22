@@ -152,7 +152,13 @@ def einkauf_request(
     return response.json() if response.content else None
 
 
-@router.api_route("/{path:path}", methods=["GET", "POST", "PATCH", "DELETE"])
+@router.api_route(
+    "/{path:path}",
+    methods=["GET", "POST", "PATCH", "DELETE"],
+    # Opaquer Legacy-Proxy ohne festes Request-/Response-Schema. In OpenAPI
+    # würde dieselbe Funktion für vier Verben doppelte Operation-IDs erzeugen.
+    include_in_schema=False,
+)
 async def proxy(path: str, request: Request) -> Response:
     safe_path = _validated_proxy_path(path)
     url = f"{_base_url()}/{safe_path}"

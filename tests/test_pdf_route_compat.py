@@ -4,7 +4,10 @@ from pathlib import Path
 
 def test_pdf_admin_routes_are_registered():
     from app.main import app
-    paths = {getattr(route, "path", "") for route in app.routes}
+    # FastAPI >=0.141 hält include_router intern verschachtelt. Die öffentliche
+    # OpenAPI-Sicht ist die stabile Aussage darüber, welche Routen registriert
+    # und dokumentiert sind.
+    paths = set(app.openapi()["paths"])
     assert "/api/admin/pdf/preflight" in paths
     assert "/api/admin/pdf/process" in paths
     assert "/api/admin/pdf/jobs/active" in paths

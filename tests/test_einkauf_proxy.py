@@ -73,10 +73,26 @@ def test_internal_request_forwards_json_and_auth(monkeypatch):
     assert captured["allow_redirects"] is False
 
 
-def test_routes_are_registered(client):
-    paths = {getattr(route, "path", "") for route in client.app.routes}
-    assert "/api/einkauf/status" in paths
-    assert "/api/einkauf/{path:path}" in paths
+def test_routes_are_registered_and_reachable(client, monkeypatch):
+    config = StubConfig({("einkauf", "api_url"): "http://einkauf:8010/"})
+    monkeypatch.setattr(api_einkauf, "get_config", lambda: config)
+    monkeypatch.setattr(
+        api_einkauf.requests,
+        "request",
+        lambda *args, **kwargs: SimpleNamespace(
+            content=b'{"ok":true}',
+            status_code=200,
+            headers={"content-type": "application/json"},
+        ),
+    )
+
+    status = client.get("/api/einkauf/status")
+    proxied = client.get("/api/einkauf/items")
+
+    assert status.status_code == 200
+    assert status.json()["configured"] is True
+    assert proxied.status_code == 200
+    assert proxied.json() == {"ok": True}
 
 
 @pytest.mark.parametrize(
