@@ -329,6 +329,8 @@ def get_recipe(recipe_id: int):
         ) if missing
     ]
     r["tags"] = db.recipe_tags_get(recipe_id)
+    r["cook_summary"] = db.recipe_cook_summary(recipe_id)
+    r["cook_history"] = db.recipe_cook_history(recipe_id, limit=10)
     # PDF-Rezepte (Mail-Import): Original-PDF melden, damit das Frontend
     # einen "PDF öffnen"-Button zeigen kann (Bild allein reicht nicht).
     try:
@@ -409,6 +411,124 @@ def update_tags(recipe_id: int, payload: TagsUpdate, request: Request):
     return {"ok": True, "tags": db.recipe_tags_get(recipe_id)}
 
 
+class BulkRecipeUpdate(BaseModel):
+    recipe_ids: List[int] = Field(min_length=1, max_length=100)
+    category: Optional[str] = Field(None, max_length=200)
+    add_tags: List[str] = Field(default_factory=list, max_length=30)
+    remove_tags: List[str] = Field(default_factory=list, max_length=30)
+
+
+@router.post("/bulk-edit")
+def bulk_edit_recipes(payload: BulkRecipeUpdate, request: Request) -> Dict[str, Any]:
+    """Ändert Kategorie und User-Tags für bis zu 100 Rezepte.
+
+    Jedes Rezept bekommt genau einen Snapshot. Ein Ordnerkonflikt stoppt nur
+    das betroffene Rezept und wird transparent in ``failed`` gemeldet.
+    """
+    from ..recipes.manage import safe_update_recipe_metadata
+
+    category = payload.category.strip() if payload.category is not None else None
+    if category is not None:
+        if not category:
+            raise HTTPException(400, "Kategorie darf nicht leer sein")
+        if any(part in category for part in ("/", "\\", "..")):
+            raise HTTPException(
+                400, "Kategorie darf keine Pfad-Separatoren oder '..' enthalten"
+            )
+    add_tags = _normalized_user_tags(payload.add_tags)
+    remove_tags = _normalized_user_tags(payload.remove_tags)
+    add_keys = {tag.casefold() for tag in add_tags}
+    remove_keys = {tag.casefold() for tag in remove_tags}
+    overlap = add_keys & remove_keys
+    if overlap:
+        raise HTTPException(
+            400,
+            "Ein Tag kann nicht gleichzeitig hinzugefügt und entfernt werden",
+        )
+    if category is None and not add_tags and not remove_tags:
+        raise HTTPException(400, "Keine Änderung ausgewählt")
+
+    db = get_db()
+    updated: List[Dict[str, Any]] = []
+    unchanged: List[int] = []
+    failed: List[Dict[str, Any]] = []
+    for recipe_id in dict.fromkeys(payload.recipe_ids):
+        recipe = db.recipe_get(int(recipe_id))
+        if not recipe or recipe.get("deleted_at") is not None:
+            failed.append({"recipe_id": recipe_id, "error": "Rezept nicht gefunden"})
+            continue
+
+        current_tags = db.recipe_tags_get(int(recipe_id))
+        manual_tags = [tag["name"] for tag in current_tags if not tag.get("auto")]
+        auto_keys = {
+            str(tag["name"]).casefold() for tag in current_tags if tag.get("auto")
+        }
+        next_tags = [tag for tag in manual_tags if tag.casefold() not in remove_keys]
+        known_keys = {tag.casefold() for tag in next_tags} | auto_keys
+        for tag in add_tags:
+            if tag.casefold() not in known_keys:
+                next_tags.append(tag)
+                known_keys.add(tag.casefold())
+        category_changed = category is not None and category != recipe.get("category")
+        tags_changed = {
+            tag.casefold() for tag in next_tags
+        } != {tag.casefold() for tag in manual_tags}
+        if not category_changed and not tags_changed:
+            unchanged.append(int(recipe_id))
+            continue
+        if len(next_tags) > 30:
+            failed.append({
+                "recipe_id": recipe_id,
+                "name": recipe.get("name"),
+                "error": "Mehr als 30 eigene Tags wären nicht zulässig",
+            })
+            continue
+
+        try:
+            _version_before(
+                int(recipe_id), request, "Massenpflege: Kategorie oder Tags geändert"
+            )
+            if category_changed:
+                safe_update_recipe_metadata(
+                    db,
+                    int(recipe_id),
+                    name=recipe.get("name") or "Unbekannt",
+                    recipe_type=recipe.get("type") or "Sonstiges",
+                    category=category or "Allgemein",
+                    description=recipe.get("description") or "",
+                    servings=recipe.get("servings"),
+                    url=recipe.get("url"),
+                )
+            if tags_changed:
+                db.recipe_tags_set(int(recipe_id), next_tags)
+            updated.append({
+                "recipe_id": int(recipe_id),
+                "name": recipe.get("name"),
+                "category": category if category_changed else recipe.get("category"),
+            })
+        except HTTPException as exc:
+            failed.append({
+                "recipe_id": recipe_id,
+                "name": recipe.get("name"),
+                "error": str(exc.detail),
+            })
+        except (ValueError, RuntimeError) as exc:
+            failed.append({
+                "recipe_id": recipe_id,
+                "name": recipe.get("name"),
+                "error": str(exc),
+            })
+
+    if updated:
+        _FACET_CACHE.clear()
+    return {
+        "ok": not failed,
+        "updated": updated,
+        "unchanged": unchanged,
+        "failed": failed,
+    }
+
+
 class MetadataUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     type: str = Field(min_length=1, max_length=200)
@@ -460,6 +580,128 @@ def update_metadata(recipe_id: int, payload: MetadataUpdate, request: Request):
         raise HTTPException(409, str(exc)) from exc
     _FACET_CACHE.clear()
     return {**result, "recipe": get_recipe(recipe_id)}
+
+
+class CookingProgressUpdate(BaseModel):
+    completed_steps: List[int] = Field(default_factory=list, max_length=200)
+    active_step: int = Field(default=0, ge=0)
+    servings: Optional[int] = Field(None, ge=1, le=50)
+
+
+def _validated_cooking_steps(
+    recipe_id: int, completed_steps: List[int], active_step: int
+) -> tuple[List[int], int, int]:
+    steps = get_db().recipe_steps_get(recipe_id)
+    if not steps:
+        raise HTTPException(409, "Das Rezept hat keine Zubereitungsschritte")
+    count = len(steps)
+    completed = sorted(set(completed_steps))
+    if any(step < 0 or step >= count for step in completed):
+        raise HTTPException(400, "Der Kochfortschritt passt nicht zur Schrittliste")
+    if active_step >= count:
+        raise HTTPException(400, "Der aktive Kochschritt existiert nicht")
+    return completed, active_step, count
+
+
+@router.get("/{recipe_id}/cooking-progress")
+def cooking_progress(recipe_id: int, request: Request) -> Dict[str, Any]:
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    username = _actor(request)
+    progress = db.recipe_cooking_progress_get(recipe_id, username)
+    step_count = len(db.recipe_steps_get(recipe_id))
+    if not progress:
+        return {
+            "recipe_id": recipe_id,
+            "username": username,
+            "completed_steps": [],
+            "active_step": 0,
+            "servings": recipe.get("servings"),
+            "started_at": None,
+            "updated_at": None,
+            "exists": False,
+            "step_count": step_count,
+        }
+    progress["completed_steps"] = [
+        step for step in progress["completed_steps"] if step < step_count
+    ]
+    progress["active_step"] = min(
+        max(0, int(progress.get("active_step") or 0)), max(0, step_count - 1)
+    )
+    progress["step_count"] = step_count
+    return progress
+
+
+@router.put("/{recipe_id}/cooking-progress")
+def update_cooking_progress(
+    recipe_id: int, payload: CookingProgressUpdate, request: Request
+) -> Dict[str, Any]:
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    completed, active, count = _validated_cooking_steps(
+        recipe_id, payload.completed_steps, payload.active_step
+    )
+    progress = db.recipe_cooking_progress_set(
+        recipe_id,
+        _actor(request),
+        completed_steps=completed,
+        active_step=active,
+        servings=payload.servings,
+    )
+    progress["step_count"] = count
+    return progress
+
+
+@router.delete("/{recipe_id}/cooking-progress")
+def clear_cooking_progress(recipe_id: int, request: Request) -> Dict[str, Any]:
+    db = get_db()
+    if not db.recipe_get(recipe_id):
+        raise HTTPException(404, "Rezept nicht gefunden")
+    return {
+        "ok": True,
+        "cleared": db.recipe_cooking_progress_clear(recipe_id, _actor(request)),
+    }
+
+
+class CookingComplete(BaseModel):
+    servings: Optional[int] = Field(None, ge=1, le=50)
+
+
+@router.post("/{recipe_id}/cooking-complete")
+def complete_cooking(
+    recipe_id: int, payload: CookingComplete, request: Request
+) -> Dict[str, Any]:
+    db = get_db()
+    try:
+        entry = db.recipe_cooking_complete(
+            recipe_id,
+            _actor(request),
+            servings=payload.servings,
+        )
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {
+        "ok": True,
+        "entry": entry,
+        "summary": db.recipe_cook_summary(recipe_id),
+    }
+
+
+@router.get("/{recipe_id}/cook-history")
+def cook_history(
+    recipe_id: int, limit: int = Query(20, ge=1, le=100)
+) -> Dict[str, Any]:
+    db = get_db()
+    if not db.recipe_get(recipe_id):
+        raise HTTPException(404, "Rezept nicht gefunden")
+    return {
+        "items": db.recipe_cook_history(recipe_id, limit=limit),
+        "summary": db.recipe_cook_summary(recipe_id),
+    }
 
 
 class IngredientIn(BaseModel):
@@ -1155,6 +1397,24 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
 class RenamePayload(BaseModel):
     new_name: str
     rename_folder: bool = True
+
+
+class DuplicatePayload(BaseModel):
+    new_name: str = Field(min_length=1, max_length=200)
+
+
+@router.post("/{recipe_id}/duplicate")
+def duplicate_recipe(recipe_id: int, payload: DuplicatePayload) -> Dict[str, Any]:
+    from ..recipes.manage import safe_duplicate_recipe
+
+    try:
+        return safe_duplicate_recipe(
+            get_db(), recipe_id, new_name=payload.new_name
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.put("/{recipe_id}/rename")

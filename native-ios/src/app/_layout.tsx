@@ -84,6 +84,7 @@ export default function RootLayout() {
                 <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
                 <Stack.Screen name="login" options={{ headerShown: false, animation: 'fade' }} />
                 <Stack.Screen name="recipe/[id]" options={{ title: 'Rezept', presentation: 'card' }} />
+                <Stack.Screen name="cook/[id]" options={{ title: 'Kochmodus', presentation: 'card' }} />
               </Stack>
               <AuthenticatedTimerBar />
             </AuthGate></PrivacyShield>

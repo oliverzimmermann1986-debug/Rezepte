@@ -22,11 +22,17 @@ import json
 import logging
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..config_store import get_config
-from ..core.safety import atomic_write_bytes, atomic_write_json, atomic_write_text
+from ..core.safety import (
+    AtomicDirectoryCommit,
+    atomic_write_bytes,
+    atomic_write_json,
+    atomic_write_text,
+)
 from ..db import Database
 
 logger = logging.getLogger(__name__)
@@ -294,6 +300,140 @@ def safe_update_recipe_metadata(
         "recipe_id": recipe_id,
         "folder_path": str(target_folder) if old_exists else recipe.get("folder_path"),
         "moved": moved,
+    }
+
+
+def safe_duplicate_recipe(
+    db: Database,
+    recipe_id: int,
+    *,
+    new_name: str,
+) -> Dict[str, Any]:
+    """Erstellt eine eigenständige Rezeptvariante ohne Social-Media-Video.
+
+    Der neue Ordner wird zuerst vollständig unter ``.incoming`` aufgebaut und
+    erst danach atomar veröffentlicht. Text, Cover und Original-PDF werden
+    übernommen; Videodateien und Quell-URL bewusst nicht. Schlägt der DB-Klon
+    danach fehl, wird ausschließlich der gerade erzeugte Zielordner entfernt.
+    """
+    name = (new_name or "").strip()
+    if not name:
+        raise ValueError("Der Name der Variante darf nicht leer sein")
+    if len(name) > 200:
+        raise ValueError("Der Name der Variante ist zu lang (maximal 200 Zeichen)")
+    if any(part in name for part in ("/", "\\", "..")):
+        raise ValueError("Der Name darf keine Pfad-Separatoren oder '..' enthalten")
+
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
+    source_folder = _assert_inside_root(Path(str(recipe.get("folder_path") or "")))
+    if not source_folder.is_dir():
+        raise RuntimeError("Der Rezeptordner des Originals fehlt")
+
+    recipe_type = str(recipe.get("type") or "Sonstiges").strip()
+    category = str(recipe.get("category") or "Allgemein").strip()
+    target = _assert_inside_root(
+        _recipe_root()
+        / sanitize_filename(recipe_type)
+        / sanitize_filename(category)
+        / sanitize_filename(name)
+    )
+    if target.exists():
+        raise RuntimeError(f"Ziel-Folder existiert bereits: {target}")
+
+    copied_names: set[str] = set()
+    published: Optional[Path] = None
+    new_id: Optional[int] = None
+    allowed_suffixes = {
+        ".jpg", ".jpeg", ".png", ".webp", ".heic",
+        ".pdf", ".txt",
+    }
+    try:
+        with AtomicDirectoryCommit(target) as transaction:
+            for source in source_folder.iterdir():
+                if (
+                    not source.is_file()
+                    or source.is_symlink()
+                    or source.name == "info.json"
+                    or source.suffix.lower() not in allowed_suffixes
+                ):
+                    continue
+                shutil.copy2(source, transaction.path(source.name))
+                copied_names.add(source.name)
+
+            description = str(recipe.get("description") or "")
+            if description:
+                atomic_write_text(transaction.path("description.txt"), description)
+                copied_names.add("description.txt")
+
+            info: Dict[str, Any] = {}
+            source_info = source_folder / "info.json"
+            if source_info.is_file() and not source_info.is_symlink():
+                try:
+                    parsed = json.loads(source_info.read_text(encoding="utf-8"))
+                    if isinstance(parsed, dict):
+                        info = parsed
+                except Exception:
+                    logger.warning(
+                        "Recipe #%s: ungültige info.json beim Varianten-Klon ignoriert",
+                        recipe_id,
+                    )
+            info.update({
+                "name": name,
+                "type": recipe_type,
+                "category": category,
+                "description": description,
+                "url": None,
+                "variant_of": recipe_id,
+                "created_at": time.time(),
+            })
+            info.pop("video_filename", None)
+            atomic_write_json(transaction.path("info.json"), info)
+            published = transaction.commit(manifest_source={
+                "operation": "recipe_variant",
+                "source_recipe_id": recipe_id,
+            })
+
+        thumb_filename = str(recipe.get("thumb_filename") or "")
+        if thumb_filename not in copied_names:
+            thumb_filename = None
+        new_id = db.recipe_upsert(
+            url=None,
+            name=name,
+            type=recipe_type,
+            category=category,
+            folder_path=str(published),
+            description=recipe.get("description"),
+            thumb_filename=thumb_filename,
+            video_filename=None,
+            source_added_at=time.time(),
+        )
+        db.recipe_clone_content(recipe_id, new_id)
+    except Exception as exc:
+        if new_id is not None:
+            try:
+                db.recipe_delete(new_id)
+            except Exception:
+                logger.exception("DB-Rollback für Varianten-Rezept #%s fehlgeschlagen", new_id)
+        if published and published.exists():
+            try:
+                published = _assert_inside_root(published)
+                shutil.rmtree(published)
+            except Exception:
+                logger.exception("Datei-Rollback für Rezeptvariante fehlgeschlagen: %s", published)
+        if isinstance(exc, (ValueError, RuntimeError)):
+            raise
+        raise RuntimeError(f"Rezeptvariante konnte nicht erstellt werden: {exc}") from exc
+
+    return {
+        "ok": True,
+        "recipe_id": new_id,
+        "source_recipe_id": recipe_id,
+        "name": name,
+        "folder_path": str(published),
+        "copied_files": len(copied_names),
+        "video_copied": False,
     }
 
 

@@ -32,6 +32,33 @@ export type RecipeStep = {
   timer_seconds?: number | null;
 };
 
+export type CookHistoryItem = {
+  id: number;
+  recipe_id: number;
+  cooked_at: number;
+  cooked_by: string;
+  servings?: number | null;
+};
+
+export type CookSummary = {
+  count: number;
+  last_cooked_at?: number | null;
+  last_cooked_by?: string | null;
+  last_servings?: number | null;
+};
+
+export type CookingProgress = {
+  recipe_id: number;
+  username: string;
+  completed_steps: number[];
+  active_step: number;
+  servings?: number | null;
+  started_at?: number | null;
+  updated_at?: number | null;
+  exists: boolean;
+  step_count: number;
+};
+
 export type RecipeDetail = RecipeListItem & {
   ingredients: Ingredient[];
   steps: RecipeStep[];
@@ -40,6 +67,8 @@ export type RecipeDetail = RecipeListItem & {
   folder_path?: string;
   pdf_filename?: string | null;
   description_original?: string | null;
+  cook_summary?: CookSummary;
+  cook_history?: CookHistoryItem[];
 };
 
 export type PendingSuggestion = {

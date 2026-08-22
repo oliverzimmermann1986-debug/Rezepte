@@ -1,5 +1,6 @@
 import { Image } from 'expo-image';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { SymbolView } from 'expo-symbols';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -8,6 +9,7 @@ import { Alert, Pressable, Share, StyleSheet, Text, View } from 'react-native';
 import { RecipeEditor } from '@/components/recipe-editor';
 import { RecipeMetadataEditor } from '@/components/recipe-metadata-editor';
 import { RecipeShareLinks } from '@/components/recipe-share-links';
+import { ServingSelector } from '@/components/serving-selector';
 import { StepTimer } from '@/components/step-timer';
 import { ManualCareBanner, PrimaryButton, Screen, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
@@ -15,28 +17,11 @@ import { absoluteApiUrl, api, apiAuthHeaders, deleteCachedFile, downloadFileToCa
 import { apiCached } from '@/lib/cache';
 import { externalSourceLabel, openExternalUrl } from '@/lib/external-links';
 import { pickEditedJpeg } from '@/lib/image-picker';
-import { RecipeDetail } from '@/lib/types';
+import { formatScaledAmount, normalizedServings, portionLabel } from '@/lib/servings';
+import { CookingProgress, RecipeDetail } from '@/lib/types';
 
 type Tab = 'info' | 'ingredients' | 'steps';
 type SymbolName = React.ComponentProps<typeof SymbolView>['name'];
-
-const MIN_COOK_SERVINGS = 1;
-const MAX_COOK_SERVINGS = 50;
-
-function normalizedServings(value?: number | null) {
-  if (!value || !Number.isFinite(value) || value < MIN_COOK_SERVINGS) return null;
-  return Math.min(MAX_COOK_SERVINGS, Math.round(value));
-}
-
-function portionLabel(value: number) {
-  return `${value} ${value === 1 ? 'Portion' : 'Portionen'}`;
-}
-
-function formatScaledAmount(value: number | null | undefined, multiplier: number) {
-  if (value === null || value === undefined) return '–';
-  const rounded = Math.round(value * multiplier * 100) / 100;
-  return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace('.', ',');
-}
 
 function CompactAction({
   label,
@@ -62,67 +47,19 @@ function CompactAction({
   );
 }
 
-function ServingSelector({
-  value,
-  original,
-  disabled,
-  onChange,
-}: {
-  value: number;
-  original: number;
-  disabled?: boolean;
-  onChange: (value: number) => void;
-}) {
-  const decreaseDisabled = disabled || value <= MIN_COOK_SERVINGS;
-  const increaseDisabled = disabled || value >= MAX_COOK_SERVINGS;
-
-  return (
-    <View style={styles.servingCard}>
-      <View style={styles.servingCopy}>
-        <Text style={styles.servingTitle}>Kochen für</Text>
-        <Text style={styles.servingHint}>
-          {value === original ? `Originalrezept · ${portionLabel(original)}` : `Original ${original} · Mengen × ${(value / original).toFixed(2).replace(/0+$/, '').replace(/[.,]$/, '').replace('.', ',')}`}
-        </Text>
-      </View>
-      <View style={styles.servingStepper}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Eine Portion weniger"
-          disabled={decreaseDisabled}
-          onPress={() => onChange(value - 1)}
-          style={({ pressed }) => [styles.servingButton, pressed && styles.actionPressed, decreaseDisabled && styles.disabled]}>
-          <SymbolView name="minus" size={18} weight="bold" tintColor={colors.text} />
-        </Pressable>
-        <View
-          accessibilityRole="adjustable"
-          accessibilityLabel="Anzahl Portionen"
-          accessibilityValue={{ min: MIN_COOK_SERVINGS, max: MAX_COOK_SERVINGS, now: value, text: portionLabel(value) }}
-          accessibilityActions={[{ name: 'decrement', label: 'Eine Portion weniger' }, { name: 'increment', label: 'Eine Portion mehr' }]}
-          onAccessibilityAction={({ nativeEvent }) => {
-            if (nativeEvent.actionName === 'decrement' && !decreaseDisabled) onChange(value - 1);
-            if (nativeEvent.actionName === 'increment' && !increaseDisabled) onChange(value + 1);
-          }}
-          style={styles.servingValue}>
-          <Text style={styles.servingNumber}>{value}</Text>
-          <Text style={styles.servingUnit}>{value === 1 ? 'Portion' : 'Portionen'}</Text>
-        </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Eine Portion mehr"
-          disabled={increaseDisabled}
-          onPress={() => onChange(value + 1)}
-          style={({ pressed }) => [styles.servingButton, pressed && styles.actionPressed, increaseDisabled && styles.disabled]}>
-          <SymbolView name="plus" size={18} weight="bold" tintColor={colors.text} />
-        </Pressable>
-      </View>
-    </View>
-  );
+function cookedAtLabel(value: number) {
+  return new Intl.DateTimeFormat('de-DE', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value * 1000));
 }
 
 export default function RecipeDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const recipeId = Number(id);
+  const router = useRouter();
   const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
+  const [cookingProgress, setCookingProgress] = useState<CookingProgress | null>(null);
   const [tab, setTab] = useState<Tab>('steps');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -138,7 +75,17 @@ export default function RecipeDetailScreen() {
     setLoading(true);
     setError('');
     try {
-      setRecipe(await apiCached<RecipeDetail>(`recipe:${recipeId}`, `/api/recipes/${recipeId}`));
+      const [recipeResult, progressResult] = await Promise.allSettled([
+        apiCached<RecipeDetail>(`recipe:${recipeId}`, `/api/recipes/${recipeId}`),
+        api<CookingProgress>(`/api/recipes/${recipeId}/cooking-progress`),
+      ]);
+      if (recipeResult.status === 'rejected') throw recipeResult.reason;
+      setRecipe(recipeResult.value);
+      setCookingProgress(
+        progressResult.status === 'fulfilled' && progressResult.value.exists
+          ? progressResult.value
+          : null,
+      );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Rezept konnte nicht geladen werden');
     } finally {
@@ -146,7 +93,9 @@ export default function RecipeDetailScreen() {
     }
   }, [recipeId]);
 
-  useEffect(() => { load(); }, [load]);
+  useFocusEffect(useCallback(() => {
+    void load();
+  }, [load]));
 
   useEffect(() => {
     setCookServings(normalizedServings(recipe?.servings));
@@ -297,6 +246,38 @@ export default function RecipeDetailScreen() {
     }
   }
 
+  function duplicateRecipe() {
+    if (!recipe) return;
+    Alert.prompt(
+      'Als Variante duplizieren',
+      'Zutaten, Schritte, Tags, Cover und PDF werden kopiert. Das Originalvideo und der Quell-Link werden nicht übernommen.',
+      value => void createVariant(value),
+      'plain-text',
+      `${recipe.name} – Variante`,
+    );
+  }
+
+  async function createVariant(value?: string) {
+    if (!recipe) return;
+    const newName = value?.trim();
+    if (!newName) {
+      Alert.alert('Name fehlt', 'Bitte gib der Variante einen Namen.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await api<{ recipe_id: number }>(`/api/recipes/${recipe.id}/duplicate`, {
+        method: 'POST',
+        body: JSON.stringify({ new_name: newName }),
+      });
+      router.push(`/recipe/${result.recipe_id}`);
+    } catch (reason) {
+      Alert.alert('Variante nicht erstellt', reason instanceof Error ? reason.message : 'Bitte erneut versuchen.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (loading && !recipe) return <Screen><StateView title="Rezept wird geladen" loading /></Screen>;
   if (error && !recipe) {
     return <Screen><StateView title="Rezept nicht verfügbar" message={error} action="Erneut versuchen" onAction={load} /></Screen>;
@@ -369,6 +350,7 @@ export default function RecipeDetailScreen() {
           {!!recipe.pdf_filename && (
             <CompactAction label="PDF" symbol="doc" onPress={openPdf} disabled={busy} />
           )}
+          <CompactAction label="Variante" symbol="doc.on.doc" onPress={duplicateRecipe} disabled={busy} />
           <CompactAction label="Teilen" symbol="square.and.arrow.up" onPress={shareRecipe} disabled={busy} />
         </View>
 
@@ -429,6 +411,30 @@ export default function RecipeDetailScreen() {
             {!!recipe.description && <Text style={styles.description}>{recipe.description}</Text>}
             <View style={styles.tagRow}>
               {recipe.tags.map(tag => <Text key={tag.id} style={styles.tag}>{tag.name}</Text>)}
+            </View>
+            <View style={styles.historyBlock}>
+              <Text style={styles.historyTitle}>Kochhistorie</Text>
+              {recipe.cook_summary?.count ? (
+                <>
+                  <Text style={styles.historySummary}>
+                    {recipe.cook_summary.count}× gekocht · zuletzt {cookedAtLabel(recipe.cook_summary.last_cooked_at!)}
+                    {recipe.cook_summary.last_cooked_by ? ` von ${recipe.cook_summary.last_cooked_by}` : ''}
+                    {recipe.cook_summary.last_servings ? ` · ${portionLabel(recipe.cook_summary.last_servings)}` : ''}
+                  </Text>
+                  <View style={styles.historyList}>
+                    {(recipe.cook_history || []).slice(0, 5).map(item => (
+                      <View key={item.id} style={styles.historyRow}>
+                        <Text style={styles.historyDate}>{cookedAtLabel(item.cooked_at)}</Text>
+                        <Text style={styles.historyMeta}>
+                          {[item.cooked_by, item.servings ? portionLabel(item.servings) : ''].filter(Boolean).join(' · ')}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                </>
+              ) : (
+                <Text style={styles.historyEmpty}>Noch nicht als gekocht gespeichert.</Text>
+              )}
             </View>
             <Text style={styles.noVideo}>Videos werden in der App bewusst nicht geladen oder abgespielt.</Text>
             {!!recipe.description_original && (
@@ -491,6 +497,13 @@ export default function RecipeDetailScreen() {
                 <Text style={styles.edit}>Bearbeiten</Text>
               </Pressable>
             </View>
+            <PrimaryButton
+              label={cookingProgress
+                ? `Kochmodus fortsetzen · ${cookingProgress.completed_steps.length}/${recipe.steps.length}`
+                : 'Kochmodus starten'}
+              onPress={() => router.push(`/cook/${recipe.id}`)}
+              disabled={busy || !recipe.steps.length}
+            />
             {recipe.steps.length ? recipe.steps.map((step, index) => (
               <View key={step.id || index} style={styles.step}>
                 <Text style={styles.stepNumber}>{index + 1}</Text>
@@ -572,11 +585,6 @@ const styles = StyleSheet.create({
   servingCopy: { flex: 1, minWidth: 150, gap: 3 },
   servingTitle: { color: colors.text, fontSize: 16, fontWeight: '800' },
   servingHint: { color: colors.muted, fontSize: 12, lineHeight: 17 },
-  servingStepper: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: 'hidden' },
-  servingButton: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.cream },
-  servingValue: { minWidth: 76, height: 48, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, borderLeftWidth: StyleSheet.hairlineWidth, borderRightWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.white },
-  servingNumber: { color: colors.text, fontSize: 19, lineHeight: 21, fontWeight: '900', fontVariant: ['tabular-nums'] },
-  servingUnit: { color: colors.muted, fontSize: 10, lineHeight: 13 },
   servingMissingAction: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 14, borderRadius: radii.sm, backgroundColor: colors.butter },
   servingMissingText: { color: colors.text, fontSize: 14, fontWeight: '800' },
   tabs: { flexDirection: 'row', padding: 4, borderRadius: radii.md, backgroundColor: '#EEE4D6' },
@@ -595,6 +603,14 @@ const styles = StyleSheet.create({
   originalText: { color: colors.muted, fontSize: 14, lineHeight: 21 },
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   tag: { color: colors.text, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#EFE5D8' },
+  historyBlock: { gap: 8, padding: 14, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface },
+  historyTitle: { color: colors.text, fontSize: 17, fontWeight: '900' },
+  historySummary: { color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: '700' },
+  historyList: { gap: 2, paddingTop: 2 },
+  historyRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  historyDate: { flex: 1, color: colors.text, fontSize: 13, fontWeight: '700' },
+  historyMeta: { color: colors.muted, fontSize: 12, textAlign: 'right' },
+  historyEmpty: { color: colors.muted, fontSize: 14, lineHeight: 20 },
   ingredient: {
     minHeight: 48,
     flexDirection: 'row',

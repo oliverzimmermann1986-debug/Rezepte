@@ -20,13 +20,15 @@ def test_overlapping_initializers_create_one_verified_migration_backup(tmp_path)
         databases = list(executor.map(lambda _index: Database(path), range(4)))
 
     assert len(databases) == 4
-    backups = list((tmp_path / "backups").glob("pre-migration-v*-to-v150-*.db"))
+    backups = list((tmp_path / "backups").glob(
+        f"pre-migration-v*-to-v{CURRENT_SCHEMA_VERSION}-*.db"
+    ))
     assert len(backups) == 1
     with sqlite3.connect(backups[0]) as backup:
         assert backup.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert backup.execute(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
-        ).fetchone()[0] == 140
+        ).fetchone()[0] == 150
     with sqlite3.connect(path) as current:
         assert current.execute(
             "SELECT MAX(version) FROM schema_migrations"

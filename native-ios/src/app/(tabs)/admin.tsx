@@ -3,6 +3,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
+import { AdminBulkEditor } from '@/components/admin-bulk-editor';
 import { AdminTrash } from '@/components/admin-trash';
 import { AdminVersions } from '@/components/admin-versions';
 import { PendingEditor } from '@/components/pending-editor';
@@ -35,6 +36,7 @@ export default function AdminScreen() {
   const [selectedPending, setSelectedPending] = useState<PendingItem | null>(null);
   const [showVersions, setShowVersions] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
+  const [showBulkEditor, setShowBulkEditor] = useState(false);
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -213,6 +215,12 @@ export default function AdminScreen() {
             <PrimaryButton label="Postfächer jetzt prüfen" onPress={runImporter} disabled={busy} />
           </View>
 
+          <View style={sharedStyles.card}>
+            <Text style={sharedStyles.sectionTitle}>Rezeptbestand pflegen</Text>
+            <Text style={styles.help}>Mehrere Rezepte auswählen, gemeinsam verschieben und eigene Tags ergänzen oder entfernen.</Text>
+            <PrimaryButton label="Massenpflege öffnen" onPress={() => setShowBulkEditor(true)} disabled={busy} />
+          </View>
+
           <View style={styles.section}>
             <Text style={sharedStyles.sectionTitle}>Manuelle Prüfung</Text>
             {!pending.length ? <Text style={styles.empty}>Keine offenen Importe.</Text> : pending.map(item => (
@@ -263,6 +271,11 @@ export default function AdminScreen() {
       />
       <AdminVersions visible={showVersions} onClose={() => setShowVersions(false)} onChanged={() => void load()} />
       <AdminTrash visible={showTrash} onClose={() => setShowTrash(false)} onChanged={() => void load()} />
+      <AdminBulkEditor
+        visible={showBulkEditor}
+        onClose={() => setShowBulkEditor(false)}
+        onChanged={() => void load()}
+      />
     </Screen>
   );
 }

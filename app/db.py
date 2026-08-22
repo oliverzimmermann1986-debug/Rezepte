@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 150
+CURRENT_SCHEMA_VERSION = 160
 _MIGRATION_THREAD_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -227,6 +227,34 @@ CREATE TABLE IF NOT EXISTS meal_plan_entries (
 );
 CREATE INDEX IF NOT EXISTS idx_meal_plan_date
   ON meal_plan_entries(planned_for, sort_order, id);
+
+-- Benutzerbezogener Fortschritt im geführten Kochmodus. Schritt-Indizes
+-- bleiben bewusst 0-basiert und werden beim API-Schreiben gegen die aktuelle
+-- Schrittliste validiert. Pro Benutzer und Rezept existiert höchstens ein Lauf.
+CREATE TABLE IF NOT EXISTS recipe_cooking_progress (
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  username TEXT NOT NULL,
+  completed_steps_json TEXT NOT NULL DEFAULT '[]',
+  active_step INTEGER NOT NULL DEFAULT 0,
+  servings INTEGER,
+  started_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY(recipe_id, username)
+);
+CREATE INDEX IF NOT EXISTS idx_cooking_progress_updated
+  ON recipe_cooking_progress(username, updated_at DESC);
+
+-- Abschlussprotokoll: Ein Rezept kann beliebig oft gekocht werden. Die Historie
+-- ist haushaltsweit sichtbar, cooked_by hält die Attribution nachvollziehbar.
+CREATE TABLE IF NOT EXISTS recipe_cook_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  cooked_at REAL NOT NULL,
+  cooked_by TEXT NOT NULL,
+  servings INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_cook_history_recipe
+  ON recipe_cook_history(recipe_id, cooked_at DESC);
 
 -- users: Multi-User-Auth. Bcrypt-Hashes in password_hash. Die role-Spalte
 -- bleibt nur für Abwärtskompatibilität; Berechtigungen werden nicht danach
@@ -761,7 +789,11 @@ class Database:
         )
         c.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
-            (CURRENT_SCHEMA_VERSION, "transactional_runtime_hardening", time.time()),
+            (150, "transactional_runtime_hardening", time.time()),
+        )
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (CURRENT_SCHEMA_VERSION, "cooking_history_progress_and_recipe_variants", time.time()),
         )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
@@ -1601,6 +1633,58 @@ class Database:
             row = c.execute("SELECT * FROM recipes WHERE folder_path=?", (folder_path,)).fetchone()
             return dict(row) if row else None
 
+    def recipe_clone_content(self, source_id: int, target_id: int) -> None:
+        """Kopiert alle logischen Rezeptinhalte atomar in eine neue Rezeptzeile.
+
+        Favorit, Bewertung und User-Verifikation bleiben absichtlich beim
+        Original. Zutaten, Schritte, Portionen, Nährwerte und alle Tags bilden
+        dagegen den Ausgangspunkt der neuen Variante.
+        """
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            source = c.execute(
+                "SELECT * FROM recipes WHERE id=? AND deleted_at IS NULL",
+                (source_id,),
+            ).fetchone()
+            target = c.execute(
+                "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL",
+                (target_id,),
+            ).fetchone()
+            if not source or not target:
+                raise ValueError("Original oder Variante nicht gefunden")
+            c.execute(
+                "INSERT INTO recipe_ingredients "
+                "(recipe_id, name, canonical_name, amount, unit, raw, sort_order, calories) "
+                "SELECT ?, name, canonical_name, amount, unit, raw, sort_order, calories "
+                "FROM recipe_ingredients WHERE recipe_id=? ORDER BY sort_order, id",
+                (target_id, source_id),
+            )
+            c.execute(
+                "INSERT INTO recipe_steps "
+                "(recipe_id, step_number, instruction, timer_seconds) "
+                "SELECT ?, step_number, instruction, timer_seconds "
+                "FROM recipe_steps WHERE recipe_id=? ORDER BY step_number, id",
+                (target_id, source_id),
+            )
+            c.execute(
+                "INSERT INTO recipe_tags(recipe_id, tag_id, auto) "
+                "SELECT ?, tag_id, auto FROM recipe_tags WHERE recipe_id=?",
+                (target_id, source_id),
+            )
+            c.execute(
+                "UPDATE recipes SET servings=?, ingredients_extracted_at=?, "
+                "ingredients_status=?, calories_per_serving=?, protein_g=?, "
+                "carbs_g=?, fat_g=?, nutrition_computed_at=?, "
+                "extraction_claimed_at=NULL, extraction_claim_owner=NULL "
+                "WHERE id=?",
+                (
+                    source["servings"], source["ingredients_extracted_at"],
+                    source["ingredients_status"], source["calories_per_serving"],
+                    source["protein_g"], source["carbs_g"], source["fat_g"],
+                    source["nutrition_computed_at"], target_id,
+                ),
+            )
+
     def recipe_delete(self, recipe_id: int) -> None:
         """Endgültig aus DB löschen (HARD-DELETE). Nur für Cleanup-Job
         oder explizit-purge aus dem Papierkorb. Normales DELETE soll
@@ -2213,6 +2297,139 @@ class Database:
         with self.conn() as c:
             cur = c.execute("DELETE FROM meal_plan_entries WHERE id=?", (item_id,))
             return cur.rowcount > 0
+
+    # ─── Cooking progress + history ─────────────────────────────────────
+
+    @staticmethod
+    def _cooking_progress_row(row) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        result = dict(row)
+        try:
+            values = json.loads(result.pop("completed_steps_json") or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            values = []
+        result["completed_steps"] = sorted({
+            int(value) for value in values
+            if isinstance(value, int) and value >= 0
+        })
+        result["exists"] = True
+        return result
+
+    def recipe_cooking_progress_get(
+        self, recipe_id: int, username: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT * FROM recipe_cooking_progress "
+                "WHERE recipe_id=? AND username=?",
+                (recipe_id, username),
+            ).fetchone()
+            return self._cooking_progress_row(row)
+
+    def recipe_cooking_progress_set(
+        self,
+        recipe_id: int,
+        username: str,
+        *,
+        completed_steps: List[int],
+        active_step: int,
+        servings: Optional[int],
+    ) -> Dict[str, Any]:
+        now = time.time()
+        completed_json = json.dumps(
+            sorted(set(int(value) for value in completed_steps)),
+            separators=(",", ":"),
+        )
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO recipe_cooking_progress "
+                "(recipe_id, username, completed_steps_json, active_step, servings, "
+                "started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(recipe_id, username) DO UPDATE SET "
+                "completed_steps_json=excluded.completed_steps_json, "
+                "active_step=excluded.active_step, servings=excluded.servings, "
+                "updated_at=excluded.updated_at",
+                (
+                    recipe_id, username, completed_json, active_step, servings,
+                    now, now,
+                ),
+            )
+            row = c.execute(
+                "SELECT * FROM recipe_cooking_progress "
+                "WHERE recipe_id=? AND username=?",
+                (recipe_id, username),
+            ).fetchone()
+            return self._cooking_progress_row(row) or {}
+
+    def recipe_cooking_progress_clear(self, recipe_id: int, username: str) -> bool:
+        with self.conn() as c:
+            cur = c.execute(
+                "DELETE FROM recipe_cooking_progress WHERE recipe_id=? AND username=?",
+                (recipe_id, username),
+            )
+            return cur.rowcount > 0
+
+    def recipe_cooking_complete(
+        self,
+        recipe_id: int,
+        username: str,
+        *,
+        servings: Optional[int],
+    ) -> Dict[str, Any]:
+        now = time.time()
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            recipe = c.execute(
+                "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL",
+                (recipe_id,),
+            ).fetchone()
+            if not recipe:
+                raise ValueError("Rezept nicht gefunden")
+            cur = c.execute(
+                "INSERT INTO recipe_cook_history "
+                "(recipe_id, cooked_at, cooked_by, servings) VALUES (?, ?, ?, ?)",
+                (recipe_id, now, username, servings),
+            )
+            c.execute(
+                "DELETE FROM recipe_cooking_progress WHERE recipe_id=? AND username=?",
+                (recipe_id, username),
+            )
+            row = c.execute(
+                "SELECT * FROM recipe_cook_history WHERE id=?",
+                (int(cur.lastrowid),),
+            ).fetchone()
+            return dict(row)
+
+    def recipe_cook_history(
+        self, recipe_id: int, limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM recipe_cook_history WHERE recipe_id=? "
+                "ORDER BY cooked_at DESC, id DESC LIMIT ?",
+                (recipe_id, max(1, min(100, int(limit)))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def recipe_cook_summary(self, recipe_id: int) -> Dict[str, Any]:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS count, MAX(cooked_at) AS last_cooked_at "
+                "FROM recipe_cook_history WHERE recipe_id=?",
+                (recipe_id,),
+            ).fetchone()
+            latest = c.execute(
+                "SELECT cooked_by, servings FROM recipe_cook_history "
+                "WHERE recipe_id=? ORDER BY cooked_at DESC, id DESC LIMIT 1",
+                (recipe_id,),
+            ).fetchone()
+            return {
+                "count": int(row["count"] or 0),
+                "last_cooked_at": row["last_cooked_at"],
+                "last_cooked_by": latest["cooked_by"] if latest else None,
+                "last_servings": latest["servings"] if latest else None,
+            }
 
     # ─── Steps + Servings ─────────────────────────────────────────────────
 
