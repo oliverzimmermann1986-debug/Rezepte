@@ -15,17 +15,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PrimaryButton } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { optionalInteger, optionalNumber } from '@/lib/numbers';
 import { Ingredient, RecipeStep } from '@/lib/types';
 
 type EditableIngredient = Omit<Ingredient, 'amount'> & { amount?: number | string | null };
 type EditableStep = Omit<RecipeStep, 'timer_seconds'> & { timer_seconds?: number | string | null };
-
-function optionalNumber(value: number | string | null | undefined, label: string) {
-  if (value === '' || value == null) return null;
-  const parsed = Number(String(value).replace(',', '.'));
-  if (!Number.isFinite(parsed)) throw new Error(`${label} ist keine gültige Zahl.`);
-  return parsed;
-}
 
 type Props = {
   recipeId: number;
@@ -72,7 +66,7 @@ export function RecipeEditor({ recipeId, kind, ingredients, steps, visible, onCl
           .filter(item => item.instruction.trim())
           .map(item => ({
             instruction: item.instruction.trim(),
-            timer_seconds: optionalNumber(item.timer_seconds, 'Timer'),
+            timer_seconds: optionalInteger(item.timer_seconds, 'Timer'),
           }));
         await api(`/api/recipes/${recipeId}/steps`, {
           method: 'PUT',

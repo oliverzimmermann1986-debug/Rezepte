@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Pressable, StyleSheet, Text } from 'react-native';
 
 import { colors } from '@/constants/design';
+import { useCookingTimers } from '@/lib/timer-context';
 
 function format(seconds: number) {
   const minutes = Math.floor(seconds / 60);
@@ -9,28 +10,16 @@ function format(seconds: number) {
   return `${minutes}:${String(rest).padStart(2, '0')}`;
 }
 
-export function StepTimer({ seconds }: { seconds: number }) {
-  const [remaining, setRemaining] = useState(seconds);
-  const [running, setRunning] = useState(false);
-
-  useEffect(() => {
-    if (!running) return;
-    if (remaining <= 0) {
-      setRunning(false);
-      return;
-    }
-    const timer = setInterval(() => setRemaining(value => Math.max(0, value - 1)), 1000);
-    return () => clearInterval(timer);
-  }, [remaining, running]);
-
-  function toggle() {
-    if (remaining === 0) setRemaining(seconds);
-    setRunning(value => !value);
-  }
+export function StepTimer({ id, label, seconds }: { id: string; label: string; seconds: number }) {
+  const duration = Math.max(1, Math.round(seconds));
+  const { timers, toggle } = useCookingTimers();
+  const timer = timers[id];
+  const remaining = timer?.remaining ?? duration;
+  const running = timer?.running ?? false;
 
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel="Schritt-Timer" onPress={toggle} style={styles.button}>
-      <Text style={styles.text}>{running || remaining !== seconds ? format(remaining) : `Timer ${format(seconds)}`}</Text>
+    <Pressable accessibilityRole="button" accessibilityLabel={`${label}: Timer`} onPress={() => toggle(id, label, duration)} style={styles.button}>
+      <Text style={styles.text}>{timer?.finished ? 'Fertig' : running || remaining !== duration ? format(remaining) : `Timer ${format(duration)}`}</Text>
     </Pressable>
   );
 }

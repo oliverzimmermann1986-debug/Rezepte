@@ -16,17 +16,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PrimaryButton, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { optionalInteger, optionalNumber } from '@/lib/numbers';
 import { Ingredient, PendingItem, RecipeStep } from '@/lib/types';
 
 type EditableIngredient = Omit<Ingredient, 'amount'> & { amount?: number | string | null };
 type EditableStep = Omit<RecipeStep, 'timer_seconds'> & { timer_seconds?: number | string | null };
-
-function optionalNumber(value: number | string | null | undefined, label: string) {
-  if (value === '' || value == null) return null;
-  const parsed = Number(String(value).replace(',', '.'));
-  if (!Number.isFinite(parsed)) throw new Error(`${label} ist keine gültige Zahl.`);
-  return parsed;
-}
 
 type Props = {
   item: PendingItem | null;
@@ -74,7 +68,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
           type: recipeType.trim(),
           category: category.trim(),
           description: description.trim(),
-          servings: servings ? Number(servings) : null,
+          servings: optionalInteger(servings, 'Portionen', 1, 50),
           verified: verified && ingredients.some(value => value.name.trim()),
           ingredients: ingredients
             .filter(value => value.name.trim())
@@ -88,7 +82,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
             .filter(value => value.instruction.trim())
             .map(value => ({
               instruction: value.instruction.trim(),
-              timer_seconds: optionalNumber(value.timer_seconds, 'Timer'),
+              timer_seconds: optionalInteger(value.timer_seconds, 'Timer'),
             })),
         }),
       });

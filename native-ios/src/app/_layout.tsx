@@ -1,13 +1,14 @@
 import { Stack, useRootNavigationState, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { ShareIntentProvider } from 'expo-share-intent';
-import React, { PropsWithChildren, useEffect, useState } from 'react';
+import React, { PropsWithChildren, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { colors } from '@/constants/design';
 import { SharedLinkReceiver } from '@/components/shared-link-receiver';
 import { AuthProvider, useAuth } from '@/lib/auth-context';
+import { ActiveTimerBar, TimerProvider, useCookingTimers } from '@/lib/timer-context';
 
 function AuthGate({ children }: PropsWithChildren) {
   const { ready, token } = useAuth();
@@ -51,27 +52,42 @@ function PrivacyShield({ children }: PropsWithChildren) {
   );
 }
 
+function AuthenticatedTimerBar() {
+  const { ready, token } = useAuth();
+  const { clearAll } = useCookingTimers();
+  const previousToken = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready) return;
+    if (previousToken.current && !token) clearAll();
+    previousToken.current = token;
+  }, [clearAll, ready, token]);
+  return token ? <ActiveTimerBar /> : null;
+}
+
 export default function RootLayout() {
   return (
     <ShareIntentProvider options={{ resetOnBackground: true }}>
       <SafeAreaProvider>
         <AuthProvider>
-          <SharedLinkReceiver />
-          <PrivacyShield><AuthGate>
-            <StatusBar style="dark" />
-            <Stack
-              screenOptions={{
-                headerTintColor: colors.text,
-                headerStyle: { backgroundColor: colors.cream },
-                headerShadowVisible: false,
-                contentStyle: { backgroundColor: colors.cream },
-                headerBackButtonDisplayMode: 'minimal',
-              }}>
-              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-              <Stack.Screen name="login" options={{ headerShown: false, animation: 'fade' }} />
-              <Stack.Screen name="recipe/[id]" options={{ title: 'Rezept', presentation: 'card' }} />
-            </Stack>
-          </AuthGate></PrivacyShield>
+          <TimerProvider>
+            <SharedLinkReceiver />
+            <PrivacyShield><AuthGate>
+              <StatusBar style="dark" />
+              <Stack
+                screenOptions={{
+                  headerTintColor: colors.text,
+                  headerStyle: { backgroundColor: colors.cream },
+                  headerShadowVisible: false,
+                  contentStyle: { backgroundColor: colors.cream },
+                  headerBackButtonDisplayMode: 'minimal',
+                }}>
+                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                <Stack.Screen name="login" options={{ headerShown: false, animation: 'fade' }} />
+                <Stack.Screen name="recipe/[id]" options={{ title: 'Rezept', presentation: 'card' }} />
+              </Stack>
+              <AuthenticatedTimerBar />
+            </AuthGate></PrivacyShield>
+          </TimerProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </ShareIntentProvider>

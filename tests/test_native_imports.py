@@ -156,6 +156,19 @@ def test_pending_image_import_can_be_named_and_saved(test_db, tmp_path):
     assert test_db.recipe_steps_get(recipe_id)[0]["instruction"] == "Alles verrühren"
 
 
+def test_pending_editor_rejects_fractional_timer_before_processing(client):
+    response = client.post(
+        "/api/pending",
+        json={
+            "url": "manual-upload://missing/test.jpg",
+            "action": "save",
+            "steps": [{"instruction": "Warten", "timer_seconds": 2.5}],
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_social_url_validation_uses_exact_hosts_and_single_posts():
     assert normalize_content_url(
         "https://www.tiktok.com/@koch/video/123?utm_source=test#comments"

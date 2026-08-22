@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
@@ -190,6 +190,18 @@ def video_file(url: str):
     return FileResponse(video, media_type="video/mp4")
 
 
+class PendingIngredientIn(BaseModel):
+    name: str
+    amount: Optional[float] = None
+    unit: Optional[str] = None
+    raw: Optional[str] = None
+
+
+class PendingStepIn(BaseModel):
+    instruction: str
+    timer_seconds: Optional[int] = Field(None, ge=1, le=86_400)
+
+
 class ResolveBody(BaseModel):
     url: str
     action: str                   # 'save' | 'skip'
@@ -197,9 +209,9 @@ class ResolveBody(BaseModel):
     type: Optional[str] = None    # für Rezept
     category: Optional[str] = None
     description: Optional[str] = None
-    ingredients: Optional[List[Dict[str, Any]]] = None
-    steps: Optional[List[Dict[str, Any]]] = None
-    servings: Optional[int] = None
+    ingredients: Optional[List[PendingIngredientIn]] = None
+    steps: Optional[List[PendingStepIn]] = None
+    servings: Optional[int] = Field(None, ge=1, le=50)
     verified: bool = False
 
 
@@ -213,8 +225,14 @@ def resolve(body: ResolveBody):
         "type": body.type,
         "category": body.category,
         "description": body.description,
-        "ingredients": body.ingredients,
-        "steps": body.steps,
+        "ingredients": (
+            [item.model_dump() for item in body.ingredients]
+            if body.ingredients is not None else None
+        ),
+        "steps": (
+            [item.model_dump() for item in body.steps]
+            if body.steps is not None else None
+        ),
         "servings": body.servings,
         "verified": body.verified,
     }

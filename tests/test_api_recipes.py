@@ -139,6 +139,11 @@ def test_verify_uses_request_actor_for_bearer_sessions(client, test_db, monkeypa
     import app.routes.api_recipes as api_recipes
 
     recipe = _create_recipe(test_db, name="Attribution", folder_path="/tmp/actor")
+    test_db.recipe_set_extraction_result(
+        recipe["id"],
+        "ok",
+        [{"name": "Mehl", "canonical_name": "mehl", "amount": 200, "unit": "g"}],
+    )
     monkeypatch.setattr(api_recipes, "_actor", lambda _request: "anna")
 
     response = client.post(f"/api/recipes/{recipe['id']}/verify?verified=true")
@@ -146,6 +151,26 @@ def test_verify_uses_request_actor_for_bearer_sessions(client, test_db, monkeypa
     assert response.status_code == 200
     assert response.json()["by"] == "anna"
     assert test_db.recipe_get(recipe["id"])["verified_by"] == "anna"
+
+
+def test_empty_ingredients_cannot_be_marked_verified(client, test_db):
+    recipe = _create_recipe(test_db, name="Leer", folder_path="/tmp/empty-verify")
+
+    response = client.post(f"/api/recipes/{recipe['id']}/verify?verified=true")
+
+    assert response.status_code == 409
+    assert test_db.recipe_get(recipe["id"])["user_verified"] == 0
+
+
+def test_step_timer_requires_whole_seconds(client, test_db):
+    recipe = _create_recipe(test_db, name="Timer", folder_path="/tmp/timer")
+
+    response = client.put(
+        f"/api/recipes/{recipe['id']}/steps",
+        json={"steps": [{"instruction": "Warten", "timer_seconds": 2.5}]},
+    )
+
+    assert response.status_code == 422
 
 
 def test_list_filter_by_type(client, test_db):

@@ -447,7 +447,7 @@ def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Requ
 
 class StepIn(BaseModel):
     instruction: str
-    timer_seconds: Optional[int] = None
+    timer_seconds: Optional[int] = Field(None, ge=1, le=86_400)
 
 
 class StepsUpdate(BaseModel):
@@ -468,7 +468,7 @@ def update_steps(recipe_id: int, payload: StepsUpdate, request: Request):
 
 
 class ServingsUpdate(BaseModel):
-    servings: Optional[int] = None
+    servings: Optional[int] = Field(None, ge=1, le=50)
 
 
 @router.put("/{recipe_id}/servings")
@@ -898,6 +898,8 @@ def toggle_verify(recipe_id: int, request: Request,
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
+    if verified and not db.recipe_ingredients_get(recipe_id):
+        raise HTTPException(409, "Eine leere Zutatenliste kann nicht als geprüft markiert werden")
     username = _actor(request)
     _version_before(recipe_id, request, "Prüfstatus geändert")
     db.recipe_set_verified(recipe_id, verified, username if verified else None)

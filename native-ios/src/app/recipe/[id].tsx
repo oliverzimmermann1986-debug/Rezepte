@@ -365,7 +365,13 @@ export default function RecipeDetailScreen() {
                 <Text style={styles.stepNumber}>{index + 1}</Text>
                 <View style={styles.stepBody}>
                   <Text style={styles.stepText}>{step.instruction}</Text>
-                  {!!step.timer_seconds && <StepTimer seconds={step.timer_seconds} />}
+                  {!!step.timer_seconds && (
+                    <StepTimer
+                      id={`recipe-${recipe.id}-step-${step.id || index}`}
+                      label={`${recipe.name} · Schritt ${index + 1}`}
+                      seconds={step.timer_seconds}
+                    />
+                  )}
                 </View>
               </View>
             )) : <Text style={styles.empty}>Keine Schritte vorhanden. Bitte manuell ergänzen.</Text>}
