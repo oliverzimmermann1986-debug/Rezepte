@@ -59,6 +59,8 @@
     ],
     "extra": {
       "apiUrl": "https://rezepte.mausbaeren.me",
+      "appVariant": "production",
+      "keychainService": "de.mausbaeren.rezepte",
       "router": {},
       "eas": {
         "projectId": "d6c688a8-ebf1-407a-ba68-bf306ec4a423"

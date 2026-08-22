@@ -17,8 +17,11 @@ const INSTALL_MARKER = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}.rezepte-install-v1`
   : null;
 const DEFAULT_SERVER = String(Constants.expoConfig?.extra?.apiUrl || '').replace(/\/+$/, '');
+const KEYCHAIN_SERVICE = String(
+  Constants.expoConfig?.extra?.keychainService || 'de.mausbaeren.rezepte',
+);
 const KEYCHAIN_OPTIONS: SecureStore.SecureStoreOptions = {
-  keychainService: __DEV__ ? 'de.mausbaeren.rezepte.dev' : 'de.mausbaeren.rezepte',
+  keychainService: KEYCHAIN_SERVICE,
 };
 const AUTH_KEYS = [
   TOKEN_KEY,
