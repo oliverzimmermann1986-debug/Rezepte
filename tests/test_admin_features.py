@@ -21,7 +21,10 @@ def _recipe(db: Database, tmp_path: Path, name: str = "Pasta al Limone", descrip
     )
 
 
-def test_recipe_version_restore_is_atomic_and_keeps_personal_state(test_db: Database, tmp_path: Path):
+def test_recipe_version_restore_is_atomic_and_keeps_personal_state(test_db: Database, tmp_path: Path, monkeypatch):
+    import app.recipes.manage as manage
+
+    monkeypatch.setattr(manage, "_recipe_root", lambda: tmp_path.resolve())
     recipe_id = _recipe(test_db, tmp_path)
     test_db.recipe_set_extraction_result(recipe_id, "ok", [{
         "name": "Zitrone", "canonical_name": "zitrone", "amount": 1, "unit": "Stück", "raw": "1 Zitrone"
@@ -54,10 +57,12 @@ def test_recipe_version_restore_is_atomic_and_keeps_personal_state(test_db: Data
 
 def test_uploaded_cover_is_versioned_and_can_be_restored(client, test_db: Database, tmp_path: Path, monkeypatch):
     import app.routes.api_recipes as api_recipes
+    import app.recipes.manage as manage
 
     folder = tmp_path / "cover-version"
     folder.mkdir()
     monkeypatch.setattr(api_recipes, "_recipe_root", lambda: tmp_path)
+    monkeypatch.setattr(manage, "_recipe_root", lambda: tmp_path.resolve())
     old_cover = folder / "thumb.jpg"
     Image.new("RGB", (40, 40), "red").save(old_cover, format="JPEG")
     old_bytes = old_cover.read_bytes()

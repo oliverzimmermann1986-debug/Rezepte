@@ -228,6 +228,7 @@ def safe_update_recipe_metadata(
     description: str,
     servings: Optional[int],
     url: Optional[str],
+    target_folder_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Aktualisiert sichtbare Metadaten konsistent in DB, Sidecars und Pfad.
 
@@ -272,7 +273,11 @@ def safe_update_recipe_metadata(
     if old_exists:
         old_folder = _assert_inside_root(old_folder)
         root = _recipe_root()
-        target_folder = root / sanitize_filename(values["type"]) / sanitize_filename(values["category"]) / sanitize_filename(values["name"])
+        target_folder = (
+            Path(target_folder_override)
+            if target_folder_override
+            else root / sanitize_filename(values["type"]) / sanitize_filename(values["category"]) / sanitize_filename(values["name"])
+        )
         target_folder = _assert_inside_root(target_folder)
         if target_folder.exists() and target_folder != old_folder:
             raise RuntimeError(f"Ziel-Folder existiert bereits: {target_folder}")

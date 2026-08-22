@@ -112,7 +112,7 @@ def _snapshot_diff(snapshot: Dict[str, Any], current: Optional[Dict[str, Any]]) 
     current = current or {"recipe": {}, "ingredients": [], "steps": [], "tags": []}
     before_recipe = snapshot.get("recipe") or {}
     after_recipe = current.get("recipe") or {}
-    fields = ("name", "type", "category", "description", "servings",
+    fields = ("name", "type", "category", "description", "servings", "url",
               "calories_per_serving", "protein_g", "carbs_g", "fat_g",
               "ingredients_status", "user_verified")
     changed_fields = []

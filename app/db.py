@@ -2963,12 +2963,13 @@ class Database:
             return {"ok": False, "error": "Rezept existiert nicht mehr"}
         snap = version["snapshot"]
         media = snap.get("media") or {}
-        folder = Path(str(current.get("folder_path") or "")).resolve()
-        backup: Optional[Path] = None
+        original_folder = Path(str(current.get("folder_path") or "")).resolve()
+        backup_relative: Optional[Path] = None
         if media.get("thumbnail_backup"):
-            backup = (folder / str(media["thumbnail_backup"])).resolve()
+            backup_relative = Path(str(media["thumbnail_backup"]))
+            backup = (original_folder / backup_relative).resolve()
             try:
-                backup.relative_to(folder)
+                backup.relative_to(original_folder)
             except ValueError:
                 return {"ok": False, "error": "Cover-Sicherung liegt außerhalb des Rezeptordners"}
             if not backup.is_file() or backup.is_symlink():
@@ -2981,10 +2982,31 @@ class Database:
         if undo_version_id is not None:
             self._backup_thumbnail_for_version(current, int(undo_version_id))
         recipe = snap.get("recipe") or {}
+        # Name/Typ/Kategorie/Description bilden zugleich die Sidecars und die
+        # NAS-Ordnerstruktur. Sie dürfen deshalb nicht nur in SQLite
+        # zurückgeschrieben werden; sonst setzt der nächste FS-Sync den Restore
+        # wieder zurück. Der Manager verschiebt und rollt diese Kerndaten
+        # konsistent zurück.
+        from .recipes.manage import safe_update_recipe_metadata
+
+        try:
+            safe_update_recipe_metadata(
+                self,
+                recipe_id,
+                name=str(recipe.get("name") or current.get("name") or "Unbekannt"),
+                recipe_type=str(recipe.get("type") or current.get("type") or "Sonstiges"),
+                category=str(recipe.get("category") or current.get("category") or "Allgemein"),
+                description=str(recipe.get("description") or ""),
+                servings=recipe.get("servings"),
+                url=recipe.get("url"),
+                target_folder_override=recipe.get("folder_path"),
+            )
+        except (ValueError, RuntimeError) as exc:
+            return {"ok": False, "error": f"Rezeptpfad konnte nicht wiederhergestellt werden: {exc}"}
+
         allowed = [
-            "name", "type", "category", "description",
             "source_added_at", "ingredients_extracted_at",
-            "ingredients_status", "servings", "calories_per_serving", "protein_g",
+            "ingredients_status", "calories_per_serving", "protein_g",
             "carbs_g", "fat_g", "nutrition_computed_at", "user_verified",
             "verified_at", "verified_by",
         ]
@@ -2993,39 +3015,68 @@ class Database:
             if col in recipe:
                 sets.append(f"{col}=?"); params.append(recipe.get(col))
         params.append(recipe_id)
-        with self.conn() as c:
-            if sets:
-                c.execute(f"UPDATE recipes SET {', '.join(sets)} WHERE id=?", params)
-            c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
-            for idx, ing in enumerate(snap.get("ingredients") or []):
-                c.execute(
-                    "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, amount, unit, raw, sort_order, calories) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (recipe_id, ing.get("name") or "", ing.get("canonical_name"),
-                     ing.get("amount"), ing.get("unit"), ing.get("raw"),
-                     ing.get("sort_order", idx), ing.get("calories")),
+        try:
+            with self.conn() as c:
+                if sets:
+                    c.execute(f"UPDATE recipes SET {', '.join(sets)} WHERE id=?", params)
+                c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
+                for idx, ing in enumerate(snap.get("ingredients") or []):
+                    c.execute(
+                        "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, amount, unit, raw, sort_order, calories) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (recipe_id, ing.get("name") or "", ing.get("canonical_name"),
+                         ing.get("amount"), ing.get("unit"), ing.get("raw"),
+                         ing.get("sort_order", idx), ing.get("calories")),
+                    )
+                c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
+                for idx, step in enumerate(snap.get("steps") or [], start=1):
+                    c.execute(
+                        "INSERT INTO recipe_steps (recipe_id, step_number, instruction, timer_seconds) VALUES (?, ?, ?, ?)",
+                        (recipe_id, int(step.get("step_number") or idx),
+                         step.get("instruction") or "", step.get("timer_seconds")),
+                    )
+                c.execute("DELETE FROM recipe_tags WHERE recipe_id=?", (recipe_id,))
+                for tag in snap.get("tags") or []:
+                    name = str(tag.get("name") or "").strip()
+                    if not name:
+                        continue
+                    c.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (name,))
+                    tag_id = int(c.execute("SELECT id FROM tags WHERE name=? COLLATE NOCASE", (name,)).fetchone()[0])
+                    c.execute(
+                        "INSERT OR IGNORE INTO recipe_tags(recipe_id, tag_id, auto) VALUES (?, ?, ?)",
+                        (recipe_id, tag_id, 1 if tag.get("auto") else 0),
+                    )
+        except Exception as exc:
+            try:
+                safe_update_recipe_metadata(
+                    self,
+                    recipe_id,
+                    name=str(current.get("name") or "Unbekannt"),
+                    recipe_type=str(current.get("type") or "Sonstiges"),
+                    category=str(current.get("category") or "Allgemein"),
+                    description=str(current.get("description") or ""),
+                    servings=current.get("servings"),
+                    url=current.get("url"),
+                    target_folder_override=current.get("folder_path"),
                 )
-            c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
-            for idx, step in enumerate(snap.get("steps") or [], start=1):
-                c.execute(
-                    "INSERT INTO recipe_steps (recipe_id, step_number, instruction, timer_seconds) VALUES (?, ?, ?, ?)",
-                    (recipe_id, int(step.get("step_number") or idx),
-                     step.get("instruction") or "", step.get("timer_seconds")),
-                )
-            c.execute("DELETE FROM recipe_tags WHERE recipe_id=?", (recipe_id,))
-            for tag in snap.get("tags") or []:
-                name = str(tag.get("name") or "").strip()
-                if not name:
-                    continue
-                c.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (name,))
-                tag_id = int(c.execute("SELECT id FROM tags WHERE name=? COLLATE NOCASE", (name,)).fetchone()[0])
-                c.execute(
-                    "INSERT OR IGNORE INTO recipe_tags(recipe_id, tag_id, auto) VALUES (?, ?, ?)",
-                    (recipe_id, tag_id, 1 if tag.get("auto") else 0),
-                )
+            except Exception:
+                logger.exception("Recipe #%s: Restore-Rollback unvollständig", recipe_id)
+            return {"ok": False, "error": f"Versionsdaten konnten nicht wiederhergestellt werden: {exc}"}
 
+        restored = self.recipe_get(recipe_id) or current
+        folder = Path(str(restored.get("folder_path") or "")).resolve()
+        backup = (folder / backup_relative).resolve() if backup_relative else None
         media_restored = False
         if media.get("thumbnail_absent"):
+            current_thumb = str(restored.get("thumb_filename") or "").strip()
+            if current_thumb:
+                candidate = (folder / Path(current_thumb).name).resolve()
+                try:
+                    candidate.relative_to(folder)
+                    if candidate.is_file() and not candidate.is_symlink():
+                        candidate.unlink(missing_ok=True)
+                except ValueError:
+                    pass
             for candidate in folder.glob("thumb.*"):
                 if candidate.is_file() and not candidate.is_symlink():
                     candidate.unlink(missing_ok=True)
@@ -3037,7 +3088,9 @@ class Database:
 
             filename = Path(str(media.get("thumbnail_filename") or "thumb.jpg")).name
             target = folder / filename
-            atomic_copy_file(backup, target)  # type: ignore[arg-type]
+            if backup is None or not backup.is_file() or backup.is_symlink():
+                return {"ok": False, "error": "Cover-Sicherung der Version fehlt"}
+            atomic_copy_file(backup, target)
             with self.conn() as c:
                 c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?", (filename, recipe_id))
             media_restored = True

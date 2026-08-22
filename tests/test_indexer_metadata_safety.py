@@ -163,3 +163,49 @@ def test_metadata_edit_rolls_back_filesystem_on_unique_url_conflict(test_db, tmp
     stored = test_db.recipe_get(recipe_id)
     assert stored["name"] == "Original"
     assert stored["url"] == "https://example.test/one"
+
+
+def test_version_restore_moves_nas_folder_and_restores_source_url(test_db, tmp_path, monkeypatch):
+    root = tmp_path / "recipes"
+    original = root / "Hauptgericht" / "Pasta" / "Original"
+    original.mkdir(parents=True)
+    (original / "info.json").write_text(
+        json.dumps({"name": "Original", "type": "Hauptgericht", "category": "Pasta"}),
+        encoding="utf-8",
+    )
+    recipe_id = test_db.recipe_upsert(
+        url="https://example.test/original",
+        name="Original",
+        type="Hauptgericht",
+        category="Pasta",
+        folder_path=str(original),
+        description="Originaltext",
+        thumb_filename=None,
+        video_filename=None,
+        source_added_at=1,
+    )
+    monkeypatch.setattr(manage, "_recipe_root", lambda: root.resolve())
+    version_id = test_db.recipe_version_create(recipe_id, reason="Vor Änderung")
+    manage.safe_update_recipe_metadata(
+        test_db,
+        recipe_id,
+        name="Neu",
+        recipe_type="Vorspeise",
+        category="Suppen",
+        description="Neu",
+        servings=3,
+        url="https://example.test/new",
+    )
+
+    result = test_db.recipe_version_restore(version_id, restored_by="test")
+
+    assert result["ok"] is True
+    assert original.is_dir()
+    assert not (root / "Vorspeise" / "Suppen" / "Neu").exists()
+    restored = test_db.recipe_get(recipe_id)
+    assert restored["name"] == "Original"
+    assert restored["url"] == "https://example.test/original"
+    assert restored["folder_path"] == str(original.resolve())
+    info = json.loads((original / "info.json").read_text(encoding="utf-8"))
+    assert info["name"] == "Original"
+    assert info["type"] == "Hauptgericht"
