@@ -1778,12 +1778,21 @@ input[type="checkbox"] { width: auto !important; }
   border-color: var(--accent);
 }
 
-/* === KOCH-MODUS: nur Schritte sichtbar, große Schrift, Screen wach === */
-.modal.cook-mode .recipe-detail-section:not(.steps-section),
+/* === KOCH-MODUS: Zutaten + Schritte sichtbar, große Schrift, Screen wach === */
+.modal.cook-mode .recipe-detail-section:not(.steps-section):not(.ingredients-section),
 .modal.cook-mode .recipe-video-wrap,
 .modal.cook-mode .cook-block,
-.modal.cook-mode .recipe-actions-row {
+.modal.cook-mode .recipe-actions-row,
+.modal.cook-mode .ingredients-section .ing-actions,
+.modal.cook-mode .ingredients-section .ingredient-raw,
+.modal.cook-mode .ingredients-section .ingredient-kcal {
   display: none !important;
+}
+.modal.cook-mode .ingredients-section {
+  display: block !important;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 18px;
+  margin-bottom: 18px;
 }
 .modal.cook-mode {
   /* Vollbild auf Mobile, sonst zentriert */

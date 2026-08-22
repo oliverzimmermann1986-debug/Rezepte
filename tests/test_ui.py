@@ -226,6 +226,9 @@ def test_recipe_library_uses_structural_redesign_and_real_recipe_data():
     assert "recipes.items[0].ingredients_count" in html
     assert "recipes.items[0].servings" in html
     assert ".recipe-detail-modal.cook-mode" in css
+    assert ":not(.steps-section):not(.ingredients-section)" in css
+    assert "recipeDetail.tab === 'zutaten' || recipeDetail.cookMode" in html
+    assert "ing.amount * (Number(recipeDetail.multiplier) || 1)" in html
     assert "@media (max-width: 768px)" in css
 
 

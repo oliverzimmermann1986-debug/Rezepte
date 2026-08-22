@@ -3307,7 +3307,8 @@
             </div>
 
             <!-- Zutaten -->
-            <div class="recipe-detail-section" x-show="recipeDetail.tab === 'zutaten'">
+            <div class="recipe-detail-section ingredients-section"
+                 x-show="recipeDetail.tab === 'zutaten' || recipeDetail.cookMode">
               <h4 class="ing-section-head">
                 <span>
                   Zutaten
@@ -3373,7 +3374,7 @@
                 <template x-for="(ing, idx) in recipeDetail.data?.ingredients || []" :key="idx">
                   <div class="ingredient-item">
                     <span class="ingredient-amount" x-show="ing.amount !== null">
-                      <span x-text="formatAmount(ing.amount)"></span>
+                      <span x-text="formatAmount(ing.amount * (Number(recipeDetail.multiplier) || 1))"></span>
                       <span x-text="ing.unit || ''"></span>
                     </span>
                     <!-- Wenn amount null ist, Platzhalter damit Grid nicht verrutscht -->
