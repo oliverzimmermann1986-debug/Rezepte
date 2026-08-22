@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
+CURRENT_SCHEMA_VERSION = 150
+_MIGRATION_THREAD_LOCK = threading.Lock()
 
 
 _DDL = """
@@ -380,18 +382,92 @@ class Database:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        # Pragmas einmalig auf einer separaten Verbindung setzen (WAL bleibt erhalten).
-        c0 = sqlite3.connect(str(self.path), timeout=10, check_same_thread=False)
+        # Web, CLI und Timer können denselben DB-Pfad gleichzeitig öffnen.
+        # Ein dateibasierter Lock serialisiert DDL auch prozessübergreifend;
+        # der Thread-Lock verhindert Plattform-Eigenheiten innerhalb eines
+        # Prozesses. Alle inkrementellen Schritte laufen danach atomar.
+        from .jobs.locks import file_lock_path_or_none
+
+        migration_lock = self.path.parent / f".{self.path.name}.migration.lock"
+        with _MIGRATION_THREAD_LOCK:
+            with file_lock_path_or_none(migration_lock, wait_seconds=30) as lock:
+                if lock is None:
+                    raise RuntimeError(
+                        f"Datenbankmigration für {self.path} ist länger als 30s belegt"
+                    )
+                c0 = sqlite3.connect(
+                    str(self.path), timeout=30, check_same_thread=False
+                )
+                try:
+                    current_version, had_schema = self._existing_schema_version(c0)
+                    if current_version > CURRENT_SCHEMA_VERSION:
+                        raise RuntimeError(
+                            "Datenbankschema ist neuer als diese Anwendung "
+                            f"({current_version} > {CURRENT_SCHEMA_VERSION}); "
+                            "Downgrade wird zum Schutz der Daten abgelehnt"
+                        )
+                    if had_schema and current_version < CURRENT_SCHEMA_VERSION:
+                        self._backup_before_migration(c0, current_version)
+
+                    c0.execute("PRAGMA journal_mode=WAL")
+                    c0.execute("PRAGMA synchronous=FULL")
+                    c0.execute("PRAGMA wal_autocheckpoint=100")
+                    c0.execute("PRAGMA busy_timeout=30000")
+                    c0.executescript(_DDL)
+                    c0.execute("BEGIN IMMEDIATE")
+                    self._migrate(c0)
+                    c0.commit()
+                except Exception:
+                    c0.rollback()
+                    raise
+                finally:
+                    c0.close()
+
+    @staticmethod
+    def _existing_schema_version(connection) -> tuple[int, bool]:
+        had_schema = bool(connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recipes'"
+        ).fetchone())
+        has_migrations = bool(connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='schema_migrations'"
+        ).fetchone())
+        if not has_migrations:
+            return 0, had_schema
+        row = connection.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()
+        return int(row[0] or 0), had_schema
+
+    def _backup_before_migration(self, source, current_version: int) -> Path:
+        backup_dir = self.path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        destination = backup_dir / (
+            f"pre-migration-v{current_version}-to-v{CURRENT_SCHEMA_VERSION}-"
+            f"{stamp}-{os.getpid()}.db"
+        )
+        temporary = destination.with_suffix(".tmp")
+        temporary.unlink(missing_ok=True)
+        backup = sqlite3.connect(str(temporary))
         try:
-            c0.execute("PRAGMA journal_mode=WAL")
-            c0.execute("PRAGMA synchronous=FULL")
-            c0.execute("PRAGMA wal_autocheckpoint=100")
-            c0.execute("PRAGMA busy_timeout=10000")
-            c0.executescript(_DDL)
-            self._migrate(c0)
-            c0.commit()
-        finally:
-            c0.close()
+            source.backup(backup)
+            check = backup.execute("PRAGMA quick_check").fetchone()
+            if not check or check[0] != "ok":
+                raise RuntimeError(f"Pre-Migration-Backup ungültig: {check}")
+            backup.commit()
+        except Exception:
+            backup.close()
+            temporary.unlink(missing_ok=True)
+            raise
+        else:
+            backup.close()
+        os.replace(temporary, destination)
+        try:
+            os.chmod(destination, 0o600)
+        except OSError:
+            pass
+        return destination
 
     @staticmethod
     def _migrate(c) -> None:
@@ -673,13 +749,17 @@ class Database:
                 )
 
             c.execute(
-                "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
                 (130, "merge_fresh_tomato_variants", time.time()),
             )
 
         c.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
             (140, "weekly_meal_plan", time.time()),
+        )
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (CURRENT_SCHEMA_VERSION, "transactional_runtime_hardening", time.time()),
         )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
@@ -1459,6 +1539,7 @@ class Database:
         es nochmal sieht (z.B. nach FS-Resync)."""
         now = time.time()
         with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
             existing = c.execute(
                 "SELECT id, ingredients_extracted_at, ingredients_status FROM recipes WHERE folder_path=?",
                 (folder_path,),
@@ -1881,6 +1962,7 @@ class Database:
         alte ingredients ersetzt; bei status='error'/'skipped' nur das Flag."""
         now = time.time()
         with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
             if claim_owner is not None:
                 owned = c.execute(
                     "SELECT 1 FROM recipes WHERE id=? "
@@ -2940,39 +3022,47 @@ class Database:
         return result
 
     # ─── Recipe versions / Undo ──────────────────────────────────────────
+    @staticmethod
+    def _recipe_snapshot_from_connection(c, recipe_id: int) -> Optional[Dict[str, Any]]:
+        row = c.execute("SELECT * FROM recipes WHERE id=?", (recipe_id,)).fetchone()
+        if not row:
+            return None
+        ingredients = [dict(item) for item in c.execute(
+            "SELECT name, canonical_name, amount, unit, raw, sort_order, calories "
+            "FROM recipe_ingredients WHERE recipe_id=? ORDER BY sort_order, id",
+            (recipe_id,),
+        ).fetchall()]
+        steps = [dict(item) for item in c.execute(
+            "SELECT step_number, instruction, timer_seconds FROM recipe_steps "
+            "WHERE recipe_id=? ORDER BY step_number, id",
+            (recipe_id,),
+        ).fetchall()]
+        tags = [dict(item) for item in c.execute(
+            "SELECT t.name, rt.auto FROM tags t "
+            "JOIN recipe_tags rt ON rt.tag_id=t.id "
+            "WHERE rt.recipe_id=? ORDER BY rt.auto, t.name",
+            (recipe_id,),
+        ).fetchall()]
+        return {
+            "recipe": dict(row),
+            "ingredients": ingredients,
+            "steps": steps,
+            "tags": tags,
+        }
+
     def recipe_snapshot(self, recipe_id: int) -> Optional[Dict[str, Any]]:
         """Kompletter logischer Rezept-Snapshot ohne Binärdateien."""
         with self.conn() as c:
-            row = c.execute("SELECT * FROM recipes WHERE id=?", (recipe_id,)).fetchone()
-            if not row:
-                return None
-            ingredients = [dict(r) for r in c.execute(
-                "SELECT name, canonical_name, amount, unit, raw, sort_order, calories "
-                "FROM recipe_ingredients WHERE recipe_id=? ORDER BY sort_order, id",
-                (recipe_id,),
-            ).fetchall()]
-            steps = [dict(r) for r in c.execute(
-                "SELECT step_number, instruction, timer_seconds FROM recipe_steps "
-                "WHERE recipe_id=? ORDER BY step_number, id", (recipe_id,),
-            ).fetchall()]
-            tags = [dict(r) for r in c.execute(
-                "SELECT t.name, rt.auto FROM tags t JOIN recipe_tags rt ON rt.tag_id=t.id "
-                "WHERE rt.recipe_id=? ORDER BY rt.auto, t.name", (recipe_id,),
-            ).fetchall()]
-            return {
-                "recipe": dict(row),
-                "ingredients": ingredients,
-                "steps": steps,
-                "tags": tags,
-            }
+            return self._recipe_snapshot_from_connection(c, recipe_id)
 
     def recipe_version_create(self, recipe_id: int, *, created_by: str = "system",
                               source: str = "user", reason: str = "Änderung",
                               max_versions: int = 50) -> Optional[int]:
-        snapshot = self.recipe_snapshot(recipe_id)
-        if not snapshot:
-            return None
         with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            snapshot = self._recipe_snapshot_from_connection(c, recipe_id)
+            if not snapshot:
+                return None
             next_no = int(c.execute(
                 "SELECT COALESCE(MAX(version_no), 0) + 1 FROM recipe_versions WHERE recipe_id=?",
                 (recipe_id,),

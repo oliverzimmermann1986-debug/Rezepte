@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
@@ -58,39 +59,46 @@ def _unlock(fh) -> None:
 
 
 @contextmanager
-def file_lock_or_none(name: str) -> Iterator[Optional[object]]:
-    """Versucht non-blocking eine Datei zu locken.
-
-    Yields:
-        Das geöffnete File-Handle wenn der Lock erworben wurde,
-        sonst ``None`` (Caller MUSS checken).
-
-    Der Lock-File-Pfad ist ``{LOCK_DIR}/{name}.lock``. Das File bleibt
-    zwischen Runs liegen (nur die Betriebssystem-Sperre ist transient).
-    """
-    LOCK_DIR.mkdir(parents=True, exist_ok=True)
-    lock_path = LOCK_DIR / f"{name}.lock"
+def file_lock_path_or_none(
+    lock_path: Path,
+    *,
+    wait_seconds: float = 0.0,
+) -> Iterator[Optional[object]]:
+    """Sperrt einen expliziten Pfad, optional mit begrenzter Wartezeit."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     fh = None
     acquired = False
     try:
-        # Nicht mit "w" öffnen: das würde die PID bereits vor dem Lock-Versuch
-        # abschneiden und damit die Diagnose des tatsächlichen Besitzers löschen.
         fh = open(lock_path, "a+")
-        if _try_lock(fh):
-            acquired = True
-            # PID reinschreiben - rein informativ für Debugging
+        try:
+            os.chmod(lock_path, 0o600)
+        except OSError:
+            pass
+        # msvcrt.locking benötigt ein vorhandenes Byte.
+        fh.seek(0, os.SEEK_END)
+        if fh.tell() == 0:
+            fh.write("\n")
+            fh.flush()
+        deadline = time.monotonic() + max(0.0, float(wait_seconds))
+        while True:
+            if _try_lock(fh):
+                acquired = True
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        if acquired:
             fh.seek(0)
             fh.truncate()
             fh.write(f"{os.getpid()}\n")
             fh.flush()
             yield fh
         else:
-            # Lock ist von anderem Prozess gehalten
             try:
                 other_pid = lock_path.read_text().strip()
             except Exception:
                 other_pid = "?"
-            logger.info(f"file_lock '{name}': gehalten von PID {other_pid}")
+            logger.info("file_lock '%s': gehalten von PID %s", lock_path, other_pid)
             yield None
     finally:
         if fh is not None:
@@ -103,6 +111,22 @@ def file_lock_or_none(name: str) -> Iterator[Optional[object]]:
                 fh.close()
             except Exception:
                 pass
+
+
+@contextmanager
+def file_lock_or_none(name: str) -> Iterator[Optional[object]]:
+    """Versucht non-blocking eine Datei zu locken.
+
+    Yields:
+        Das geöffnete File-Handle wenn der Lock erworben wurde,
+        sonst ``None`` (Caller MUSS checken).
+
+    Der Lock-File-Pfad ist ``{LOCK_DIR}/{name}.lock``. Das File bleibt
+    zwischen Runs liegen (nur die Betriebssystem-Sperre ist transient).
+    """
+    lock_path = LOCK_DIR / f"{name}.lock"
+    with file_lock_path_or_none(lock_path) as fh:
+        yield fh
 
 
 def is_locked(name: str) -> bool:
