@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ from ..auth import require_auth
 from ..config_store import get_config
 from ..db import get_db
 from ..jobs.scraper import get_scraper_job
+from ..jobs.locks import file_lock_or_none
 
 router = APIRouter(prefix="/api/pending", tags=["pending"], dependencies=[Depends(require_auth)])
 
@@ -86,7 +88,10 @@ def import_url(body: ImportUrlBody) -> Dict[str, Any]:
         return {"ok": True, "status": "duplicate", "url": url,
                 "message": "URL wurde bereits importiert"}
 
-    result = get_scraper_job().process_url({"url": url, "type": body.type})
+    with file_lock_or_none("scraper") as lock:
+        if lock is None:
+            raise HTTPException(409, "Ein Import läuft bereits. Bitte gleich erneut versuchen.")
+        result = get_scraper_job().process_url({"url": url, "type": body.type})
     return {"ok": result.get("status") in ("already_processed", "pending"), **result}
 
 
@@ -112,18 +117,25 @@ async def import_file(file: UploadFile = File(...), type: str = "recipe") -> Dic
         raise HTTPException(415, "Dateiendung und tatsächliches Dateiformat stimmen nicht überein")
 
     synth_url = f"manual-upload://{uuid.uuid4().hex}/{filename}"
-    result = get_scraper_job().process_attachment(
-        {
-            "filename": filename,
-            "ext": ext,
-            "type": type,
-            "data": data,
-            "subject": Path(filename).stem.replace("_", " "),
-            "body_excerpt": "",
-            "default_category": "Allgemein",
-        },
-        synth_url,
-    )
+    attachment = {
+        "filename": filename,
+        "ext": ext,
+        "type": type,
+        "data": data,
+        "subject": Path(filename).stem.replace("_", " "),
+        "body_excerpt": "",
+        "default_category": "Allgemein",
+    }
+    with file_lock_or_none("scraper") as lock:
+        if lock is None:
+            raise HTTPException(409, "Ein Import läuft bereits. Bitte gleich erneut versuchen.")
+        # PDF-Parsing, OCR und Vision sind synchron/blockierend. Im Threadpool
+        # bleibt der FastAPI-Event-Loop für Login, Status und andere Nutzer frei.
+        result = await run_in_threadpool(
+            get_scraper_job().process_attachment,
+            attachment,
+            synth_url,
+        )
     if result.get("status") == "error":
         raise HTTPException(422, result.get("error") or "Datei konnte nicht verarbeitet werden")
     result["ok"] = result.get("status") in {"auto", "pending"}

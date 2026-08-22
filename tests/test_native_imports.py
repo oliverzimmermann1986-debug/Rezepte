@@ -1,4 +1,5 @@
 from pathlib import Path
+from contextlib import contextmanager
 
 from app.core.email_processor import normalize_content_url
 from app.jobs.scraper import ScraperJob
@@ -16,6 +17,12 @@ def test_native_file_upload_uses_attachment_pipeline(client, monkeypatch):
             return {"status": "pending", "name": "Unbekannt"}
 
     monkeypatch.setattr(api_pending, "get_scraper_job", lambda: FakeJob())
+
+    @contextmanager
+    def available_lock(_name):
+        yield object()
+
+    monkeypatch.setattr(api_pending, "file_lock_or_none", available_lock)
     response = client.post(
         "/api/pending/import-file",
         files={"file": ("Mein_Rezept.jpg", b"\xff\xd8\xffjpeg-data", "image/jpeg")},
@@ -27,6 +34,29 @@ def test_native_file_upload_uses_attachment_pipeline(client, monkeypatch):
     assert captured["attachment"]["ext"] == ".jpg"
     assert captured["attachment"]["data"] == b"\xff\xd8\xffjpeg-data"
     assert captured["url"].startswith("manual-upload://")
+
+
+def test_native_file_upload_returns_conflict_when_scraper_is_busy(client, monkeypatch):
+    import app.routes.api_pending as api_pending
+
+    @contextmanager
+    def busy_lock(_name):
+        yield None
+
+    monkeypatch.setattr(api_pending, "file_lock_or_none", busy_lock)
+    response = client.post(
+        "/api/pending/import-file",
+        files={"file": ("Rezept.jpg", b"\xff\xd8\xffjpeg-data", "image/jpeg")},
+    )
+    assert response.status_code == 409
+    assert "Import läuft bereits" in response.json()["detail"]
+
+
+def test_file_import_offloads_blocking_pipeline_to_threadpool():
+    source = Path(__file__).resolve().parents[1] / "app" / "routes" / "api_pending.py"
+    code = source.read_text(encoding="utf-8")
+    assert "await run_in_threadpool(" in code
+    assert "with file_lock_or_none(\"scraper\")" in code
 
 
 def test_native_file_upload_rejects_unsupported_type(client):
