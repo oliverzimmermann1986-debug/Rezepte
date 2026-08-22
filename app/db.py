@@ -7,6 +7,7 @@ Persistente Speicherung für:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -19,6 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
 CURRENT_SCHEMA_VERSION = 150
 _MIGRATION_THREAD_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 _DDL = """
