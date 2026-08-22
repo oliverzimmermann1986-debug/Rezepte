@@ -2619,12 +2619,10 @@ function scrapperApp() {
     },
 
     closeRecipeDetail() {
-      // Laufende Step-Timer aufräumen — sonst tickern sie im Hintergrund weiter
-      // und beepen evtl. nach Modal-close.
-      Object.values(this.timers).forEach(t => {
-        if (t && t.intervalId) clearInterval(t.intervalId);
-      });
-      this.timers = {};
+      // Step-Timer bleiben bewusst aktiv, wenn das Rezept geschlossen wird.
+      // In der Küche muss ein 20-Minuten-Timer weiterlaufen, während der User
+      // ein anderes Rezept oder die Einkaufsliste öffnet. Die Timer basieren
+      // auf endsAt und korrigieren daher auch Hintergrund-/Sleep-Pausen.
       // Wake-Lock + Cook-Mode resetten — sonst hält der Lock weiter und der
       // nächste open würde mit angeschaltetem Cook-Mode starten
       this._releaseWakeLock();

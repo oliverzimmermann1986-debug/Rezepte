@@ -232,6 +232,14 @@ def test_recipe_library_uses_structural_redesign_and_real_recipe_data():
     assert "@media (max-width: 768px)" in css
 
 
+def test_recipe_timers_survive_closing_the_detail_dialog():
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    close_body = js.split("closeRecipeDetail() {", 1)[1].split("async addTagToRecipe", 1)[0]
+    assert "Step-Timer bleiben bewusst aktiv" in close_body
+    assert "this.timers = {}" not in close_body
+    assert "clearInterval" not in close_body
+
+
 def test_logout_controls_work_without_javascript_on_desktop_and_mobile():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
