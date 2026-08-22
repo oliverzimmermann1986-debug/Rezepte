@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..config_store import get_config
-from ..core.safety import atomic_write_json
+from ..core.safety import atomic_write_bytes, atomic_write_json, atomic_write_text
 from ..db import Database
 
 logger = logging.getLogger(__name__)
@@ -216,6 +216,174 @@ def safe_rename_recipe(
     result["old_folder"] = str(old_dir)
     result["new_folder"] = str(new_dir)
     return result
+
+
+def safe_update_recipe_metadata(
+    db: Database,
+    recipe_id: int,
+    *,
+    name: str,
+    recipe_type: str,
+    category: str,
+    description: str,
+    servings: Optional[int],
+    url: Optional[str],
+) -> Dict[str, Any]:
+    """Aktualisiert sichtbare Metadaten konsistent in DB, Sidecars und Pfad.
+
+    Typ/Kategorie/Name bilden die Ordnerstruktur. Deshalb wird der Rezeptordner
+    bei Bedarf mit verschoben. Scheitert danach ein Sidecar- oder DB-Schritt,
+    werden Dateinamen, Sidecars und Ordner bestmöglich auf den Ausgangsstand
+    zurückgerollt.
+    """
+    values = {
+        "name": (name or "").strip(),
+        "type": (recipe_type or "").strip(),
+        "category": (category or "").strip(),
+    }
+    for label, value in values.items():
+        if not value:
+            raise ValueError(f"{label} darf nicht leer sein")
+        if len(value) > 200:
+            raise ValueError(f"{label} ist zu lang (maximal 200 Zeichen)")
+        if any(part in value for part in ("/", "\\", "..")):
+            raise ValueError(f"{label} darf keine Pfad-Separatoren oder '..' enthalten")
+    if len(description or "") > 50_000:
+        raise ValueError("description ist zu lang (maximal 50000 Zeichen)")
+    if servings is not None and not 1 <= int(servings) <= 50:
+        raise ValueError("servings muss zwischen 1 und 50 liegen")
+
+    recipe = db.recipe_get(recipe_id)
+    if not recipe:
+        raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
+
+    old_folder_value = str(recipe.get("folder_path") or "").strip()
+    old_folder = Path(old_folder_value)
+    old_exists = bool(old_folder_value) and old_folder.exists()
+    target_folder = old_folder
+    created_parents: List[Path] = []
+    moved = False
+    file_renames: List[tuple[Path, Path]] = []
+    original_info: Optional[bytes] = None
+    original_description: Optional[bytes] = None
+    info_existed = False
+    description_existed = False
+
+    if old_exists:
+        old_folder = _assert_inside_root(old_folder)
+        root = _recipe_root()
+        target_folder = root / sanitize_filename(values["type"]) / sanitize_filename(values["category"]) / sanitize_filename(values["name"])
+        target_folder = _assert_inside_root(target_folder)
+        if target_folder.exists() and target_folder != old_folder:
+            raise RuntimeError(f"Ziel-Folder existiert bereits: {target_folder}")
+        info_path = old_folder / "info.json"
+        desc_path = old_folder / "description.txt"
+        info_existed = info_path.is_file()
+        description_existed = desc_path.is_file()
+        if info_existed:
+            original_info = info_path.read_bytes()
+            try:
+                info = json.loads(original_info.decode("utf-8"))
+            except Exception as exc:
+                raise RuntimeError(f"info.json ist ungültig und wurde nicht überschrieben: {exc}") from exc
+        else:
+            info = {}
+        if description_existed:
+            original_description = desc_path.read_bytes()
+    else:
+        info = {}
+
+    try:
+        if old_exists and target_folder != old_folder:
+            for parent in (target_folder.parent.parent, target_folder.parent):
+                if not parent.exists():
+                    parent.mkdir()
+                    created_parents.append(parent)
+            old_folder.rename(target_folder)
+            moved = True
+
+        working_folder = target_folder if old_exists else old_folder
+        new_video_filename = recipe.get("video_filename")
+        new_thumb_filename = recipe.get("thumb_filename")
+        if old_exists:
+            old_file_base = old_folder.name
+            new_file_base = target_folder.name
+            for source in list(working_folder.iterdir()):
+                if not source.is_file() or source.stem != old_file_base:
+                    continue
+                destination = working_folder / f"{new_file_base}{source.suffix}"
+                if destination == source:
+                    continue
+                if destination.exists():
+                    raise RuntimeError(f"Zieldatei existiert bereits: {destination.name}")
+                source.rename(destination)
+                file_renames.append((source, destination))
+                if recipe.get("video_filename") == source.name:
+                    new_video_filename = destination.name
+                if recipe.get("thumb_filename") == source.name:
+                    new_thumb_filename = destination.name
+
+            info.update({
+                "name": values["name"],
+                "type": values["type"],
+                "category": values["category"],
+                "description": description or "",
+                "url": url,
+            })
+            atomic_write_json(working_folder / "info.json", info)
+            if description:
+                atomic_write_text(working_folder / "description.txt", description)
+            else:
+                (working_folder / "description.txt").unlink(missing_ok=True)
+
+        with db.conn() as connection:
+            connection.execute(
+                "UPDATE recipes SET name=?, type=?, category=?, description=?, "
+                "servings=?, url=?, folder_path=?, video_filename=?, thumb_filename=? "
+                "WHERE id=?",
+                (
+                    values["name"], values["type"], values["category"],
+                    description or None, servings, url,
+                    str(target_folder) if old_exists else recipe.get("folder_path"),
+                    new_video_filename, new_thumb_filename, recipe_id,
+                ),
+            )
+    except Exception as exc:
+        if old_exists:
+            working_folder = target_folder if moved else old_folder
+            try:
+                info_path = working_folder / "info.json"
+                if info_existed and original_info is not None:
+                    atomic_write_bytes(info_path, original_info)
+                else:
+                    info_path.unlink(missing_ok=True)
+                desc_path = working_folder / "description.txt"
+                if description_existed and original_description is not None:
+                    atomic_write_bytes(desc_path, original_description)
+                else:
+                    desc_path.unlink(missing_ok=True)
+                for source, destination in reversed(file_renames):
+                    if destination.exists() and not source.exists():
+                        destination.rename(source)
+                if moved and working_folder.exists() and not old_folder.exists():
+                    working_folder.rename(old_folder)
+                for parent in reversed(created_parents):
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        pass
+            except Exception:
+                logger.exception("Recipe #%s: Metadaten-Rollback unvollständig", recipe_id)
+        if isinstance(exc, (ValueError, RuntimeError)):
+            raise
+        raise RuntimeError(f"Metadaten konnten nicht gespeichert werden: {exc}") from exc
+
+    return {
+        "ok": True,
+        "recipe_id": recipe_id,
+        "folder_path": str(target_folder) if old_exists else recipe.get("folder_path"),
+        "moved": moved,
+    }
 
 
 # ────────────────────────────────────────────────────────────────────────

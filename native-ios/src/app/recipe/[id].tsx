@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Linking, Pressable, Share, StyleSheet, Text, View } from 'react-native';
 
 import { RecipeEditor } from '@/components/recipe-editor';
+import { RecipeMetadataEditor } from '@/components/recipe-metadata-editor';
 import { StepTimer } from '@/components/step-timer';
 import { ManualCareBanner, PrimaryButton, Screen, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
@@ -49,6 +50,7 @@ export default function RecipeDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editor, setEditor] = useState<'ingredients' | 'steps' | null>(null);
+  const [metadataEditor, setMetadataEditor] = useState(false);
   const [busy, setBusy] = useState(false);
   const [imageVersion, setImageVersion] = useState(0);
   const [showOriginal, setShowOriginal] = useState(false);
@@ -295,6 +297,13 @@ export default function RecipeDetailScreen() {
 
         {tab === 'info' && (
           <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={sharedStyles.sectionTitle}>Informationen</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Rezeptinformationen bearbeiten" onPress={() => setMetadataEditor(true)} hitSlop={8}>
+                <Text style={styles.edit}>Bearbeiten</Text>
+              </Pressable>
+            </View>
+            {!!recipe.servings && <Text style={styles.infoMeta}>{recipe.servings} Portionen</Text>}
             {!!recipe.description && <Text style={styles.description}>{recipe.description}</Text>}
             <View style={styles.tagRow}>
               {recipe.tags.map(tag => <Text key={tag.id} style={styles.tag}>{tag.name}</Text>)}
@@ -390,6 +399,15 @@ export default function RecipeDetailScreen() {
           await load();
         }}
       />
+      <RecipeMetadataEditor
+        recipe={recipe}
+        visible={metadataEditor}
+        onClose={() => setMetadataEditor(false)}
+        onSaved={async () => {
+          setMetadataEditor(false);
+          await load();
+        }}
+      />
     </>
   );
 }
@@ -424,6 +442,7 @@ const styles = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   edit: { color: colors.text, minHeight: 36, paddingTop: 8, fontWeight: '800' },
   description: { color: colors.text, fontSize: 17, lineHeight: 25 },
+  infoMeta: { color: colors.muted, fontSize: 14, fontWeight: '700' },
   noVideo: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center' },
   originalBlock: { marginTop: space.md, gap: 10, paddingTop: space.md, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   originalButton: { color: colors.text, minHeight: 44, paddingTop: 12, textAlign: 'center', fontWeight: '800' },

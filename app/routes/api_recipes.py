@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -387,6 +388,58 @@ def update_tags(recipe_id: int, payload: TagsUpdate, request: Request):
     _version_before(recipe_id, request, "Tags geändert")
     db.recipe_tags_set(recipe_id, payload.tags)
     return {"ok": True, "tags": db.recipe_tags_get(recipe_id)}
+
+
+class MetadataUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    type: str = Field(min_length=1, max_length=200)
+    category: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=50_000)
+    servings: Optional[int] = Field(None, ge=1, le=50)
+    url: Optional[str] = Field(None, max_length=2_000)
+
+
+def _metadata_source_url(value: Optional[str]) -> Optional[str]:
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            raise ValueError
+        if parsed.username or parsed.password or any(ch.isspace() for ch in value):
+            raise ValueError
+        parsed.port  # validiert auch ungültige Portangaben
+    except (ValueError, UnicodeError) as exc:
+        raise HTTPException(400, "Die Quelladresse muss eine gültige HTTPS-URL sein") from exc
+    return value
+
+
+@router.put("/{recipe_id}/metadata")
+def update_metadata(recipe_id: int, payload: MetadataUpdate, request: Request):
+    from ..recipes.manage import safe_update_recipe_metadata
+
+    db = get_db()
+    if not db.recipe_get(recipe_id):
+        raise HTTPException(404, "Rezept nicht gefunden")
+    source_url = _metadata_source_url(payload.url)
+    _version_before(recipe_id, request, "Rezeptinformationen geändert")
+    try:
+        result = safe_update_recipe_metadata(
+            db,
+            recipe_id,
+            name=payload.name,
+            recipe_type=payload.type,
+            category=payload.category,
+            description=payload.description,
+            servings=payload.servings,
+            url=source_url,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {**result, "recipe": get_recipe(recipe_id)}
 
 
 class IngredientIn(BaseModel):

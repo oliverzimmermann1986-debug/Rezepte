@@ -173,6 +173,24 @@ def test_step_timer_requires_whole_seconds(client, test_db):
     assert response.status_code == 422
 
 
+def test_metadata_rejects_url_with_embedded_credentials(client, test_db):
+    recipe = _create_recipe(test_db, name="Metadaten", folder_path="/missing/metadata")
+
+    response = client.put(
+        f"/api/recipes/{recipe['id']}/metadata",
+        json={
+            "name": "Metadaten",
+            "type": "Hauptgericht",
+            "category": "Test",
+            "description": "",
+            "servings": 2,
+            "url": "https://rezepte.example@evil.test/post",
+        },
+    )
+
+    assert response.status_code == 400
+
+
 def test_list_filter_by_type(client, test_db):
     _create_recipe(test_db, name="Suppe", folder_path="/tmp/su", type="Vorspeise")
     _create_recipe(test_db, name="Pasta", folder_path="/tmp/pa", type="Hauptgericht")
