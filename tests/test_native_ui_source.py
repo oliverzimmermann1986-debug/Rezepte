@@ -69,3 +69,14 @@ def test_favorite_toggle_reports_network_errors():
     favorite = detail[detail.index("async function toggleFavorite"):detail.index("async function addToCart")]
     assert "catch (reason)" in favorite
     assert "Favorit nicht geändert" in favorite
+
+
+def test_bulk_editor_shows_the_recipe_currently_being_processed():
+    bulk_editor = (NATIVE / "components" / "admin-bulk-editor.tsx").read_text(encoding="utf-8")
+
+    assert "setProgress({" in bulk_editor
+    assert "recipe_ids: [recipe.id]" in bulk_editor
+    assert "Rezept {progress.current} von {progress.total}" in bulk_editor
+    assert "{progress.recipeName}" in bulk_editor
+    assert "Wird gerade bearbeitet" in bulk_editor
+    assert 'accessibilityRole="progressbar"' in bulk_editor

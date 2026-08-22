@@ -1,6 +1,7 @@
 import { SymbolView } from 'expo-symbols';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   FlatList,
   KeyboardAvoidingView,
@@ -30,6 +31,12 @@ type BulkResult = {
   updated: { recipe_id: number; name?: string; category?: string }[];
   unchanged: number[];
   failed: { recipe_id: number; name?: string; error: string }[];
+};
+type BulkProgress = {
+  current: number;
+  total: number;
+  recipeId: number;
+  recipeName: string;
 };
 
 const MAX_SELECTION = 100;
@@ -74,6 +81,7 @@ export function AdminBulkEditor({
   const [removeTags, setRemoveTags] = useState('');
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<BulkProgress | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -85,6 +93,7 @@ export function AdminBulkEditor({
     setCategory('');
     setAddTags('');
     setRemoveTags('');
+    setProgress(null);
     setError('');
     setLoading(true);
     void Promise.all([
@@ -161,17 +170,45 @@ export function AdminBulkEditor({
   async function applyChanges(additions: string[], removals: string[]) {
     setBusy(true);
     setError('');
+    const recipeById = new Map(recipes.map(recipe => [recipe.id, recipe]));
+    const targets = [...selected].map(recipeId => ({
+      id: recipeId,
+      name: recipeById.get(recipeId)?.name || `Rezept #${recipeId}`,
+    }));
+    const result: BulkResult = { ok: true, updated: [], unchanged: [], failed: [] };
     try {
-      const result = await api<BulkResult>('/api/recipes/bulk-edit', {
-        method: 'POST',
-        body: JSON.stringify({
-          recipe_ids: [...selected],
-          category: category.trim() || null,
-          add_tags: additions,
-          remove_tags: removals,
-        }),
-      });
-      onChanged();
+      for (const [index, recipe] of targets.entries()) {
+        setProgress({
+          current: index + 1,
+          total: targets.length,
+          recipeId: recipe.id,
+          recipeName: recipe.name,
+        });
+        try {
+          const itemResult = await api<BulkResult>('/api/recipes/bulk-edit', {
+            method: 'POST',
+            body: JSON.stringify({
+              recipe_ids: [recipe.id],
+              category: category.trim() || null,
+              add_tags: additions,
+              remove_tags: removals,
+            }),
+          });
+          result.updated.push(...itemResult.updated);
+          result.unchanged.push(...itemResult.unchanged);
+          result.failed.push(...itemResult.failed);
+        } catch (reason) {
+          const message = reason instanceof Error ? reason.message : 'Serverfehler';
+          setSelected(new Set(targets.slice(index).map(item => item.id)));
+          setError(
+            `Unterbrochen bei „${recipe.name}“: ${message}. `
+            + `${result.updated.length} von ${targets.length} Rezepten wurden geändert.`,
+          );
+          if (result.updated.length) onChanged();
+          return;
+        }
+      }
+      if (result.updated.length) onChanged();
       if (!result.failed.length) {
         Alert.alert(
           'Massenpflege abgeschlossen',
@@ -189,6 +226,7 @@ export function AdminBulkEditor({
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Massenpflege fehlgeschlagen.');
     } finally {
+      setProgress(null);
       setBusy(false);
     }
   }
@@ -334,6 +372,27 @@ export function AdminBulkEditor({
                 <Text style={styles.help}>Automatisch erkannte Tags werden nicht entfernt.</Text>
               </View>
               {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+              {busy && progress && (
+                <View
+                  accessible
+                  accessibilityLabel={`Rezept ${progress.current} von ${progress.total}: ${progress.recipeName}`}
+                  accessibilityLiveRegion="polite"
+                  accessibilityRole="progressbar"
+                  accessibilityValue={{
+                    min: 0,
+                    max: progress.total,
+                    now: progress.current - 1,
+                    text: `${progress.recipeName} wird bearbeitet`,
+                  }}
+                  style={styles.progressCard}>
+                  <ActivityIndicator color={colors.text} />
+                  <View style={styles.progressText}>
+                    <Text style={styles.progressCount}>Rezept {progress.current} von {progress.total}</Text>
+                    <Text numberOfLines={2} style={styles.progressName}>{progress.recipeName}</Text>
+                    <Text style={styles.progressHint}>Wird gerade bearbeitet …</Text>
+                  </View>
+                </View>
+              )}
               <PrimaryButton label={busy ? 'Änderungen laufen …' : 'Änderungen prüfen'} onPress={requestApply} disabled={busy} />
             </ScrollView>
           )}
@@ -373,6 +432,11 @@ const styles = StyleSheet.create({
   chipText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   tagInput: { minHeight: 72, paddingTop: 13, textAlignVertical: 'top' },
   help: { color: colors.muted, fontSize: 12, lineHeight: 17 },
+  progressCard: { minHeight: 88, padding: space.md, flexDirection: 'row', alignItems: 'center', gap: 14, borderWidth: 1, borderColor: colors.butterPressed, borderRadius: radii.md, backgroundColor: colors.warningSurface },
+  progressText: { flex: 1, gap: 3 },
+  progressCount: { color: colors.muted, fontSize: 12, fontWeight: '800' },
+  progressName: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '900' },
+  progressHint: { color: colors.warning, fontSize: 13, fontWeight: '700' },
   empty: { color: colors.muted, padding: space.lg, textAlign: 'center' },
   error: { color: colors.danger, lineHeight: 20, padding: 12, borderRadius: radii.sm, backgroundColor: colors.dangerSurface },
   pressed: { opacity: 0.7 },
