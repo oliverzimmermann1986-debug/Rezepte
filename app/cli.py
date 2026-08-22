@@ -24,6 +24,30 @@ from .config_store import get_config
 from .db import get_db
 
 
+def _sqlite_online_copy(source: Path, destination: Path) -> None:
+    """Konsistente SQLite-Kopie inklusive noch nicht checkpointeter WAL-Frames."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.unlink(missing_ok=True)
+    src = sqlite3.connect(str(source), timeout=30)
+    dst = sqlite3.connect(str(destination), timeout=30)
+    try:
+        with dst:
+            src.backup(dst)
+    finally:
+        src.close()
+        dst.close()
+
+
+def _verify_sqlite(path: Path) -> None:
+    check = sqlite3.connect(str(path), timeout=10)
+    try:
+        row = check.execute("PRAGMA integrity_check").fetchone()
+        if not row or row[0] != "ok":
+            raise RuntimeError(f"integrity_check fehlgeschlagen: {row}")
+    finally:
+        check.close()
+
+
 def _cmd_set_password() -> int:
     pw = getpass.getpass("Neues Passwort: ")
     if len(pw) < 8:
@@ -170,11 +194,17 @@ def _cmd_db_restore(args: list) -> int:
         # Erstaufnahme - kein Pre-Backup nötig
         print(f"ℹ Ziel-DB existiert nicht ({db_path}), wird neu angelegt")
     else:
-        # Safety-Backup vom aktuellen Stand
+        # Safety-Backup vom aktuellen Stand über die SQLite-Backup-API. Ein
+        # simples copy2 würde noch nicht checkpointete WAL-Frames verlieren.
         safety = db_path.parent / f"pre-restore-{datetime.now():%Y%m%d-%H%M%S}.db"
         print(f"💾 Sichere aktuelle DB nach: {safety}")
-        import shutil as _sh
-        _sh.copy2(db_path, safety)
+        try:
+            _sqlite_online_copy(db_path, safety)
+            _verify_sqlite(safety)
+        except Exception as exc:
+            safety.unlink(missing_ok=True)
+            print(f"✗ Safety-Backup fehlgeschlagen: {exc}", file=sys.stderr)
+            return 1
 
     # Entpacken wenn gzipped
     import gzip as _gz
@@ -182,6 +212,7 @@ def _cmd_db_restore(args: list) -> int:
 
     is_gz = src.name.endswith(".gz")
     tmp_target = db_path.parent / f".restore-tmp-{os.getpid()}.db"
+    normalized_target = db_path.parent / f".restore-normalized-{os.getpid()}.db"
 
     try:
         if is_gz:
@@ -191,28 +222,31 @@ def _cmd_db_restore(args: list) -> int:
         else:
             _sh.copy2(src, tmp_target)
 
-        # Integrity-Check der entpackten Datei
+        # Das ausgewählte Backup zuerst prüfen und dann über SQLite in eine
+        # neue, eigenständige DB kopieren. So werden keine fremden WAL-Dateien
+        # oder Dateiseiten blind übernommen.
         print("🔍 Integrity-Check…")
-        check = sqlite3.connect(str(tmp_target), timeout=10)
-        try:
-            row = check.execute("PRAGMA integrity_check").fetchone()
-            if row and row[0] == "ok":
-                print("  ✓ integrity_check: ok")
-            else:
-                print(f"  ✗ integrity_check fehlgeschlagen: {row}", file=sys.stderr)
-                tmp_target.unlink()
-                return 1
-        finally:
-            check.close()
+        _verify_sqlite(tmp_target)
+        _sqlite_online_copy(tmp_target, normalized_target)
+        _verify_sqlite(normalized_target)
+        print("  ✓ integrity_check: ok")
 
-        # Atomic move ins Ziel
-        tmp_target.replace(db_path)
+        # Atomic move ins Ziel. Danach stale Sidecars des ALTEN DB-Stands
+        # entfernen, bevor irgendein Prozess die wiederhergestellte DB öffnet.
+        os.replace(normalized_target, db_path)
+        Path(f"{db_path}-wal").unlink(missing_ok=True)
+        Path(f"{db_path}-shm").unlink(missing_ok=True)
+        tmp_target.unlink(missing_ok=True)
         print(f"✓ Restore abgeschlossen: {db_path}")
         print(f"  Start den Service: systemctl start scrapper-web")
         return 0
     except Exception as e:
         try:
             tmp_target.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            normalized_target.unlink(missing_ok=True)
         except Exception:
             pass
         print(f"✗ Restore fehlgeschlagen: {e}", file=sys.stderr)
