@@ -1008,16 +1008,41 @@ class Database:
 
     def auto_skip_old_pending(self, days: int = 30) -> int:
         """Markiert pending Items älter als ``days`` Tage als 'auto_skipped'.
-        Hindert die Pending-Liste am Vollstopfen mit toten Items.
+        Hindert die Pending-Liste am Vollstopfen mit toten Items. Die URL wird
+        in derselben Transaktion in ``history`` vermerkt: ein späterer
+        Mail-Lauf darf sie sonst erneut importieren und die Quellmail trotz
+        fehlender Nutzerentscheidung löschen.
         """
         cutoff = time.time() - days * 86400
+        now = time.time()
         with self.conn() as c:
-            cur = c.execute(
-                "UPDATE pending SET status='auto_skipped' "
+            c.execute("BEGIN IMMEDIATE")
+            rows = c.execute(
+                "SELECT url, content_type, ai_suggestion FROM pending "
                 "WHERE status='pending' AND created_at < ?",
                 (cutoff,),
-            )
-            return cur.rowcount or 0
+            ).fetchall()
+            for row in rows:
+                name = ""
+                try:
+                    suggestion = json.loads(row["ai_suggestion"] or "{}")
+                    if isinstance(suggestion, dict):
+                        name = str(suggestion.get("name") or "")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+                c.execute(
+                    "INSERT OR IGNORE INTO history "
+                    "(url, processed_at, content_type, name, target_dir) "
+                    "VALUES (?, ?, ?, ?, '')",
+                    (row["url"], now, row["content_type"] or "", name),
+                )
+            if rows:
+                c.executemany(
+                    "UPDATE pending SET status='auto_skipped' "
+                    "WHERE url=? AND status='pending'",
+                    ((row["url"],) for row in rows),
+                )
+            return len(rows)
 
     # ---------------- Persistente Background-Tasks ----------------
     def background_task_enqueue(
