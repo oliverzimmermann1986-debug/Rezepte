@@ -377,7 +377,24 @@ def get_recipe_pdf(recipe_id: int):
 # ── Mutation ────────────────────────────────────────────────────────────
 
 class TagsUpdate(BaseModel):
-    tags: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list, max_length=30)
+
+
+def _normalized_user_tags(tags: List[str]) -> List[str]:
+    normalized: List[str] = []
+    seen = set()
+    for raw in tags:
+        name = " ".join((raw or "").split())
+        if not name:
+            continue
+        if len(name) > 80:
+            raise HTTPException(400, "Ein Tag darf höchstens 80 Zeichen lang sein")
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(name)
+    return normalized
 
 
 @router.put("/{recipe_id}/tags")
@@ -385,8 +402,10 @@ def update_tags(recipe_id: int, payload: TagsUpdate, request: Request):
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
+    tags = _normalized_user_tags(payload.tags)
     _version_before(recipe_id, request, "Tags geändert")
-    db.recipe_tags_set(recipe_id, payload.tags)
+    db.recipe_tags_set(recipe_id, tags)
+    _FACET_CACHE.clear()
     return {"ok": True, "tags": db.recipe_tags_get(recipe_id)}
 
 
@@ -439,6 +458,7 @@ def update_metadata(recipe_id: int, payload: MetadataUpdate, request: Request):
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
+    _FACET_CACHE.clear()
     return {**result, "recipe": get_recipe(recipe_id)}
 
 

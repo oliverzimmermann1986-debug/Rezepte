@@ -312,6 +312,41 @@ def test_structured_mutation_creates_required_version(client, test_db: Database,
     assert versions[0]["reason"] == "Tags geändert"
 
 
+def test_tag_update_normalizes_manual_tags_and_preserves_auto_tags(
+    client, test_db: Database, tmp_path: Path
+):
+    recipe_id = _recipe(test_db, tmp_path)
+    test_db.recipe_auto_tags_set(recipe_id, ["vegan"])
+
+    response = client.put(
+        f"/api/recipes/{recipe_id}/tags",
+        json={"tags": [" Sommer  Küche ", "sommer küche", "", "Familie"]},
+    )
+
+    assert response.status_code == 200
+    tags = response.json()["tags"]
+    assert {(tag["name"], tag["auto"]) for tag in tags} == {
+        ("vegan", 1),
+        ("Sommer Küche", 0),
+        ("Familie", 0),
+    }
+
+
+def test_tag_update_rejects_overlong_tag_without_mutating(
+    client, test_db: Database, tmp_path: Path
+):
+    recipe_id = _recipe(test_db, tmp_path)
+    test_db.recipe_tags_set(recipe_id, ["Bleibt"])
+
+    response = client.put(
+        f"/api/recipes/{recipe_id}/tags",
+        json={"tags": ["x" * 81]},
+    )
+
+    assert response.status_code == 400
+    assert [tag["name"] for tag in test_db.recipe_tags_get(recipe_id)] == ["Bleibt"]
+
+
 def test_mutation_is_blocked_when_version_snapshot_fails(client, test_db: Database,
                                                           tmp_path: Path, monkeypatch):
     recipe_id = _recipe(test_db, tmp_path)
