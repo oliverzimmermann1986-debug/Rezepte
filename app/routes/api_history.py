@@ -28,12 +28,15 @@ class EditRequest(BaseModel):
 @router.post("/edit")
 def edit_item(req: EditRequest):
     """Item im FS umsortieren/umbenennen + DB updaten + leeren alten Parent entfernen."""
-    return get_scraper_job().move_history_item(
+    result = get_scraper_job().move_history_item(
         req.url,
         new_name=req.name,
         new_type=req.type,
         new_category=req.category,
     )
+    if not result.get("ok"):
+        raise HTTPException(409, result.get("error") or "Eintrag konnte nicht verschoben werden")
+    return result
 
 
 @router.post("/delete")

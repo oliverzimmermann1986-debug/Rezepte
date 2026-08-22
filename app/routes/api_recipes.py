@@ -1186,6 +1186,10 @@ def trash_list(limit: int = Query(200, ge=1, le=500),
     # Für jedes Item: Anzahl Tage im Papierkorb + days_until_purge
     now = time.time()
     for it in items:
+        # Interne UNIQUE-Platzhalter nicht an Clients ausliefern. Im
+        # Papierkorb bleiben die ursprünglichen Werte sichtbar.
+        it["url"] = it.get("url") or it.get("deleted_url")
+        it["folder_path"] = it.get("deleted_folder_path") or it.get("folder_path")
         if it.get("deleted_at"):
             age_days = (now - it["deleted_at"]) / 86400.0
             it["days_in_trash"] = round(age_days, 1)

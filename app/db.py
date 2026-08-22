@@ -87,10 +87,12 @@ CREATE INDEX IF NOT EXISTS idx_history_processed ON history(processed_at DESC);
 CREATE TABLE IF NOT EXISTS recipes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   url TEXT UNIQUE,                          -- NULL für manuell angelegte Folder
+  deleted_url TEXT,                         -- Original-URL solange im Papierkorb
   name TEXT NOT NULL,
   type TEXT,                                -- Hauptgericht, Dessert, ...
   category TEXT,                            -- Pasta, Fleisch, ...
   folder_path TEXT NOT NULL UNIQUE,         -- /mnt/rezepte/Hauptgericht/Pasta/Lasagne
+  deleted_folder_path TEXT,                 -- Originalpfad solange im Papierkorb
   description TEXT,                         -- Caption-Text (Source für KI)
   thumb_filename TEXT,                      -- relative {name}.jpg
   video_filename TEXT,                      -- relative {name}.mp4
@@ -423,6 +425,11 @@ class Database:
             # Wurde der Folder beim Soft-Delete schon entfernt? Wenn ja,
             # kann Restore die Files nicht wiederherstellen. Default 0.
             ("files_deleted", "INTEGER NOT NULL DEFAULT 0"),
+            # URL und Pfad werden im Papierkorb aus den UNIQUE-Spalten gelöst.
+            # So kann dieselbe Quelle neu importiert werden; Restore prüft
+            # anschließend explizit auf inzwischen belegte Ziele.
+            ("deleted_url", "TEXT"),
+            ("deleted_folder_path", "TEXT"),
             # Favorit (User-Stern). 0 = unmarkiert, 1 = Favorit.
             ("is_favorite", "INTEGER NOT NULL DEFAULT 0"),
             # Bewertung 1-5 Sterne (0 = unbewertet). Persönlich pro Rezept.
@@ -440,6 +447,13 @@ class Database:
         c.execute("CREATE INDEX IF NOT EXISTS idx_recipes_deleted ON recipes(deleted_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_recipes_favorite ON recipes(is_favorite) WHERE is_favorite=1")
         c.execute("CREATE INDEX IF NOT EXISTS idx_recipes_rating ON recipes(rating) WHERE rating>0")
+        c.execute(
+            "UPDATE recipes SET deleted_url=url, "
+            "deleted_folder_path=folder_path, url=NULL, "
+            "folder_path='__trash__/' || id "
+            "WHERE deleted_at IS NOT NULL "
+            "AND deleted_folder_path IS NULL"
+        )
 
         rt_cols = {r[1] for r in c.execute("PRAGMA table_info(recipe_tags)").fetchall()}
         if "auto" not in rt_cols:
@@ -1474,14 +1488,24 @@ class Database:
 
     def recipe_soft_delete(self, recipe_id: int, files_deleted: bool = False) -> None:
         """Markiert Rezept als gelöscht (deleted_at = now). Wird in Listings
-        gefiltert und in Trash-View sichtbar. files_deleted=True heißt der
-        FS-Folder wurde zusätzlich entfernt → Restore kann Files nicht
-        wiederherstellen, nur DB-Eintrag."""
-        import time
+        gefiltert und in Trash-View sichtbar. URL und Ordnerpfad wandern in
+        separate Restore-Felder, damit ihre UNIQUE-Slots freigegeben werden."""
         with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute(
+                "SELECT url, folder_path, deleted_at FROM recipes WHERE id=?",
+                (recipe_id,),
+            ).fetchone()
+            if not row or row["deleted_at"] is not None:
+                return
             c.execute(
-                "UPDATE recipes SET deleted_at=?, files_deleted=? WHERE id=?",
-                (time.time(), 1 if files_deleted else 0, recipe_id),
+                "UPDATE recipes SET deleted_at=?, files_deleted=?, "
+                "deleted_url=url, deleted_folder_path=folder_path, "
+                "url=NULL, folder_path=? WHERE id=?",
+                (
+                    time.time(), 1 if files_deleted else 0,
+                    f"__trash__/{recipe_id}", recipe_id,
+                ),
             )
 
     def recipe_restore(
@@ -1495,7 +1519,8 @@ class Database:
         Filesystem-Restore aktiviert werden."""
         with self.conn() as c:
             row = c.execute(
-                "SELECT folder_path, files_deleted, deleted_at "
+                "SELECT folder_path, deleted_folder_path, url, deleted_url, "
+                "files_deleted, deleted_at "
                 "FROM recipes WHERE id=?",
                 (recipe_id,)
             ).fetchone()
@@ -1512,14 +1537,41 @@ class Database:
                 return {
                     "ok": False,
                     "error": "Rezeptdateien müssen zuerst aus der Quarantäne wiederhergestellt werden",
-                    "folder_path": row["folder_path"],
+                    "folder_path": row["deleted_folder_path"] or row["folder_path"],
                     "files_deleted": True,
                 }
+            original_folder = row["deleted_folder_path"] or row["folder_path"]
+            original_url = row["deleted_url"] or row["url"]
+            folder_conflict = c.execute(
+                "SELECT id FROM recipes WHERE folder_path=? AND id<>?",
+                (original_folder, recipe_id),
+            ).fetchone()
+            if folder_conflict:
+                return {
+                    "ok": False,
+                    "error": "Der ursprüngliche Rezeptordner ist inzwischen einem anderen Rezept zugeordnet",
+                    "conflict_recipe_id": int(folder_conflict["id"]),
+                    "folder_path": original_folder,
+                }
+            if original_url:
+                url_conflict = c.execute(
+                    "SELECT id FROM recipes WHERE url=? AND id<>?",
+                    (original_url, recipe_id),
+                ).fetchone()
+                if url_conflict:
+                    return {
+                        "ok": False,
+                        "error": "Die ursprüngliche Quelle ist inzwischen einem anderen Rezept zugeordnet",
+                        "conflict_recipe_id": int(url_conflict["id"]),
+                        "folder_path": original_folder,
+                    }
             c.execute(
-                "UPDATE recipes SET deleted_at=NULL, files_deleted=0 WHERE id=?",
-                (recipe_id,)
+                "UPDATE recipes SET deleted_at=NULL, files_deleted=0, "
+                "url=?, folder_path=?, deleted_url=NULL, deleted_folder_path=NULL "
+                "WHERE id=?",
+                (original_url, original_folder, recipe_id),
             )
-            return {"ok": True, "folder_path": row["folder_path"],
+            return {"ok": True, "folder_path": original_folder,
                     "files_deleted": bool(row["files_deleted"])}
 
     def recipe_list_trash_expired(self, days: int = 30) -> List[Dict[str, Any]]:

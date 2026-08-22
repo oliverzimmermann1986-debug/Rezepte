@@ -83,20 +83,7 @@ def safe_rename_recipe(
     *,
     rename_folder: bool = True,
 ) -> Dict[str, Any]:
-    """Benennt ein Rezept um. Atomisch über DB + FS.
-
-    rename_folder=True (Default):
-      - Folder wird umbenannt (auf _sanitize(new_name))
-      - Dateien innerhalb (name.mp4, name.jpg) bekommen den neuen Namen
-      - info.json.name + DB-thumb_filename + DB-video_filename werden mit angepasst
-      - Bei Konflikt (Ziel-Folder existiert): Abbruch mit RuntimeError
-
-    rename_folder=False:
-      - Nur das DB-Feld `name` ändert sich (Display-Name)
-      - Folder + Files bleiben unverändert
-
-    Returns: {ok, recipe_id, old_name, new_name, old_folder?, new_folder?}
-    """
+    """Benennt über den rollback-fähigen Metadatenpfad um."""
     new_name = (new_name or "").strip()
     if not new_name:
         raise ValueError("new_name darf nicht leer sein")
@@ -115,107 +102,26 @@ def safe_rename_recipe(
         raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
     old_name = recipe.get("name") or ""
     old_folder = recipe.get("folder_path") or ""
-
-    result: Dict[str, Any] = {
-        "ok": True,
-        "recipe_id": recipe_id,
-        "old_name": old_name,
-        "new_name": new_name,
-    }
-
-    if not rename_folder:
-        # Der Ordnername bleibt unverändert, der Display-Name muss aber auch
-        # im Sidecar stehen. Sonst setzt der nächste FS-Sync den User-Edit
-        # wieder auf den alten importierten Namen zurück.
-        if old_folder:
-            info_file = Path(old_folder) / "info.json"
-            if info_file.parent.exists():
-                try:
-                    info = (
-                        json.loads(info_file.read_text(encoding="utf-8"))
-                        if info_file.exists() else {}
-                    )
-                    info["name"] = new_name
-                    atomic_write_json(info_file, info)
-                except Exception as e:
-                    raise RuntimeError(f"info.json konnte nicht aktualisiert werden: {e}") from e
-        with db.conn() as c:
-            c.execute("UPDATE recipes SET name=? WHERE id=?", (new_name, recipe_id))
-        logger.info(f"Recipe #{recipe_id}: name '{old_name}' → '{new_name}' (FS unverändert)")
-        return result
-
-    # rename_folder=True
     if not old_folder:
         raise ValueError(f"Recipe #{recipe_id} hat keinen folder_path")
-    old_dir = Path(old_folder)
-    _assert_inside_root(old_dir)
-    if not old_dir.exists():
-        # FS-Folder fehlt — wahrscheinlich manuell gelöscht. DB-only-Rename
-        # ist trotzdem sicher (kein FS-Touch, nichts zu konflikten).
-        logger.warning(
-            f"Recipe #{recipe_id}: folder {old_dir} existiert nicht, "
-            f"nur DB-Rename"
-        )
-        with db.conn() as c:
-            c.execute("UPDATE recipes SET name=? WHERE id=?", (new_name, recipe_id))
-        result["warning"] = "Folder existierte nicht — nur DB aktualisiert"
-        return result
-
-    new_dir_name = sanitize_filename(new_name)
-    new_dir = old_dir.parent / new_dir_name
-    _assert_inside_root(new_dir)
-
-    if new_dir.exists() and new_dir != old_dir:
-        raise RuntimeError(
-            f"Ziel-Folder existiert bereits: {new_dir}. "
-            f"Anderen Namen wählen oder den existierenden zuerst aufräumen."
-        )
-
-    # 1. Folder verschieben
-    if new_dir != old_dir:
-        old_dir.rename(new_dir)
-        logger.info(f"Recipe #{recipe_id}: folder {old_dir} → {new_dir}")
-
-    # 2. Files innerhalb umbenennen — alle die mit dem alten Folder-Namen
-    #    anfangen (z.B. "Lasagne.mp4", "Lasagne.jpg"). description.txt +
-    #    info.json bleiben generisch und müssen nicht umbenannt werden.
-    old_file_base = old_dir.name
-    new_video_filename = recipe.get("video_filename")
-    new_thumb_filename = recipe.get("thumb_filename")
-    for f in new_dir.iterdir():
-        if not f.is_file():
-            continue
-        # Nur Files umbenennen die exakt mit dem alten Folder-Namen + Suffix anfangen
-        if f.stem == old_file_base:
-            new_path = new_dir / f"{new_dir_name}{f.suffix}"
-            f.rename(new_path)
-            # DB-Filename-Felder mitziehen
-            if recipe.get("video_filename") == f.name:
-                new_video_filename = new_path.name
-            if recipe.get("thumb_filename") == f.name:
-                new_thumb_filename = new_path.name
-
-    # 3. info.json updaten (falls vorhanden)
-    info_file = new_dir / "info.json"
-    if info_file.exists():
-        try:
-            info = json.loads(info_file.read_text(encoding="utf-8"))
-            info["name"] = new_name
-            atomic_write_json(info_file, info)
-        except Exception as e:
-            logger.warning(f"Recipe #{recipe_id}: info.json update failed: {e}")
-
-    # 4. DB updaten
-    with db.conn() as c:
-        c.execute(
-            "UPDATE recipes SET name=?, folder_path=?, video_filename=?, thumb_filename=? "
-            "WHERE id=?",
-            (new_name, str(new_dir), new_video_filename, new_thumb_filename, recipe_id),
-        )
-
-    result["old_folder"] = str(old_dir)
-    result["new_folder"] = str(new_dir)
-    return result
+    updated = safe_update_recipe_metadata(
+        db,
+        recipe_id,
+        name=new_name,
+        recipe_type=recipe.get("type") or "Sonstiges",
+        category=recipe.get("category") or "Allgemein",
+        description=recipe.get("description") or "",
+        servings=recipe.get("servings"),
+        url=recipe.get("url"),
+        target_folder_override=old_folder if not rename_folder else None,
+    )
+    return {
+        **updated,
+        "old_name": old_name,
+        "new_name": new_name,
+        "old_folder": old_folder,
+        "new_folder": updated.get("folder_path"),
+    }
 
 
 def safe_update_recipe_metadata(
@@ -411,9 +317,10 @@ def safe_delete_recipe(
       auf ingredients/steps/tags, optional auch FS-Folder. Verwendet vom
       Papierkorb-Endpunkt 'endgültig löschen' und vom Cleanup-Job.
 
-    - delete_files=True: bei soft-delete wird der Folder zusätzlich entfernt
-      (files_deleted=1 gesetzt — Restore kann Files dann nicht wiederherstellen).
-      Bei hard-delete wird der Folder gelöscht falls er noch existiert.
+    - Soft-Delete verschiebt einen vorhandenen Ordner immer in die
+      wiederherstellbare Quarantäne, damit der Indexer ihn nicht sofort neu
+      anlegt. Bei hard-delete steuert delete_files weiterhin, ob ein noch
+      vorhandener Ordner mit entfernt werden darf.
 
     Cart wird bei BEIDEN Modi aufgeräumt (Cart-Einträge die auf das Rezept
     referenzieren werden upgedatet), damit Cart nicht auf 'unsichtbare'
@@ -424,7 +331,8 @@ def safe_delete_recipe(
     recipe = db.recipe_get(recipe_id)
     if not recipe:
         raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
-    folder = recipe.get("folder_path")
+    folder = recipe.get("deleted_folder_path") or recipe.get("folder_path")
+    source_url = recipe.get("deleted_url") or recipe.get("url")
     name = recipe.get("name")
 
     if hard and not delete_files and folder:
@@ -442,10 +350,13 @@ def safe_delete_recipe(
     # FS: nicht mehr hart löschen — in Quarantäne verschieben (Härtung gegen
     # Datenverlust). deleted_history bewahrt Herkunft für spätere Suche/Restore.
     folder_deleted = False
-    if delete_files and folder:
+    # Auch ein normales Soft-Delete verschiebt vorhandene Dateien in die
+    # wiederherstellbare Quarantäne. Würden sie im Rezeptbaum bleiben, würde
+    # der nächste Indexlauf das gerade gelöschte Rezept sofort neu anlegen.
+    if (delete_files or not hard) and folder:
         folder_path = Path(folder)
-        _assert_inside_root(folder_path)
         if folder_path.exists():
+            folder_path = _assert_inside_root(folder_path)
             from ..core.safety import quarantine_move
             trash_root = Path(get_config().get("safety", "trash_dir",
                               default="/opt/scrapper/data/trash"))
@@ -455,7 +366,7 @@ def safe_delete_recipe(
             folder_deleted = True
             try:
                 db.deleted_history_add(
-                    {"url": recipe.get("url"), "content_type": recipe.get("type"),
+                    {"url": source_url, "content_type": recipe.get("type"),
                      "name": name, "target_dir": folder},
                     quarantine_path=str(qpath or ""),
                     reason="hard_delete" if hard else "soft_delete")
@@ -492,7 +403,8 @@ def safe_restore_recipe(db: Database, recipe_id: int) -> Dict[str, Any]:
     if recipe.get("deleted_at") is None:
         return db.recipe_restore(recipe_id)
 
-    folder = _assert_inside_root(Path(recipe["folder_path"]))
+    original_folder = recipe.get("deleted_folder_path") or recipe.get("folder_path")
+    folder = _assert_inside_root(Path(original_folder))
     files_deleted = bool(recipe.get("files_deleted"))
     moved_from: Optional[Path] = None
 
@@ -502,7 +414,7 @@ def safe_restore_recipe(db: Database, recipe_id: int) -> Dict[str, Any]:
             files_restored = True
         else:
             history = db.deleted_history_latest(
-                str(recipe["folder_path"]),
+                str(original_folder),
                 reason="soft_delete",
             )
             quarantine_value = str(

@@ -1181,6 +1181,46 @@ class ScraperJob:
         if new_dir.exists():
             new_dir = new_dir.parent / f"{sanitized_name}_{datetime.now():%Y%m%d_%H%M%S}"
 
+        # Bei indizierten Rezepten ist die recipes-Tabelle die kanonische
+        # Zuordnung für Medienendpunkte. Deshalb dieselbe rollback-fähige
+        # Mutation wie der native Metadateneditor verwenden, statt nur die
+        # History-Zeile und das Dateisystem zu verschieben.
+        indexed_recipe = None
+        if content_type == "recipe":
+            indexed_recipe = (
+                self.db.recipe_get_by_folder(str(old_dir))
+                or self.db.recipe_get_by_folder(str(old_dir.resolve()))
+            )
+        if indexed_recipe:
+            from ..recipes.manage import safe_update_recipe_metadata
+            try:
+                updated = safe_update_recipe_metadata(
+                    self.db,
+                    int(indexed_recipe["id"]),
+                    name=new_name,
+                    recipe_type=new_type or indexed_recipe.get("type") or "Sonstiges",
+                    category=new_category or indexed_recipe.get("category") or "Allgemein",
+                    description=indexed_recipe.get("description") or "",
+                    servings=indexed_recipe.get("servings"),
+                    url=indexed_recipe.get("url"),
+                    target_folder_override=str(new_dir),
+                )
+            except (ValueError, RuntimeError) as exc:
+                return {"ok": False, "error": str(exc)}
+            self.db.history_update(
+                url,
+                name=new_name,
+                target_dir=str(updated["folder_path"]),
+                content_type=content_type,
+            )
+            self._cleanup_empty_parents(old_dir)
+            return {
+                "ok": True,
+                "action": "moved",
+                "target": str(updated["folder_path"]),
+                "recipe_id": int(indexed_recipe["id"]),
+            }
+
         new_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(old_dir), str(new_dir))
 

@@ -52,7 +52,7 @@ def test_display_only_rename_is_persisted_in_atomic_sidecar(test_db, tmp_path, m
         video_filename=None,
         source_added_at=1,
     )
-    monkeypatch.setattr(manage, "_assert_inside_root", lambda _path: None)
+    monkeypatch.setattr(manage, "_assert_inside_root", lambda path: path.resolve())
 
     result = manage.safe_rename_recipe(
         test_db, recipe_id, "Neuer Anzeigename", rename_folder=False
@@ -62,6 +62,106 @@ def test_display_only_rename_is_persisted_in_atomic_sidecar(test_db, tmp_path, m
     assert test_db.recipe_get(recipe_id)["name"] == "Neuer Anzeigename"
     assert json.loads(info_file.read_text(encoding="utf-8"))["name"] == "Neuer Anzeigename"
     assert not list(folder.glob(".info.json.tmp-*"))
+
+
+def test_history_edit_updates_recipe_path_and_sidecars(test_db, tmp_path, monkeypatch):
+    from app.jobs.scraper import ScraperJob
+
+    root = tmp_path / "recipes"
+    old = root / "Hauptgericht" / "Pasta" / "Alt"
+    old.mkdir(parents=True)
+    (old / "info.json").write_text(
+        json.dumps({"name": "Alt", "type": "Hauptgericht", "category": "Pasta"}),
+        encoding="utf-8",
+    )
+    (old / "Alt.jpg").write_bytes(b"cover")
+    url = "https://example.test/history-edit"
+    recipe_id = test_db.recipe_upsert(
+        url=url,
+        name="Alt",
+        type="Hauptgericht",
+        category="Pasta",
+        folder_path=str(old),
+        description="Beschreibung",
+        thumb_filename="Alt.jpg",
+        video_filename=None,
+        source_added_at=1,
+    )
+    test_db.history_add(
+        url,
+        content_type="recipe",
+        name="Alt",
+        target_dir=str(old),
+    )
+    monkeypatch.setattr(manage, "_recipe_root", lambda: root.resolve())
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.recipe_dir = root
+    job.wedding_dir = tmp_path / "wedding"
+
+    result = job.move_history_item(
+        url,
+        new_name="Neue Suppe",
+        new_type="Vorspeise",
+        new_category="Suppen",
+    )
+
+    target = root / "Vorspeise" / "Suppen" / "Neue_Suppe"
+    assert result["ok"] is True
+    assert test_db.recipe_get(recipe_id)["folder_path"] == str(target.resolve())
+    assert test_db.history_get(url)["target_dir"] == str(target.resolve())
+    assert (target / "Neue_Suppe.jpg").read_bytes() == b"cover"
+
+
+def test_soft_delete_releases_source_and_folder_unique_slots(test_db, tmp_path, monkeypatch):
+    root = tmp_path / "recipes"
+    trash = tmp_path / "trash"
+    folder = root / "Hauptgericht" / "Pasta" / "Alt"
+    folder.mkdir(parents=True)
+    (folder / "info.json").write_text("{}", encoding="utf-8")
+    url = "https://example.test/reimport"
+    original_id = test_db.recipe_upsert(
+        url=url,
+        name="Alt",
+        type="Hauptgericht",
+        category="Pasta",
+        folder_path=str(folder),
+        description=None,
+        thumb_filename=None,
+        video_filename=None,
+        source_added_at=1,
+    )
+
+    class Config:
+        def get(self, *keys, default=None):
+            return {
+                ("paths", "recipe_dir"): str(root),
+                ("safety", "trash_dir"): str(trash),
+            }.get(keys, default)
+
+    monkeypatch.setattr(manage, "get_config", lambda: Config())
+    manage.safe_delete_recipe(test_db, original_id)
+    deleted = test_db.recipe_get(original_id)
+    assert deleted["url"] is None
+    assert deleted["deleted_url"] == url
+    assert deleted["folder_path"] == f"__trash__/{original_id}"
+    assert deleted["deleted_folder_path"] == str(folder)
+
+    replacement_id = test_db.recipe_upsert(
+        url=url,
+        name="Neu",
+        type="Hauptgericht",
+        category="Pasta",
+        folder_path=str(folder),
+        description=None,
+        thumb_filename=None,
+        video_filename=None,
+        source_added_at=2,
+    )
+    assert replacement_id != original_id
+    restore = test_db.recipe_restore(original_id, files_restored=True)
+    assert restore["ok"] is False
+    assert restore["conflict_recipe_id"] == replacement_id
 
 
 def test_metadata_edit_moves_folder_and_updates_sidecars(test_db, tmp_path, monkeypatch):
