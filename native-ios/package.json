@@ -45,5 +45,11 @@
     "patch-package": "^8.0.1",
     "typescript": "~5.9.2"
   },
+  "overrides": {
+    "metro": "0.83.8",
+    "metro-config": "0.83.8",
+    "metro-transform-worker": "0.83.8",
+    "uuid": "11.1.1"
+  },
   "private": true
 }
