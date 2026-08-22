@@ -1979,11 +1979,27 @@
                    placeholder="Menge" aria-label="Menge" />
             <select x-model="cart.add.unit" aria-label="Einheit">
               <option value="">Einheit</option>
+              <option value="mg">mg</option>
               <option value="g">g</option>
               <option value="kg">kg</option>
               <option value="ml">ml</option>
+              <option value="cl">cl</option>
+              <option value="dl">dl</option>
               <option value="l">l</option>
+              <option value="TL">TL</option>
+              <option value="EL">EL</option>
               <option value="Stück">Stück</option>
+              <option value="Prise">Prise</option>
+              <option value="Zehe">Zehe</option>
+              <option value="Bund">Bund</option>
+              <option value="Scheibe">Scheibe</option>
+              <option value="Blatt">Blatt</option>
+              <option value="Tasse">Tasse</option>
+              <option value="Dose">Dose</option>
+              <option value="Pck">Pck</option>
+              <option value="Flasche">Flasche</option>
+              <option value="Tüte">Tüte</option>
+              <option value="Glas">Glas</option>
             </select>
             <button class="btn btn-primary" @click="addToCart()">＋ Hinzufügen</button>
           </div>
@@ -2042,8 +2058,34 @@
               </div>
               <div class="field">
                 <label for="recurring-unit">Einheit</label>
-                <input id="recurring-unit" type="text" x-model="cart.recForm.default_unit"
-                       placeholder="z. B. l" />
+                <select id="recurring-unit" x-model="cart.recForm.default_unit">
+                  <option value="">— ohne Einheit —</option>
+                  <option value="mg">mg</option>
+                  <option value="g">g</option>
+                  <option value="kg">kg</option>
+                  <option value="ml">ml</option>
+                  <option value="cl">cl</option>
+                  <option value="dl">dl</option>
+                  <option value="l">l</option>
+                  <option value="TL">TL</option>
+                  <option value="EL">EL</option>
+                  <option value="Stück">Stück</option>
+                  <option value="Prise">Prise</option>
+                  <option value="Zehe">Zehe</option>
+                  <option value="Bund">Bund</option>
+                  <option value="Scheibe">Scheibe</option>
+                  <option value="Blatt">Blatt</option>
+                  <option value="Tasse">Tasse</option>
+                  <option value="Dose">Dose</option>
+                  <option value="Pck">Pck</option>
+                  <option value="Flasche">Flasche</option>
+                  <option value="Tüte">Tüte</option>
+                  <option value="Glas">Glas</option>
+                  <option
+                    x-show="cart.recForm.default_unit && !['mg','g','kg','ml','cl','dl','l','TL','EL','Stück','Prise','Zehe','Bund','Scheibe','Blatt','Tasse','Dose','Pck','Flasche','Tüte','Glas'].includes(cart.recForm.default_unit)"
+                    :value="cart.recForm.default_unit"
+                    x-text="'Bisher: ' + cart.recForm.default_unit"></option>
+                </select>
               </div>
               <div class="field">
                 <label for="recurring-interval">Alle … Tage</label>
@@ -3404,9 +3446,12 @@
                            x-model.number="ing.amount" placeholder="Menge">
                     <select class="ing-unit" x-model="ing.unit">
                       <option value="">—</option>
+                      <option value="mg">mg</option>
                       <option value="g">g</option>
                       <option value="kg">kg</option>
                       <option value="ml">ml</option>
+                      <option value="cl">cl</option>
+                      <option value="dl">dl</option>
                       <option value="l">l</option>
                       <option value="TL">TL</option>
                       <option value="EL">EL</option>
@@ -3420,6 +3465,7 @@
                       <option value="Dose">Dose</option>
                       <option value="Tasse">Tasse</option>
                       <option value="Flasche">Flasche</option>
+                      <option value="Tüte">Tüte</option>
                       <option value="Glas">Glas</option>
                     </select>
                     <input type="text" class="ing-name" x-model="ing.name" placeholder="Zutat"

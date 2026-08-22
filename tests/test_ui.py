@@ -317,6 +317,10 @@ def test_external_shopping_and_local_recurring_ui_are_available():
     assert "async recRunNow()" in js
     assert ".recurring-form" in css
     assert "app_token:" in config_example
+    assert '<select id="recurring-unit"' in html
+    assert '<input id="recurring-unit"' not in html
+    for unit in ('mg', 'g', 'kg', 'ml', 'cl', 'dl', 'l', 'TL', 'EL', 'Stück', 'Pck'):
+        assert f'<option value="{unit}">' in html
 
 
 def test_ingredients_can_be_excluded_from_shopping():

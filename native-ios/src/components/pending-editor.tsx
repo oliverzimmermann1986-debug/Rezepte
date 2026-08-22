@@ -14,6 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrimaryButton, sharedStyles } from '@/components/ui';
+import { UnitPicker } from '@/components/unit-picker';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
 import {
@@ -24,6 +25,7 @@ import {
 } from '@/lib/editor-rows';
 import { optionalInteger, optionalNumber } from '@/lib/numbers';
 import { PendingItem } from '@/lib/types';
+import { normalizeUnit } from '@/lib/units';
 
 type Props = {
   item: PendingItem | null;
@@ -78,7 +80,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
             .map(value => ({
               name: value.name.trim(),
               amount: optionalNumber(value.amount, `Menge für ${value.name}`),
-              unit: value.unit?.trim() || null,
+              unit: normalizeUnit(value.unit) || null,
               raw: value.raw || null,
             })),
           steps: steps
@@ -142,12 +144,11 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
                       onChangeText={value => setIngredients(rows => rows.map(row => row.clientKey === ingredient.clientKey ? { ...row, amount: value } : row))}
                       style={[sharedStyles.input, styles.flex]}
                     />
-                    <TextInput
-                      placeholder="Einheit"
-                      placeholderTextColor={colors.muted}
-                      value={ingredient.unit || ''}
-                      onChangeText={value => setIngredients(rows => rows.map(row => row.clientKey === ingredient.clientKey ? { ...row, unit: value } : row))}
-                      style={[sharedStyles.input, styles.flex]}
+                    <UnitPicker
+                      value={ingredient.unit}
+                      onChange={value => setIngredients(rows => rows.map(row => row.clientKey === ingredient.clientKey ? { ...row, unit: value } : row))}
+                      accessibilityLabel={`Mengeneinheit für ${ingredient.name || `Zutat ${index + 1}`}`}
+                      style={styles.flex}
                     />
                   </View>
                   <Pressable onPress={() => setIngredients(rows => rows.filter(row => row.clientKey !== ingredient.clientKey))}><Text style={styles.remove}>Entfernen</Text></Pressable>

@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrimaryButton } from '@/components/ui';
+import { UnitPicker } from '@/components/unit-picker';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
 import {
@@ -23,6 +24,7 @@ import {
 } from '@/lib/editor-rows';
 import { optionalInteger, optionalNumber } from '@/lib/numbers';
 import { Ingredient, RecipeStep } from '@/lib/types';
+import { normalizeUnit } from '@/lib/units';
 
 type Props = {
   recipeId: number;
@@ -57,7 +59,7 @@ export function RecipeEditor({ recipeId, kind, ingredients, steps, visible, onCl
           .map(item => ({
             name: item.name.trim(),
             amount: optionalNumber(item.amount, `Menge für ${item.name}`),
-            unit: item.unit?.trim() || null,
+            unit: normalizeUnit(item.unit) || null,
             raw: item.raw || null,
           }));
         await api(`/api/recipes/${recipeId}/ingredients`, {
@@ -115,12 +117,11 @@ export function RecipeEditor({ recipeId, kind, ingredients, steps, visible, onCl
                         onChangeText={value => setIngredientRows(rows => rows.map(row => row.clientKey === item.clientKey ? { ...row, amount: value } : row))}
                         style={[styles.input, styles.flex]}
                       />
-                      <TextInput
-                        placeholder="Einheit"
-                        placeholderTextColor={colors.muted}
-                        value={item.unit || ''}
-                        onChangeText={unit => setIngredientRows(rows => rows.map(row => row.clientKey === item.clientKey ? { ...row, unit } : row))}
-                        style={[styles.input, styles.flex]}
+                      <UnitPicker
+                        value={item.unit}
+                        onChange={unit => setIngredientRows(rows => rows.map(row => row.clientKey === item.clientKey ? { ...row, unit } : row))}
+                        accessibilityLabel={`Mengeneinheit für ${item.name || `Zutat ${index + 1}`}`}
+                        style={[styles.flex, styles.unitPicker]}
                       />
                     </View>
                     <Pressable
@@ -207,6 +208,7 @@ const styles = StyleSheet.create({
   multiline: { minHeight: 100, paddingTop: 12, textAlignVertical: 'top' },
   amountRow: { flexDirection: 'row', gap: 8 },
   flex: { flex: 1 },
+  unitPicker: { minHeight: 48, borderRadius: radii.sm },
   remove: { color: colors.danger, minHeight: 32, paddingTop: 6, fontWeight: '700' },
   error: { color: colors.danger, lineHeight: 20 },
 });

@@ -1,4 +1,5 @@
 import { Ingredient, RecipeStep } from './types';
+import { normalizeUnit } from './units';
 
 let nextClientKey = 0;
 
@@ -21,6 +22,7 @@ export function createIngredientRow(item: Ingredient = { name: '' }): EditableIn
   return {
     ...item,
     amount: item.amount == null ? '' : String(item.amount),
+    unit: normalizeUnit(item.unit) || null,
     clientKey: clientKey('ingredient'),
   };
 }

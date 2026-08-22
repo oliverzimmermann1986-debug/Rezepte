@@ -17,10 +17,12 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrimaryButton, StateView } from '@/components/ui';
+import { UnitPicker } from '@/components/unit-picker';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
 import { apiCached } from '@/lib/cache';
 import { CartItem, RecurringCartItem } from '@/lib/types';
+import { normalizeUnit } from '@/lib/units';
 
 type RecurringForm = {
   id: number | null;
@@ -162,7 +164,7 @@ export default function CartScreen() {
       id: item.id,
       name: item.name,
       amount: item.amount == null ? '' : String(item.amount).replace('.', ','),
-      unit: item.default_unit || '',
+      unit: normalizeUnit(item.default_unit),
       category: item.category || '',
       interval: String(item.interval_days),
       nextDueOn: item.next_due_on,
@@ -195,7 +197,7 @@ export default function CartScreen() {
       const body = JSON.stringify({
         name: editor.name.trim(),
         amount: parsedAmount,
-        default_unit: editor.unit.trim() || null,
+        default_unit: normalizeUnit(editor.unit) || null,
         category: editor.category.trim() || null,
         interval_days: interval,
         next_due_on: editor.nextDueOn,
@@ -381,7 +383,12 @@ export default function CartScreen() {
                 <Field label="Artikel" value={editor.name} onChangeText={value => setEditor({ ...editor, name: value })} placeholder="z. B. Hafermilch" />
                 <View style={styles.formRow}>
                   <View style={styles.formHalf}><Field label="Menge" value={editor.amount} onChangeText={value => setEditor({ ...editor, amount: value })} placeholder="z. B. 2" keyboardType="decimal-pad" /></View>
-                  <View style={styles.formHalf}><Field label="Einheit" value={editor.unit} onChangeText={value => setEditor({ ...editor, unit: value })} placeholder="z. B. l" /></View>
+                  <View style={styles.formHalf}>
+                    <View style={styles.field}>
+                      <Text style={styles.fieldLabel}>Einheit</Text>
+                      <UnitPicker value={editor.unit} onChange={unit => setEditor({ ...editor, unit })} />
+                    </View>
+                  </View>
                 </View>
                 <Field label="Kategorie (optional)" value={editor.category} onChangeText={value => setEditor({ ...editor, category: value })} placeholder="z. B. Kühlregal" />
                 <Field label="Intervall in Tagen" value={editor.interval} onChangeText={value => setEditor({ ...editor, interval: value })} placeholder="7" keyboardType="number-pad" />
