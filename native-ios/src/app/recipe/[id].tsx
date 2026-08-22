@@ -7,6 +7,7 @@ import { Alert, Linking, Pressable, Share, StyleSheet, Text, View } from 'react-
 
 import { RecipeEditor } from '@/components/recipe-editor';
 import { RecipeMetadataEditor } from '@/components/recipe-metadata-editor';
+import { RecipeShareLinks } from '@/components/recipe-share-links';
 import { StepTimer } from '@/components/step-timer';
 import { ManualCareBanner, PrimaryButton, Screen, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
@@ -51,6 +52,7 @@ export default function RecipeDetailScreen() {
   const [error, setError] = useState('');
   const [editor, setEditor] = useState<'ingredients' | 'steps' | null>(null);
   const [metadataEditor, setMetadataEditor] = useState(false);
+  const [shareLinks, setShareLinks] = useState(false);
   const [busy, setBusy] = useState(false);
   const [imageVersion, setImageVersion] = useState(0);
   const [showOriginal, setShowOriginal] = useState(false);
@@ -106,6 +108,7 @@ export default function RecipeDetailScreen() {
       'Jeder mit dem Link kann dieses Rezept 7 Tage lang ohne Anmeldung sehen.',
       [
         { text: 'Abbrechen', style: 'cancel' },
+        { text: 'Freigaben verwalten', onPress: () => setShareLinks(true) },
         { text: 'Link erstellen', onPress: createShareLink },
       ],
     );
@@ -408,6 +411,7 @@ export default function RecipeDetailScreen() {
           await load();
         }}
       />
+      <RecipeShareLinks recipeId={recipe.id} visible={shareLinks} onClose={() => setShareLinks(false)} />
     </>
   );
 }

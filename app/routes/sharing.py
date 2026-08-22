@@ -22,16 +22,18 @@ from __future__ import annotations
 import html
 import logging
 import re
+import secrets
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel, Field
 
-from ..auth import require_auth
+from ..auth import auth_disabled, request_user, require_auth
 from ..config_store import get_config
 from ..core.safety import resolve_directory_under, resolve_regular_file_under
 from ..db import get_db
@@ -73,6 +75,13 @@ def _load_share_token(token: str) -> dict:
             raise SignatureExpired("Share-Link ist abgelaufen", payload=data)
     except (TypeError, ValueError) as exc:
         raise BadSignature("Ungültiges Ablaufdatum im Share-Token") from exc
+    share_id = str(data.get("sid") or "").strip()
+    if share_id:
+        link = get_db().recipe_share_link_get(share_id)
+        if not link or int(link.get("recipe_id") or 0) != int(data.get("rid") or 0):
+            raise BadSignature("Share-Link ist nicht registriert")
+        if link.get("revoked_at") is not None or float(link.get("expires_at") or 0) < time.time():
+            raise SignatureExpired("Share-Link ist nicht mehr gültig", payload=data)
     return data
 
 
@@ -334,21 +343,62 @@ def create_share_link(recipe_id: int, payload: ShareRequest, request: Request):
     if not recipe or recipe.get("deleted_at") is not None:
         raise HTTPException(404, "Rezept nicht gefunden")
 
+    expires_at = time.time() + payload.expires_days * 86400
+    share_id = secrets.token_urlsafe(18)
     token = _serializer().dumps({
         "rid": int(recipe_id),
-        "exp": time.time() + payload.expires_days * 86400,
+        "sid": share_id,
+        "exp": expires_at,
     })
+    created_by = "local" if auth_disabled() else (request_user(request) or "unknown")
+    db.recipe_share_link_create(
+        share_id,
+        recipe_id,
+        expires_at=expires_at,
+        created_by=created_by,
+    )
 
     # base_url respektiert X-Forwarded-Proto + Host bei Reverse-Proxy
-    base = str(request.base_url).rstrip("/")
+    configured_base = str(get_config().get("web", "public_url", default="") or "").strip().rstrip("/")
+    if configured_base:
+        parsed_base = urlsplit(configured_base)
+        if (
+            parsed_base.scheme.lower() != "https"
+            or not parsed_base.hostname
+            or parsed_base.username
+            or parsed_base.password
+            or parsed_base.path not in ("", "/")
+            or parsed_base.query
+            or parsed_base.fragment
+        ):
+            raise HTTPException(503, "web.public_url muss eine reine HTTPS-Serveradresse sein")
+    base = configured_base or str(request.base_url).rstrip("/")
     url = f"{base}/share/{token}"
     logger.info(f"Share-Link für Rezept #{recipe_id} erstellt (gültig {payload.expires_days}d)")
     return {
         "ok": True,
         "url": url,
         "expires_days": payload.expires_days,
+        "expires_at": expires_at,
+        "share_id": share_id,
         "recipe_id": recipe_id,
     }
+
+
+@share_api_router.get("/{recipe_id}/shares")
+def list_share_links(recipe_id: int):
+    recipe = get_db().recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    return {"items": get_db().recipe_share_links_list(recipe_id)}
+
+
+@share_api_router.delete("/{recipe_id}/shares/{share_id}")
+def revoke_share_link(recipe_id: int, share_id: str):
+    if not get_db().recipe_share_link_revoke(recipe_id, share_id):
+        raise HTTPException(404, "Freigabe nicht gefunden")
+    logger.info("Share-Link für Rezept #%s widerrufen", recipe_id)
+    return {"ok": True, "share_id": share_id}
 
 
 # ════ Public Share-Resolution (KEINE Auth) ════

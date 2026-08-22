@@ -107,6 +107,20 @@ CREATE INDEX IF NOT EXISTS idx_recipes_extract  ON recipes(ingredients_status, i
 -- idx_recipes_deleted wird in _migrate erstellt NACHDEM die deleted_at-Spalte
 -- via ALTER COLUMN hinzugefügt ist (DDL läuft auf bestehender DB sonst vor Migration).
 
+-- Widerrufbare, kurzlebige öffentliche Rezeptfreigaben. Der eigentliche
+-- signierte Token wird nicht gespeichert; die zufällige Share-ID im Token
+-- reicht zum Sperren und Auditieren.
+CREATE TABLE IF NOT EXISTS recipe_share_links (
+  id TEXT PRIMARY KEY,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  created_at REAL NOT NULL,
+  expires_at REAL NOT NULL,
+  created_by TEXT,
+  revoked_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_share_links_recipe
+  ON recipe_share_links(recipe_id, created_at DESC);
+
 -- recipe_ingredients: pro Rezept N Zutaten. Kein FK auf eine Master-Tabelle —
 -- canonical_name reicht für Merge & Filter und ist robust gegen Tippfehler
 -- der KI (ein neuer Eintrag mit gleichem canonical_name verschmilzt sich
@@ -2886,6 +2900,48 @@ class Database:
         sql += " ORDER BY v.created_at DESC LIMIT ?"; params.append(max(1, min(1000, int(limit))))
         with self.conn() as c:
             return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+    def recipe_share_link_create(self, share_id: str, recipe_id: int, *,
+                                 expires_at: float,
+                                 created_by: Optional[str] = None) -> Dict[str, Any]:
+        now = time.time()
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO recipe_share_links "
+                "(id, recipe_id, created_at, expires_at, created_by, revoked_at) "
+                "VALUES (?, ?, ?, ?, ?, NULL)",
+                (share_id, int(recipe_id), now, float(expires_at), created_by),
+            )
+            return dict(c.execute(
+                "SELECT * FROM recipe_share_links WHERE id=?", (share_id,)
+            ).fetchone())
+
+    def recipe_share_link_get(self, share_id: str) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT * FROM recipe_share_links WHERE id=?", (share_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def recipe_share_links_list(self, recipe_id: int, limit: int = 100) -> List[Dict[str, Any]]:
+        now = time.time()
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT *, CASE WHEN revoked_at IS NULL AND expires_at>? THEN 1 ELSE 0 END AS active "
+                "FROM recipe_share_links WHERE recipe_id=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (now, int(recipe_id), max(1, min(500, int(limit)))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def recipe_share_link_revoke(self, recipe_id: int, share_id: str) -> bool:
+        with self.conn() as c:
+            cur = c.execute(
+                "UPDATE recipe_share_links SET revoked_at=COALESCE(revoked_at, ?) "
+                "WHERE id=? AND recipe_id=?",
+                (time.time(), share_id, int(recipe_id)),
+            )
+            return cur.rowcount > 0
 
     def recipe_version_get(self, version_id: int) -> Optional[Dict[str, Any]]:
         with self.conn() as c:

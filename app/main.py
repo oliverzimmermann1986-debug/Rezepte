@@ -430,12 +430,14 @@ Website übergeben; dann gelten deren Datenschutzbestimmungen.</p>
 <p>Nur nach ausdrücklicher Bestätigung kann die App einen öffentlichen Link
 erstellen. Jeder mit diesem Link kann das ausgewählte Rezept einschließlich
 Cover sehen. In der iPhone-App sind neue Links sieben Tage gültig und enthalten
-keinen Benutzernamen.</p>
+keinen Benutzernamen. Aktive Links können in der App eingesehen und jederzeit
+sofort widerrufen werden.</p>
 <h2>Löschung und Auskunft</h2>
 <p>Rezepte und Kontodaten werden vom Betreiber des privaten Servers verwaltet.
-richten. Durch Abmelden werden Sitzungstoken, Cloudflare-Zugangsdaten und private
+Anfragen zu Auskunft oder Löschung sind an diesen Betreiber zu richten. Durch
+Abmelden werden Sitzungstoken, Cloudflare-Zugangsdaten und private
 Bildcaches vom iPhone entfernt; die Serversitzung wird widerrufen.</p>
-<p><small>Stand: 21. August 2026</small></p>
+<p><small>Stand: 22. August 2026</small></p>
 </main></body></html>"""
     )
 

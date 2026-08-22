@@ -1,0 +1,49 @@
+from urllib.parse import urlsplit
+
+from itsdangerous import URLSafeTimedSerializer
+
+from tests.conftest import _create_recipe
+
+
+def test_public_recipe_share_can_be_listed_and_revoked(client, test_db, monkeypatch):
+    import app.routes.sharing as sharing
+
+    serializer = URLSafeTimedSerializer("s" * 32, salt=sharing.SHARE_SALT)
+    monkeypatch.setattr(sharing, "_serializer", lambda: serializer)
+    recipe = _create_recipe(
+        test_db,
+        name="Freigabe",
+        folder_path="/missing/share",
+        description="Ein öffentlich freigegebenes Testrezept.",
+    )
+    test_db.recipe_set_extraction_result(
+        recipe["id"],
+        "ok",
+        [{"name": "Mehl", "canonical_name": "mehl", "amount": 200, "unit": "g"}],
+    )
+    test_db.recipe_steps_set(recipe["id"], [{"instruction": "Verrühren."}])
+
+    created = client.post(
+        f"/api/recipes/{recipe['id']}/share",
+        json={"expires_days": 7},
+    )
+
+    assert created.status_code == 200
+    payload = created.json()
+    share_path = urlsplit(payload["url"]).path
+    token = share_path.rsplit("/", 1)[-1]
+    token_data = serializer.loads(token)
+    assert token_data["sid"] == payload["share_id"]
+    assert "by" not in token_data
+    assert client.get(share_path).status_code == 200
+
+    listed = client.get(f"/api/recipes/{recipe['id']}/shares")
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["active"] == 1
+
+    revoked = client.delete(
+        f"/api/recipes/{recipe['id']}/shares/{payload['share_id']}"
+    )
+    assert revoked.status_code == 200
+    assert client.get(share_path).status_code == 410
+    assert client.get(f"/api/recipes/{recipe['id']}/shares").json()["items"][0]["active"] == 0

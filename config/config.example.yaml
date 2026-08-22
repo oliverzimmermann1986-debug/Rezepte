@@ -23,6 +23,9 @@ web:
   external_logout_url: ""
   bind_host: 127.0.0.1
   bind_port: 8000
+  # Öffentliche Basis für widerrufbare Rezept-Links. Verhindert, dass ein
+  # manipuliertes Host-Header-Ziel in einen neu erstellten Link gelangt.
+  public_url: ""  # z. B. https://rezepte.example.com
   secret_key: change-this-to-random-string-32chars-min
   # Nur von diesen direkten Proxy-Adressen werden CF-Connecting-IP und
   # X-Forwarded-For für Login-Rate-Limits ausgewertet.
