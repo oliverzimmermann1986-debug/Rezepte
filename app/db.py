@@ -321,7 +321,8 @@ CREATE TRIGGER IF NOT EXISTS recipes_fts_ad AFTER DELETE ON recipes BEGIN
   VALUES ('delete', old.id, old.name, COALESCE(old.description, ''),
           COALESCE(old.type, ''), COALESCE(old.category, ''));
 END;
-CREATE TRIGGER IF NOT EXISTS recipes_fts_au AFTER UPDATE ON recipes BEGIN
+CREATE TRIGGER IF NOT EXISTS recipes_fts_au
+AFTER UPDATE OF name, description, type, category ON recipes BEGIN
   INSERT INTO recipes_fts(recipes_fts, rowid, name, description, type, category)
   VALUES ('delete', old.id, old.name, COALESCE(old.description, ''),
           COALESCE(old.type, ''), COALESCE(old.category, ''));
@@ -476,19 +477,32 @@ class Database:
         )
         c.execute("CREATE INDEX IF NOT EXISTS idx_deleted_history_at ON deleted_history(deleted_at DESC)")
 
-        # FTS5-Backfill: wenn recipes_fts existiert aber leer ist (Migration auf
-        # bestehende DB ohne FTS), alle Rezepte indizieren. Triggers übernehmen
-        # ab da Pflege. Idempotent: fts_count > 0 → skip.
+        # Bestehende Installationen haben evtl. noch den alten Trigger ohne
+        # OF-Spaltenliste; selbst Flag-Updates re-tokenisierten dort das ganze
+        # Rezept. Definition idempotent auf die schmale Variante heben.
+        c.execute("DROP TRIGGER IF EXISTS recipes_fts_au")
+        c.execute("""
+            CREATE TRIGGER recipes_fts_au
+            AFTER UPDATE OF name, description, type, category ON recipes BEGIN
+              INSERT INTO recipes_fts(recipes_fts, rowid, name, description, type, category)
+              VALUES ('delete', old.id, old.name, COALESCE(old.description, ''),
+                      COALESCE(old.type, ''), COALESCE(old.category, ''));
+              INSERT INTO recipes_fts(rowid, name, description, type, category)
+              VALUES (new.id, new.name, COALESCE(new.description, ''),
+                      COALESCE(new.type, ''), COALESCE(new.category, ''));
+            END
+        """)
+
+        # Bei external-content FTS liefert SELECT COUNT(*) aus recipes_fts die
+        # Zeilenzahl der Content-Tabelle, selbst wenn der Index leer ist. Die
+        # docsize-Schattentabelle bildet dagegen wirklich indizierte Dokumente
+        # ab. Bei jeder Abweichung ist ein vollständiger rebuild sicherer als
+        # ein partieller Insert.
         try:
-            fts_count = int(c.execute("SELECT COUNT(*) FROM recipes_fts").fetchone()[0])
+            fts_count = int(c.execute("SELECT COUNT(*) FROM recipes_fts_docsize").fetchone()[0])
             rec_count = int(c.execute("SELECT COUNT(*) FROM recipes").fetchone()[0])
-            if rec_count > 0 and fts_count == 0:
-                c.execute("""
-                    INSERT INTO recipes_fts(rowid, name, description, type, category)
-                    SELECT id, name, COALESCE(description, ''),
-                           COALESCE(type, ''), COALESCE(category, '')
-                    FROM recipes
-                """)
+            if rec_count != fts_count:
+                c.execute("INSERT INTO recipes_fts(recipes_fts) VALUES('rebuild')")
         except Exception as e:
             # Bei sehr alter SQLite ohne FTS5 — nicht fatal, search-Endpoint
             # fällt dann auf den LIKE-Fallback (siehe recipe_list)
@@ -504,7 +518,11 @@ class Database:
         import logging as _log
         _logger = _log.getLogger(__name__)
         try:
-            c.execute("INSERT INTO recipes_fts(recipes_fts) VALUES('integrity-check')")
+            # rank=1 vergleicht bei external-content Tabellen zusätzlich den
+            # Indexinhalt mit recipes; ohne rank prüft FTS nur seine Interna.
+            c.execute(
+                "INSERT INTO recipes_fts(recipes_fts, rank) VALUES('integrity-check', 1)"
+            )
         except Exception as e:
             _logger.warning(
                 f"FTS-Integrity-Check failed ({type(e).__name__}: {e}) — "
