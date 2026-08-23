@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 180
+CURRENT_SCHEMA_VERSION = 190
 _MIGRATION_THREAD_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,9 @@ CREATE TABLE IF NOT EXISTS shopping_cart (
   unit TEXT,                                -- Speicher-Einheit (g/ml/Stück/..., NICHT kg/l — siehe units.py)
   checked INTEGER NOT NULL DEFAULT 0,       -- "habe ich"-Häkchen
   added_at REAL NOT NULL,
-  source_recipe_ids TEXT                    -- JSON-Array der recipe_id's die zur Menge beigetragen haben
+  source_recipe_ids TEXT,                   -- JSON-Array der recipe_id's die zur Menge beigetragen haben
+  category TEXT,                            -- KI-/User-Einkaufsbereich
+  sort_order INTEGER                        -- optimierte Laufreihenfolge
 );
 CREATE INDEX IF NOT EXISTS idx_cart_canonical ON shopping_cart(canonical_name, unit);
 CREATE INDEX IF NOT EXISTS idx_cart_added     ON shopping_cart(added_at DESC);
@@ -597,6 +599,16 @@ class Database:
             # ~). NULL = noch nicht berechnet. Wird beim Nährwert-Lauf befüllt.
             c.execute("ALTER TABLE recipe_ingredients ADD COLUMN calories REAL")
 
+        cart_cols = {r[1] for r in c.execute("PRAGMA table_info(shopping_cart)").fetchall()}
+        if "category" not in cart_cols:
+            c.execute("ALTER TABLE shopping_cart ADD COLUMN category TEXT")
+        if "sort_order" not in cart_cols:
+            c.execute("ALTER TABLE shopping_cart ADD COLUMN sort_order INTEGER")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cart_sort "
+            "ON shopping_cart(checked, sort_order, added_at DESC)"
+        )
+
         df_cols = {r[1] for r in c.execute("PRAGMA table_info(download_failures)").fetchall()}
         if "content_type" not in df_cols:
             # recipe|wedding. Nötig seit Mails nach Verarbeitung gelöscht werden:
@@ -836,7 +848,11 @@ class Database:
         )
         c.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
-            (CURRENT_SCHEMA_VERSION, "idempotent_cooking_completion", time.time()),
+            (180, "idempotent_cooking_completion", time.time()),
+        )
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (CURRENT_SCHEMA_VERSION, "ai_shopping_list_optimization", time.time()),
         )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
@@ -3110,7 +3126,9 @@ class Database:
     def cart_list(self) -> List[Dict[str, Any]]:
         with self.conn() as c:
             rows = c.execute(
-                "SELECT * FROM shopping_cart ORDER BY checked ASC, added_at DESC"
+                "SELECT * FROM shopping_cart ORDER BY checked ASC, "
+                "CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END, "
+                "sort_order ASC, added_at DESC"
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -3303,16 +3321,18 @@ class Database:
                         if amount is not None else old_amount
                     )
                     c.execute(
-                        "UPDATE shopping_cart SET amount=?, checked=0, added_at=? WHERE id=?",
-                        (new_amount, now, existing["id"]),
+                        "UPDATE shopping_cart SET amount=?, checked=0, added_at=?, "
+                        "category=COALESCE(category, ?) WHERE id=?",
+                        (new_amount, now, row["category"], existing["id"]),
                     )
                     cart_id = int(existing["id"])
                 else:
                     cur = c.execute(
                         "INSERT INTO shopping_cart "
-                        "(name, canonical_name, amount, unit, checked, added_at, source_recipe_ids) "
-                        "VALUES (?, ?, ?, ?, 0, ?, '[]')",
-                        (row["name"], canonical, row["amount"], unit, now),
+                        "(name, canonical_name, amount, unit, checked, added_at, "
+                        "source_recipe_ids, category) "
+                        "VALUES (?, ?, ?, ?, 0, ?, '[]', ?)",
+                        (row["name"], canonical, row["amount"], unit, now, row["category"]),
                     )
                     cart_id = int(cur.lastrowid)
 
@@ -3338,15 +3358,56 @@ class Database:
             for item in items:
                 c.execute(
                     "INSERT INTO shopping_cart "
-                    "(name, canonical_name, amount, unit, checked, added_at, source_recipe_ids) "
-                    "VALUES (?, ?, ?, ?, 0, ?, ?)",
+                    "(name, canonical_name, amount, unit, checked, added_at, "
+                    "source_recipe_ids, category, sort_order) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         item.get("name") or "?",
                         item.get("canonical_name"),
                         item.get("amount"),
                         item.get("unit"),
-                        now,
+                        1 if item.get("checked") else 0,
+                        float(item.get("added_at") or now),
                         json.dumps(item.get("source_recipe_ids") or []),
+                        item.get("category"),
+                        item.get("sort_order"),
+                    ),
+                )
+            return len(items)
+
+    def cart_replace_if_unchanged(
+        self,
+        items: List[Dict[str, Any]],
+        expected_fingerprint: str,
+    ) -> Optional[int]:
+        """Ersetzt den Cart nur, wenn er noch exakt dem Preview-Stand entspricht."""
+        from .recipes.shopping_optimizer import cart_fingerprint
+
+        now = time.time()
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            current = [dict(row) for row in c.execute(
+                "SELECT * FROM shopping_cart ORDER BY id"
+            ).fetchall()]
+            if cart_fingerprint(current) != expected_fingerprint:
+                return None
+            c.execute("DELETE FROM shopping_cart")
+            for item in items:
+                c.execute(
+                    "INSERT INTO shopping_cart "
+                    "(name, canonical_name, amount, unit, checked, added_at, "
+                    "source_recipe_ids, category, sort_order) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        item.get("name") or "?",
+                        item.get("canonical_name"),
+                        item.get("amount"),
+                        item.get("unit"),
+                        1 if item.get("checked") else 0,
+                        float(item.get("added_at") or now),
+                        json.dumps(item.get("source_recipe_ids") or []),
+                        item.get("category"),
+                        item.get("sort_order"),
                     ),
                 )
             return len(items)

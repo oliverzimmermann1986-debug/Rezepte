@@ -19,6 +19,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrimaryButton, StateView } from '@/components/ui';
+import { ShoppingAiOptimizer } from '@/components/shopping-ai-optimizer';
 import { UnitPicker } from '@/components/unit-picker';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
@@ -61,6 +62,7 @@ export default function CartScreen() {
   const [editor, setEditor] = useState<RecurringForm | null>(null);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
+  const [showAiOptimizer, setShowAiOptimizer] = useState(false);
   const mutating = useRef(new Set<number>());
 
   const loadCart = useCallback(async (refresh = false) => {
@@ -315,6 +317,15 @@ export default function CartScreen() {
               <Text style={styles.addText}>+</Text>
             </Pressable>
           </View>
+          {!!items.length && (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setShowAiOptimizer(true)}
+              style={({ pressed }) => [styles.aiButton, pressed && styles.pressed]}>
+              <Text style={styles.aiButtonLabel}>Einkaufsliste mit KI optimieren</Text>
+              <Text style={styles.aiButtonArrow}>›</Text>
+            </Pressable>
+          )}
           {!!error && !!items.length && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
           {loading && !items.length ? (
             <StateView title="Einkaufsliste wird geladen" loading />
@@ -339,7 +350,12 @@ export default function CartScreen() {
                     </View>
                     <View style={styles.itemText}>
                       <Text style={[styles.name, item.checked && styles.nameDone]}>{item.name}</Text>
-                      <Text style={styles.amount}>{item.amount == null ? '' : `${item.amount} `}{item.unit || ''}</Text>
+                      <Text style={styles.amount}>
+                        {[
+                          item.amount == null ? item.unit || '' : `${item.amount} ${item.unit || ''}`.trim(),
+                          item.category || '',
+                        ].filter(Boolean).join(' · ')}
+                      </Text>
                     </View>
                   </Pressable>
                   <Pressable accessibilityRole="button" accessibilityLabel={`${item.name} entfernen`} onPress={() => remove(item)} hitSlop={10}>
@@ -421,6 +437,11 @@ export default function CartScreen() {
           </SafeAreaView>
         )}
       </Modal>
+      <ShoppingAiOptimizer
+        visible={showAiOptimizer}
+        onClose={() => setShowAiOptimizer(false)}
+        onApplied={() => loadCart()}
+      />
     </SafeAreaView>
   );
 }
@@ -455,6 +476,9 @@ const styles = StyleSheet.create({
   addRowInput: { flex: 1 },
   addButton: { width: 50, height: 50, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.butter },
   addText: { color: colors.text, fontSize: 28, fontWeight: '700' },
+  aiButton: { minHeight: 48, marginHorizontal: space.md, marginBottom: space.sm, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: colors.butterPressed, borderRadius: radii.md, backgroundColor: colors.warningSurface },
+  aiButtonLabel: { color: colors.text, fontWeight: '900' },
+  aiButtonArrow: { color: colors.text, fontSize: 25, lineHeight: 28 },
   pressed: { opacity: 0.75, transform: [{ scale: 0.97 }] },
   disabled: { opacity: 0.4 },
   error: { color: colors.danger, paddingHorizontal: space.md, paddingBottom: 8 },

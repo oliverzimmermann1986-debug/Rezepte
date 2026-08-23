@@ -108,6 +108,7 @@ export type CartItem = {
   amount?: number | null;
   unit?: string | null;
   checked: boolean;
+  category?: string | null;
 };
 
 export type RecurringCartItem = {

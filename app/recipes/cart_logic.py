@@ -213,6 +213,8 @@ def cart_for_display(db) -> List[Dict[str, object]]:
             "checked": bool(row.get("checked")),
             "added_at": row.get("added_at"),
             "source_recipe_ids": _parse_json_array(row.get("source_recipe_ids")),
+            "category": row.get("category"),
+            "sort_order": row.get("sort_order"),
         })
     return out
 

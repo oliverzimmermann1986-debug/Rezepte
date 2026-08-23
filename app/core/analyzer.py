@@ -411,6 +411,7 @@ class OpenAIAnalyzer:
         }
         if not content:
             return default
+
         try:
             data = json.loads(content)
             return {
@@ -427,6 +428,44 @@ class OpenAIAnalyzer:
         except Exception as e:
             logger.warning(f"audit_recipe_consistency JSON-Parse: {e} | {content[:200]}")
             return default
+
+    def optimize_shopping_list(self, items: list[dict]) -> list[dict]:
+        """Schlägt nur Anzeigenamen und Einkaufsbereiche für Cart-Items vor.
+
+        Mengen und Einheiten werden absichtlich nicht an die KI übertragen und
+        später ausschließlich serverseitig aus dem Original übernommen.
+        """
+        from ..recipes.shopping_optimizer import SHOPPING_CATEGORIES
+
+        candidates = [
+            {"id": int(item["id"]), "name": str(item.get("name") or "")[:200]}
+            for item in items[:200]
+        ]
+        if not candidates:
+            return []
+        categories = ", ".join(SHOPPING_CATEGORIES)
+        system = (
+            "Du optimierst eine deutsche Einkaufsliste. Vereinheitliche nur "
+            "offensichtliche Schreibweisen und Singular/Plural, ohne Produkte "
+            "zu erfinden oder genauer zu machen als die Eingabe. Ordne jeden "
+            f"Artikel genau einem Bereich zu: {categories}. "
+            "Antworte ausschließlich als JSON im Schema "
+            '{"items":[{"id":1,"name":"Kartoffeln","category":"Obst & Gemüse"}]}. '
+            "Jede Eingabe-ID muss genau einmal vorkommen. IDs und Namen dürfen "
+            "nicht vertauscht werden. Mengen sind nicht Teil deiner Aufgabe."
+        )
+        content = self._call(
+            system,
+            "Artikel:\n" + json.dumps(candidates, ensure_ascii=False, indent=2),
+        )
+        if not content:
+            return []
+        try:
+            data = json.loads(content)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        result = data.get("items")
+        return result if isinstance(result, list) else []
 
     def compute_nutrition(self, ingredients: list, servings: Optional[int]) -> Optional[dict]:
         """Schätzt Kalorien + Makros (Protein/Kohlenhydrate/Fett) PRO PORTION

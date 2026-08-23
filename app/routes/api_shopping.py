@@ -8,6 +8,8 @@ Endpoints:
   PATCH  /api/cart/{item_id}      — Menge / Häkchen / Name ändern
   DELETE /api/cart/{item_id}      — Eintrag löschen
   POST   /api/cart/clear          — Alles oder nur abgehakte löschen
+  POST   /api/cart/optimize/preview — KI-Vorschau ohne Mengenänderungen
+  POST   /api/cart/optimize/apply   — unveränderte Vorschau atomar anwenden
   GET    /api/cart/export.txt     — Plain-Text-Liste für Mail/WhatsApp
 
 Smart-Merge passiert in `cart_logic.add_recipe_to_cart` — gleiche
@@ -17,21 +19,36 @@ gespeichert, in Display-Einheit zurückgegeben).
 from __future__ import annotations
 
 import logging
+import secrets
+import threading
+import time
 from datetime import date
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from ..auth import require_auth
+from ..config_store import get_config
+from ..core.analyzer import build_analyzer
 from ..db import get_db
 from ..recipes.cart_logic import add_recipe_to_cart, cart_for_display, prepare_for_cart
+from ..recipes.shopping_optimizer import (
+    SHOPPING_CATEGORIES,
+    build_optimized_cart,
+    cart_fingerprint,
+)
 from .api_einkauf import einkauf_response, status as einkauf_status
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cart", tags=["cart"], dependencies=[Depends(require_auth)])
+
+_OPTIMIZE_PREVIEW_TTL_SECONDS = 15 * 60
+_OPTIMIZE_PREVIEW_LIMIT = 20
+_optimize_preview_lock = threading.Lock()
+_optimize_previews: Dict[str, Dict[str, Any]] = {}
 
 
 # ── Reading ─────────────────────────────────────────────────────────────
@@ -279,6 +296,93 @@ class ClearPayload(BaseModel):
 def clear_cart(payload: ClearPayload):
     n = get_db().cart_clear(only_checked=payload.only_checked)
     return {"ok": True, "deleted": n}
+
+
+# ── KI-Optimierung mit serverseitiger Vorschau ─────────────────────────
+
+def _store_optimize_preview(payload: Dict[str, Any]) -> str:
+    now = time.monotonic()
+    preview_id = secrets.token_urlsafe(24)
+    with _optimize_preview_lock:
+        expired = [
+            key for key, value in _optimize_previews.items()
+            if now - float(value["created_at"]) > _OPTIMIZE_PREVIEW_TTL_SECONDS
+        ]
+        for key in expired:
+            _optimize_previews.pop(key, None)
+        while len(_optimize_previews) >= _OPTIMIZE_PREVIEW_LIMIT:
+            oldest = min(
+                _optimize_previews,
+                key=lambda key: float(_optimize_previews[key]["created_at"]),
+            )
+            _optimize_previews.pop(oldest, None)
+        _optimize_previews[preview_id] = {"created_at": now, **payload}
+    return preview_id
+
+
+@router.post("/optimize/preview")
+def preview_cart_optimization() -> Dict[str, Any]:
+    """Erzeugt eine KI-Vorschau; der aktuelle Cart bleibt unverändert."""
+    db = get_db()
+    items = db.cart_list()
+    if not items:
+        raise HTTPException(400, "Die Einkaufsliste ist leer")
+    if len(items) > 200:
+        raise HTTPException(413, "Maximal 200 Einträge können gleichzeitig optimiert werden")
+    try:
+        analyzer = build_analyzer(get_config().get("ai", default={}) or {})
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    suggestions = analyzer.optimize_shopping_list(items)
+    if not suggestions:
+        raise HTTPException(502, "Die KI hat keine gültige Optimierung geliefert")
+
+    optimized = build_optimized_cart(items, suggestions)
+    if not optimized["matched_suggestions"]:
+        raise HTTPException(502, "Die KI-Antwort enthielt keine passenden Einträge")
+    preview_id = _store_optimize_preview({
+        "fingerprint": cart_fingerprint(items),
+        "items": optimized["items"],
+    })
+    return {
+        "preview_id": preview_id,
+        "items": optimized["preview_items"],
+        "summary": optimized["summary"],
+        "categories": list(SHOPPING_CATEGORIES),
+        "expires_in_seconds": _OPTIMIZE_PREVIEW_TTL_SECONDS,
+    }
+
+
+class OptimizeApply(BaseModel):
+    preview_id: str = Field(min_length=20, max_length=100)
+
+
+@router.post("/optimize/apply")
+def apply_cart_optimization(payload: OptimizeApply) -> Dict[str, Any]:
+    """Wendet nur eine frische Vorschau auf den unveränderten Cart an."""
+    now = time.monotonic()
+    with _optimize_preview_lock:
+        preview = _optimize_previews.get(payload.preview_id)
+        if preview and now - float(preview["created_at"]) > _OPTIMIZE_PREVIEW_TTL_SECONDS:
+            _optimize_previews.pop(payload.preview_id, None)
+            preview = None
+    if not preview:
+        raise HTTPException(410, "Die KI-Vorschau ist abgelaufen; bitte neu erstellen")
+
+    replaced = get_db().cart_replace_if_unchanged(
+        preview["items"],
+        str(preview["fingerprint"]),
+    )
+    if replaced is None:
+        with _optimize_preview_lock:
+            _optimize_previews.pop(payload.preview_id, None)
+        raise HTTPException(
+            409,
+            "Die Einkaufsliste wurde seit der Vorschau geändert; bitte neu optimieren",
+        )
+    with _optimize_preview_lock:
+        _optimize_previews.pop(payload.preview_id, None)
+    return {"ok": True, "count": replaced, "items": cart_for_display(get_db())}
 
 
 # ─── Push zur externen Einkauf-App (einkaufen.mausbaeren.me-API) ────────

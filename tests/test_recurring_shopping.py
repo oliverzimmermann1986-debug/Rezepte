@@ -24,6 +24,7 @@ def test_due_recurring_item_is_materialized_once_and_advanced(client, test_db):
     assert first.json()["items"][0]["name"] == "Milch"
     assert first.json()["items"][0]["amount"] == 2
     assert first.json()["items"][0]["unit"] == "l"
+    assert first.json()["items"][0]["category"] == "Kühlregal"
 
     second = client.get("/api/cart")
     assert second.json()["recurring_added"] == 0
@@ -76,4 +77,3 @@ def test_recurring_validation_rejects_empty_or_invalid_intervals(client):
     assert client.post(
         "/api/cart/recurring", json={"name": "Milch", "interval_days": 0}
     ).status_code == 422
-
