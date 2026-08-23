@@ -11,6 +11,7 @@ let unauthorizedHandlingEpoch: number | null = null;
 let nextDownloadId = 0;
 const REQUEST_TIMEOUT_MS = 20_000;
 const UPLOAD_TIMEOUT_MS = 90_000;
+const DOWNLOAD_TIMEOUT_MS = 90_000;
 
 type ActiveDownload = {
   epoch: number;
@@ -235,6 +236,27 @@ export async function uploadFile<T>(
   );
 }
 
+async function downloadWithTimeout(task: FileSystem.DownloadResumable) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      // Der Timeout darf die UI sofort freigeben. cancelAsync läuft parallel;
+      // ein späteres Resolve/Reject von downloadAsync bleibt durch Promise.race
+      // behandelt und erzeugt keine unhandled rejection.
+      void task.cancelAsync().catch(() => undefined);
+      reject(new ApiError(
+        'Der Dateidownload dauert zu lange. Bitte erneut versuchen.',
+        0,
+      ));
+    }, DOWNLOAD_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([task.downloadAsync(), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function downloadFileToCache(
   path: string,
   filename: string,
@@ -253,7 +275,7 @@ export async function downloadFileToCache(
   );
   activeDownloads.set(downloadId, { epoch: requestEpoch, destination, task });
   try {
-    const result = await task.downloadAsync();
+    const result = await downloadWithTimeout(task);
     assertApiSessionEpochCurrent(requestEpoch);
     if (!result) throw new ApiError('Dateidownload wurde abgebrochen.', 0);
     if (result.status === 401 && requestHadAuth) await notifyUnauthorized(requestEpoch);

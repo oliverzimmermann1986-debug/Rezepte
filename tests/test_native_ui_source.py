@@ -117,6 +117,9 @@ def test_native_authenticated_downloads_are_cancelled_on_session_change():
     assert "cancelDownloadsFromPreviousSessions();" in api_source
     assert "download.task.cancelAsync()" in api_source
     assert "assertApiSessionEpochCurrent(requestEpoch);" in api_source
+    assert "const DOWNLOAD_TIMEOUT_MS = 90_000" in api_source
+    assert "Promise.race([task.downloadAsync(), timeout])" in api_source
+    assert "Der Dateidownload dauert zu lange" in api_source
     for source in share_sources:
         code = source.read_text(encoding="utf-8")
         share_flow = code[code.index("downloadFileToCache("):code.index("Sharing.shareAsync")]
