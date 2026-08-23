@@ -80,3 +80,12 @@ def test_bulk_editor_shows_the_recipe_currently_being_processed():
     assert "{progress.recipeName}" in bulk_editor
     assert "Wird gerade bearbeitet" in bulk_editor
     assert 'accessibilityRole="progressbar"' in bulk_editor
+
+
+def test_recipe_info_shows_selectable_archive_id():
+    detail = (NATIVE / "app" / "recipe" / "[id].tsx").read_text(encoding="utf-8")
+
+    assert "Rezept-ID" in detail
+    assert "Videoarchiv: {recipe.id}.mp4" in detail
+    assert "accessibilityLabel={`Rezept-ID ${recipe.id}`}" in detail
+    assert "selectable" in detail

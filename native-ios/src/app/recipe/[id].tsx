@@ -407,6 +407,18 @@ export default function RecipeDetailScreen() {
                 <Text style={styles.edit}>Bearbeiten</Text>
               </Pressable>
             </View>
+            <View style={styles.identifierCard}>
+              <View style={styles.identifierText}>
+                <Text style={styles.identifierLabel}>Rezept-ID</Text>
+                <Text style={styles.identifierHint}>Videoarchiv: {recipe.id}.mp4</Text>
+              </View>
+              <Text
+                accessibilityLabel={`Rezept-ID ${recipe.id}`}
+                selectable
+                style={styles.identifierValue}>
+                {recipe.id}
+              </Text>
+            </View>
             {!!recipe.servings && <Text style={styles.infoMeta}>{recipe.servings} Portionen</Text>}
             {!!recipe.description && <Text style={styles.description}>{recipe.description}</Text>}
             <View style={styles.tagRow}>
@@ -597,6 +609,11 @@ const styles = StyleSheet.create({
   edit: { color: colors.text, minHeight: 36, paddingTop: 8, fontWeight: '800' },
   description: { color: colors.text, fontSize: 17, lineHeight: 25 },
   infoMeta: { color: colors.muted, fontSize: 14, fontWeight: '700' },
+  identifierCard: { minHeight: 64, paddingHorizontal: 14, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface },
+  identifierText: { flex: 1, gap: 2 },
+  identifierLabel: { color: colors.text, fontSize: 14, fontWeight: '900' },
+  identifierHint: { color: colors.muted, fontSize: 12 },
+  identifierValue: { color: colors.text, fontSize: 20, fontWeight: '900', fontVariant: ['tabular-nums'] },
   noVideo: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center' },
   originalBlock: { marginTop: space.md, gap: 10, paddingTop: space.md, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   originalButton: { color: colors.text, minHeight: 44, paddingTop: 12, textAlign: 'center', fontWeight: '800' },
