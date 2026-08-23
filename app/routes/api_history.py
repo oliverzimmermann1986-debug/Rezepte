@@ -6,11 +6,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from ..auth import require_auth
+from ..auth import require_admin
 from ..db import get_db
 from ..jobs.scraper import get_scraper_job
 
-router = APIRouter(prefix="/api/history", tags=["history"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/history", tags=["history"], dependencies=[Depends(require_admin)])
 
 
 @router.get("")

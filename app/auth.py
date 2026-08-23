@@ -1,8 +1,7 @@
-"""
-Session-Auth mit Bcrypt-Passwort-Hashing.
-Single-User-System: Username/Password aus Config, Session-Cookie signiert.
+"""Session-Auth mit Bcrypt-Passwort-Hashing und rollenbasiertem Zugriff.
 
 Migration: alte Klartext-Passwörter werden beim Erststart automatisch gehasht.
+Der frühere Config-Benutzer wird als initialer Administrator übernommen.
 """
 from __future__ import annotations
 
@@ -27,6 +26,9 @@ DEFAULT_SECRETS = (
     "please-change-me",
     "change-this-to-random-string-32chars-min",
 )
+ROLE_USER = "user"
+ROLE_ADMIN = "admin"
+VALID_ROLES = frozenset({ROLE_USER, ROLE_ADMIN})
 
 
 # -------------------- Passwort-Hashing --------------------
@@ -86,18 +88,31 @@ def check_credentials(username: str, password: str) -> bool:
 
 
 def migrate_users_to_db() -> None:
-    """Übernimmt den config-web-User als initialen Benutzer in die users-Tabelle.
-    Idempotent: läuft nur wenn die users-Tabelle leer ist. Rollen werden nur
-    noch aus Gründen der Datenbank-Kompatibilität gespeichert und nicht für
-    Berechtigungen ausgewertet."""
+    """Übernimmt den Config-Benutzer als initialen Administrator.
+
+    Frühere Versionen speicherten zwar eine Rolle, werteten sie aber nicht aus
+    und legten den ersten Benutzer als ``user`` an. Damit ein Upgrade den
+    bestehenden Betreiber nicht aussperrt, wird bei Installationen ohne aktiven
+    Administrator einmalig der Config-Benutzer (oder ersatzweise der älteste
+    aktive Benutzer) zum Administrator hochgestuft. Der Ablauf ist idempotent.
+    """
     from .db import get_db
     db = get_db()
     with db.conn() as c:
         existing = int(c.execute("SELECT COUNT(*) FROM users").fetchone()[0])
-    if existing > 0:
-        return
     cfg = get_config()
-    username = str(cfg.get("web", "username", default="admin"))
+    config_username = str(cfg.get("web", "username", default="admin")).strip()
+
+    if existing > 0:
+        promoted = db.user_ensure_initial_admin(config_username)
+        if promoted:
+            logger.warning(
+                "Keine aktive Admin-Rolle vorhanden; '%s' wurde für ein "
+                "rückwärtskompatibles Upgrade zum Administrator hochgestuft.",
+                promoted,
+            )
+        return
+    username = config_username
     pw_hash = cfg.get("web", "password", default="") or ""
     if not username or not pw_hash or not is_hashed(pw_hash):
         logger.warning(
@@ -106,8 +121,8 @@ def migrate_users_to_db() -> None:
             "Anlegen funktionieren."
         )
         return
-    db.user_create(username, pw_hash, role="user")
-    logger.info(f"Initialer Benutzer '{username}' aus Config in users-DB migriert.")
+    db.user_create(username, pw_hash, role=ROLE_ADMIN)
+    logger.info("Initialer Administrator '%s' aus Config in users-DB migriert.", username)
 
 
 
@@ -300,14 +315,20 @@ def request_user(request: Request) -> Optional[str]:
 
 
 async def require_admin(request: Request) -> dict:
-    """Kompatibilitäts-Dependency für frühere Admin-Endpunkte.
+    """Verlangt eine aktive Sitzung mit der Rolle ``admin``.
 
-    Seit v1.2.2 gibt es keine Admin-Rollen mehr: Jeder aktive, angemeldete
-    Benutzer hat vollständigen Zugriff. Der Funktionsname bleibt nur erhalten,
-    damit bestehende Router und Erweiterungen kompatibel bleiben.
+    Im expliziten ``auth_disabled``-Betrieb bleibt der lokale/Cloudflare-
+    geschützte Kompatibilitätsbenutzer Administrator. Eine noch nicht in die
+    Datenbank migrierte Config-Sitzung wird ebenfalls als Legacy-Admin
+    akzeptiert, damit ein Upgrade den Betreiber nicht aussperrt.
     """
     if auth_disabled():
-        return {"username": "local", "disabled": False, "full_access": True}
+        return {
+            "username": "local",
+            "role": ROLE_ADMIN,
+            "disabled": False,
+            "full_access": True,
+        }
 
     username = request_user(request)
     if not username:
@@ -318,14 +339,23 @@ async def require_admin(request: Request) -> dict:
     if user:
         if user.get("disabled"):
             raise HTTPException(403, "Benutzerkonto ist deaktiviert")
+        if user.get("role") != ROLE_ADMIN:
+            raise HTTPException(403, "Administratorrechte erforderlich")
         return {**user, "full_access": True}
 
     # Legacy-Fallback für Installationen, die noch ausschließlich den
     # config.web-Benutzer verwenden.
     cfg = get_config()
     config_user = str(cfg.get("web", "username", default="admin"))
-    if username == config_user:
-        return {"username": username, "disabled": False,
-                "legacy_config_user": True, "full_access": True}
+    with get_db().conn() as c:
+        has_db_users = bool(c.execute("SELECT 1 FROM users LIMIT 1").fetchone())
+    if not has_db_users and hmac.compare_digest(username, config_user):
+        return {
+            "username": username,
+            "role": ROLE_ADMIN,
+            "disabled": False,
+            "legacy_config_user": True,
+            "full_access": True,
+        }
 
     raise HTTPException(401, "Authentication required")

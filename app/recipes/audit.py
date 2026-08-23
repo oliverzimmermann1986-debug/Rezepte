@@ -27,6 +27,10 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
+import requests
+
+from ..core.webhook import server_configured_request
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -252,8 +256,6 @@ def ai_suggest_batch(
 ) -> Dict[int, str]:
     """Ein einzelner OpenAI-Call mit ALLEN bad-name-Rezepten. Returnt
     {recipe_id: suggested_name}. Bei Fehler: leeres Dict + Warning im Log."""
-    import requests
-
     candidates = []
     for r, _reason in bad_items:
         desc = (r.get("description") or "").strip()
@@ -286,8 +288,10 @@ def ai_suggest_batch(
     user = "Einträge:\n" + json.dumps(candidates, ensure_ascii=False, indent=2)
 
     try:
-        r = requests.post(
+        r = server_configured_request(
+            "POST",
             f"{base_url}/chat/completions",
+            trusted_private_bases=(base_url,),
             headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model,
@@ -315,10 +319,13 @@ def ai_suggest_batch(
                 continue
         return out
     except requests.exceptions.HTTPError as e:
-        logger.warning(f"Audit OpenAI HTTP {e.response.status_code}: {e.response.text[:200]}")
+        logger.warning(
+            "Audit OpenAI HTTP %s",
+            e.response.status_code if e.response else "?",
+        )
         return {}
     except Exception as e:
-        logger.warning(f"Audit OpenAI call failed: {type(e).__name__}: {e}")
+        logger.warning("Audit OpenAI call failed: %s", type(e).__name__)
         return {}
 
 

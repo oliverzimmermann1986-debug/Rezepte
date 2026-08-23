@@ -7,11 +7,13 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from ..auth import SESSION_COOKIE, hash_password, is_hashed, require_auth, session_user
+from ..auth import hash_password, is_hashed, request_user, require_admin
 from ..config_store import get_config
+from ..core.webhook import normalize_server_base_url
 from ..jobs.scraper import invalidate_scraper_job
+from .api_einkauf import normalize_einkauf_base_url
 
-router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_admin)])
 
 
 @router.get("")
@@ -26,6 +28,16 @@ def update_config(payload: Dict[str, Any], request: Request):
     """Schreibt die komplette Config neu. Maskierte Felder werden zurückgemerged."""
     store = get_config()
     current = store.all()
+    authenticated_username = request_user(request)
+
+    # Laufzeit-/Datenpfade definieren die Sicherheitsgrenzen für Browse,
+    # Audit, PDF und Backups. Sie dürfen nicht über eine HTTP-Anfrage auf '/'
+    # oder andere beliebige Wurzeln umgebogen werden. Bewusste Infrastruktur-
+    # Änderungen erfolgen direkt in der serverseitigen config.yaml.
+    _assert_server_managed_paths_unchanged(payload, current)
+
+    _assert_server_managed_einkauf_url_unchanged(payload, current)
+    _assert_server_managed_service_urls_unchanged(payload, current)
 
     # Ein gespeicherter OpenAI-Key darf nicht still an eine neue Base-URL
     # gebunden werden. Sonst könnte ein Benutzer nur die URL ändern, die
@@ -71,10 +83,9 @@ def update_config(payload: Dict[str, Any], request: Request):
     store.replace(merged)
     store.save()
     if new_password_hash:
-        username = session_user(request.cookies.get(SESSION_COOKIE, ""))
-        if username:
+        if authenticated_username and authenticated_username != "local":
             from ..db import get_db
-            user = get_db().user_get_by_name(username)
+            user = get_db().user_get_by_name(authenticated_username)
             if user:
                 get_db().user_set_password(int(user["id"]), new_password_hash)
         initial_password = Path(
@@ -108,6 +119,13 @@ MASK_PATHS = [
     ("einkauf", "app_token"),
     ("einkauf", "cf_access_client_secret"),
 ]
+SERVER_MANAGED_PATH_KEYS = frozenset(
+    {"data_dir", "db_path", "recipe_dir", "wedding_dir", "temp_dir", "logs_dir"}
+)
+SERVER_MANAGED_SERVICE_URL_PATHS = (
+    ("ai", "openai", "base_url"),
+    ("external_hdd", "shelly_url"),
+)
 
 
 def _get(d: dict, path: tuple):
@@ -126,6 +144,118 @@ def _set(d: dict, path: tuple, value: Any) -> None:
             cur[k] = {}
         cur = cur[k]
     cur[path[-1]] = value
+
+
+def _incoming_path_value(incoming: dict, path: tuple[str, ...]) -> tuple[bool, Any]:
+    cur: Any = incoming
+    for index, key in enumerate(path):
+        if not isinstance(cur, dict):
+            parent = ".".join(path[:index]) or "Konfiguration"
+            raise HTTPException(400, f"{parent} muss ein Objekt sein")
+        if key not in cur:
+            return False, None
+        cur = cur[key]
+    return True, cur
+
+
+def _normalized_path_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise HTTPException(400, "Konfigurationspfade müssen Textwerte sein")
+    # Plattformneutral vergleichen: Der Server nutzt POSIX-Pfade, die Tests
+    # laufen teilweise unter Windows. Auflösen gegen das lokale Dateisystem
+    # würde hier falsche Gleich-/Ungleichheiten erzeugen.
+    normalized = value.strip().replace("\\", "/")
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    return normalized.rstrip("/") or ("/" if normalized.startswith("/") else "")
+
+
+def _assert_server_managed_paths_unchanged(incoming: dict, current: dict) -> None:
+    paths = incoming.get("paths")
+    if paths is None:
+        return
+    if not isinstance(paths, dict):
+        raise HTTPException(400, "paths muss ein Objekt sein")
+    current_paths = current.get("paths") or {}
+    if not isinstance(current_paths, dict):
+        current_paths = {}
+    for key in SERVER_MANAGED_PATH_KEYS:
+        if key not in paths:
+            continue
+        if _normalized_path_value(paths[key]) != _normalized_path_value(
+            current_paths.get(key)
+        ):
+            raise HTTPException(
+                400,
+                f"paths.{key} ist serververwaltet und kann nicht per API geändert werden",
+            )
+
+
+def _normalized_optional_einkauf_url(value: Any) -> str:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return ""
+    if not isinstance(value, str):
+        raise HTTPException(400, "einkauf.api_url muss ein Textwert sein")
+    return normalize_einkauf_base_url(value)
+
+
+def _assert_server_managed_einkauf_url_unchanged(
+    incoming: dict,
+    current: dict,
+) -> None:
+    """Die Infrastruktur-URL wird ausschließlich auf dem Server gesetzt.
+
+    Vollständige Legacy-Formulare dürfen den vorhandenen Wert unverändert
+    zurücksenden. So blockiert eine bestehende interne Loopback-URL das
+    Speichern anderer Einstellungen nicht.
+    """
+    present, incoming_value = _incoming_path_value(
+        incoming,
+        ("einkauf", "api_url"),
+    )
+    if not present:
+        return
+    current_value = _get(current, ("einkauf", "api_url"))
+    if _normalized_optional_einkauf_url(incoming_value) != _normalized_optional_einkauf_url(
+        current_value
+    ):
+        raise HTTPException(
+            400,
+            "einkauf.api_url ist serververwaltet und kann nicht per API geändert werden",
+        )
+
+
+def _normalized_optional_server_url(value: Any, dotted_path: str) -> str:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return ""
+    if not isinstance(value, str):
+        raise HTTPException(400, f"{dotted_path} muss ein Textwert sein")
+    try:
+        return normalize_server_base_url(value)
+    except ValueError as exc:
+        raise HTTPException(400, f"Ungültige serververwaltete URL {dotted_path}: {exc}") from exc
+
+
+def _assert_server_managed_service_urls_unchanged(
+    incoming: dict,
+    current: dict,
+) -> None:
+    for path in SERVER_MANAGED_SERVICE_URL_PATHS:
+        present, incoming_value = _incoming_path_value(incoming, path)
+        if not present:
+            continue
+        dotted_path = ".".join(path)
+        current_value = _get(current, path)
+        if _normalized_optional_server_url(
+            incoming_value,
+            dotted_path,
+        ) != _normalized_optional_server_url(current_value, dotted_path):
+            raise HTTPException(
+                400,
+                f"{dotted_path} ist serververwaltet und kann nicht per API geändert werden",
+            )
 
 
 def _deep_merge(current: dict, incoming: dict) -> dict:

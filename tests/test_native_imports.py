@@ -1,8 +1,29 @@
 from pathlib import Path
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
+import threading
+
+import pymupdf
+import pytest
+from PIL import Image
 
 from app.core.email_processor import normalize_content_url
 from app.jobs.scraper import ScraperJob
+
+
+def _jpeg_bytes(color: str = "red") -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (32, 24), color).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+def _pdf_bytes() -> bytes:
+    document = pymupdf.open()
+    document.new_page(width=240, height=180)
+    data = document.tobytes()
+    document.close()
+    return data
 
 
 def test_native_file_upload_uses_attachment_pipeline(client, monkeypatch):
@@ -23,16 +44,17 @@ def test_native_file_upload_uses_attachment_pipeline(client, monkeypatch):
         yield object()
 
     monkeypatch.setattr(api_pending, "file_lock_or_none", available_lock)
+    jpeg = _jpeg_bytes()
     response = client.post(
         "/api/pending/import-file",
-        files={"file": ("Mein_Rezept.jpg", b"\xff\xd8\xffjpeg-data", "image/jpeg")},
+        files={"file": ("Mein_Rezept.jpg", jpeg, "image/jpeg")},
     )
 
     assert response.status_code == 200
     assert response.json()["status"] == "pending"
     assert response.json()["ok"] is True
     assert captured["attachment"]["ext"] == ".jpg"
-    assert captured["attachment"]["data"] == b"\xff\xd8\xffjpeg-data"
+    assert captured["attachment"]["data"] == jpeg
     assert captured["url"].startswith("manual-upload://")
 
 
@@ -46,7 +68,7 @@ def test_native_file_upload_returns_conflict_when_scraper_is_busy(client, monkey
     monkeypatch.setattr(api_pending, "file_lock_or_none", busy_lock)
     response = client.post(
         "/api/pending/import-file",
-        files={"file": ("Rezept.jpg", b"\xff\xd8\xffjpeg-data", "image/jpeg")},
+        files={"file": ("Rezept.jpg", _jpeg_bytes(), "image/jpeg")},
     )
     assert response.status_code == 409
     assert "Import läuft bereits" in response.json()["detail"]
@@ -90,11 +112,281 @@ def test_native_file_upload_rejects_when_work_disk_is_full(client, monkeypatch):
     monkeypatch.setattr(api_pending.shutil, "disk_usage", lambda _path: Usage())
     response = client.post(
         "/api/pending/import-file",
-        files={"file": ("rezept.jpg", b"\xff\xd8\xffjpeg-data", "image/jpeg")},
+        files={"file": ("rezept.jpg", _jpeg_bytes(), "image/jpeg")},
     )
 
     assert response.status_code == 507
     assert "Zu wenig freier Speicher" in response.json()["detail"]
+
+
+def test_file_import_is_idempotent_across_header_and_form(client, test_db, monkeypatch):
+    import app.routes.api_pending as api_pending
+
+    calls = []
+
+    class FakeJob:
+        def process_attachment(self, attachment, synth_url):
+            calls.append(synth_url)
+            test_db.pending_add(
+                synth_url,
+                "recipe",
+                ai_suggestion={"name": "Kartoffelsuppe", "filename": attachment["filename"]},
+            )
+            return {"status": "pending", "name": "Kartoffelsuppe", "url": synth_url}
+
+    @contextmanager
+    def available_lock(_name):
+        yield object()
+
+    monkeypatch.setattr(api_pending, "get_scraper_job", lambda: FakeJob())
+    monkeypatch.setattr(api_pending, "file_lock_or_none", available_lock)
+    jpeg = _jpeg_bytes()
+
+    first = client.post(
+        "/api/pending/import-file",
+        headers={"Idempotency-Key": "upload-123"},
+        files={"file": ("suppe.jpg", jpeg, "image/jpeg")},
+    )
+    replay = client.post(
+        "/api/pending/import-file",
+        data={"client_request_id": "upload-123"},
+        files={"file": ("  SUPPE.JPG  ", jpeg, "image/jpeg")},
+    )
+
+    assert first.status_code == 200, first.text
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["idempotent_replay"] is True
+    assert replay.json()["duplicate"] is True
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("second_filename", "second_color", "second_type"),
+    [
+        ("eins.jpg", "blue", "recipe"),
+        ("anderer-name.jpg", "red", "recipe"),
+        ("eins.jpg", "red", "wedding"),
+    ],
+)
+def test_file_import_rejects_request_id_reuse_for_other_semantics(
+    client,
+    test_db,
+    monkeypatch,
+    second_filename,
+    second_color,
+    second_type,
+):
+    import app.routes.api_pending as api_pending
+
+    class FakeJob:
+        def process_attachment(self, attachment, synth_url):
+            test_db.pending_add(synth_url, "recipe", ai_suggestion={"name": "Import"})
+            return {"status": "pending", "name": "Import", "url": synth_url}
+
+    @contextmanager
+    def available_lock(_name):
+        yield object()
+
+    monkeypatch.setattr(api_pending, "get_scraper_job", lambda: FakeJob())
+    monkeypatch.setattr(api_pending, "file_lock_or_none", available_lock)
+    first = client.post(
+        "/api/pending/import-file",
+        headers={"Idempotency-Key": "same-request"},
+        files={"file": ("eins.jpg", _jpeg_bytes("red"), "image/jpeg")},
+    )
+    conflict = client.post(
+        "/api/pending/import-file",
+        headers={"Idempotency-Key": "same-request"},
+        params={"type": second_type},
+        files={"file": (second_filename, _jpeg_bytes(second_color), "image/jpeg")},
+    )
+
+    assert first.status_code == 200, first.text
+    assert conflict.status_code == 409
+    assert "andere Anfrage" in conflict.json()["detail"]
+
+
+def test_parallel_identical_file_imports_are_processed_once(client, test_db, monkeypatch):
+    import app.routes.api_pending as api_pending
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    calls = []
+    entrants = threading.Barrier(2)
+    processing_lock = threading.Lock()
+
+    class FakeJob:
+        def process_attachment(self, attachment, synth_url):
+            calls.append(synth_url)
+            test_db.pending_add(synth_url, "recipe", ai_suggestion={"name": "Parallel"})
+            return {"status": "pending", "name": "Parallel", "url": synth_url}
+
+    @contextmanager
+    def serialized_lock(_name):
+        entrants.wait(timeout=5)
+        with processing_lock:
+            yield object()
+
+    monkeypatch.setattr(api_pending, "get_scraper_job", lambda: FakeJob())
+    monkeypatch.setattr(api_pending, "file_lock_or_none", serialized_lock)
+    jpeg = _jpeg_bytes("purple")
+
+    def upload():
+        # Je Thread ein eigener Client: ein geteilter TestClient serialisiert
+        # Requests intern und würde den eigentlichen Parallelfall verdecken.
+        return TestClient(app).post(
+            "/api/pending/import-file",
+            headers={"Idempotency-Key": "parallel-upload"},
+            files={"file": ("parallel.jpg", jpeg, "image/jpeg")},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = [future.result() for future in (pool.submit(upload), pool.submit(upload))]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert len(calls) == 1
+    assert sorted(response.json()["idempotent_replay"] for response in responses) == [False, True]
+
+
+def test_file_import_uses_short_content_hash_window_without_request_id(
+    client, test_db, monkeypatch
+):
+    import app.routes.api_pending as api_pending
+
+    calls = []
+
+    class FakeJob:
+        def process_attachment(self, attachment, synth_url):
+            calls.append(synth_url)
+            test_db.pending_add(synth_url, "recipe", ai_suggestion={"name": "Hash-Import"})
+            return {"status": "pending", "name": "Hash-Import", "url": synth_url}
+
+    @contextmanager
+    def available_lock(_name):
+        yield object()
+
+    monkeypatch.setattr(api_pending, "get_scraper_job", lambda: FakeJob())
+    monkeypatch.setattr(api_pending, "file_lock_or_none", available_lock)
+    jpeg = _jpeg_bytes("green")
+    first = client.post(
+        "/api/pending/import-file",
+        files={"file": ("hash.jpg", jpeg, "image/jpeg")},
+    )
+    replay = client.post(
+        "/api/pending/import-file",
+        files={"file": ("hash.jpg", jpeg, "image/jpeg")},
+    )
+
+    assert first.status_code == 200, first.text
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["idempotent_replay"] is True
+    assert "force=true" in replay.json()["message"]
+    assert len(calls) == 1
+
+
+def test_pending_file_preview_only_serves_safe_supported_media(
+    client, test_db, tmp_path, monkeypatch
+):
+    import app.routes.api_pending as api_pending
+
+    pending_root = tmp_path / "pending"
+    pending_root.mkdir()
+    source = pending_root / "scan.jpg"
+    source.write_bytes(_jpeg_bytes())
+    url = "manual-upload://preview/scan.jpg"
+    test_db.pending_add(
+        url,
+        "recipe",
+        video_path=str(source),
+        ai_suggestion={"filename": "Crème-Brûlée Überraschung.jpg"},
+    )
+
+    class FakeConfig:
+        def get(self, section, key=None, default=None):
+            if (section, key) == ("paths", "temp_dir"):
+                return str(tmp_path)
+            return default
+
+    monkeypatch.setattr(api_pending, "get_config", lambda: FakeConfig())
+    response = client.get("/api/pending/file", params={"url": url})
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("image/jpeg")
+    assert response.headers["cache-control"] == "private, no-store"
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith("inline; filename*=utf-8''")
+    assert "Cr%C3%A8me-Br%C3%BBl%C3%A9e%20%C3%9Cberraschung.jpg" in disposition
+    assert response.content == source.read_bytes()
+
+
+def test_pending_pdf_preview_remains_available(client, test_db, tmp_path, monkeypatch):
+    import app.routes.api_pending as api_pending
+
+    pending_root = tmp_path / "pending"
+    pending_root.mkdir()
+    source = pending_root / "scan.pdf"
+    source.write_bytes(_pdf_bytes())
+    url = "manual-upload://preview/scan.pdf"
+    test_db.pending_add(
+        url,
+        "recipe",
+        video_path=str(source),
+        ai_suggestion={"filename": "Mein Scan.pdf"},
+    )
+
+    class FakeConfig:
+        def get(self, section, key=None, default=None):
+            if (section, key) == ("paths", "temp_dir"):
+                return str(tmp_path)
+            return default
+
+    monkeypatch.setattr(api_pending, "get_config", lambda: FakeConfig())
+    response = client.get("/api/pending/file", params={"url": url})
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert response.content == source.read_bytes()
+
+
+def test_pending_routes_separate_submission_from_admin_management(client):
+    from app.auth import require_admin, require_auth
+    from app.routes import api_pending
+
+    routes = {
+        (route.path, method): route
+        for route in api_pending.router.routes
+        for method in getattr(route, "methods", set())
+        if route.path.startswith("/api/pending")
+    }
+    for path in ("/api/pending/import-url", "/api/pending/import-file"):
+        calls = {
+            dependency.call
+            for dependency in routes[(path, "POST")].dependant.dependencies
+        }
+        assert require_auth in calls
+        assert require_admin not in calls
+
+    submission_paths = {"/api/pending/import-url", "/api/pending/import-file"}
+    for (path, _method), route in routes.items():
+        if path in submission_paths:
+            continue
+        calls = {
+            dependency.call
+            for dependency in route.dependant.dependencies
+        }
+        assert require_auth in calls
+        assert require_admin in calls
+
+
+def test_pending_video_route_is_absent(client):
+    from app.routes import api_pending
+
+    assert all(route.path != "/api/pending/video" for route in api_pending.router.routes)
+    response = client.get(
+        "/api/pending/video",
+        params={"url": "manual-upload://legacy/video.mp4"},
+    )
+    assert response.status_code == 404
 
 
 def test_failed_download_can_be_retried_and_discarded_with_json_body(client, test_db):

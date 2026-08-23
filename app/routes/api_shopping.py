@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 from ..auth import require_auth
 from ..db import get_db
 from ..recipes.cart_logic import add_recipe_to_cart, cart_for_display, prepare_for_cart
-from ..config_store import get_config
+from .api_einkauf import einkauf_response, status as einkauf_status
 
 logger = logging.getLogger(__name__)
 
@@ -320,26 +320,14 @@ def push_to_einkauf(payload: PushPayload):
                                        Empfänger-Seite
     Auth: aktuell keine im Schema. Falls 401/403 → wir loggen den Body
     und reichen den HTTP-Code durch."""
-    import requests
-    cfg = get_config()
-    base_url = (cfg.get("einkauf", "api_url", default="") or "").strip().rstrip("/")
+    base_url = str(einkauf_status().get("target") or "")
     if not base_url:
         raise HTTPException(
             400,
-            "Einkauf-API-URL nicht konfiguriert. In Einstellungen unter "
-            "'Einkauf-App-Integration' eintragen (z.B. https://einkaufen.mausbaeren.me).",
+            "Einkauf-API-URL nicht konfiguriert. api_url serverseitig in "
+            "config.yaml setzen; zusätzliche interne Literal-IP-Ziele über "
+            "SCRAPPER_EINKAUF_INTERNAL_URLS erlauben.",
         )
-
-    # Cloudflare-Access-Service-Token (für Zero-Trust-geschützte Ziele).
-    # Ohne diese Header wird ein geschütztes Ziel mit 302 auf die CF-Login-
-    # Seite umgeleitet → Push schlägt still fehl. Token anlegen unter:
-    # Cloudflare Zero Trust → Access → Service Auth → Service Tokens.
-    cf_id = (cfg.get("einkauf", "cf_access_client_id", default="") or "").strip()
-    cf_secret = (cfg.get("einkauf", "cf_access_client_secret", default="") or "").strip()
-    base_headers = {}
-    if cf_id and cf_secret:
-        base_headers["CF-Access-Client-Id"] = cf_id
-        base_headers["CF-Access-Client-Secret"] = cf_secret
 
     db = get_db()
     items = db.cart_list()
@@ -351,18 +339,14 @@ def push_to_einkauf(payload: PushPayload):
     pushed_ids: list = []
     failed: list = []
     auth_redirect = False  # Flag: mind. ein Request lief in CF-Access-Redirect
-    session = requests.Session()
     for it in items:
         raw_text = _format_raw_text(it)
         try:
-            r = session.post(
-                f"{base_url}/items",
+            r = einkauf_response(
+                "POST",
+                "items",
                 json={"raw_text": raw_text},
-                headers=base_headers,
                 timeout=(5, 10),  # (connect, read)
-                allow_redirects=False,  # KRITISCH: 302 nicht folgen, sonst
-                                        # wird die Login-Seite als 'Erfolg'
-                                        # fehlinterpretiert.
             )
             # 2xx = echt erfolgreich. 3xx = Redirect (i.d.R. CF-Access-Login)
             # → als Fehler werten. 4xx/5xx = Fehler.
@@ -373,7 +357,7 @@ def push_to_einkauf(payload: PushPayload):
                     auth_redirect = True
                 failed.append({
                     "id": it["id"], "raw_text": raw_text,
-                    "status": r.status_code, "error": r.text[:200],
+                    "status": r.status_code, "error": f"HTTP {r.status_code}",
                 })
         except Exception as e:
             failed.append({
@@ -384,11 +368,10 @@ def push_to_einkauf(payload: PushPayload):
     consolidated = False
     if payload.consolidate and pushed_ids:
         try:
-            cr = session.post(f"{base_url}/consolidate", headers=base_headers,
-                              timeout=(5, 15), allow_redirects=False)
+            cr = einkauf_response("POST", "consolidate", timeout=(5, 15))
             consolidated = 200 <= cr.status_code < 300
             if not consolidated:
-                logger.warning(f"consolidate returned {cr.status_code}: {cr.text[:200]}")
+                logger.warning("consolidate returned HTTP %s", cr.status_code)
         except Exception as e:
             logger.warning(f"consolidate-Call failed: {e}")
 
@@ -398,7 +381,7 @@ def push_to_einkauf(payload: PushPayload):
         cleared = db.cart_clear(only_checked=False)
 
     logger.info(
-        f"push-to-einkauf: {len(pushed_ids)}/{len(items)} Items zu {base_url} "
+        f"push-to-einkauf: {len(pushed_ids)}/{len(items)} Items "
         f"(failed={len(failed)}, consolidated={consolidated}, cleared={cleared}, "
         f"auth_redirect={auth_redirect})"
     )

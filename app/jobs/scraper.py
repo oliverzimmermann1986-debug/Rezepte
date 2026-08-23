@@ -433,9 +433,9 @@ class ScraperJob:
         ]
 
         try:
-            import requests
-            r = self.analyzer.session.post(
-                f"{self.analyzer.base_url}/chat/completions",
+            r = self.analyzer.request(
+                "POST",
+                "/chat/completions",
                 json={
                     "model": self.analyzer.model,
                     "messages": [
@@ -731,9 +731,10 @@ class ScraperJob:
     def _stash_for_pending(self, video: Path) -> Optional[str]:
         """Kopiert das Temp-Video an einen persistenten Pending-Ort, da der
         Temp-Download-Ordner danach via _cleanup_temp gelöscht wird. Rückgabe
-        = Pfad für pending.video_path (Auslieferung via /api/pending/video,
-        Aufräumen via _remove_pending_files). None bei Fehler — Pending-Eintrag
-        bleibt dann ohne Video, aber der Lauf crasht nicht."""
+        = interner Pfad für pending.video_path. Die Datei wird bewusst nicht
+        über HTTP ausgeliefert und nur beim Auflösen des Eingangs bzw. durch
+        _remove_pending_files weiterverarbeitet oder entfernt. None bei Fehler
+        — der Pending-Eintrag bleibt dann ohne Datei, der Lauf crasht aber nicht."""
         try:
             pending_dir = self.temp_dir / "pending"
             pending_dir.mkdir(parents=True, exist_ok=True)

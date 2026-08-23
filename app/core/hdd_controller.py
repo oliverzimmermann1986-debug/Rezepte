@@ -29,7 +29,7 @@ import subprocess
 import time
 from typing import Dict, Optional
 
-import requests
+from .webhook import server_configured_request
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +48,24 @@ class HDDController:
 
     # ---------- Shelly-API ----------
 
+    def _shelly_request(self, path: str, *, params: dict | None = None):
+        if not self.shelly_url:
+            raise ValueError("Keine Shelly-URL konfiguriert")
+        return server_configured_request(
+            "GET",
+            f"{self.shelly_url}/{path.lstrip('/')}",
+            trusted_private_bases=(self.shelly_url,),
+            params=params,
+            timeout=self.http_timeout,
+        )
+
     def shelly_status(self) -> Optional[bool]:
         """True = relay ON, False = OFF, None = nicht erreichbar."""
         if not self.shelly_url:
             return None
         # Gen1 zuerst
         try:
-            r = requests.get(f"{self.shelly_url}/status", timeout=self.http_timeout)
+            r = self._shelly_request("status")
             r.raise_for_status()
             data = r.json()
             relays = data.get("relays")
@@ -64,12 +75,11 @@ class HDDController:
             logger.debug(f"Shelly Gen1 status fail, versuche Gen2: {e}")
         # Gen2 fallback
         try:
-            r = requests.get(f"{self.shelly_url}/rpc/Switch.GetStatus",
-                              params={"id": 0}, timeout=self.http_timeout)
+            r = self._shelly_request("rpc/Switch.GetStatus", params={"id": 0})
             r.raise_for_status()
             return bool(r.json().get("output"))
         except Exception as e:
-            logger.warning(f"Shelly nicht erreichbar ({self.shelly_url}): {e}")
+            logger.warning("Shelly nicht erreichbar: %s", type(e).__name__)
             return None
 
     def shelly_switch(self, on: bool) -> bool:
@@ -78,10 +88,9 @@ class HDDController:
             return False
         # Gen1
         try:
-            r = requests.get(
-                f"{self.shelly_url}/relay/0",
+            r = self._shelly_request(
+                "relay/0",
                 params={"turn": "on" if on else "off"},
-                timeout=self.http_timeout,
             )
             r.raise_for_status()
             return True
@@ -89,10 +98,9 @@ class HDDController:
             logger.debug(f"Shelly Gen1 switch fail, versuche Gen2: {e}")
         # Gen2
         try:
-            r = requests.get(
-                f"{self.shelly_url}/rpc/Switch.Set",
+            r = self._shelly_request(
+                "rpc/Switch.Set",
                 params={"id": 0, "on": "true" if on else "false"},
-                timeout=self.http_timeout,
             )
             r.raise_for_status()
             return True

@@ -5,10 +5,10 @@ from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..auth import require_auth
+from ..auth import require_admin
 from ..core.hdd_controller import get_controller
 
-router = APIRouter(prefix="/api/hdd", tags=["hdd"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/hdd", tags=["hdd"], dependencies=[Depends(require_admin)])
 
 
 @router.get("/status")

@@ -22,12 +22,12 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..auth import require_auth
+from ..auth import require_admin
 from ..db import get_db
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/master", tags=["master"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/master", tags=["master"], dependencies=[Depends(require_admin)])
 
 
 # ─── Tags ────────────────────────────────────────────────────────────────

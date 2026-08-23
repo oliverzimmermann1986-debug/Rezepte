@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from ..auth import require_auth
+from ..auth import require_admin
 from ..config_store import get_config
 from ..core.analyzer import build_analyzer
 from ..db import get_db
@@ -28,7 +28,7 @@ from ..recipes.audit import run_audit
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/audit", tags=["audit"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/audit", tags=["audit"], dependencies=[Depends(require_admin)])
 
 
 # ─── KI-Sanity Background-Job State ─────────────────────────────────────

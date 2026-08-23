@@ -1,19 +1,15 @@
-"""Benutzer-Verwaltung (Multi-User).
-
-Jeder aktive, angemeldete Benutzer besitzt Vollzugriff. Benutzerkonten steuern
-nur noch Login, Passwort und Aktivstatus; Rollen werden nicht mehr verwendet.
-"""
+"""Benutzer- und Rollenverwaltung (Multi-User)."""
 from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ..auth import hash_password, require_admin
-from ..db import get_db
+from ..auth import ROLE_USER, hash_password, require_admin
+from ..db import LastActiveAdminError, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +42,7 @@ def list_users():
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=32)
     password: str = Field(..., min_length=MIN_PW_LEN)
+    role: Literal["user", "admin"] = ROLE_USER
 
 
 @router.post("")
@@ -56,19 +53,34 @@ def create_user(payload: UserCreate, current=Depends(require_admin)):
     if db.user_get_by_name(username):
         raise HTTPException(409, f"User '{username}' existiert bereits")
 
-    user_id = db.user_create(username, hash_password(payload.password), role="user")
-    logger.info(f"User '{username}' angelegt von '{current.get('username')}'")
-    return {"ok": True, "id": user_id, "username": username}
+    user_id = db.user_create(
+        username,
+        hash_password(payload.password),
+        role=payload.role,
+    )
+    logger.info(
+        "User '%s' mit Rolle '%s' angelegt von '%s'",
+        username,
+        payload.role,
+        current.get("username"),
+    )
+    return {
+        "ok": True,
+        "id": user_id,
+        "username": username,
+        "role": payload.role,
+    }
 
 
 class UserUpdate(BaseModel):
     password: Optional[str] = None
     disabled: Optional[bool] = None
+    role: Optional[Literal["user", "admin"]] = None
 
 
 @router.patch("/{user_id}")
 def update_user(user_id: int, payload: UserUpdate, current=Depends(require_admin)):
-    """Passwort oder Aktivstatus eines Benutzerkontos ändern."""
+    """Passwort, Rolle oder Aktivstatus eines Benutzerkontos ändern."""
     db = get_db()
     with db.conn() as c:
         row = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
@@ -76,19 +88,43 @@ def update_user(user_id: int, payload: UserUpdate, current=Depends(require_admin
         raise HTTPException(404, "User nicht gefunden")
     target = dict(row)
 
-
-    if payload.password is not None:
-        _validate_password(payload.password)
-        db.user_set_password(user_id, hash_password(payload.password))
-        logger.info(f"Passwort für '{target['username']}' geändert von '{current.get('username')}'")
     if payload.disabled is True and target.get("username") == current.get("username"):
         raise HTTPException(400, "Du kannst dein eigenes Konto nicht deaktivieren")
+
+    new_password_hash = None
+    if payload.password is not None:
+        _validate_password(payload.password)
+        new_password_hash = hash_password(payload.password)
+    try:
+        updated = db.user_update_security(
+            user_id,
+            password_hash=new_password_hash,
+            disabled=payload.disabled,
+            role=payload.role,
+        )
+    except LastActiveAdminError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not updated:
+        raise HTTPException(404, "User nicht gefunden")
+
+    if payload.password is not None:
+        logger.info(
+            "Passwort für '%s' geändert von '%s'",
+            target["username"],
+            current.get("username"),
+        )
     if payload.disabled is not None:
-        db.user_set_disabled(user_id, bool(payload.disabled))
         logger.info(
             f"User '{target['username']}' "
             f"{'deaktiviert' if payload.disabled else 'aktiviert'} "
             f"von '{current.get('username')}'"
+        )
+    if payload.role is not None and payload.role != target.get("role"):
+        logger.info(
+            "Rolle für '%s' auf '%s' gesetzt von '%s'",
+            target["username"],
+            payload.role,
+            current.get("username"),
         )
     return {"ok": True}
 
@@ -108,7 +144,11 @@ def delete_user(user_id: int, current=Depends(require_admin)):
     if target.get("username") == current.get("username"):
         raise HTTPException(400, "Du kannst dich nicht selbst löschen")
 
-
-    db.user_delete(user_id)
+    try:
+        deleted = db.user_delete(user_id)
+    except LastActiveAdminError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not deleted:
+        raise HTTPException(404, "User nicht gefunden")
     logger.info(f"User '{target['username']}' gelöscht von '{current.get('username')}'")
     return {"ok": True, "deleted": target["username"]}

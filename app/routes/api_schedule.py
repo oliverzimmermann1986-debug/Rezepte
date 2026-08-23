@@ -10,12 +10,12 @@ from typing import Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..auth import require_auth
+from ..auth import require_admin
 from ..config_store import get_config
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/schedule", tags=["schedule"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/schedule", tags=["schedule"], dependencies=[Depends(require_admin)])
 
 TIMER_FILES = {
     "scraper": "/etc/systemd/system/scrapper-job.timer",

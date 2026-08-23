@@ -8,17 +8,28 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from ..auth import auth_disabled, require_admin, require_auth, request_user
+from ..auth import ROLE_ADMIN, ROLE_USER, auth_disabled, require_admin, require_auth, request_user
 from ..config_store import get_config
 from ..core.analyzer import build_analyzer
 from ..core.pdf_processing import (
-    analyze_pdf_bytes, backup_original_pdf, find_recipe_pdfs, process_pdf_bytes, process_pdf_path,
+    MAX_PDF_INPUT_BYTES,
+    MAX_PDF_OUTPUT_BYTES,
+    PdfResourceLimitError,
+    PdfValidationError,
+    analyze_pdf_bytes,
+    backup_original_pdf,
+    find_recipe_pdfs,
+    process_pdf_bytes,
+    process_pdf_path,
+    validate_pdf_resource_budget,
 )
 from ..core.safety import atomic_write_bytes
 from ..db import get_db
@@ -36,7 +47,69 @@ router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(re
 # und Ergebnis werden in maintenance_runs persistiert.
 _PDF_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdf-admin")
 _PDF_JOB_LOCK = threading.Lock()
+_PDF_PROCESS_LOCK = threading.Lock()
 _PDF_ACTIVE_RUN_ID: Optional[int] = None
+
+_PdfEndpoint = TypeVar("_PdfEndpoint", bound=Callable[..., Any])
+
+
+def _claim_pdf_run(db: Any, kind: str, actor: str) -> int:
+    global _PDF_ACTIVE_RUN_ID
+    with _PDF_JOB_LOCK:
+        if _PDF_ACTIVE_RUN_ID is not None:
+            active = db.maintenance_get(_PDF_ACTIVE_RUN_ID)
+            if active and active.get("status") == "running":
+                raise HTTPException(409, f"PDF-Lauf #{_PDF_ACTIVE_RUN_ID} läuft bereits")
+            _PDF_ACTIVE_RUN_ID = None
+        if _PDF_PROCESS_LOCK.locked():
+            raise HTTPException(409, "Eine PDF-Verarbeitung läuft bereits")
+        run_id = db.maintenance_start(kind, actor)
+        _PDF_ACTIVE_RUN_ID = run_id
+        return run_id
+
+
+def _release_pdf_run(run_id: int) -> None:
+    global _PDF_ACTIVE_RUN_ID
+    with _PDF_JOB_LOCK:
+        if _PDF_ACTIVE_RUN_ID == run_id:
+            _PDF_ACTIVE_RUN_ID = None
+
+
+@contextmanager
+def _exclusive_pdf_process() -> Iterator[None]:
+    """Reserviert die PDF-Engine ohne auf einen anderen Lauf zu warten.
+
+    Job-Status und Prozess-Lock werden unter demselben Koordinations-Lock
+    geprüft. Dadurch kann kein Seiten-Request zwischen dem Claim eines
+    Bestandslaufs und dessen eigentlicher Lock-Akquise schlüpfen.
+    """
+    global _PDF_ACTIVE_RUN_ID
+    acquired = False
+    with _PDF_JOB_LOCK:
+        if _PDF_ACTIVE_RUN_ID is not None:
+            active = get_db().maintenance_get(_PDF_ACTIVE_RUN_ID)
+            if active and active.get("status") == "running":
+                raise HTTPException(
+                    409, f"PDF-Lauf #{_PDF_ACTIVE_RUN_ID} läuft bereits"
+                )
+            _PDF_ACTIVE_RUN_ID = None
+        acquired = _PDF_PROCESS_LOCK.acquire(blocking=False)
+    if not acquired:
+        raise HTTPException(409, "Eine PDF-Verarbeitung läuft bereits")
+    try:
+        yield
+    finally:
+        _PDF_PROCESS_LOCK.release()
+
+
+def _exclusive_pdf_endpoint(func: _PdfEndpoint) -> _PdfEndpoint:
+    """FastAPI-kompatibler Guard für interaktive PDF-Endpunkte."""
+    @wraps(func)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        with _exclusive_pdf_process():
+            return func(*args, **kwargs)
+
+    return guarded  # type: ignore[return-value]
 
 
 def _username(request: Request) -> str:
@@ -47,17 +120,27 @@ def _username(request: Request) -> str:
 
 @session_router.get("")
 def current_session(request: Request) -> Dict[str, Any]:
-    """Sitzungsdaten für die Oberfläche.
-
-    Alle aktiven, angemeldeten Benutzer besitzen denselben Vollzugriff.
-    ``is_admin`` bleibt als Frontend-Kompatibilitätsfeld immer ``True``.
-    """
+    """Sitzungsdaten mit derselben Rollen-Semantik wie der native Login."""
     username = _username(request)
-    user = None if auth_disabled() else get_db().user_get_by_name(username)
+    authentication_disabled = auth_disabled()
+    user = None if authentication_disabled else get_db().user_get_by_name(username)
+    # Eine gültige Legacy-Config-Sitzung existiert nur solange noch kein
+    # DB-Benutzer angelegt wurde. Sie war historisch der Betreiber-Account und
+    # bleibt deshalb für das Upgrade ein Administrator. Im lokalen Modus gilt
+    # derselbe Vertrag. Alle DB-Benutzer werden dagegen fail-closed anhand der
+    # persistierten Rolle ausgewertet.
+    if authentication_disabled or user is None:
+        role = ROLE_ADMIN
+    else:
+        role = str(user.get("role") or ROLE_USER)
+        if role not in {ROLE_USER, ROLE_ADMIN}:
+            role = ROLE_USER
+    is_admin = role == ROLE_ADMIN
     return {
         "username": (user or {}).get("username") or username,
-        "is_admin": True,
-        "full_access": True,
+        "role": role,
+        "is_admin": is_admin,
+        "full_access": is_admin,
     }
 
 
@@ -409,6 +492,8 @@ def _process_pdf_targets(
             )
             processed_pdf: bytes | Path
             if payload.dry_run:
+                if path.stat().st_size > MAX_PDF_INPUT_BYTES:
+                    raise ValueError("PDF überschreitet das sichere Dateigrößenlimit")
                 preview_bytes, report = process_pdf_bytes(path.read_bytes(), **kwargs)
                 processed_pdf = preview_bytes
             else:
@@ -485,11 +570,11 @@ def _process_pdf_targets(
 
 
 def _run_pdf_background(payload_data: Dict[str, Any], targets: List[Path], run_id: int, actor: str) -> None:
-    global _PDF_ACTIVE_RUN_ID
     db = get_db()
     try:
         payload = PdfBatchPayload.model_validate(payload_data)
-        result = _process_pdf_targets(payload, targets, run_id=run_id, actor=actor)
+        with _PDF_PROCESS_LOCK:
+            result = _process_pdf_targets(payload, targets, run_id=run_id, actor=actor)
         db.maintenance_finish(run_id, ok=result["ok"], result=result)
     except Exception as exc:
         logger.exception("PDF-Hintergrundlauf #%s abgebrochen", run_id)
@@ -500,14 +585,11 @@ def _run_pdf_background(payload_data: Dict[str, Any], targets: List[Path], run_i
         }
         db.maintenance_finish(run_id, ok=False, result=result)
     finally:
-        with _PDF_JOB_LOCK:
-            if _PDF_ACTIVE_RUN_ID == run_id:
-                _PDF_ACTIVE_RUN_ID = None
+        _release_pdf_run(run_id)
 
 
 @router.post("/pdf/process")
 def process_pdfs(payload: PdfBatchPayload, request: Request, response: Response) -> Dict[str, Any]:
-    global _PDF_ACTIVE_RUN_ID
     db = get_db(); actor = _username(request)
     preflight = _pdf_preflight(
         require_backup=bool(not payload.dry_run and payload.keep_original),
@@ -522,26 +604,39 @@ def process_pdfs(payload: PdfBatchPayload, request: Request, response: Response)
     if not targets:
         raise HTTPException(404, "Keine PDF-Dateien im gewählten Umfang gefunden")
 
+    kind = "pdf_dry_run" if payload.dry_run else "pdf_process"
+    run_id = _claim_pdf_run(db, kind, actor)
+
     if not payload.background:
-        run_id = db.maintenance_start("pdf_dry_run" if payload.dry_run else "pdf_process", actor)
-        result = _process_pdf_targets(payload, targets, actor=actor)
-        result["preflight"] = preflight
-        db.maintenance_finish(run_id, ok=result["ok"], result=result)
-        return result
+        try:
+            with _PDF_PROCESS_LOCK:
+                result = _process_pdf_targets(payload, targets, actor=actor)
+            result["preflight"] = preflight
+            db.maintenance_finish(run_id, ok=result["ok"], result=result)
+            return result
+        except Exception as exc:
+            db.maintenance_finish(
+                run_id,
+                ok=False,
+                result={"ok": False, "status": "error", "error": str(exc)},
+            )
+            raise
+        finally:
+            _release_pdf_run(run_id)
 
-    with _PDF_JOB_LOCK:
-        if _PDF_ACTIVE_RUN_ID is not None:
-            active = db.maintenance_get(_PDF_ACTIVE_RUN_ID)
-            if active and active.get("status") == "running":
-                raise HTTPException(409, f"PDF-Lauf #{_PDF_ACTIVE_RUN_ID} läuft bereits")
-            _PDF_ACTIVE_RUN_ID = None
-        run_id = db.maintenance_start("pdf_dry_run" if payload.dry_run else "pdf_process", actor)
-        _PDF_ACTIVE_RUN_ID = run_id
-
-    initial = _pdf_result_base(payload, targets)
-    initial["preflight"] = preflight
-    db.maintenance_progress(run_id, initial)
-    _PDF_EXECUTOR.submit(_run_pdf_background, payload.model_dump(), targets, run_id, actor)
+    try:
+        initial = _pdf_result_base(payload, targets)
+        initial["preflight"] = preflight
+        db.maintenance_progress(run_id, initial)
+        _PDF_EXECUTOR.submit(_run_pdf_background, payload.model_dump(), targets, run_id, actor)
+    except Exception as exc:
+        db.maintenance_finish(
+            run_id,
+            ok=False,
+            result={"ok": False, "status": "error", "error": str(exc)},
+        )
+        _release_pdf_run(run_id)
+        raise HTTPException(503, "PDF-Hintergrundlauf konnte nicht gestartet werden") from exc
     response.status_code = 202
     return {
         "ok": True, "accepted": True, "run_id": run_id,
@@ -586,11 +681,30 @@ def _recipe_pdf(recipe_id: int) -> tuple[Dict[str, Any], Path]:
     return rec, pdfs[0]
 
 
+def _read_pdf_bytes(path: Path) -> bytes:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise HTTPException(404, "PDF nicht verfügbar") from exc
+    if size > MAX_PDF_INPUT_BYTES:
+        raise HTTPException(413, "PDF überschreitet das sichere Dateigrößenlimit")
+    data = path.read_bytes()
+    try:
+        validate_pdf_resource_budget(data, max_pages=150)
+    except PdfResourceLimitError as exc:
+        raise HTTPException(413, str(exc)) from exc
+    except PdfValidationError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return data
+
+
 @router.get("/pdf/{recipe_id}/pages")
+@_exclusive_pdf_endpoint
 def pdf_pages(recipe_id: int) -> Dict[str, Any]:
     import pymupdf
     _rec, path = _recipe_pdf(recipe_id)
-    report = analyze_pdf_bytes(path.read_bytes(), detect_skew=True, max_pages=150)
+    data = _read_pdf_bytes(path)
+    report = analyze_pdf_bytes(data, detect_skew=True, max_pages=150)
     if not report.ok:
         raise HTTPException(409, report.error or report.reason or "PDF nicht lesbar")
     doc = pymupdf.open(str(path))
@@ -609,16 +723,21 @@ def pdf_pages(recipe_id: int) -> Dict[str, Any]:
 
 
 @router.get("/pdf/{recipe_id}/pages/{page_no}/preview")
+@_exclusive_pdf_endpoint
 def pdf_page_preview(recipe_id: int, page_no: int,
                      width: int = Query(420, ge=180, le=1200)) -> Response:
     import pymupdf
     _rec, path = _recipe_pdf(recipe_id)
-    doc = pymupdf.open(str(path))
+    data = _read_pdf_bytes(path)
+    doc = pymupdf.open(stream=data, filetype="pdf")
     try:
         if page_no < 1 or page_no > len(doc):
             raise HTTPException(404, "Seite nicht gefunden")
         page = doc[page_no - 1]
         scale = min(3.0, max(0.35, width / max(1.0, page.rect.width)))
+        estimated_pixels = max(1.0, page.rect.width * page.rect.height * scale * scale)
+        if estimated_pixels > 8_000_000:
+            scale *= (8_000_000 / estimated_pixels) ** 0.5
         pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), colorspace=pymupdf.csRGB,
                               alpha=False, annots=False)
         return Response(pix.tobytes("jpeg", jpg_quality=82), media_type="image/jpeg",
@@ -634,11 +753,12 @@ class PdfPageEditPayload(BaseModel):
 
 
 @router.post("/pdf/{recipe_id}/pages/apply")
+@_exclusive_pdf_endpoint
 def apply_pdf_page_edits(recipe_id: int, payload: PdfPageEditPayload,
                          request: Request) -> Dict[str, Any]:
     import pymupdf
     rec, path = _recipe_pdf(recipe_id)
-    original = path.read_bytes()
+    original = _read_pdf_bytes(path)
     doc = pymupdf.open(stream=original, filetype="pdf")
     pages_before = len(doc)
     try:
@@ -671,6 +791,8 @@ def apply_pdf_page_edits(recipe_id: int, payload: PdfPageEditPayload,
                 page = rebuilt[-1]
                 page.set_rotation((int(page.rotation or 0) + delta) % 360)
             output = rebuilt.tobytes(garbage=4, deflate=True, clean=False)
+            if len(output) > MAX_PDF_OUTPUT_BYTES:
+                raise HTTPException(413, "Bearbeitete PDF überschreitet das sichere Dateigrößenlimit")
             check = pymupdf.open(stream=output, filetype="pdf")
             try:
                 if len(check) != len(order):

@@ -4,11 +4,41 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..auth import auth_disabled, check_credentials, create_session, request_user
+from ..auth import (
+    ROLE_ADMIN,
+    ROLE_USER,
+    auth_disabled,
+    check_credentials,
+    create_session,
+    request_user,
+)
 from ..db import get_db
 from ..security import client_ip, login_limiter
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def _access_payload(username: str) -> dict:
+    """Einheitlicher Rollenvertrag für Login und Sitzungsprüfung.
+
+    Ein noch nicht in die Datenbank migrierter Legacy-Config-Benutzer ist der
+    bestehende Betreiber und bleibt deshalb Administrator. Reguläre DB-Konten
+    werden ausschließlich anhand ihrer gespeicherten Rolle ausgewertet.
+    """
+    if auth_disabled():
+        role = ROLE_ADMIN
+    else:
+        user = get_db().user_get_by_name(username)
+        role = (user or {}).get("role") or ROLE_ADMIN
+        if role not in {ROLE_USER, ROLE_ADMIN}:
+            role = ROLE_USER
+    is_admin = role == ROLE_ADMIN
+    return {
+        "username": username,
+        "role": role,
+        "is_admin": is_admin,
+        "full_access": is_admin,
+    }
 
 
 class NativeLogin(BaseModel):
@@ -37,7 +67,7 @@ def native_login(payload: NativeLogin, request: Request) -> dict:
             "token": "cloudflare-access",
             "token_type": "bearer",
             "expires_in": 60 * 60 * 24 * 14,
-            "username": "local",
+            **_access_payload("local"),
         }
     if not check_credentials(username, payload.password):
         login_limiter.record_fail(ip)
@@ -49,7 +79,7 @@ def native_login(payload: NativeLogin, request: Request) -> dict:
         "token": create_session(username),
         "token_type": "bearer",
         "expires_in": 60 * 60 * 24 * 14,
-        "username": username,
+        **_access_payload(username),
     }
 
 
@@ -58,7 +88,7 @@ def native_session(request: Request) -> dict:
     username = request_user(request)
     if not username:
         raise HTTPException(401, "Authentication required")
-    return {"username": username, "full_access": True}
+    return _access_payload(username)
 
 
 @router.post("/logout")

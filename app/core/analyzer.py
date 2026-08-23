@@ -14,6 +14,8 @@ from typing import List, Optional
 
 import requests
 
+from .webhook import server_configured_request
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,11 +87,23 @@ class OpenAIAnalyzer:
         self.model = model
         self.base_url = (base_url or self.OPENAI_BASE).rstrip("/")
         self.timeout = timeout
-        self.session = requests.Session()
-        self.session.headers.update({
+        self._headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-        })
+        }
+
+    def request(self, method: str, path: str, **kwargs) -> requests.Response:
+        """Einziger OpenAI-Transportpfad für öffentliche und interne Ziele."""
+        normalized_path = "/" + (path or "").lstrip("/")
+        headers = dict(self._headers)
+        headers.update(kwargs.pop("headers", {}) or {})
+        return server_configured_request(
+            method,
+            f"{self.base_url}{normalized_path}",
+            trusted_private_bases=(self.base_url,),
+            headers=headers,
+            **kwargs,
+        )
 
     def _call(self, system: str, user: str) -> Optional[str]:
         # max_tokens=6000: bei gpt-4o-mini gibt's 16k Output-Limit, 6k ist
@@ -98,8 +112,9 @@ class OpenAIAnalyzer:
         # Vorher: 300 → 2000, beides zu wenig für lange Rezepte mit vielen
         # Schritten. Logging unten verrät wie groß die Antworten wirklich sind.
         try:
-            r = self.session.post(
-                f"{self.base_url}/chat/completions",
+            r = self.request(
+                "POST",
+                "/chat/completions",
                 json={
                     "model": self.model,
                     "messages": [
@@ -144,11 +159,7 @@ class OpenAIAnalyzer:
             return content
         except requests.exceptions.HTTPError as e:
             # 401/403/429 sind häufig und sollten verständlich loggen
-            try:
-                body = e.response.json().get("error", {}).get("message", "")
-            except Exception:
-                body = e.response.text[:200] if e.response is not None else ""
-            logger.error(f"OpenAI HTTP {e.response.status_code if e.response else '?'}: {body}")
+            logger.error("OpenAI HTTP %s", e.response.status_code if e.response else "?")
             return None
         except Exception as e:
             logger.error(f"OpenAI Call: {e}")
@@ -222,8 +233,9 @@ class OpenAIAnalyzer:
         (Vision liefert Freitext, kein JSON). Höherer max_tokens damit lange
         Caption-Bilder vollständig transkribiert werden."""
         try:
-            r = self.session.post(
-                f"{self.base_url}/chat/completions",
+            r = self.request(
+                "POST",
+                "/chat/completions",
                 json={
                     "model": self.model,
                     "messages": [{
@@ -246,11 +258,10 @@ class OpenAIAnalyzer:
                 return None
             return (choices[0].get("message") or {}).get("content", "").strip()
         except requests.exceptions.HTTPError as e:
-            try:
-                body = e.response.json().get("error", {}).get("message", "")
-            except Exception:
-                body = e.response.text[:200] if e.response is not None else ""
-            logger.error(f"OpenAI Vision HTTP {e.response.status_code if e.response else '?'}: {body}")
+            logger.error(
+                "OpenAI Vision HTTP %s",
+                e.response.status_code if e.response else "?",
+            )
             return None
         except Exception as e:
             logger.error(f"OpenAI Vision Call: {e}")
@@ -471,7 +482,7 @@ class OpenAIAnalyzer:
         Loggt den konkreten Grund bei Fehler - sonst sieht der User nur
         'AI nicht erreichbar' ohne zu wissen ob Key, Netz oder Account-Problem."""
         try:
-            r = self.session.get(f"{self.base_url}/models", timeout=15)
+            r = self.request("GET", "/models", timeout=15)
             if r.status_code == 200:
                 return True
             if r.status_code == 401:
@@ -481,16 +492,16 @@ class OpenAIAnalyzer:
             elif r.status_code == 429:
                 logger.error("OpenAI health: Rate limit (HTTP 429)")
             else:
-                logger.error(f"OpenAI health: HTTP {r.status_code} - {r.text[:200]}")
+                logger.error("OpenAI health: HTTP %s", r.status_code)
             return False
         except requests.exceptions.Timeout:
-            logger.error(f"OpenAI health: Timeout (15s) gegen {self.base_url}/models - Internet vom Container aus?")
+            logger.error("OpenAI health: Timeout (15s) - Internet vom Container aus?")
             return False
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"OpenAI health: keine Verbindung zu {self.base_url}: {e}")
+        except requests.exceptions.ConnectionError:
+            logger.error("OpenAI health: keine Verbindung")
             return False
         except Exception as e:
-            logger.error(f"OpenAI health: unerwarteter Fehler: {e}")
+            logger.error("OpenAI health: unerwarteter Fehler: %s", type(e).__name__)
             return False
 
     def analyze_recipe(self, description: str) -> RecipeAnalysis:

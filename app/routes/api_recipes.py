@@ -24,7 +24,17 @@ import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -33,7 +43,7 @@ from ..core.analyzer import build_analyzer
 from ..core.safety import resolve_directory_under, resolve_regular_file_under
 from ..core.ttl_cache import TTLCache
 from ..config_store import get_config
-from ..db import get_db
+from ..db import CookingCompletionConflictError, get_db
 from pathlib import Path
 from ..recipes.canonical import canonical_name as _canonical
 from ..recipes.search import suggest_query
@@ -588,21 +598,6 @@ class CookingProgressUpdate(BaseModel):
     servings: Optional[int] = Field(None, ge=1, le=50)
 
 
-def _validated_cooking_steps(
-    recipe_id: int, completed_steps: List[int], active_step: int
-) -> tuple[List[int], int, int]:
-    steps = get_db().recipe_steps_get(recipe_id)
-    if not steps:
-        raise HTTPException(409, "Das Rezept hat keine Zubereitungsschritte")
-    count = len(steps)
-    completed = sorted(set(completed_steps))
-    if any(step < 0 or step >= count for step in completed):
-        raise HTTPException(400, "Der Kochfortschritt passt nicht zur Schrittliste")
-    if active_step >= count:
-        raise HTTPException(400, "Der aktive Kochschritt existiert nicht")
-    return completed, active_step, count
-
-
 @router.get("/{recipe_id}/cooking-progress")
 def cooking_progress(recipe_id: int, request: Request) -> Dict[str, Any]:
     db = get_db()
@@ -639,21 +634,20 @@ def update_cooking_progress(
     recipe_id: int, payload: CookingProgressUpdate, request: Request
 ) -> Dict[str, Any]:
     db = get_db()
-    recipe = db.recipe_get(recipe_id)
-    if not recipe or recipe.get("deleted_at") is not None:
-        raise HTTPException(404, "Rezept nicht gefunden")
-    completed, active, count = _validated_cooking_steps(
-        recipe_id, payload.completed_steps, payload.active_step
-    )
-    progress = db.recipe_cooking_progress_set(
-        recipe_id,
-        _actor(request),
-        completed_steps=completed,
-        active_step=active,
-        servings=payload.servings,
-    )
-    progress["step_count"] = count
-    return progress
+    try:
+        return db.recipe_cooking_progress_set(
+            recipe_id,
+            _actor(request),
+            completed_steps=payload.completed_steps,
+            active_step=payload.active_step,
+            servings=payload.servings,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.delete("/{recipe_id}/cooking-progress")
@@ -673,15 +667,24 @@ class CookingComplete(BaseModel):
 
 @router.post("/{recipe_id}/cooking-complete")
 def complete_cooking(
-    recipe_id: int, payload: CookingComplete, request: Request
+    recipe_id: int,
+    payload: CookingComplete,
+    request: Request,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ) -> Dict[str, Any]:
     db = get_db()
+    key = idempotency_key.strip() if idempotency_key is not None else None
+    if key is not None and (not key or len(key) > 200):
+        raise HTTPException(400, "Idempotency-Key muss 1 bis 200 Zeichen lang sein")
     try:
         entry = db.recipe_cooking_complete(
             recipe_id,
             _actor(request),
             servings=payload.servings,
+            idempotency_key=key,
         )
+    except CookingCompletionConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
     return {
@@ -715,6 +718,45 @@ class IngredientsUpdate(BaseModel):
     ingredients: List[IngredientIn]
 
 
+def _replace_ingredients_and_reset_verification(
+    db: Any, recipe_id: int, ingredients: List[Dict[str, Any]]
+) -> None:
+    """Ersetzt Zutaten und widerruft die darauf bezogene Prüfung atomar.
+
+    ``user_verified`` bestätigt den konkreten Zutatenstand. Würde das Flag bei
+    einer manuellen Änderung erhalten bleiben, sähe die neue Liste weiterhin
+    wie von einem Nutzer geprüft aus. Die eine SQLite-Transaktion verhindert
+    auch bei einem Prozessabbruch einen halb aktualisierten Zustand.
+    """
+    now = time.time()
+    with db.conn() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,)
+        )
+        for index, ingredient in enumerate(ingredients):
+            connection.execute(
+                "INSERT INTO recipe_ingredients "
+                "(recipe_id, name, canonical_name, amount, unit, raw, sort_order) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    recipe_id,
+                    ingredient.get("name") or "",
+                    ingredient.get("canonical_name"),
+                    ingredient.get("amount"),
+                    ingredient.get("unit"),
+                    ingredient.get("raw"),
+                    index,
+                ),
+            )
+        connection.execute(
+            "UPDATE recipes SET ingredients_status='ok', ingredients_extracted_at=?, "
+            "extraction_claimed_at=NULL, extraction_claim_owner=NULL, "
+            "user_verified=0, verified_at=NULL, verified_by=NULL WHERE id=?",
+            (now, recipe_id),
+        )
+
+
 @router.put("/{recipe_id}/ingredients")
 def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Request):
     """Manuelle Override der Zutatenliste. Setzt ingredients_status='ok',
@@ -741,7 +783,7 @@ def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Requ
             "unit": normalize_unit(ing.unit),
             "raw": ing.raw,
         })
-    db.recipe_set_extraction_result(recipe_id, status="ok", ingredients=prepared)
+    _replace_ingredients_and_reset_verification(db, recipe_id, prepared)
 
     # Diät-Tags recompute: nimm existierende auto-Tags die NICHT in DIET_TAGS
     # sind (das sind die KI-Stil-Tags wie 'pasta', 'schnell') und merge sie
@@ -769,6 +811,35 @@ class StepsUpdate(BaseModel):
     steps: List[StepIn]
 
 
+def _replace_steps_and_clear_progress(
+    db: Any, recipe_id: int, steps: List[Dict[str, Any]]
+) -> int:
+    """Ersetzt Schritte und verwirft indexbasierten Fortschritt atomar.
+
+    Kochfortschritt referenziert Schritte derzeit über Listenindizes. Schon das
+    Einfügen eines neuen ersten Schritts würde deshalb sonst einen anderen
+    Schritt als erledigt markieren. Bis stabile Schritt-IDs Teil des Vertrags
+    sind, ist ein vollständiger Reset für alle Nutzer die sichere Semantik.
+    """
+    with db.conn() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
+        for step_number, step in enumerate(steps, start=1):
+            instruction = (step.get("instruction") or "").strip()
+            if not instruction:
+                continue
+            connection.execute(
+                "INSERT INTO recipe_steps "
+                "(recipe_id, step_number, instruction, timer_seconds) "
+                "VALUES (?, ?, ?, ?)",
+                (recipe_id, step_number, instruction, step.get("timer_seconds")),
+            )
+        cleared = connection.execute(
+            "DELETE FROM recipe_cooking_progress WHERE recipe_id=?", (recipe_id,)
+        ).rowcount
+    return max(0, int(cleared))
+
+
 @router.put("/{recipe_id}/steps")
 def update_steps(recipe_id: int, payload: StepsUpdate, request: Request):
     """Manuelles Override der Zubereitungs-Schritte. step_number wird beim
@@ -778,8 +849,14 @@ def update_steps(recipe_id: int, payload: StepsUpdate, request: Request):
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
     _version_before(recipe_id, request, "Zubereitungsschritte geändert")
-    db.recipe_steps_set(recipe_id, [s.model_dump() for s in payload.steps])
-    return {"ok": True, "steps": db.recipe_steps_get(recipe_id)}
+    cleared_progress = _replace_steps_and_clear_progress(
+        db, recipe_id, [s.model_dump() for s in payload.steps]
+    )
+    return {
+        "ok": True,
+        "steps": db.recipe_steps_get(recipe_id),
+        "cleared_cooking_progress": cleared_progress,
+    }
 
 
 class ServingsUpdate(BaseModel):
@@ -1213,11 +1290,21 @@ def toggle_verify(recipe_id: int, request: Request,
     db = get_db()
     if not db.recipe_get(recipe_id):
         raise HTTPException(404, "Rezept nicht gefunden")
+    # Schneller, nutzerfreundlicher Reject. Die gleiche Invariante wird in
+    # recipe_set_verified nochmals unter BEGIN IMMEDIATE durchgesetzt; dieser
+    # Vorab-Check ist ausdrücklich nicht die Concurrency-Grenze.
     if verified and not db.recipe_ingredients_get(recipe_id):
-        raise HTTPException(409, "Eine leere Zutatenliste kann nicht als geprüft markiert werden")
+        raise HTTPException(
+            409, "Eine leere Zutatenliste kann nicht als geprüft markiert werden"
+        )
     username = _actor(request)
     _version_before(recipe_id, request, "Prüfstatus geändert")
-    db.recipe_set_verified(recipe_id, verified, username if verified else None)
+    try:
+        db.recipe_set_verified(recipe_id, verified, username if verified else None)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     logger.info(f"verify #{recipe_id}: {verified} von '{username}'")
     return {"ok": True, "verified": verified, "by": username}
 

@@ -163,6 +163,19 @@ def test_pdf_auto_rotation_settings_are_exposed_with_safe_defaults():
     assert "cfg.pdf.auto_rotate = true" in js
 
 
+def test_server_managed_service_urls_are_read_only_in_admin_ui():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    openai_input = html.split('x-model="config.ai.openai.base_url"', 1)[1].split(">", 1)[0]
+    einkauf_input = html.split('x-model="config.einkauf.api_url"', 1)[1].split(">", 1)[0]
+
+    assert "readonly" in openai_input
+    assert 'aria-readonly="true"' in openai_input
+    assert "readonly" in einkauf_input
+    assert 'aria-readonly="true"' in einkauf_input
+    assert "konkrete IP-Adresse" in html
+    assert "SCRAPPER_EINKAUF_INTERNAL_URLS" in html
+
+
 def test_admin_center_uses_private_tile_navigation():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     js = (STATIC / "app.js").read_text(encoding="utf-8")
@@ -252,7 +265,7 @@ def test_logout_controls_work_without_javascript_on_desktop_and_mobile():
     assert 'x-model="config.web.external_logout_url"' in html
 
 
-def test_admin_ui_is_private_and_has_no_user_management():
+def test_admin_ui_is_private_and_backend_has_explicit_roles():
     js = (STATIC / "app.js").read_text(encoding="utf-8")
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     users_api = (ROOT / "app" / "routes" / "api_users.py").read_text(encoding="utf-8")
@@ -260,7 +273,7 @@ def test_admin_ui_is_private_and_has_no_user_management():
     assert "Benutzer-Verwaltung" not in html
     assert "loadUsers" not in js
     assert "createUser" not in js
-    assert "role: Optional[str]" not in users_api
+    assert 'Literal["user", "admin"]' in users_api
 
 
 def test_refined_recipe_filters_and_shopping_list_match_mockup():

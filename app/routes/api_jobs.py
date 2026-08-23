@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..auth import require_auth
+from ..auth import require_admin
 from ..config_store import get_config
 from ..db import get_db
 from ..jobs import scraper as scraper_job
@@ -19,7 +19,7 @@ from ..jobs.locks import file_lock_or_none
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(require_admin)])
 
 # Globaler Lock damit Scraper nicht 2x parallel läuft (Web-Trigger + CLI)
 _locks: Dict[str, threading.Lock] = {

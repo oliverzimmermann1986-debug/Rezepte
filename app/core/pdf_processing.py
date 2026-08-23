@@ -19,6 +19,28 @@ from .pdf_rotation import normalize_pdf_bytes
 
 logger = logging.getLogger(__name__)
 
+# Harte Obergrenzen für nicht vertrauenswürdige und lokal gefundene PDFs.
+# Die Verarbeitung arbeitet zwar seitenweise, hält bei Raster-/OCR-Schritten
+# aber mehrere RGB-Bilder gleichzeitig. Diese Budgets verhindern deshalb
+# sowohl extrem große Einzelseiten als auch PDFs mit tausenden Seiten.
+MAX_PDF_INPUT_BYTES = 100 * 1024 * 1024
+MAX_PDF_OUTPUT_BYTES = 200 * 1024 * 1024
+MAX_PDF_PAGES = 150
+MAX_PDF_PAGE_PIXELS = 12_000_000
+MAX_PDF_TOTAL_BASE_PIXELS = 300_000_000
+
+
+class PdfValidationError(ValueError):
+    """Die Bytes sind keine strukturell nutzbare PDF."""
+
+
+class PdfEncryptedError(PdfValidationError):
+    """Die PDF ist verschlüsselt und kann ohne Passwort nicht geprüft werden."""
+
+
+class PdfResourceLimitError(ValueError):
+    """Die PDF ist valide, überschreitet aber ein Verarbeitungsbudget."""
+
 
 @dataclass
 class PdfPageAnalysis:
@@ -63,29 +85,95 @@ class PdfProcessReport:
 def _render_gray(page: Any, dpi: int = 96):
     import pymupdf
     from PIL import Image
-    pix = page.get_pixmap(dpi=max(72, min(200, int(dpi))), colorspace=pymupdf.csGRAY,
-                             alpha=False, annots=False)
+    render_dpi = _safe_render_dpi(
+        page,
+        max(72, min(200, int(dpi))),
+        max_pixels=MAX_PDF_PAGE_PIXELS,
+    )
+    pix = page.get_pixmap(dpi=render_dpi, colorspace=pymupdf.csGRAY,
+                          alpha=False, annots=False)
     return Image.frombytes("L", (pix.width, pix.height), pix.samples)
 
 
-def _safe_render_dpi(page: Any, requested_dpi: int, *, max_pixels: int = 24_000_000) -> int:
+def _safe_render_dpi(
+    page: Any, requested_dpi: int, *, max_pixels: int = MAX_PDF_PAGE_PIXELS
+) -> int:
     """Begrenzt den Speicherbedarf ungewöhnlich großer PDF-Seiten.
 
-    24 Mio. RGB-Pixel benötigen grob 72 MiB nur für das Rohbild. Ohne diese
+    12 Mio. RGB-Pixel benötigen grob 36 MiB nur für das Rohbild. Ohne diese
     Begrenzung können A2/A1-Scans bei 300–400 DPI den Webdienst vom OOM-Killer
     beenden, was im Browser nur als „PDF-Verarbeitung fehlgeschlagen“ erscheint.
     """
-    dpi = max(180, min(400, int(requested_dpi or 300)))
+    dpi = max(72, min(400, int(requested_dpi or 300)))
     try:
         width_in = max(0.1, float(page.rect.width) / 72.0)
         height_in = max(0.1, float(page.rect.height) / 72.0)
+        minimum_pixels = width_in * height_in * 72 * 72
+        if minimum_pixels > max_pixels:
+            raise ValueError(
+                "PDF-Seite ist selbst bei 72 DPI größer als das sichere Pixelbudget"
+            )
         estimated = width_in * height_in * dpi * dpi
         if estimated <= max_pixels:
             return dpi
         scale = (max_pixels / estimated) ** 0.5
-        return max(150, int(dpi * scale))
-    except Exception:
+        return max(72, int(dpi * scale))
+    except (TypeError, AttributeError):
         return dpi
+
+
+def validate_pdf_resource_budget(
+    pdf_bytes: bytes,
+    *,
+    max_bytes: int = MAX_PDF_INPUT_BYTES,
+    max_pages: int = MAX_PDF_PAGES,
+    max_page_pixels: int = MAX_PDF_PAGE_PIXELS,
+    max_total_base_pixels: int = MAX_PDF_TOTAL_BASE_PIXELS,
+) -> Dict[str, int]:
+    """Validiert PDF-Größe, Seitenzahl und minimale Rasterkosten."""
+    if not pdf_bytes:
+        raise PdfValidationError("PDF ist leer")
+    if len(pdf_bytes) > max(1, int(max_bytes)):
+        raise PdfResourceLimitError("PDF überschreitet das sichere Dateigrößenlimit")
+    try:
+        import pymupdf
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as exc:
+        raise PdfValidationError("PDF ist nicht lesbar") from exc
+    try:
+        page_count = len(doc)
+        if page_count < 1:
+            raise PdfValidationError("PDF enthält keine Seiten")
+        if getattr(doc, "needs_pass", False):
+            raise PdfEncryptedError("Verschlüsselte PDFs werden nicht verarbeitet")
+        if page_count > max(1, int(max_pages)):
+            raise PdfResourceLimitError(f"PDF enthält zu viele Seiten (maximal {max_pages})")
+        total_pixels = 0.0
+        for index in range(page_count):
+            rect = doc[index].rect
+            width = max(0.0, float(rect.width))
+            height = max(0.0, float(rect.height))
+            if width <= 0 or height <= 0:
+                raise PdfValidationError(f"PDF-Seite {index + 1} hat keine gültige Größe")
+            base_pixels = width * height  # PDF-Punkte entsprechen Pixeln bei 72 DPI.
+            if base_pixels > max_page_pixels:
+                raise PdfResourceLimitError(
+                    f"PDF-Seite {index + 1} überschreitet das sichere Pixelbudget"
+                )
+            total_pixels += base_pixels
+            if total_pixels > max_total_base_pixels:
+                raise PdfResourceLimitError("PDF überschreitet das sichere Gesamt-Pixelbudget")
+        return {
+            "bytes": len(pdf_bytes),
+            "pages": page_count,
+            "base_pixels": int(total_pixels),
+        }
+    except (PdfValidationError, PdfResourceLimitError):
+        raise
+    except Exception as exc:
+        raise PdfValidationError("PDF-Struktur ist nicht sicher lesbar") from exc
+    finally:
+        doc.close()
 
 
 def _content_bbox(image, threshold: int = 245):
@@ -160,8 +248,18 @@ def analyze_pdf_bytes(pdf_bytes: bytes, *, detect_skew: bool = False,
                       max_pages: int = 100) -> PdfProcessReport:
     report = PdfProcessReport()
     try:
+        validate_pdf_resource_budget(pdf_bytes, max_pages=max_pages)
         import pymupdf
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    except PdfEncryptedError as exc:
+        report.ok = False; report.reason = "encrypted"; report.error = str(exc)
+        return report
+    except PdfResourceLimitError as exc:
+        report.ok = False; report.reason = "resource_limit"; report.error = str(exc)
+        return report
+    except PdfValidationError as exc:
+        report.ok = False; report.reason = "invalid_pdf"; report.error = str(exc)
+        return report
     except Exception as exc:
         report.ok = False; report.reason = "invalid_pdf"; report.error = str(exc)
         return report
@@ -169,7 +267,7 @@ def analyze_pdf_bytes(pdf_bytes: bytes, *, detect_skew: bool = False,
         report.pages_before = report.pages_after = len(doc)
         if getattr(doc, "needs_pass", False):
             report.reason = "encrypted"; return report
-        for idx in range(min(len(doc), max(1, int(max_pages)))):
+        for idx in range(len(doc)):
             page = doc[idx]
             info = _analyze_page(page, idx + 1)
             if detect_skew and info.text_chars < 20 and not info.blank:
@@ -230,8 +328,31 @@ def process_pdf_bytes(
     osd_min_confidence: float = 1.0,
     max_osd_pages: int = 100,
     use_ocr_vote: bool = True,
+    max_pages: int = MAX_PDF_PAGES,
+    max_input_bytes: int = MAX_PDF_INPUT_BYTES,
 ) -> Tuple[bytes, PdfProcessReport]:
     report = PdfProcessReport()
+    try:
+        validate_pdf_resource_budget(
+            pdf_bytes,
+            max_bytes=max_input_bytes,
+            max_pages=max_pages,
+        )
+    except PdfEncryptedError as exc:
+        report.ok = False
+        report.reason = "encrypted"
+        report.error = str(exc)
+        return pdf_bytes, report
+    except PdfResourceLimitError as exc:
+        report.ok = False
+        report.reason = "resource_limit"
+        report.error = str(exc)
+        return pdf_bytes, report
+    except PdfValidationError as exc:
+        report.ok = False
+        report.reason = "invalid_pdf"
+        report.error = str(exc)
+        return pdf_bytes, report
     source = pdf_bytes
     rotation_report = None
     if auto_rotate:
@@ -249,6 +370,11 @@ def process_pdf_bytes(
         report.rotation_decisions = [
             {**asdict(item), "changed": item.changed} for item in rotation_report.decisions
         ]
+        if len(source) > MAX_PDF_OUTPUT_BYTES:
+            report.ok = False
+            report.reason = "resource_limit"
+            report.error = "Aufbereitete PDF überschreitet das sichere Dateigrößenlimit"
+            return pdf_bytes, report
 
     try:
         import pymupdf
@@ -369,6 +495,10 @@ def process_pdf_bytes(
             report.reason = "no_changes"
             return pdf_bytes, report
         output = doc.tobytes(garbage=4, deflate=True, clean=False)
+        if len(output) > MAX_PDF_OUTPUT_BYTES:
+            raise PdfResourceLimitError(
+                "Aufbereitete PDF überschreitet das sichere Dateigrößenlimit"
+            )
         check = pymupdf.open(stream=output, filetype="pdf")
         try:
             if len(check) != report.pages_after:
@@ -376,6 +506,10 @@ def process_pdf_bytes(
         finally:
             check.close()
         return output, report
+    except PdfResourceLimitError as exc:
+        logger.warning("PDF-Ressourcenlimit erreicht: %s", exc)
+        report.ok = False; report.changed = False; report.reason = "resource_limit"; report.error = str(exc)
+        return pdf_bytes, report
     except Exception as exc:
         logger.warning("PDF-Aufbereitung fehlgeschlagen: %s", exc)
         report.ok = False; report.changed = False; report.reason = "processing_error"; report.error = str(exc)
@@ -409,6 +543,16 @@ def process_pdf_path(path: Path, *, backup_root: Optional[Path] = None,
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         return PdfProcessReport(ok=False, reason="invalid_path")
+    max_input_bytes = int(kwargs.get("max_input_bytes", MAX_PDF_INPUT_BYTES))
+    try:
+        if path.stat().st_size > max_input_bytes:
+            return PdfProcessReport(
+                ok=False,
+                reason="resource_limit",
+                error="PDF überschreitet das sichere Dateigrößenlimit",
+            )
+    except OSError as exc:
+        return PdfProcessReport(ok=False, reason="invalid_path", error=str(exc))
     original = path.read_bytes()
     output, report = process_pdf_bytes(original, **kwargs)
     if not report.changed:

@@ -7,16 +7,15 @@ Strategy:
   sonst Production-Recipes vom FS in die Test-DB laden würden (Lazy-Sync
   triggert bei recipe_count==0 → fängt sich alle echten Rezepte ein).
 - Singleton get_db() wird auf eine Test-Datenbank umgebogen (pro Test fresh)
-- require_auth Dependency-Override → kein Login nötig
+- require_auth/require_admin Dependency-Overrides → fachliche API-Tests
+  brauchen keinen Login; dedizierte RBAC-Tests entfernen den Admin-Override.
 - TestClient von FastAPI für synchrone HTTP-Calls
 """
-# WICHTIG: diese Patches müssen passieren BEVOR app.main / api_recipes
-# importiert werden, weil:
+# WICHTIG: diese Funktionen werden nur während des ersten app.main-Imports
+# temporär ersetzt, weil:
 # - app.main ruft migrate_security() beim Modul-Import auf
 # - api_recipes ruft sync_filesystem() bei jedem list-Endpoint mit count==0 auf
 import app.auth as _auth
-_auth.migrate_security = lambda: None
-_auth.migrate_users_to_db = lambda: None
 
 import app.recipes.indexer as _indexer
 _indexer.sync_filesystem = lambda db=None: {"added": 0, "updated": 0}
@@ -29,7 +28,7 @@ from fastapi.testclient import TestClient
 
 from app.db import Database
 import app.db as db_module
-from app.auth import require_auth
+from app.auth import require_admin, require_auth
 
 
 @pytest.fixture
@@ -50,10 +49,24 @@ def client(test_db: Database) -> TestClient:
     Test-Collect läuft — sonst hätten wir Issues mit migrate_security() das
     bei nicht-konfiguriertem Default-PW raised.
     """
-    from app.main import app
+    real_migrate_security = _auth.migrate_security
+    real_migrate_users = _auth.migrate_users_to_db
+    _auth.migrate_security = lambda: None
+    _auth.migrate_users_to_db = lambda: None
+    try:
+        from app.main import app
+    finally:
+        _auth.migrate_security = real_migrate_security
+        _auth.migrate_users_to_db = real_migrate_users
 
-    # Auth-Dependency überschreiben: alle Endpoints akzeptieren ohne Login
+    # Auth-Dependencies überschreiben: fachliche Endpoint-Tests laufen als
+    # Administrator. Die Security-Suite testet die echten Dependencies separat.
     app.dependency_overrides[require_auth] = lambda: None
+    app.dependency_overrides[require_admin] = lambda: {
+        "username": "test-admin",
+        "role": "admin",
+        "full_access": True,
+    }
     try:
         with TestClient(app) as c:
             yield c

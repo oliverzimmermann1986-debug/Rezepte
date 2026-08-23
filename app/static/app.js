@@ -2,7 +2,7 @@
 function scrapperApp() {
   return {
     page: 'recipes',
-    session: { username: '', is_admin: true, full_access: true, loaded: false },
+    session: { username: '', role: 'user', is_admin: false, full_access: false, loaded: false },
     systemInfo: { version: '', capabilities: [], loaded: false, backendOutdated: false },
     admin: {
       tab: 'home',
@@ -46,6 +46,10 @@ function scrapperApp() {
       }
       const allowed = new Set(['recipes','plan','cart','admin']);
       if (!allowed.has(targetPage)) targetPage = 'recipes';
+      if (targetPage === 'admin' && !this.session.is_admin) {
+        targetPage = 'recipes';
+        if (this.session.loaded) this.showToast('Administratorrechte erforderlich', 'err');
+      }
       this.page = targetPage;
       if (this.browser?.show) this.browser.show = false;
       if (this.recipeDetail?.show) this.recipeDetail.show = false;
@@ -322,15 +326,41 @@ function scrapperApp() {
     async loadSession() {
       try {
         const r = await this.api('GET', '/api/session');
-        this.session = { ...this.session, ...(r || {}), is_admin: true, full_access: true, loaded: true };
-        this.admin.accessDenied = false;
+        this.session = {
+          ...this.session,
+          ...(r || {}),
+          is_admin: r?.is_admin === true || r?.role === 'admin',
+          full_access: r?.full_access === true,
+          loaded: true,
+        };
+        this.admin.accessDenied = !this.session.is_admin;
+        if (this.session.is_admin && window.location.pathname.startsWith('/admin')) {
+          this.navTo('admin', { updateUrl: false });
+        } else if (!this.session.is_admin && this.page === 'admin') {
+          this.navTo('recipes', { updateUrl: false });
+        }
       } catch (_) {
-        this.session = { ...this.session, is_admin: true, full_access: true, loaded: true };
-        if (this.page === 'admin') this.showToast('Sitzung konnte nicht geladen werden', 'err');
+        this.session = {
+          ...this.session,
+          role: 'user',
+          is_admin: false,
+          full_access: false,
+          loaded: true,
+        };
+        this.admin.accessDenied = true;
+        if (this.page === 'admin') {
+          this.navTo('recipes', { updateUrl: false });
+          this.showToast('Sitzung konnte nicht geladen werden', 'err');
+        }
       }
     },
 
     async selectAdminTab(tab, { updateUrl = true } = {}) {
+      if (!this.session.is_admin) {
+        this.admin.accessDenied = true;
+        this.navTo('recipes', { updateUrl: false });
+        return;
+      }
       const allowed = new Set(['home','import','quality','versions','pdf','search','maintenance','master','settings','trash']);
       this.admin.tab = allowed.has(tab) ? tab : 'home';
       this.page = 'admin';

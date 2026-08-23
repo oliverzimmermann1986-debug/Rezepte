@@ -3,24 +3,24 @@ from __future__ import annotations
 
 import logging
 import os
-import ipaddress
-import socket
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+import requests
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..auth import require_auth
+from ..auth import require_admin
 from ..config_store import get_config
 from ..core.email_processor import MailAccount
+from ..core.webhook import pinned_https_request, server_configured_request
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/test", tags=["test"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/test", tags=["test"], dependencies=[Depends(require_admin)])
 
 
 class MailTestRequest(BaseModel):
@@ -86,29 +86,6 @@ def _normalized_base_url(value: str) -> str:
     return urlunsplit((parsed.scheme.lower(), f"{host_for_netloc}{port}", path, "", ""))
 
 
-def _assert_public_https_url(value: str) -> None:
-    """Blockiert SSRF-Ziele für ad-hoc Test-URLs.
-
-    Die dauerhaft konfigurierte Base-URL darf weiterhin ein bewusst gewählter
-    interner OpenAI-kompatibler Dienst sein. Eine nur für diesen Request
-    übermittelte URL muss dagegen öffentliches HTTPS sein.
-    """
-    parsed = urlsplit(value)
-    if parsed.scheme.lower() != "https":
-        raise HTTPException(400, "Eigene Test-Base-URLs müssen HTTPS verwenden")
-    try:
-        infos = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
-    except OSError as exc:
-        raise HTTPException(400, "Host der Base-URL konnte nicht aufgelöst werden") from exc
-    addresses = {item[4][0] for item in infos}
-    if not addresses:
-        raise HTTPException(400, "Host der Base-URL konnte nicht aufgelöst werden")
-    for raw in addresses:
-        ip = ipaddress.ip_address(raw)
-        if not ip.is_global:
-            raise HTTPException(400, "Private oder lokale Base-URLs sind hier nicht erlaubt")
-
-
 @router.post("/openai")
 def test_openai(req: OpenAITestRequest = None) -> Dict[str, Any]:
     """OpenAI API-Key gültig? GET /v1/models pingen + Model verfügbar.
@@ -156,17 +133,27 @@ def test_openai(req: OpenAITestRequest = None) -> Dict[str, Any]:
 
     if not api_key or _is_masked_secret(api_key):
         return {"ok": False, "error": "Kein API-Key - eintragen oder vorher speichern"}
-    if custom_base:
-        _assert_public_https_url(base_url)
-
-    import requests
+    models_url = f"{base_url}/models"
+    request_headers = {"Authorization": f"Bearer {api_key}"}
     try:
-        r = requests.get(
-            f"{base_url}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=10,
-            allow_redirects=False,
-        )
+        if custom_base:
+            try:
+                r = pinned_https_request(
+                    "GET",
+                    models_url,
+                    headers=request_headers,
+                    timeout=10,
+                )
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        else:
+            r = server_configured_request(
+                "GET",
+                models_url,
+                trusted_private_bases=(configured_base,),
+                headers=request_headers,
+                timeout=10,
+            )
         if 300 <= r.status_code < 400:
             return {"ok": False, "error": "Redirects der Base-URL werden nicht verfolgt"}
         if r.status_code == 401:
@@ -177,6 +164,8 @@ def test_openai(req: OpenAITestRequest = None) -> Dict[str, Any]:
         models = [m.get("id", "") for m in r.json().get("data", [])]
     except requests.exceptions.HTTPError as e:
         return {"ok": False, "error": f"HTTP {e.response.status_code if e.response else '?'}: {str(e)[:200]}"}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"ok": False, "error": f"Nicht erreichbar: {e}"}
 

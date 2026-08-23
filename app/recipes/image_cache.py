@@ -13,7 +13,13 @@ from typing import Dict
 
 from PIL import Image, ImageOps
 
-Image.MAX_IMAGE_PIXELS = 40_000_000
+MAX_JPEG_SOURCE_PIXELS = 50_000_000
+MAX_OTHER_SOURCE_PIXELS = 24_000_000
+MAX_SOURCE_DIMENSION = 12_000
+
+# Pillow warnt oberhalb dieses Wertes und wirft erst beim Doppelten. Die
+# explizite Prüfung unten hat formatspezifische, deutlichere Grenzen.
+Image.MAX_IMAGE_PIXELS = MAX_JPEG_SOURCE_PIXELS
 
 _lock_guard = threading.Lock()
 _locks: Dict[str, threading.Lock] = {}
@@ -22,6 +28,31 @@ _locks: Dict[str, threading.Lock] = {}
 def _keyed_lock(key: str) -> threading.Lock:
     with _lock_guard:
         return _locks.setdefault(key, threading.Lock())
+
+
+def assert_safe_image_dimensions(image) -> None:
+    """Lehnt Bilder ab, deren Dekodierung unverhältnismäßig viel RAM braucht."""
+    width, height = (int(value) for value in image.size)
+    image_format = str(getattr(image, "format", "") or "").upper()
+    pixel_limit = (
+        MAX_JPEG_SOURCE_PIXELS
+        if image_format in {"JPEG", "JPG"}
+        else MAX_OTHER_SOURCE_PIXELS
+    )
+    if width < 1 or height < 1:
+        raise ValueError("Bild hat keine gültige Größe")
+    if width > MAX_SOURCE_DIMENSION or height > MAX_SOURCE_DIMENSION:
+        raise ValueError("Bildabmessungen überschreiten das sichere Limit")
+    if width * height > pixel_limit:
+        raise ValueError("Bild überschreitet das sichere Pixelbudget")
+
+
+def _prepare_image_decode(image, target_size: tuple[int, int]) -> None:
+    assert_safe_image_dimensions(image)
+    # JPEG kann der Decoder direkt verkleinert laden. Das erlaubt auch moderne
+    # 48-MP-iPhone-Fotos, ohne dafür das vollständige RGB-Bild zu allozieren.
+    if str(getattr(image, "format", "") or "").upper() in {"JPEG", "JPG"}:
+        image.draft("RGB", target_size)
 
 
 def cached_thumbnail_path(source: Path, width: int) -> Path:
@@ -43,6 +74,7 @@ def ensure_thumbnail(source: Path, width: int, *, quality: int = 84) -> Path:
         tmp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
             with Image.open(source) as image:
+                _prepare_image_decode(image, (width, width * 8))
                 image = ImageOps.exif_transpose(image)
                 image.thumbnail((width, width * 8), Image.Resampling.LANCZOS)
                 if image.mode not in ("RGB", "L"):
@@ -71,6 +103,7 @@ def normalize_image(source: Path, target: Path, *, max_width: int = 2400, qualit
     tmp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         with Image.open(source) as image:
+            _prepare_image_decode(image, (max_width, max_width * 8))
             image.load()  # vollständiges Dekodieren, nicht nur Header lesen
             image = ImageOps.exif_transpose(image)
             image.thumbnail((max_width, max_width * 8), Image.Resampling.LANCZOS)

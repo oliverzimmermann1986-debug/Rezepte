@@ -28,7 +28,7 @@ def test_overlapping_initializers_create_one_verified_migration_backup(tmp_path)
         assert backup.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert backup.execute(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
-        ).fetchone()[0] == 150
+        ).fetchone()[0] == CURRENT_SCHEMA_VERSION - 10
     with sqlite3.connect(path) as current:
         assert current.execute(
             "SELECT MAX(version) FROM schema_migrations"
@@ -45,6 +45,38 @@ def test_newer_database_schema_refuses_application_downgrade(tmp_path):
 
     with pytest.raises(RuntimeError, match="neuer als diese Anwendung"):
         Database(path)
+
+
+def test_cooking_completion_dedupe_table_is_recreated_on_upgrade(tmp_path):
+    path = tmp_path / "legacy-cooking.db"
+    database = Database(path)
+    with database.conn() as connection:
+        connection.execute("DROP TABLE recipe_cooking_completion_requests")
+        connection.execute(
+            "DELETE FROM schema_migrations WHERE version=?",
+            (CURRENT_SCHEMA_VERSION,),
+        )
+
+    Database(path)
+
+    with sqlite3.connect(path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(recipe_cooking_completion_requests)"
+            ).fetchall()
+        }
+        assert columns == {
+            "recipe_id",
+            "username",
+            "idempotency_key",
+            "servings",
+            "history_id",
+            "created_at",
+        }
+        assert connection.execute(
+            "SELECT MAX(version) FROM schema_migrations"
+        ).fetchone()[0] == CURRENT_SCHEMA_VERSION
 
 
 def test_concurrent_recipe_upserts_converge_on_one_row(tmp_path):

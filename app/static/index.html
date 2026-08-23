@@ -97,7 +97,7 @@
             x-show="(cart.external ? cart.total : cart.items.length) > 0"
             x-text="cart.external ? cart.total : cart.items.length"></span>
     </button>
-    <button type="button" class="nav-item nav-primary"
+    <button type="button" class="nav-item nav-primary" x-show="session.loaded && session.is_admin"
             :class="page==='admin' && 'active'" @click="admin.tab='home'; navTo('admin')" title="Administration">
       <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/><circle cx="18" cy="17" r="3"/></svg></span>
       <span class="nav-label">Admin</span>
@@ -119,7 +119,7 @@
   <!-- ============ MAIN ============ -->
   <main class="main">
 
-    <section class="admin-shell" x-show="page==='admin'">
+    <section class="admin-shell" x-show="session.is_admin && page==='admin'">
       <div x-show="admin.tab==='home'">
         <div class="page-head admin-page-head">
           <div>
@@ -487,10 +487,15 @@
                 <label>Interne API-URL</label>
                 <input x-model="config.einkauf.api_url"
                        placeholder="http://127.0.0.1:8010"
-                       autocomplete="url">
+                       autocomplete="url"
+                       readonly
+                       aria-readonly="true">
                 <div class="hint">
                   Leer lassen nutzt den einfachen lokalen Rezept-Warenkorb.
-                  Für Wiederkehrendes die interne Adresse des Einkauf-Dienstes eintragen.
+                  Die Adresse ist aus Sicherheitsgründen serververwaltet und
+                  wird in <code>config.yaml</code> geändert. Zusätzliche interne
+                  Ziele müssen serverseitig über
+                  <code>SCRAPPER_EINKAUF_INTERNAL_URLS</code> freigegeben werden.
                 </div>
               </div>
               <div class="row">
@@ -778,10 +783,14 @@
               </div>
               <div class="field">
                 <label>Base-URL (optional)</label>
-                <input x-model="config.ai.openai.base_url" placeholder="leer = api.openai.com">
+                <input x-model="config.ai.openai.base_url"
+                       placeholder="leer = api.openai.com"
+                       readonly
+                       aria-readonly="true">
                 <div class="hint">
-                  Nur setzen für Azure-OpenAI, OpenRouter, lokale Proxies (LM-Studio etc.) -
-                  alles mit OpenAI-kompatibler API.
+                  Aus Sicherheitsgründen serververwaltet. Benutzerdefinierte OpenAI-kompatible
+                  Ziele werden in <code>config.yaml</code> gesetzt; interne Ziele müssen eine
+                  konkrete IP-Adresse verwenden.
                 </div>
               </div>
               <div class="row">

@@ -7,10 +7,10 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..auth import require_auth
+from ..auth import require_admin
 from ..config_store import get_config
 
-router = APIRouter(prefix="/api/browse", tags=["browse"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/browse", tags=["browse"], dependencies=[Depends(require_admin)])
 
 
 # Whitelist: nur diese Roots + alles darunter ist erlaubt.

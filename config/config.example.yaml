@@ -83,7 +83,9 @@ ai:
   openai:
     api_key: ""               # sk-... aus platform.openai.com/api-keys
     model: gpt-4o-mini        # Empfehlung: gpt-4o-mini (günstig + ausreichend)
-    base_url: ""              # leer = api.openai.com; gesetzt für Azure / OpenRouter / etc.
+    # Serververwaltet: leer = api.openai.com. Interne Ziele nur als konkrete IP,
+    # keine internen DNS-Namen; öffentliche HTTPS-Ziele werden DNS-gepinnt.
+    base_url: ""
     timeout: 30
   # Confidence-Schwelle: darunter → Pending (manuell)
   confidence_threshold: 0.75
@@ -175,6 +177,7 @@ webhooks: []
 # Plus fstab-Eintrag mit 'noauto,nofail' für den mount_point.
 external_hdd:
   enabled: false                            # auf true für Live-Modus
+  # Serververwaltet; lokale Ziele nur als konkrete IP (keine internen DNS-Namen).
   shelly_url: http://192.168.1.50           # IP deiner Shelly Plug S
   mount_point: /mnt/external_hdd            # Pfad, muss in fstab stehen
   device: /dev/sdb1                         # optional, für device_present-Check im UI
@@ -185,7 +188,9 @@ external_hdd:
 # Verbindung zur vollwertigen Einkaufsliste. Bevorzugt wird die interne
 # Adresse des zweiten Dienstes im selben Container/Netz verwendet.
 einkauf:
-  api_url: ""                               # z.B. http://127.0.0.1:8010 — leer = lokaler Rezepte-Cart
+  # Serververwaltet; http://127.0.0.1:8010 ist intern standardmäßig freigegeben.
+  # Weitere interne Literal-IP-Ziele via SCRAPPER_EINKAUF_INTERNAL_URLS erlauben.
+  api_url: ""                               # leer = lokaler Rezepte-Cart
   app_token: ""                             # APP_TOKEN des Einkauf-Dienstes
   cf_access_client_id: ""                   # nur bei Zugriff über Cloudflare Access
   cf_access_client_secret: ""

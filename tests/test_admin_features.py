@@ -2,10 +2,20 @@ from pathlib import Path
 from io import BytesIO
 
 import pymupdf
+import pytest
+from fastapi import HTTPException
 from PIL import Image
 
 from app.auth import require_admin
-from app.core.pdf_processing import analyze_pdf_bytes, process_pdf_bytes, process_pdf_path
+from app.core.pdf_processing import (
+    MAX_PDF_PAGE_PIXELS,
+    PdfResourceLimitError,
+    _safe_render_dpi,
+    analyze_pdf_bytes,
+    process_pdf_bytes,
+    process_pdf_path,
+    validate_pdf_resource_budget,
+)
 from app.db import Database
 from app.recipes.search import parse_search_query, suggest_query
 
@@ -406,7 +416,7 @@ def test_admin_pdf_dry_run_detects_rotation_without_writing(client, test_db: Dat
         app.dependency_overrides.pop(require_admin, None)
 
 
-def test_every_active_user_has_admin_compat_access(test_db: Database, monkeypatch):
+def test_normal_user_is_rejected_by_admin_dependency(test_db: Database, monkeypatch):
     import app.auth as auth
 
     test_db.user_create("mitglied", "not-used", role="user")
@@ -417,9 +427,44 @@ def test_every_active_user_has_admin_compat_access(test_db: Database, monkeypatc
         cookies = {auth.SESSION_COOKIE: "valid"}
 
     import asyncio
-    result = asyncio.run(auth.require_admin(Request()))
-    assert result["username"] == "mitglied"
-    assert result["full_access"] is True
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(auth.require_admin(Request()))
+    assert exc.value.status_code == 403
+    assert "Administratorrechte" in exc.value.detail
+
+
+def test_current_session_exposes_persisted_user_role(client, test_db: Database, monkeypatch):
+    import app.routes.api_admin as admin_api
+
+    test_db.user_create("mitglied", "not-used", role="user")
+    monkeypatch.setattr(admin_api, "auth_disabled", lambda: False)
+    monkeypatch.setattr(admin_api, "request_user", lambda request: "mitglied")
+
+    response = client.get("/api/session")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "username": "mitglied",
+        "role": "user",
+        "is_admin": False,
+        "full_access": False,
+    }
+
+
+def test_current_session_treats_auth_disabled_as_local_admin(client, monkeypatch):
+    import app.routes.api_admin as admin_api
+
+    monkeypatch.setattr(admin_api, "auth_disabled", lambda: True)
+
+    response = client.get("/api/session")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "username": "local",
+        "role": "admin",
+        "is_admin": True,
+        "full_access": True,
+    }
 
 
 def test_direct_admin_routes_render_requested_start_page(client, monkeypatch):
@@ -438,7 +483,7 @@ def test_direct_admin_routes_render_requested_start_page(client, monkeypatch):
     assert 'data-initial-admin-tab="pdf"' in pdf.text
 
 
-def test_user_list_hides_legacy_role_and_self_disable_is_blocked(client, test_db: Database):
+def test_user_list_exposes_role_and_self_disable_is_blocked(client, test_db: Database):
     from app.main import app
 
     user_id = test_db.user_create("mitglied", "not-used", role="admin")
@@ -447,7 +492,7 @@ def test_user_list_hides_legacy_role_and_self_disable_is_blocked(client, test_db
         listed = client.get("/api/users")
         assert listed.status_code == 200
         item = next(item for item in listed.json()["users"] if item["id"] == user_id)
-        assert "role" not in item
+        assert item["role"] == "admin"
 
         disabled = client.patch(f"/api/users/{user_id}", json={"disabled": True})
         assert disabled.status_code == 400
@@ -516,11 +561,111 @@ def test_pdf_background_job_persists_result(client, test_db: Database, tmp_path:
 
 
 def test_safe_pdf_render_dpi_limits_huge_pages():
-    from app.core.pdf_processing import _safe_render_dpi
-
     doc = pymupdf.open(); page = doc.new_page(width=2384, height=3370)  # ungefähr A1
     try:
-        assert _safe_render_dpi(page, 400) < 400
-        assert _safe_render_dpi(page, 400) >= 150
+        dpi = _safe_render_dpi(page, 400)
+        assert 72 <= dpi < 400
+        estimated = (page.rect.width / 72) * (page.rect.height / 72) * dpi * dpi
+        assert estimated <= MAX_PDF_PAGE_PIXELS
     finally:
         doc.close()
+
+
+def test_pdf_resource_budget_rejects_excessive_page_count():
+    doc = pymupdf.open()
+    for _ in range(3):
+        doc.new_page(width=120, height=120)
+    data = doc.tobytes(); doc.close()
+
+    with pytest.raises(PdfResourceLimitError, match="zu viele Seiten"):
+        validate_pdf_resource_budget(data, max_pages=2)
+
+    output, report = process_pdf_bytes(data, max_pages=2)
+    assert output == data
+    assert report.ok is False
+    assert report.reason == "resource_limit"
+
+
+def test_encrypted_pdf_returns_stable_report_instead_of_raising():
+    doc = pymupdf.open()
+    doc.new_page(width=120, height=120)
+    data = doc.tobytes(
+        encryption=pymupdf.PDF_ENCRYPT_AES_256,
+        owner_pw="owner",
+        user_pw="user",
+    )
+    doc.close()
+
+    output, report = process_pdf_bytes(data)
+
+    assert output == data
+    assert report.ok is False
+    assert report.reason == "encrypted"
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_pdf_sync_and_background_runs_share_exclusive_lock(
+    client, test_db: Database, tmp_path: Path, monkeypatch, background: bool
+):
+    import threading
+
+    from app.main import app
+    import app.routes.api_admin as admin_api
+
+    target = tmp_path / "recipe.pdf"
+    target.write_bytes(b"%PDF-placeholder")
+    held_lock = threading.Lock()
+    held_lock.acquire()
+    monkeypatch.setattr(admin_api, "_PDF_PROCESS_LOCK", held_lock)
+    monkeypatch.setattr(admin_api, "_PDF_ACTIVE_RUN_ID", None)
+    monkeypatch.setattr(admin_api, "_pdf_targets", lambda _payload: [target])
+    monkeypatch.setattr(admin_api, "_pdf_preflight", lambda **_kwargs: {
+        "ok": True,
+        "issues": [],
+        "warnings": [],
+    })
+    app.dependency_overrides[require_admin] = lambda: None
+    try:
+        response = client.post(
+            "/api/admin/pdf/process",
+            json={"process_all": True, "dry_run": True, "background": background},
+        )
+        assert response.status_code == 409
+        assert "PDF-Verarbeitung läuft bereits" in response.json()["detail"]
+    finally:
+        held_lock.release()
+        app.dependency_overrides.pop(require_admin, None)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("GET", "/api/admin/pdf/1/pages", None),
+        ("GET", "/api/admin/pdf/1/pages/1/preview", None),
+        (
+            "POST",
+            "/api/admin/pdf/1/pages/apply",
+            {"order": [1], "rotations": {}, "keep_original": True},
+        ),
+    ],
+)
+def test_interactive_pdf_endpoints_return_busy_while_engine_is_claimed(
+    client, monkeypatch, method: str, path: str, payload
+):
+    import threading
+
+    from app.main import app
+    import app.routes.api_admin as admin_api
+
+    held_lock = threading.Lock()
+    held_lock.acquire()
+    monkeypatch.setattr(admin_api, "_PDF_PROCESS_LOCK", held_lock)
+    monkeypatch.setattr(admin_api, "_PDF_ACTIVE_RUN_ID", None)
+    app.dependency_overrides[require_admin] = lambda: None
+    try:
+        response = client.request(method, path, json=payload)
+        assert response.status_code == 409
+        assert "PDF-Verarbeitung läuft bereits" in response.json()["detail"]
+    finally:
+        held_lock.release()
+        app.dependency_overrides.pop(require_admin, None)

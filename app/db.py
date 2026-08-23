@@ -18,9 +18,17 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 160
+CURRENT_SCHEMA_VERSION = 180
 _MIGRATION_THREAD_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
+
+
+class LastActiveAdminError(RuntimeError):
+    """Die Operation würde den letzten aktiven Administrator entfernen."""
+
+
+class CookingCompletionConflictError(RuntimeError):
+    """Ein Idempotenzschlüssel wurde mit anderer Koch-Semantik wiederverwendet."""
 
 
 _DDL = """
@@ -256,9 +264,24 @@ CREATE TABLE IF NOT EXISTS recipe_cook_history (
 CREATE INDEX IF NOT EXISTS idx_recipe_cook_history_recipe
   ON recipe_cook_history(recipe_id, cooked_at DESC);
 
--- users: Multi-User-Auth. Bcrypt-Hashes in password_hash. Die role-Spalte
--- bleibt nur für Abwärtskompatibilität; Berechtigungen werden nicht danach
--- unterschieden. disabled=1 → kein Login mehr,
+-- Dedupliziert mobile Abschluss-Retries. Der Schlüssel ist absichtlich an
+-- Rezept und Benutzer gebunden; dieselbe Person darf denselben Request nach
+-- einem Netzabbruch wiederholen, ohne einen zweiten Historieneintrag anzulegen.
+CREATE TABLE IF NOT EXISTS recipe_cooking_completion_requests (
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  username TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  servings INTEGER,
+  history_id INTEGER NOT NULL REFERENCES recipe_cook_history(id) ON DELETE CASCADE,
+  created_at REAL NOT NULL,
+  PRIMARY KEY(recipe_id, username, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_cooking_completion_history
+  ON recipe_cooking_completion_requests(history_id);
+
+-- users: Multi-User-Auth. Bcrypt-Hashes in password_hash. role ist entweder
+-- 'user' oder 'admin'; administrative APIs prüfen diese Rolle serverseitig.
+-- disabled=1 → kein Login mehr,
 -- Datensatz bleibt für Audit-Trail.
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -581,6 +604,10 @@ class Database:
             c.execute("ALTER TABLE download_failures ADD COLUMN content_type TEXT NOT NULL DEFAULT 'recipe'")
 
         user_cols = {r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()}
+        if "role" not in user_cols:
+            c.execute(
+                "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"
+            )
         if "session_version" not in user_cols:
             # Bestehende signierte Cookies enthalten keine Version und werden
             # nach dem Upgrade bewusst einmalig ungültig. Ab dann invalidieren
@@ -589,6 +616,14 @@ class Database:
                 "ALTER TABLE users ADD COLUMN session_version "
                 "INTEGER NOT NULL DEFAULT 0"
             )
+        # Historische Versionen haben die Rolle nicht ausgewertet. Ungültige
+        # Altwerte werden deshalb fail-closed zu einem normalen Benutzer. Die
+        # initiale Admin-Promotion erfolgt anschließend in migrate_users_to_db(),
+        # wo der konfigurierte Legacy-Benutzer bekannt ist.
+        c.execute(
+            "UPDATE users SET role='user' "
+            "WHERE role IS NULL OR role NOT IN ('user', 'admin')"
+        )
 
         task_cols = {
             r[1] for r in c.execute("PRAGMA table_info(background_tasks)").fetchall()
@@ -793,7 +828,15 @@ class Database:
         )
         c.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
-            (CURRENT_SCHEMA_VERSION, "cooking_history_progress_and_recipe_variants", time.time()),
+            (160, "cooking_history_progress_and_recipe_variants", time.time()),
+        )
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (170, "enforced_user_admin_roles", time.time()),
+        )
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (CURRENT_SCHEMA_VERSION, "idempotent_cooking_completion", time.time()),
         )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
@@ -2337,11 +2380,31 @@ class Database:
         servings: Optional[int],
     ) -> Dict[str, Any]:
         now = time.time()
-        completed_json = json.dumps(
-            sorted(set(int(value) for value in completed_steps)),
-            separators=(",", ":"),
-        )
+        completed = sorted(set(int(value) for value in completed_steps))
+        active = int(active_step)
+        completed_json = json.dumps(completed, separators=(",", ":"))
         with self.conn() as c:
+            # Validierung und UPSERT teilen denselben Writer-Lock mit dem
+            # atomaren Schrittersatz. So kann ein Request nicht mehr gegen die
+            # alte Liste validieren und nach deren Austausch Fortschritt
+            # zurückschreiben.
+            c.execute("BEGIN IMMEDIATE")
+            recipe = c.execute(
+                "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL",
+                (recipe_id,),
+            ).fetchone()
+            if recipe is None:
+                raise LookupError("Rezept nicht gefunden")
+            step_count = int(c.execute(
+                "SELECT COUNT(*) FROM recipe_steps WHERE recipe_id=?",
+                (recipe_id,),
+            ).fetchone()[0])
+            if step_count <= 0:
+                raise RuntimeError("Das Rezept hat keine Zubereitungsschritte")
+            if any(step < 0 or step >= step_count for step in completed):
+                raise ValueError("Der Kochfortschritt passt nicht zur Schrittliste")
+            if active < 0 or active >= step_count:
+                raise ValueError("Der aktive Kochschritt existiert nicht")
             c.execute(
                 "INSERT INTO recipe_cooking_progress "
                 "(recipe_id, username, completed_steps_json, active_step, servings, "
@@ -2351,7 +2414,7 @@ class Database:
                 "active_step=excluded.active_step, servings=excluded.servings, "
                 "updated_at=excluded.updated_at",
                 (
-                    recipe_id, username, completed_json, active_step, servings,
+                    recipe_id, username, completed_json, active, servings,
                     now, now,
                 ),
             )
@@ -2360,7 +2423,9 @@ class Database:
                 "WHERE recipe_id=? AND username=?",
                 (recipe_id, username),
             ).fetchone()
-            return self._cooking_progress_row(row) or {}
+            result = self._cooking_progress_row(row) or {}
+            result["step_count"] = step_count
+            return result
 
     def recipe_cooking_progress_clear(self, recipe_id: int, username: str) -> bool:
         with self.conn() as c:
@@ -2376,8 +2441,12 @@ class Database:
         username: str,
         *,
         servings: Optional[int],
+        idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         now = time.time()
+        key = idempotency_key.strip() if idempotency_key is not None else None
+        if key is not None and (not key or len(key) > 200):
+            raise ValueError("Ungültiger Idempotenzschlüssel")
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
             recipe = c.execute(
@@ -2386,6 +2455,22 @@ class Database:
             ).fetchone()
             if not recipe:
                 raise ValueError("Rezept nicht gefunden")
+            if key is not None:
+                existing = c.execute(
+                    "SELECT q.servings AS request_servings, h.* "
+                    "FROM recipe_cooking_completion_requests q "
+                    "JOIN recipe_cook_history h ON h.id=q.history_id "
+                    "WHERE q.recipe_id=? AND q.username=? AND q.idempotency_key=?",
+                    (recipe_id, username, key),
+                ).fetchone()
+                if existing is not None:
+                    if existing["request_servings"] != servings:
+                        raise CookingCompletionConflictError(
+                            "Idempotency-Key wurde bereits mit einer anderen Portionszahl verwendet"
+                        )
+                    replay = dict(existing)
+                    replay.pop("request_servings", None)
+                    return replay
             cur = c.execute(
                 "INSERT INTO recipe_cook_history "
                 "(recipe_id, cooked_at, cooked_by, servings) VALUES (?, ?, ?, ?)",
@@ -2395,6 +2480,13 @@ class Database:
                 "DELETE FROM recipe_cooking_progress WHERE recipe_id=? AND username=?",
                 (recipe_id, username),
             )
+            if key is not None:
+                c.execute(
+                    "INSERT INTO recipe_cooking_completion_requests "
+                    "(recipe_id, username, idempotency_key, servings, history_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (recipe_id, username, key, servings, int(cur.lastrowid), now),
+                )
             row = c.execute(
                 "SELECT * FROM recipe_cook_history WHERE id=?",
                 (int(cur.lastrowid),),
@@ -2672,7 +2764,22 @@ class Database:
         wird Timestamp + Username für den Audit-Trail mitgeschrieben, bei
         False werden beide gelöscht."""
         with self.conn() as c:
+            # Writer-Lock vor Existenzprüfung: ein paralleler Zutatenersatz
+            # kann damit weder zwischen Check und Flag-Update rutschen noch
+            # eine leere Liste als geprüft hinterlassen.
+            c.execute("BEGIN IMMEDIATE")
+            if not c.execute(
+                "SELECT 1 FROM recipes WHERE id=?", (recipe_id,)
+            ).fetchone():
+                raise LookupError("Rezept nicht gefunden")
             if verified:
+                if not c.execute(
+                    "SELECT 1 FROM recipe_ingredients WHERE recipe_id=? LIMIT 1",
+                    (recipe_id,),
+                ).fetchone():
+                    raise ValueError(
+                        "Eine leere Zutatenliste kann nicht als geprüft markiert werden"
+                    )
                 c.execute(
                     "UPDATE recipes SET user_verified=1, verified_at=?, verified_by=? "
                     "WHERE id=?",
@@ -2731,13 +2838,15 @@ class Database:
         """Liste aller User für die Settings-UI. OHNE password_hash."""
         with self.conn() as c:
             rows = c.execute(
-                "SELECT id, username, disabled, created_at, last_login_at "
+                "SELECT id, username, role, disabled, created_at, last_login_at "
                 "FROM users ORDER BY username"
             ).fetchall()
             return [dict(r) for r in rows]
 
     def user_create(self, username: str, password_hash: str,
                      role: str = "user") -> int:
+        if role not in {"user", "admin"}:
+            raise ValueError("role muss 'user' oder 'admin' sein")
         with self.conn() as c:
             cur = c.execute(
                 "INSERT INTO users (username, password_hash, role, created_at) "
@@ -2746,30 +2855,101 @@ class Database:
             )
             return int(cur.lastrowid)
 
-    def user_set_password(self, user_id: int, password_hash: str) -> None:
-        with self.conn() as c:
-            c.execute(
-                "UPDATE users SET password_hash=?, "
-                "session_version=session_version+1 WHERE id=?",
-                (password_hash, user_id),
+    @staticmethod
+    def _assert_admin_survives(c, current, *, role: str, disabled: bool) -> None:
+        currently_active_admin = (
+            current["role"] == "admin" and not bool(current["disabled"])
+        )
+        remains_active_admin = role == "admin" and not disabled
+        if not currently_active_admin or remains_active_admin:
+            return
+        active_admins = int(c.execute(
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND disabled=0"
+        ).fetchone()[0])
+        if active_admins <= 1:
+            raise LastActiveAdminError(
+                "Der letzte aktive Administrator muss erhalten bleiben"
             )
+
+    def user_update_security(
+        self,
+        user_id: int,
+        *,
+        password_hash: Optional[str] = None,
+        role: Optional[str] = None,
+        disabled: Optional[bool] = None,
+    ) -> bool:
+        """Ändert Auth-Felder atomar und widerruft bestehende Sitzungen."""
+        if role is not None and role not in {"user", "admin"}:
+            raise ValueError("role muss 'user' oder 'admin' sein")
+        with self.conn() as c:
+            # Writer-Lock vor Lesen und Entscheiden: ein paralleler
+            # Demote/Disable/Delete liest erst nach unserem Commit.
+            c.execute("BEGIN IMMEDIATE")
+            current = c.execute(
+                "SELECT role, disabled FROM users WHERE id=?",
+                (user_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            next_role = role if role is not None else str(current["role"])
+            next_disabled = (
+                bool(disabled) if disabled is not None else bool(current["disabled"])
+            )
+            self._assert_admin_survives(
+                c,
+                current,
+                role=next_role,
+                disabled=next_disabled,
+            )
+
+            updates: list[str] = []
+            values: list[Any] = []
+            if password_hash is not None:
+                updates.append("password_hash=?")
+                values.append(password_hash)
+            if role is not None and role != current["role"]:
+                updates.append("role=?")
+                values.append(role)
+            if disabled is not None and int(bool(disabled)) != int(current["disabled"]):
+                updates.append("disabled=?")
+                values.append(int(bool(disabled)))
+            if updates:
+                updates.append("session_version=session_version+1")
+                values.append(user_id)
+                c.execute(
+                    f"UPDATE users SET {', '.join(updates)} WHERE id=?",
+                    values,
+                )
+            return True
+
+    def user_set_password(self, user_id: int, password_hash: str) -> None:
+        self.user_update_security(user_id, password_hash=password_hash)
 
     def user_set_role(self, user_id: int, role: str) -> None:
-        """Legacy-Kompatibilität; Rollen werden nicht mehr ausgewertet."""
-        with self.conn() as c:
-            c.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
+        """Setzt die Rolle und widerruft dabei bestehende Sitzungen."""
+        self.user_update_security(user_id, role=role)
 
     def user_set_disabled(self, user_id: int, disabled: bool) -> None:
-        with self.conn() as c:
-            c.execute(
-                "UPDATE users SET disabled=?, "
-                "session_version=session_version+1 WHERE id=?",
-                (1 if disabled else 0, user_id),
-            )
+        self.user_update_security(user_id, disabled=disabled)
 
-    def user_delete(self, user_id: int) -> None:
+    def user_delete(self, user_id: int) -> bool:
         with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            current = c.execute(
+                "SELECT role, disabled FROM users WHERE id=?",
+                (user_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            self._assert_admin_survives(
+                c,
+                current,
+                role="user",
+                disabled=True,
+            )
             c.execute("DELETE FROM users WHERE id=?", (user_id,))
+            return True
 
     def user_update_last_login(self, user_id: int) -> None:
         with self.conn() as c:
@@ -2795,6 +2975,44 @@ class Database:
             return int(c.execute(
                 "SELECT COUNT(*) FROM users WHERE role='admin' AND disabled=0"
             ).fetchone()[0])
+
+    def user_ensure_initial_admin(self, preferred_username: str = "") -> Optional[str]:
+        """Stuft bei einer Legacy-Installation genau einen aktiven User hoch.
+
+        Existiert bereits ein aktiver Administrator, passiert nichts. Sonst
+        wird bevorzugt der alte Config-Benutzer gewählt, ersatzweise der
+        älteste aktive Account. Der gesamte Entscheid erfolgt in einer
+        Transaktion, damit parallele Startvorgänge nicht mehrere Nutzer
+        unbeabsichtigt hochstufen.
+        """
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            if c.execute(
+                "SELECT 1 FROM users WHERE role='admin' AND disabled=0 LIMIT 1"
+            ).fetchone():
+                return None
+
+            candidate = None
+            if preferred_username:
+                candidate = c.execute(
+                    "SELECT id, username FROM users "
+                    "WHERE username=? COLLATE NOCASE AND disabled=0 LIMIT 1",
+                    (preferred_username,),
+                ).fetchone()
+            if candidate is None:
+                candidate = c.execute(
+                    "SELECT id, username FROM users WHERE disabled=0 "
+                    "ORDER BY created_at, id LIMIT 1"
+                ).fetchone()
+            if candidate is None:
+                return None
+
+            c.execute(
+                "UPDATE users SET role='admin', "
+                "session_version=session_version+1 WHERE id=?",
+                (int(candidate["id"]),),
+            )
+            return str(candidate["username"])
 
     # ─── Sync-Errors (FS-Konflikte) ──────────────────────────────────────
     def sync_error_record(self, folder_path: str, error_type: str,

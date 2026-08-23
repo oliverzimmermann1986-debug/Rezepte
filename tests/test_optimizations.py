@@ -5,9 +5,16 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
-from app.recipes.image_cache import ensure_thumbnail, normalize_image
+from app.recipes.image_cache import (
+    MAX_OTHER_SOURCE_PIXELS,
+    MAX_SOURCE_DIMENSION,
+    assert_safe_image_dimensions,
+    ensure_thumbnail,
+    normalize_image,
+)
 from app.recipes import sync_manager
 from tests.conftest import _create_recipe
 
@@ -115,6 +122,21 @@ def test_thumbnail_cache_is_atomic_and_reused(tmp_path: Path):
     with Image.open(second) as image:
         assert image.width == 400
         assert image.mode == "RGB"
+
+
+def test_image_dimension_guard_rejects_dimensions_and_pixel_bombs():
+    class FakeImage:
+        format = "PNG"
+
+        def __init__(self, size):
+            self.size = size
+
+    with pytest.raises(ValueError, match="abmessungen"):
+        assert_safe_image_dimensions(FakeImage((MAX_SOURCE_DIMENSION + 1, 10)))
+    with pytest.raises(ValueError, match="Pixelbudget"):
+        assert_safe_image_dimensions(
+            FakeImage((6000, MAX_OTHER_SOURCE_PIXELS // 6000 + 1))
+        )
 
 
 def test_ui_loads_runtime_helpers_and_accessible_status_region():

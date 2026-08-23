@@ -1,6 +1,7 @@
-def test_native_login_returns_bearer_session(client, monkeypatch):
+def test_native_login_returns_bearer_session(client, test_db, monkeypatch):
     import app.routes.api_auth as api_auth
 
+    test_db.user_create("anna", "unused-test-hash", role="user")
     monkeypatch.setattr(api_auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(api_auth, "check_credentials", lambda username, password: (
         username == "anna" and password == "geheim"
@@ -18,6 +19,9 @@ def test_native_login_returns_bearer_session(client, monkeypatch):
         "token_type": "bearer",
         "expires_in": 1209600,
         "username": "anna",
+        "role": "user",
+        "is_admin": False,
+        "full_access": False,
     }
 
 
@@ -89,12 +93,16 @@ def test_native_login_uses_cloudflare_as_only_auth_when_local_auth_is_disabled(
         "token_type": "bearer",
         "expires_in": 1209600,
         "username": "local",
+        "role": "admin",
+        "is_admin": True,
+        "full_access": True,
     }
 
 
-def test_native_session_accepts_authenticated_request(client, monkeypatch):
+def test_native_session_accepts_authenticated_request(client, test_db, monkeypatch):
     import app.routes.api_auth as api_auth
 
+    test_db.user_create("anna", "unused-test-hash", role="user")
     monkeypatch.setattr(api_auth, "request_user", lambda request: (
         "anna" if request.headers.get("authorization") == "Bearer valid-token" else None
     ))
@@ -105,7 +113,12 @@ def test_native_session_accepts_authenticated_request(client, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"username": "anna", "full_access": True}
+    assert response.json() == {
+        "username": "anna",
+        "role": "user",
+        "is_admin": False,
+        "full_access": False,
+    }
 
 
 def test_native_logout_revokes_server_sessions(client, monkeypatch):
