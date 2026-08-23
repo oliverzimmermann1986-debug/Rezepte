@@ -302,10 +302,13 @@ class ScraperJob:
 
     # ---------------- URL-Verarbeitung ----------------
     def process_url(self, item: Dict) -> Dict:
-        """Speichert Social-Links zur manuellen Pflege, ohne Medien-Download.
+        """Analysiert Social-Link-Metadaten, ohne Medien herunterzuladen.
 
-        TikTok-/Instagram-Inhalte bleiben bei der Plattform. Dadurch enthält
-        die App nur Quelle und manuell gepflegte Rezeptdaten.
+        TikTok-/Instagram-Inhalte bleiben bei der Plattform. ``yt-dlp`` liest
+        ausschließlich Caption/Titel mit ``--skip-download``. Nur wenn Name,
+        Zutaten *und* Schritte zuverlässig erkannt wurden, entsteht sofort ein
+        Rezept; unvollständige Quellen bleiben mit dem Link in der manuellen
+        Prüfung.
         """
         from ..core.email_processor import normalize_content_url
 
@@ -337,10 +340,15 @@ class ScraperJob:
             }
 
         existing_pending = self.db.pending_get(url)
-        if existing_pending and existing_pending.get("status") == "pending":
+        if (
+            existing_pending
+            and existing_pending.get("status") == "pending"
+            and not item.get("reanalyze_existing")
+        ):
             return {**result, "status": "pending", "name": "Unvollständiger Link-Import"}
 
         platform = "TikTok" if "tiktok.com" in url else "Instagram"
+        description = self._fetch_description_via_ytdlp(url)
         suggestion = {
             "name": f"{platform}-Rezept prüfen",
             "type": "Sonstiges",
@@ -348,11 +356,63 @@ class ScraperJob:
             "confidence": 0.0,
             "source": "external-link",
             "platform": platform,
+            "analysis_state": "metadata_unavailable",
+            "ingredients": [],
+            "steps": [],
+            "servings": None,
         }
+
+        structured_recipe = None
+        if description and content_type == "recipe":
+            analysis = self._analyze_recipe(description)
+            structured_recipe = self._extract_recipe_data(description)
+            suggestion.update({
+                "name": analysis.name,
+                "type": analysis.type,
+                "category": analysis.category or "Allgemein",
+                "confidence": analysis.confidence,
+                "analysis_state": "complete" if self._recipe_data_complete(
+                    analysis, structured_recipe,
+                ) else "incomplete",
+                "ingredients": structured_recipe.ingredients,
+                "steps": structured_recipe.steps,
+                "servings": structured_recipe.servings,
+                "tags": structured_recipe.tags,
+                "extraction_method": structured_recipe.method,
+                "warnings": structured_recipe.warnings,
+            })
+            if suggestion["analysis_state"] == "complete":
+                target, recipe_id = self._save_external_link_recipe(
+                    url=url,
+                    platform=platform,
+                    analysis=analysis,
+                    description=description,
+                    structured=structured_recipe,
+                )
+                if existing_pending:
+                    self.db.pending_resolve(url, status="resolved")
+                result.update({
+                    "status": "auto",
+                    "name": analysis.name,
+                    "platform": platform,
+                    "target": str(target),
+                    "recipe_id": recipe_id,
+                    "message": "Link und Caption wurden übernommen; Zutaten und Schritte wurden per KI erkannt.",
+                })
+                return result
+        elif description and content_type == "wedding":
+            analysis = self._analyze_wedding(description)
+            suggestion.update({
+                "name": analysis.name,
+                "category": analysis.category or "Sonstiges",
+                "confidence": analysis.confidence,
+                "analysis_state": "incomplete",
+            })
+
         self.db.pending_add(
             url=url,
             content_type=content_type,
-            description=None,
+            description=(description or "")[:5000] or None,
             video_path=None,
             frame_path=None,
             ai_suggestion=suggestion,
@@ -361,9 +421,101 @@ class ScraperJob:
             "status": "pending",
             "name": suggestion["name"],
             "platform": platform,
-            "message": "Link gespeichert. Rezeptdaten werden manuell gepflegt; der Post öffnet extern.",
+            "message": (
+                "Link und Caption wurden geprüft. Fehlende Zutaten oder Schritte bitte unter „Manuelle Prüfung“ ergänzen."
+                if description
+                else "Link gespeichert. Die Caption war nicht abrufbar und muss unter „Manuelle Prüfung“ ergänzt werden."
+            ),
         })
         return result
+
+    def _recipe_data_complete(self, analysis: RecipeAnalysis, structured) -> bool:
+        return bool(
+            structured
+            and structured.ingredients
+            and structured.steps
+            and not analysis.needs_manual_input(self.confidence_threshold)
+        )
+
+    def _save_external_link_recipe(
+        self,
+        *,
+        url: str,
+        platform: str,
+        analysis: RecipeAnalysis,
+        description: str,
+        structured,
+    ) -> tuple[Path, int]:
+        """Speichert ein vollständiges Link-Rezept ohne Video oder Medienkopie."""
+        from ..core.safety import atomic_write_json, atomic_write_text, write_manifest
+
+        target = (
+            self.recipe_dir
+            / _sanitize(analysis.type)
+            / _sanitize(analysis.category or "Allgemein")
+            / _sanitize(analysis.name)
+        )
+        if target.exists():
+            target = target.parent / f"{target.name}_{datetime.now():%Y%m%d_%H%M%S}"
+        target.mkdir(parents=True, exist_ok=False)
+        info = {
+            "url": url,
+            "name": analysis.name,
+            "type": analysis.type,
+            "category": analysis.category or "Allgemein",
+            "confidence": analysis.confidence,
+            "content_type": "recipe",
+            "source": "external-link",
+            "platform": platform,
+            "description": description[:5000],
+            "timestamp": datetime.now().isoformat(),
+            "is_manual": False,
+            "recipe_extraction": {
+                "method": structured.method,
+                "ingredients": len(structured.ingredients),
+                "steps": len(structured.steps),
+                "servings": structured.servings,
+                "warnings": structured.warnings,
+            },
+        }
+        try:
+            atomic_write_text(target / "description.txt", description)
+            atomic_write_json(target / "info.json", info)
+            write_manifest(target, source={"kind": "external-link", "url": url})
+            recipe_id = self.db.recipe_upsert(
+                url=url,
+                name=analysis.name,
+                type=analysis.type,
+                category=analysis.category or "Allgemein",
+                folder_path=str(target),
+                description=description,
+                thumb_filename=None,
+                video_filename=None,
+                source_added_at=time.time(),
+            )
+            applied = apply_extracted_recipe_data(
+                self.db,
+                recipe_id,
+                structured,
+                actor="social-link-ai",
+                overwrite=False,
+                create_version=False,
+                update_description=True,
+            )
+            if not applied.get("ok"):
+                raise RuntimeError(applied.get("error") or "Rezeptdaten konnten nicht gespeichert werden")
+            self.db.history_add(
+                url,
+                content_type="recipe",
+                name=analysis.name,
+                target_dir=str(target),
+            )
+            return target, recipe_id
+        except Exception:
+            # Der Ordner wurde ausschließlich für diesen neuen Import angelegt.
+            # Bei DB-Fehler darf kein unsichtbarer Halbimport übrig bleiben.
+            shutil.rmtree(target, ignore_errors=True)
+            raise
 
     # ---------------- Mail-Attachments (PDF + JPG/PNG) ----------------
 
@@ -497,8 +649,8 @@ class ScraperJob:
         atomic_write_bytes(target, data)
         return str(target)
 
-    def _extract_pdf_recipe_data(self, description: str):
-        """Liest Zutaten, Schritte, Portionen und Tags direkt aus PDF-Text.
+    def _extract_recipe_data(self, description: str):
+        """Liest Zutaten, Schritte, Portionen und Tags aus erkanntem Rezepttext.
 
         Der lokale Parser funktioniert ohne Cloud; bei konfiguriertem Analyzer
         ergänzt die KI schwierig formatierte Zutatenlisten und Arbeitsschritte.
@@ -508,6 +660,10 @@ class ScraperJob:
             description, analyzer=self.analyzer if self.analyzer_enabled else None,
             existing_tags=tags, existing_canonical=canonical,
         )
+
+    def _extract_pdf_recipe_data(self, description: str):
+        """Kompatibilitätsalias für bestehende PDF-Aufrufer und Tests."""
+        return self._extract_recipe_data(description)
 
     def _index_saved_attachment_recipe(self, target: Path, analysis: RecipeAnalysis,
                                        synth_url: str, description: str,
@@ -549,6 +705,7 @@ class ScraperJob:
         subject = att.get("subject", "")
         body_excerpt = att.get("body_excerpt", "")
         default_cat = att.get("default_category") or "Sonstiges"
+        source_kind = str(att.get("source") or "mail-attachment")
         result: Dict = {"url": synth_url, "type": content_type, "status": "error"}
         pdf_rotation = None
         structured_recipe = None
@@ -592,26 +749,51 @@ class ScraperJob:
         else:  # .jpg / .jpeg / .png
             description = f"{subject}\n\n{body_excerpt}".strip()
 
+        # Ein manueller Bild-Upload wurde bislang nur grob klassifiziert. Jetzt
+        # wird der lesbare Rezepttext sofort per Vision transkribiert, damit
+        # Zutaten und Schritte noch in derselben Import-Pipeline entstehen.
+        image_mime = None
+        if ext in (".jpg", ".jpeg", ".png"):
+            image_mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+        if (
+            image_mime
+            and content_type == "recipe"
+            and self.analyzer
+            and hasattr(self.analyzer, "extract_description_from_image_bytes")
+        ):
+            extracted = self.analyzer.extract_description_from_image_bytes(
+                data,
+                image_mime,
+                subject,
+            )
+            if extracted:
+                description = extracted
+
         if not description and ext != ".pdf":
             # Kein Text greifbar
             description = subject or "(kein Subject)"
 
-        # PDF-Rezepte sofort strukturiert auslesen. Die Ausgabe wird sowohl in
-        # Pending-Vorschlägen als auch beim Auto-Import verwendet.
-        if ext == ".pdf" and content_type == "recipe":
-            structured_recipe = self._extract_pdf_recipe_data(description)
+        # PDF- und Bild-Rezepte sofort strukturiert auslesen. Die Ausgabe wird
+        # sowohl in Pending-Vorschlägen als auch beim Auto-Import verwendet.
+        if content_type == "recipe":
+            structured_recipe = self._extract_recipe_data(description)
 
         try:
             if content_type == "recipe":
-                # Bei JPG/PNG + OpenAI-Provider: Vision-Call
+                # Wenn Vision lesbaren Text geliefert hat, läuft auch die
+                # Klassifizierung textbasiert. Ein reines Food-Foto nutzt als
+                # letzten Fallback weiterhin die grobe Bild-Klassifizierung.
                 analysis = None
-                if ext in (".jpg", ".jpeg", ".png"):
-                    mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
-                    analysis = self._analyze_image_via_openai(data, mime, "recipe", subject)
+                if _has_usable_description(description, self.min_desc_len):
+                    analysis = self._analyze_recipe(description)
+                elif image_mime:
+                    analysis = self._analyze_image_via_openai(
+                        data, image_mime, "recipe", subject,
+                    )
                 if not analysis:
                     analysis = self._analyze_recipe(description)
 
-                if analysis.needs_manual_input(self.confidence_threshold):
+                if not self._recipe_data_complete(analysis, structured_recipe):
                     pending_path = self._stash_attachment_for_pending(data, ext, synth_url)
                     self.db.pending_add(
                         url=synth_url, content_type="recipe",
@@ -623,7 +805,7 @@ class ScraperJob:
                         ai_suggestion={
                             "name": analysis.name, "type": analysis.type,
                             "category": analysis.category, "confidence": analysis.confidence,
-                            "source": "mail-attachment", "filename": att["filename"],
+                            "source": source_kind, "filename": att["filename"],
                             "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
                             "ingredients": (structured_recipe.ingredients if structured_recipe else []),
                             "steps": (structured_recipe.steps if structured_recipe else []),
@@ -642,7 +824,7 @@ class ScraperJob:
                     info = {
                         "url": synth_url, "name": analysis.name, "type": analysis.type,
                         "category": analysis.category, "confidence": analysis.confidence,
-                        "content_type": "recipe", "source": "mail-attachment",
+                        "content_type": "recipe", "source": source_kind,
                         "filename": att["filename"], "mail_subject": subject,
                         "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
                         "description": description[:5000],
@@ -660,7 +842,7 @@ class ScraperJob:
                         original_pdf_data=original_pdf_data if self.pdf_keep_original else None,
                     )
                     recipe_id = None
-                    if ext == ".pdf" and structured_recipe is not None:
+                    if structured_recipe is not None:
                         recipe_id = self._index_saved_attachment_recipe(
                             target, analysis, synth_url, description, structured_recipe,
                         )
@@ -693,7 +875,7 @@ class ScraperJob:
                         ai_suggestion={
                             "name": analysis.name, "category": analysis.category or default_cat,
                             "confidence": analysis.confidence,
-                            "source": "mail-attachment", "filename": att["filename"],
+                            "source": source_kind, "filename": att["filename"],
                             "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
                         },
                     )
@@ -709,7 +891,7 @@ class ScraperJob:
                         "url": synth_url, "name": analysis.name,
                         "wedding_category": analysis.category or default_cat,
                         "confidence": analysis.confidence,
-                        "content_type": "wedding", "source": "mail-attachment",
+                        "content_type": "wedding", "source": source_kind,
                         "filename": att["filename"], "mail_subject": subject,
                         "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
                         "description": description[:5000],
@@ -936,10 +1118,13 @@ class ScraperJob:
         """Lädt nur die Description einer URL (skip-download). Nutzt das
         existing yt-dlp Binary + Cookie-Datei, kein File-Download."""
         import subprocess
-        binary = self.downloader.ytdlp_path
+        binary = getattr(self.downloader, "ytdlp_path", "")
+        if not binary:
+            logger.warning("yt-dlp metadata nicht verfügbar: Binary fehlt")
+            return None
         cmd = [binary, "--skip-download", "--no-warnings", "--no-playlist",
                "--print", "%(description)s\n%(title)s"]
-        if self.downloader.cookies_file:
+        if getattr(self.downloader, "cookies_file", None):
             cmd += ["--cookies", self.downloader.cookies_file]
         cmd.append(url)
         try:
@@ -1300,11 +1485,75 @@ class ScraperJob:
 
         suggestion = entry.get("ai_suggestion") or {}
         if suggestion.get("source") == "external-link":
+            description = self._fetch_description_via_ytdlp(url)
+            if not description:
+                return {
+                    "ok": True,
+                    "action": "still_pending",
+                    "analysis": suggestion,
+                    "message": "Die Caption konnte nicht abgerufen werden; der Link bleibt zur manuellen Pflege erhalten.",
+                }
+            platform = suggestion.get("platform") or (
+                "TikTok" if "tiktok.com" in url else "Instagram"
+            )
+            content_type = entry.get("content_type") or "recipe"
+            if content_type == "recipe":
+                analysis = self._analyze_recipe(description)
+                structured = self._extract_recipe_data(description)
+                suggestion = {
+                    **suggestion,
+                    "name": analysis.name,
+                    "type": analysis.type,
+                    "category": analysis.category or "Allgemein",
+                    "confidence": analysis.confidence,
+                    "analysis_state": "complete" if self._recipe_data_complete(
+                        analysis, structured,
+                    ) else "incomplete",
+                    "ingredients": structured.ingredients,
+                    "steps": structured.steps,
+                    "servings": structured.servings,
+                    "tags": structured.tags,
+                    "extraction_method": structured.method,
+                    "warnings": structured.warnings,
+                }
+                if suggestion["analysis_state"] == "complete":
+                    target, recipe_id = self._save_external_link_recipe(
+                        url=url,
+                        platform=str(platform),
+                        analysis=analysis,
+                        description=description,
+                        structured=structured,
+                    )
+                    self.db.pending_resolve(url, status="resolved")
+                    return {
+                        "ok": True,
+                        "action": "auto_saved",
+                        "target": str(target),
+                        "recipe_id": recipe_id,
+                        "analysis": suggestion,
+                    }
+            else:
+                analysis = self._analyze_wedding(description)
+                suggestion = {
+                    **suggestion,
+                    "name": analysis.name,
+                    "category": analysis.category or "Sonstiges",
+                    "confidence": analysis.confidence,
+                    "analysis_state": "incomplete",
+                }
+            self.db.pending_add(
+                url=url,
+                content_type=content_type,
+                description=description[:5000],
+                video_path=None,
+                frame_path=None,
+                ai_suggestion=suggestion,
+            )
             return {
                 "ok": True,
                 "action": "still_pending",
                 "analysis": suggestion,
-                "message": "Externe Links werden nicht heruntergeladen und müssen manuell gepflegt werden.",
+                "message": "Caption wurde neu ausgewertet; fehlende Zutaten oder Schritte bleiben zur manuellen Pflege offen.",
             }
 
         description = entry.get("description")

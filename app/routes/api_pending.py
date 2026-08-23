@@ -35,6 +35,7 @@ from ..config_store import get_config
 from ..db import get_db
 from ..jobs.scraper import get_scraper_job
 from ..jobs.locks import file_lock_or_none
+from ..jobs.task_queue import enqueue
 from ..core.pdf_processing import (
     PdfResourceLimitError,
     PdfValidationError,
@@ -243,10 +244,12 @@ def _assert_upload_capacity(payload_size: int) -> None:
 
 @router.post("/import-url")
 def import_url(body: ImportUrlBody) -> Dict[str, Any]:
-    """Speichert einen einzelnen Social-Post als externe Rezeptquelle.
+    """Nimmt einen Social-Post sofort an und analysiert ihn im Hintergrund.
 
-    Medien werden bewusst nicht heruntergeladen. Der Link landet zur manuellen
-    Pflege bei den unvollständigen Importen und wird später extern geöffnet.
+    Der Platzhalter ist direkt in der manuellen Prüfung sichtbar. Caption- und
+    KI-Auswertung laufen persistent in der Background-Queue, damit die iOS-App
+    nicht während ``yt-dlp``/OpenAI in einen Request-Timeout läuft. Medien
+    werden weiterhin nicht heruntergeladen.
     """
     from ..core.email_processor import normalize_content_url
 
@@ -268,11 +271,40 @@ def import_url(body: ImportUrlBody) -> Dict[str, Any]:
         return {"ok": True, "status": "duplicate", "url": url,
                 "message": "URL wurde bereits importiert"}
 
-    with file_lock_or_none("scraper") as lock:
-        if lock is None:
-            raise HTTPException(409, "Ein Import läuft bereits. Bitte gleich erneut versuchen.")
-        result = get_scraper_job().process_url({"url": url, "type": body.type})
-    return {"ok": result.get("status") in ("already_processed", "pending"), **result}
+    platform = "TikTok" if "tiktok.com" in url else "Instagram"
+    db.pending_add(
+        url=url,
+        content_type=body.type,
+        description=None,
+        video_path=None,
+        frame_path=None,
+        ai_suggestion={
+            "name": f"{platform}-Rezept wird analysiert",
+            "type": "Sonstiges",
+            "category": "Allgemein",
+            "confidence": 0.0,
+            "source": "external-link",
+            "platform": platform,
+            "analysis_state": "queued",
+            "ingredients": [],
+            "steps": [],
+            "servings": None,
+        },
+    )
+    dedupe_key = hashlib.sha256(f"{body.type}\0{url}".encode("utf-8")).hexdigest()
+    task_id = enqueue(
+        "share_ingest",
+        {"url": url, "type": body.type},
+        dedupe_key=dedupe_key,
+    )
+    return {
+        "ok": True,
+        "status": "pending",
+        "accepted": True,
+        "url": url,
+        "task_id": task_id,
+        "message": "Link übernommen. Caption und Rezeptdaten werden jetzt per KI ausgewertet.",
+    }
 
 
 @router.post("/import-file")
@@ -351,6 +383,7 @@ async def import_file(
         "filename": filename,
         "ext": ext,
         "type": import_type,
+        "source": "manual-upload",
         "data": data,
         "subject": Path(filename).stem.replace("_", " "),
         "body_excerpt": "",

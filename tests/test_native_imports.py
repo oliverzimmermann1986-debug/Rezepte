@@ -8,8 +8,10 @@ import pymupdf
 import pytest
 from PIL import Image
 
+from app.core.analyzer import RecipeAnalysis
 from app.core.email_processor import normalize_content_url
 from app.jobs.scraper import ScraperJob
+from app.recipes.pdf_recipe_extract import ExtractedRecipeData
 
 
 def _jpeg_bytes(color: str = "red") -> bytes:
@@ -492,6 +494,168 @@ def test_social_url_validation_uses_exact_hosts_and_single_posts():
     assert normalize_content_url("http://www.instagram.com/reel/123") is None
     assert normalize_content_url("https://www.instagram.com/koch") is None
     assert normalize_content_url("https://www.tiktok.com/@koch") is None
+
+
+def test_native_social_import_is_visible_before_background_analysis(
+    client, test_db, monkeypatch,
+):
+    from app.routes import api_pending
+
+    queued = {}
+
+    def fake_enqueue(kind, payload, *, dedupe_key=None):
+        queued.update(kind=kind, payload=payload, dedupe_key=dedupe_key)
+        return 73
+
+    monkeypatch.setattr(api_pending, "enqueue", fake_enqueue)
+    response = client.post(
+        "/api/pending/import-url",
+        json={"url": "https://www.instagram.com/reel/ABC123/?igsh=share", "type": "recipe"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["task_id"] == 73
+    assert response.json()["status"] == "pending"
+    pending = test_db.pending_get("https://www.instagram.com/reel/ABC123/")
+    assert pending["status"] == "pending"
+    assert pending["ai_suggestion"]["analysis_state"] == "queued"
+    assert queued["kind"] == "share_ingest"
+    assert queued["payload"]["url"] == "https://www.instagram.com/reel/ABC123/"
+
+
+def test_social_metadata_ai_keeps_incomplete_recipe_pending_without_video(test_db):
+    url = "https://www.tiktok.com/@koch/video/987"
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.confidence_threshold = 0.75
+    job.downloader = type("NoMediaDownloader", (), {
+        "download": lambda *_args: (_ for _ in ()).throw(
+            AssertionError("Social-Medien dürfen nicht heruntergeladen werden")
+        ),
+    })()
+    job._fetch_description_via_ytdlp = lambda _url: (
+        "Tomatensuppe. Zutaten: 4 Tomaten und Salz. Alles pürieren."
+    )
+    job._analyze_recipe = lambda _text: RecipeAnalysis(
+        "Tomatensuppe", "Hauptgericht", "Suppe", 0.94,
+    )
+    job._extract_recipe_data = lambda _text: ExtractedRecipeData(
+        ingredients=[{"name": "Tomaten", "amount": 4, "unit": "Stück"}],
+        steps=[],
+        method="ai",
+    )
+
+    result = job.process_url({"url": url, "type": "recipe"})
+
+    assert result["status"] == "pending"
+    pending = test_db.pending_get(url)
+    assert pending["description"].startswith("Tomatensuppe")
+    assert pending["ai_suggestion"]["ingredients"][0]["name"] == "Tomaten"
+    assert pending["ai_suggestion"]["steps"] == []
+    assert pending["video_path"] is None
+
+
+def test_social_metadata_ai_saves_complete_recipe_without_video(test_db, tmp_path):
+    url = "https://www.instagram.com/reel/COMPLETE/"
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.recipe_dir = tmp_path / "recipes"
+    job.confidence_threshold = 0.75
+    job.downloader = type("NoMediaDownloader", (), {})()
+    job._fetch_description_via_ytdlp = lambda _url: (
+        "Pasta. Zutaten: 200 g Nudeln, 4 Tomaten. Nudeln kochen und Tomaten einkochen."
+    )
+    job._analyze_recipe = lambda _text: RecipeAnalysis(
+        "Schnelle Tomatenpasta", "Hauptgericht", "Pasta", 0.96,
+    )
+    job._extract_recipe_data = lambda text: ExtractedRecipeData(
+        text=text,
+        ingredients=[
+            {"name": "Nudeln", "canonical_name": "nudeln", "amount": 200, "unit": "g"},
+            {"name": "Tomaten", "canonical_name": "tomate", "amount": 4, "unit": "Stück"},
+        ],
+        steps=[{"instruction": "Nudeln kochen und Tomaten einkochen.", "timer_seconds": None}],
+        servings=2,
+        method="ai",
+    )
+
+    result = job.process_url({"url": url, "type": "recipe"})
+
+    assert result["status"] == "auto"
+    recipe = test_db.recipe_get(result["recipe_id"])
+    assert recipe["video_filename"] is None
+    assert recipe["servings"] == 2
+    assert len(test_db.recipe_ingredients_get(recipe["id"])) == 2
+    target = Path(result["target"])
+    assert not list(target.glob("*.mp4"))
+    assert (target / "description.txt").exists()
+
+
+def test_manual_image_is_transcribed_and_structured_immediately(test_db, tmp_path):
+    class FakeAnalyzer:
+        def extract_description_from_image_bytes(self, _data, _mime, _context):
+            return (
+                "Kartoffelsuppe für 4 Portionen. Zutaten: 500 g Kartoffeln, 1 l Brühe. "
+                "Kartoffeln schneiden. Danach 20 Minuten kochen."
+            )
+
+        def analyze_recipe(self, _description):
+            return RecipeAnalysis("Kartoffelsuppe", "Hauptgericht", "Suppe", 0.97)
+
+        def analyze_recipe_content(self, _description, **_kwargs):
+            return {
+                "ingredients": [
+                    {"name": "Kartoffel", "amount": 500, "unit": "g", "raw": "500 g Kartoffeln"},
+                    {"name": "Brühe", "amount": 1, "unit": "l", "raw": "1 l Brühe"},
+                ],
+                "steps": [
+                    {"instruction": "Kartoffeln schneiden.", "timer_seconds": None},
+                    {"instruction": "20 Minuten kochen.", "timer_seconds": 1200},
+                ],
+                "servings": 4,
+                "tags": ["suppe"],
+            }
+
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.recipe_dir = tmp_path / "recipes"
+    job.wedding_dir = tmp_path / "wedding"
+    job.temp_dir = tmp_path / "temp"
+    job.analyzer = FakeAnalyzer()
+    job.analyzer_enabled = True
+    job.min_desc_len = 20
+    job.confidence_threshold = 0.75
+    job.pdf_keep_original = True
+
+    result = job.process_attachment(
+        {
+            "filename": "kartoffelsuppe.jpg",
+            "ext": ".jpg",
+            "type": "recipe",
+            "source": "manual-upload",
+            "data": b"jpeg-placeholder",
+            "subject": "kartoffelsuppe",
+            "body_excerpt": "",
+        },
+        "manual-upload://vision/kartoffelsuppe.jpg",
+    )
+
+    assert result["status"] == "auto"
+    recipe = test_db.recipe_get(result["recipe_id"])
+    assert recipe["description"].startswith("Kartoffelsuppe für 4 Portionen")
+    assert recipe["servings"] == 4
+    assert [item["name"] for item in test_db.recipe_ingredients_get(recipe["id"])] == [
+        "Kartoffel", "Brühe",
+    ]
+    assert len(test_db.recipe_steps_get(recipe["id"])) == 2
+
+
+def test_cart_add_endpoint_returns_json(client):
+    response = client.post("/api/cart/add", json={"name": "Kartoffel"})
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["ok"] is True
 
 
 def test_social_import_is_link_only_and_never_calls_downloader(test_db):

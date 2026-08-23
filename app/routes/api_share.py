@@ -1,8 +1,9 @@
 """TikTok-/Instagram-Share-Intake.
 
 Ein iOS-Kurzbefehl (Share-Sheet aus TikTok) POSTet eine URL hierher; sie läuft
-dann durch die normale Link-Pipeline und landet ohne Medien-Download in der
-manuellen Prüfung.
+dann durch die normale Link-Pipeline. Caption und Rezeptdaten werden ohne
+Medien-Download ausgewertet; unvollständige Ergebnisse landen in der manuellen
+Prüfung.
 
 Auth: KEIN Session-Cookie (ein Kurzbefehl kann keins liefern), stattdessen ein
 statisches Token aus der Config (``web.share_token``, lazy generiert). Header
@@ -103,7 +104,14 @@ def run_share_ingest_task(payload: dict) -> dict:
                 "error": "Scraper ist momentan belegt",
             }
         result = scraper_job.get_scraper_job().process_url(
-            {"url": url, "type": content_type}
+            {
+                "url": url,
+                "type": content_type,
+                # Die native Intake-Route legt sofort einen sichtbaren
+                # Pending-Platzhalter an. Der Worker muss diesen analysieren,
+                # statt ihn als bereits bekannten Import zu überspringen.
+                "reanalyze_existing": True,
+            }
         )
         logger.info("Share-Intake %s → %s", url, result.get("status"))
         return {"ok": result.get("status") != "error", "url": url, **result}

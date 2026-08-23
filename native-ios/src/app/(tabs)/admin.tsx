@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
+import { useLocalSearchParams } from 'expo-router';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
@@ -30,6 +31,7 @@ type Overview = {
 };
 
 export default function AdminScreen() {
+  const { importRefresh } = useLocalSearchParams<{ importRefresh?: string }>();
   const { username, serverUrl, sessionWarning, isAdmin, signOut } = useAuth();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [pending, setPending] = useState<PendingItem[]>([]);
@@ -69,8 +71,11 @@ export default function AdminScreen() {
 
   useFocusEffect(useCallback(() => {
     if (!isAdmin) return;
+    // Der Zeitstempel ändert sich auch dann, wenn der Admin-Reiter bereits
+    // geöffnet ist, und erzwingt so das Nachladen eines Share-Imports.
+    void importRefresh;
     void load();
-  }, [isAdmin, load]));
+  }, [importRefresh, isAdmin, load]));
 
   async function openPrivacy() {
     try {
@@ -221,7 +226,7 @@ export default function AdminScreen() {
 
           <View style={sharedStyles.card}>
             <Text style={sharedStyles.sectionTitle}>Direktimport</Text>
-            <Text style={styles.help}>TikTok-/Instagram-Link, Foto oder lokales PDF übernehmen. Social-Medien bleiben bei der Plattform; gespeichert wird nur der Link.</Text>
+            <Text style={styles.help}>TikTok-/Instagram-Link, Foto oder lokales PDF übernehmen. Social-Medien bleiben bei der Plattform; gespeichert werden Link und erkannte Rezeptdaten, kein Video.</Text>
             <TextInput
               accessibilityLabel="TikTok- oder Instagram-Link"
               autoCapitalize="none"

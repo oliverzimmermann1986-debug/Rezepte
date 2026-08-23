@@ -205,28 +205,54 @@ class OpenAIAnalyzer:
 
         if suffix in (".jpg", ".jpeg", ".png", ".webp"):
             try:
-                import base64
-                with open(p, "rb") as fh:
-                    b64 = base64.b64encode(fh.read()).decode()
-                mime = "jpeg" if suffix in (".jpg", ".jpeg") else suffix.lstrip(".")
-                prompt = (
-                    "Du siehst ein Bild eines Rezepts (Foto oder Screenshot). "
-                    "Extrahiere ALLEN lesbaren Text und gib eine zusammenhängende "
-                    "deutsche Rezept-Beschreibung zurück, mit Zutaten (Mengen falls "
-                    "erkennbar) und Zubereitungs-Schritten. Wenn nichts Rezept-Artiges "
-                    "lesbar ist, antworte exakt mit: KEINE_REZEPT_DATEN"
-                )
-                txt = self._call_vision(b64, mime, prompt)
-                if not txt or "KEINE_REZEPT_DATEN" in txt or len(txt) < 20:
+                mime = "image/jpeg" if suffix in (".jpg", ".jpeg") else f"image/{suffix.lstrip('.')}"
+                txt = self.extract_description_from_image_bytes(p.read_bytes(), mime)
+                if txt:
+                    logger.info(f"Vision-Extract: {p.name} ({len(txt)} chars)")
+                else:
                     logger.info(f"Vision {p.name}: kein verwertbarer Text")
-                    return None
-                logger.info(f"Vision-Extract: {p.name} ({len(txt)} chars)")
                 return txt
             except Exception as e:
                 logger.warning(f"Vision-Extract-Fehler bei {p}: {e}")
                 return None
 
         return None
+
+    def extract_description_from_image_bytes(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+        context: str = "",
+    ) -> Optional[str]:
+        """Liest ein manuell hochgeladenes Rezeptbild sofort per Vision aus.
+
+        Anders als die reine Bild-Klassifizierung liefert diese Methode den
+        vollständigen erkannten Rezepttext. Dieser kann anschließend durch die
+        normale Zutaten-/Schritt-Pipeline laufen, ohne dass zuerst ein
+        Dateisystem-Sync oder ein späterer Hintergrundlauf nötig ist.
+        """
+        if not image_bytes:
+            return None
+        import base64
+
+        normalized_mime = (mime_type or "image/jpeg").lower()
+        image_format = normalized_mime.removeprefix("image/")
+        if image_format == "jpg":
+            image_format = "jpeg"
+        prompt = (
+            "Du siehst ein Bild eines Rezepts (Foto, Screenshot oder Rezeptkarte). "
+            "Extrahiere ALLEN lesbaren Rezepttext und gib eine zusammenhängende "
+            "deutsche Rezept-Beschreibung zurück, mit Zutaten samt Mengen sowie "
+            "Zubereitungs-Schritten. Erfinde keine unlesbaren Angaben. Wenn nichts "
+            "Rezept-Artiges lesbar ist, antworte exakt mit: KEINE_REZEPT_DATEN"
+        )
+        if context.strip():
+            prompt += f"\nDateiname oder Kontext: {context.strip()[:200]}"
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        text = self._call_vision(b64, image_format, prompt)
+        if not text or "KEINE_REZEPT_DATEN" in text or len(text.strip()) < 20:
+            return None
+        return text.strip()
 
     def _call_vision(self, b64_data: str, mime: str, prompt: str) -> Optional[str]:
         """Multimodal-Call: prompt + 1 Bild als base64. Kein response_format

@@ -110,25 +110,39 @@ export function apiAuthHeaders(): Record<string, string> {
 
 async function readResponse<T>(response: Response): Promise<T> {
   if (response.status === 204) return undefined as T;
-  const contentType = response.headers.get('content-type') || '';
-  const payload = contentType.includes('application/json')
-    ? await response.json()
-    : await response.text();
-  if (!contentType.includes('application/json')) {
-    const body = String(payload);
+  const body = await response.text();
+  let payload: unknown;
+  let parsedJson = false;
+  try {
+    payload = JSON.parse(body);
+    parsedJson = true;
+  } catch {
+    payload = body;
+  }
+  if (!parsedJson) {
+    const bodyLower = body.toLowerCase();
+    const location = (response.headers.get('location') || '').toLowerCase();
+    const isRedirect = response.status >= 300 && response.status < 400;
     const isCloudflare = response.url.includes('cloudflareaccess.com')
-      || body.includes('Cloudflare Access')
-      || body.includes('cloudflareaccess.com');
+      || location.includes('cloudflareaccess.com')
+      || location.includes('/cdn-cgi/access/')
+      || bodyLower.includes('cloudflare access')
+      || bodyLower.includes('cloudflareaccess.com')
+      || bodyLower.includes('/cdn-cgi/access/')
+      || response.redirected;
     throw new ApiError(
-      isCloudflare
-        ? 'Cloudflare Access verlangt eine gültige Client-ID und ein Client-Secret.'
-        : 'Der Server hat keine gültige JSON-Antwort gesendet.',
+      isCloudflare || isRedirect
+        ? 'Cloudflare Access hat die Anfrage zur Anmeldung umgeleitet. Bitte Client-ID und Client-Secret in der App prüfen.'
+        : `Der Server hat keine gültige JSON-Antwort gesendet (HTTP ${response.status}).`,
       response.status,
     );
   }
   if (!response.ok) {
-    const message = typeof payload === 'object' && payload?.detail
-      ? String(payload.detail)
+    const detail = payload && typeof payload === 'object' && 'detail' in payload
+      ? (payload as { detail?: unknown }).detail
+      : null;
+    const message = detail
+      ? String(detail)
       : `Serverfehler (${response.status})`;
     throw new ApiError(message, response.status);
   }
@@ -181,6 +195,7 @@ export async function api<T>(
     async timeoutSignal => {
       const response = await fetch(absoluteApiUrl(path), {
         ...options,
+        redirect: 'manual',
         headers,
         signal: timeoutSignal,
       });
@@ -226,6 +241,7 @@ export async function uploadFile<T>(
     async timeoutSignal => {
       const response = await fetch(absoluteApiUrl(path), {
         method: 'POST',
+        redirect: 'manual',
         headers,
         body,
         signal: timeoutSignal,

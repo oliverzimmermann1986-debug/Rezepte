@@ -6,7 +6,7 @@ import { Alert } from 'react-native';
 import { api } from '@/lib/api';
 import { invalidateApiCacheByPrefix } from '@/lib/cache';
 import { useAuth } from '@/lib/auth-context';
-import { socialLinkFromSharedContent } from '@/lib/shared-link';
+import { socialLinkFromShareIntent } from '@/lib/shared-link';
 
 type ImportResult = {
   ok: boolean;
@@ -46,7 +46,7 @@ export function SharedLinkReceiver() {
     ) return;
 
     processing.current = true;
-    const source = socialLinkFromSharedContent(shareIntent.webUrl, shareIntent.text);
+    const source = socialLinkFromShareIntent(shareIntent);
     if (!source) {
       Alert.alert(
         'Kein Rezept-Link gefunden',
@@ -69,7 +69,12 @@ export function SharedLinkReceiver() {
       .then(async result => {
         await invalidateApiCacheByPrefix('recipes:');
         if (result.ok) {
-          router.replace(isAdmin ? '/(tabs)/admin' : '/(tabs)');
+          router.replace(isAdmin
+            ? {
+                pathname: '/(tabs)/admin',
+                params: { importRefresh: String(Date.now()) },
+              }
+            : '/(tabs)');
         }
         Alert.alert(
           result.ok
@@ -101,8 +106,7 @@ export function SharedLinkReceiver() {
     ready,
     resetShareIntent,
     router,
-    shareIntent.text,
-    shareIntent.webUrl,
+    shareIntent,
     token,
   ]);
 
