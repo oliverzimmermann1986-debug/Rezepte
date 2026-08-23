@@ -82,10 +82,11 @@ def test_bulk_editor_shows_the_recipe_currently_being_processed():
     assert 'accessibilityRole="progressbar"' in bulk_editor
 
 
-def test_recipe_info_shows_selectable_archive_id():
+def test_recipe_info_shows_only_a_neutral_selectable_recipe_id():
     detail = (NATIVE / "app" / "recipe" / "[id].tsx").read_text(encoding="utf-8")
 
     assert "Rezept-ID" in detail
-    assert "Videoarchiv: {recipe.id}.mp4" in detail
+    assert "Videoarchiv" not in detail
+    assert ".mp4" not in detail
     assert "accessibilityLabel={`Rezept-ID ${recipe.id}`}" in detail
     assert "selectable" in detail

@@ -408,10 +408,7 @@ export default function RecipeDetailScreen() {
               </Pressable>
             </View>
             <View style={styles.identifierCard}>
-              <View style={styles.identifierText}>
-                <Text style={styles.identifierLabel}>Rezept-ID</Text>
-                <Text style={styles.identifierHint}>Videoarchiv: {recipe.id}.mp4</Text>
-              </View>
+              <Text style={styles.identifierLabel}>Rezept-ID</Text>
               <Text
                 accessibilityLabel={`Rezept-ID ${recipe.id}`}
                 selectable
@@ -610,9 +607,7 @@ const styles = StyleSheet.create({
   description: { color: colors.text, fontSize: 17, lineHeight: 25 },
   infoMeta: { color: colors.muted, fontSize: 14, fontWeight: '700' },
   identifierCard: { minHeight: 64, paddingHorizontal: 14, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface },
-  identifierText: { flex: 1, gap: 2 },
   identifierLabel: { color: colors.text, fontSize: 14, fontWeight: '900' },
-  identifierHint: { color: colors.muted, fontSize: 12 },
   identifierValue: { color: colors.text, fontSize: 20, fontWeight: '900', fontVariant: ['tabular-nums'] },
   noVideo: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center' },
   originalBlock: { marginTop: space.md, gap: 10, paddingTop: space.md, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
