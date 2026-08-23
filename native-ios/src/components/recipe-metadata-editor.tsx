@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PrimaryButton, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { invalidateApiCache, invalidateApiCacheByPrefix } from '@/lib/cache';
 import { optionalInteger } from '@/lib/numbers';
 import { RecipeDetail } from '@/lib/types';
 
@@ -123,46 +124,66 @@ export function RecipeMetadataEditor({
     setBusy(true);
     setError('');
     let metadataSaved = false;
+    let serverChanged = false;
+    let failure: unknown = null;
     try {
-      if (!name.trim() || !recipeType.trim() || !category.trim()) {
-        throw new Error('Name, Typ und Kategorie dürfen nicht leer sein.');
+      try {
+        if (!name.trim() || !recipeType.trim() || !category.trim()) {
+          throw new Error('Name, Typ und Kategorie dürfen nicht leer sein.');
+        }
+        const nextServings = optionalInteger(servings, 'Portionen', 1, 50);
+        const nextTags = withTag(tags, tagDraft, automaticTags);
+        const nextUrl = url.trim() || null;
+        const metadataChanged = name.trim() !== (recipe.name || '').trim()
+          || recipeType.trim() !== (recipe.type || 'Sonstiges').trim()
+          || category.trim() !== (recipe.category || 'Allgemein').trim()
+          || nextServings !== (recipe.servings ?? null)
+          || nextUrl !== ((recipe.url || '').trim() || null)
+          || description.trim() !== (recipe.description || '').trim();
+        if (metadataChanged) {
+          await api(`/api/recipes/${recipe.id}/metadata`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              name: name.trim(),
+              type: recipeType.trim(),
+              category: category.trim(),
+              servings: nextServings,
+              url: nextUrl,
+              description: description.trim(),
+            }),
+          });
+          metadataSaved = true;
+          serverChanged = true;
+        }
+        const originalTags = recipe.tags.filter(tag => !tag.auto).map(tag => tag.name);
+        if (!sameTags(nextTags, originalTags)) {
+          await api(`/api/recipes/${recipe.id}/tags`, {
+            method: 'PUT',
+            body: JSON.stringify({ tags: nextTags }),
+          });
+          serverChanged = true;
+        }
+      } catch (reason) {
+        failure = reason;
       }
-      const nextServings = optionalInteger(servings, 'Portionen', 1, 50);
-      const nextTags = withTag(tags, tagDraft, automaticTags);
-      const nextUrl = url.trim() || null;
-      const metadataChanged = name.trim() !== (recipe.name || '').trim()
-        || recipeType.trim() !== (recipe.type || 'Sonstiges').trim()
-        || category.trim() !== (recipe.category || 'Allgemein').trim()
-        || nextServings !== (recipe.servings ?? null)
-        || nextUrl !== ((recipe.url || '').trim() || null)
-        || description.trim() !== (recipe.description || '').trim();
-      if (metadataChanged) {
-        await api(`/api/recipes/${recipe.id}/metadata`, {
-          method: 'PUT',
-          body: JSON.stringify({
-            name: name.trim(),
-            type: recipeType.trim(),
-            category: category.trim(),
-            servings: nextServings,
-            url: nextUrl,
-            description: description.trim(),
-          }),
-        });
-        metadataSaved = true;
+
+      // Cachepflege folgt erst, nachdem alle vorgesehenen Servermutationen
+      // versucht wurden. Die Helfer sind best effort und können den Save nicht
+      // nachträglich in einen Fehler verwandeln.
+      if (serverChanged) {
+        await Promise.all([
+          invalidateApiCache(`recipe:${recipe.id}`),
+          invalidateApiCacheByPrefix('recipes:'),
+        ]);
       }
-      const originalTags = recipe.tags.filter(tag => !tag.auto).map(tag => tag.name);
-      if (!sameTags(nextTags, originalTags)) {
-        await api(`/api/recipes/${recipe.id}/tags`, {
-          method: 'PUT',
-          body: JSON.stringify({ tags: nextTags }),
-        });
+      if (failure) {
+        const message = failure instanceof Error ? failure.message : 'Speichern fehlgeschlagen';
+        setError(metadataSaved
+          ? `Name, Kategorie und weitere Angaben wurden gespeichert. Tags konnten nicht gespeichert werden: ${message}`
+          : message);
+        return;
       }
       onSaved();
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : 'Speichern fehlgeschlagen';
-      setError(metadataSaved
-        ? `Name, Kategorie und weitere Angaben wurden gespeichert. Tags konnten nicht gespeichert werden: ${message}`
-        : message);
     } finally {
       setBusy(false);
     }
@@ -290,7 +311,7 @@ export function RecipeMetadataEditor({
             <View style={sharedStyles.card}>
               <Text style={styles.label}>TikTok-, Instagram- oder Quell-Link</Text>
               <TextInput autoCapitalize="none" autoCorrect={false} keyboardType="url" placeholder="https://…" placeholderTextColor={colors.muted} value={url} onChangeText={setUrl} style={sharedStyles.input} />
-              <Text style={styles.help}>Der Link wird nur extern geöffnet. Die App lädt oder zeigt kein Social-Media-Video.</Text>
+              <Text style={styles.help}>Der Link wird ausschließlich in der jeweiligen Plattform geöffnet.</Text>
             </View>
             <View style={sharedStyles.card}>
               <Text style={styles.label}>Beschreibung</Text>

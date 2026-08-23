@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { Alert } from 'react-native';
 
 import { api } from '@/lib/api';
+import { invalidateApiCacheByPrefix } from '@/lib/cache';
 import { useAuth } from '@/lib/auth-context';
 import { socialLinkFromSharedContent } from '@/lib/shared-link';
 
@@ -14,7 +15,7 @@ type ImportResult = {
 };
 
 export function SharedLinkReceiver() {
-  const { ready, token } = useAuth();
+  const { isAdmin, ready, token } = useAuth();
   const { error, hasShareIntent, isReady, resetShareIntent, shareIntent } = useShareIntentContext();
   const navigationState = useRootNavigationState();
   const router = useRouter();
@@ -65,14 +66,21 @@ export function SharedLinkReceiver() {
       method: 'POST',
       body: JSON.stringify({ url: source, type: 'recipe' }),
     })
-      .then(result => {
-        router.replace('/(tabs)/admin');
+      .then(async result => {
+        await invalidateApiCacheByPrefix('recipes:');
+        if (result.ok) {
+          router.replace(isAdmin ? '/(tabs)/admin' : '/(tabs)');
+        }
         Alert.alert(
-          result.ok ? 'Link übernommen' : 'Import fehlgeschlagen',
-          result.message
-            || (result.status === 'pending'
-              ? 'Der Beitrag wartet unter „Manuelle Prüfung“.'
-              : 'Der Beitrag wurde verarbeitet.'),
+          result.ok
+            ? isAdmin ? 'Link übernommen' : 'Zur Prüfung eingereicht'
+            : 'Import fehlgeschlagen',
+          result.ok && !isAdmin
+            ? 'Der Link wurde übernommen. Nach der Prüfung erscheint das Rezept in deiner Rezeptliste.'
+            : result.message
+              || (result.status === 'pending'
+                ? 'Der Beitrag wartet unter „Manuelle Prüfung“.'
+                : 'Der Beitrag wurde verarbeitet.'),
         );
       })
       .catch(reason => {
@@ -87,6 +95,7 @@ export function SharedLinkReceiver() {
       });
   }, [
     hasShareIntent,
+    isAdmin,
     isReady,
     navigationState?.key,
     ready,

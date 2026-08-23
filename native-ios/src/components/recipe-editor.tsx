@@ -16,6 +16,7 @@ import { PrimaryButton } from '@/components/ui';
 import { UnitPicker } from '@/components/unit-picker';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { invalidateApiCache, invalidateApiCacheByPrefix } from '@/lib/cache';
 import {
   createIngredientRow,
   createStepRow,
@@ -66,6 +67,7 @@ export function RecipeEditor({ recipeId, kind, ingredients, steps, visible, onCl
           method: 'PUT',
           body: JSON.stringify({ ingredients: cleaned }),
         });
+        await invalidateApiCache(`recipe:${recipeId}`);
       } else {
         const cleaned = stepRows
           .filter(item => item.instruction.trim())
@@ -77,7 +79,9 @@ export function RecipeEditor({ recipeId, kind, ingredients, steps, visible, onCl
           method: 'PUT',
           body: JSON.stringify({ steps: cleaned }),
         });
+        await invalidateApiCache(`recipe:${recipeId}`, `cooking-progress:${recipeId}`);
       }
+      await invalidateApiCacheByPrefix('recipes:');
       onSaved();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Speichern fehlgeschlagen');

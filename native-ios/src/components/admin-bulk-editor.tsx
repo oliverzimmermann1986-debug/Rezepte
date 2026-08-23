@@ -19,6 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PrimaryButton, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { invalidateApiCacheByPrefix } from '@/lib/cache';
 import { RecipeListItem } from '@/lib/types';
 
 type RecipeResponse = { total: number; items: RecipeListItem[] };
@@ -40,6 +41,26 @@ type BulkProgress = {
 };
 
 const MAX_SELECTION = 100;
+const RECIPE_PAGE_SIZE = 250;
+
+async function loadAllRecipes(signal: AbortSignal): Promise<RecipeResponse> {
+  const items: RecipeListItem[] = [];
+  let total = Number.POSITIVE_INFINITY;
+  while (items.length < total) {
+    const result = await api<RecipeResponse>(
+      `/api/recipes?limit=${RECIPE_PAGE_SIZE}&offset=${items.length}`,
+      {},
+      signal,
+    );
+    total = result.total;
+    if (!result.items.length) break;
+    const known = new Set(items.map(item => item.id));
+    const unique = result.items.filter(item => !known.has(item.id));
+    items.push(...unique);
+    if (!unique.length) break;
+  }
+  return { total: Number.isFinite(total) ? total : items.length, items };
+}
 
 function parseTags(value: string) {
   const seen = new Set<string>();
@@ -96,12 +117,18 @@ export function AdminBulkEditor({
     setProgress(null);
     setError('');
     setLoading(true);
-    void Promise.all([
-      api<RecipeResponse>('/api/recipes?limit=500', {}, controller.signal),
+    void Promise.allSettled([
+      loadAllRecipes(controller.signal),
       api<RecipeFacets>('/api/recipes/facets', {}, controller.signal),
     ]).then(([recipeResult, facetResult]) => {
-      setRecipes(recipeResult.items);
-      setFacets(facetResult);
+      if (recipeResult.status === 'rejected') throw recipeResult.reason;
+      setRecipes(recipeResult.value.items);
+      if (facetResult.status === 'fulfilled') {
+        setFacets(facetResult.value);
+      } else {
+        setFacets(null);
+        setError('Rezepte sind geladen; Kategorien und Tag-Vorschläge sind gerade nicht verfügbar.');
+      }
     }).catch(reason => {
       if (!controller.signal.aborted) {
         setError(reason instanceof Error ? reason.message : 'Rezepte konnten nicht geladen werden.');
@@ -204,11 +231,17 @@ export function AdminBulkEditor({
             `Unterbrochen bei „${recipe.name}“: ${message}. `
             + `${result.updated.length} von ${targets.length} Rezepten wurden geändert.`,
           );
-          if (result.updated.length) onChanged();
+          if (result.updated.length) {
+            await invalidateApiCacheByPrefix('recipe:', 'recipes:');
+            onChanged();
+          }
           return;
         }
       }
-      if (result.updated.length) onChanged();
+      if (result.updated.length) {
+        await invalidateApiCacheByPrefix('recipe:', 'recipes:');
+        onChanged();
+      }
       if (!result.failed.length) {
         Alert.alert(
           'Massenpflege abgeschlossen',
@@ -381,7 +414,7 @@ export function AdminBulkEditor({
                   accessibilityValue={{
                     min: 0,
                     max: progress.total,
-                    now: progress.current - 1,
+                    now: progress.current,
                     text: `${progress.recipeName} wird bearbeitet`,
                   }}
                   style={styles.progressCard}>

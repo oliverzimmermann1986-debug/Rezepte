@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StateView } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { invalidateApiCacheByPrefix } from '@/lib/cache';
 import { RecipeListItem } from '@/lib/types';
 
 type TrashItem = RecipeListItem & {
@@ -52,6 +53,7 @@ export function AdminTrash({
     setError('');
     try {
       await api(`/api/recipes/${item.id}/restore`, { method: 'POST' });
+      await invalidateApiCacheByPrefix('recipe:', 'recipes:');
       await load();
       onChanged();
       Alert.alert('Wiederhergestellt', `„${item.name}“ ist wieder bei den Rezepten.`);
@@ -78,6 +80,7 @@ export function AdminTrash({
     setError('');
     try {
       await api(`/api/recipes/${item.id}?delete_files=true&hard=true`, { method: 'DELETE' });
+      await invalidateApiCacheByPrefix('recipe:', 'recipes:');
       setItems(current => current.filter(value => value.id !== item.id));
       onChanged();
     } catch (reason) {

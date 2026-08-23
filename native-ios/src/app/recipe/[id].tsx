@@ -13,8 +13,23 @@ import { ServingSelector } from '@/components/serving-selector';
 import { StepTimer } from '@/components/step-timer';
 import { ManualCareBanner, PrimaryButton, Screen, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
-import { absoluteApiUrl, api, apiAuthHeaders, deleteCachedFile, downloadFileToCache, uploadFile } from '@/lib/api';
-import { apiCached } from '@/lib/cache';
+import {
+  absoluteApiUrl,
+  ApiError,
+  api,
+  apiAuthHeaders,
+  assertApiSessionEpochCurrent,
+  currentApiSessionEpoch,
+  deleteCachedFile,
+  downloadFileToCache,
+  uploadFile,
+} from '@/lib/api';
+import {
+  apiCached,
+  invalidateApiCache,
+  invalidateApiCacheByPrefix,
+  putApiCache,
+} from '@/lib/cache';
 import { externalSourceLabel, openExternalUrl } from '@/lib/external-links';
 import { pickEditedJpeg } from '@/lib/image-picker';
 import { formatScaledAmount, normalizedServings, portionLabel } from '@/lib/servings';
@@ -101,12 +116,18 @@ export default function RecipeDetailScreen() {
     setCookServings(normalizedServings(recipe?.servings));
   }, [recipe?.id, recipe?.servings]);
 
+  function updateCachedRecipe(nextRecipe: RecipeDetail) {
+    setRecipe(nextRecipe);
+    void putApiCache(`recipe:${nextRecipe.id}`, nextRecipe).catch(() => undefined);
+    void invalidateApiCacheByPrefix('recipes:').catch(() => undefined);
+  }
+
   async function toggleFavorite() {
     if (!recipe) return;
     setBusy(true);
     try {
       const result = await api<{ is_favorite: boolean }>(`/api/recipes/${recipe.id}/favorite`, { method: 'POST' });
-      setRecipe({ ...recipe, is_favorite: result.is_favorite });
+      updateCachedRecipe({ ...recipe, is_favorite: result.is_favorite });
     } catch (reason) {
       Alert.alert('Favorit nicht geändert', reason instanceof Error ? reason.message : 'Bitte erneut versuchen.');
     } finally {
@@ -128,6 +149,7 @@ export default function RecipeDetailScreen() {
         body: JSON.stringify(selectedServings ? { servings: selectedServings, multiplier } : { multiplier: 1 }),
       });
       const changed = result.added + result.merged;
+      await invalidateApiCache('cart');
       const scope = selectedServings ? ` für ${portionLabel(selectedServings)}` : ' in Originalmenge';
       Alert.alert('Zum Einkauf hinzugefügt', `${changed} Artikel${scope} übernommen${result.skipped ? ` · ${result.skipped} ausgeschlossen` : ''}.`);
     } catch (reason) {
@@ -184,6 +206,7 @@ export default function RecipeDetailScreen() {
       imageUri = image.uri;
       setBusy(true);
       await uploadFile(`/api/recipes/${recipe.id}/upload-thumbnail`, image);
+      await invalidateApiCache(`recipe:${recipe.id}`);
       await Image.clearMemoryCache();
       setImageVersion(Date.now());
       Alert.alert('Bild gespeichert', 'Das zugeschnittene Rezeptbild wurde übernommen.');
@@ -197,6 +220,7 @@ export default function RecipeDetailScreen() {
 
   async function openPdf() {
     if (!recipe?.pdf_filename) return;
+    const downloadEpoch = currentApiSessionEpoch();
     setBusy(true);
     let localUri = '';
     try {
@@ -204,13 +228,16 @@ export default function RecipeDetailScreen() {
         `/api/recipes/${recipe.id}/pdf`,
         recipe.pdf_filename,
       );
+      assertApiSessionEpochCurrent(downloadEpoch);
       if (!await Sharing.isAvailableAsync()) throw new Error('PDF-Vorschau ist auf diesem Gerät nicht verfügbar.');
+      assertApiSessionEpochCurrent(downloadEpoch);
       await Sharing.shareAsync(localUri, {
         mimeType: 'application/pdf',
         UTI: 'com.adobe.pdf',
         dialogTitle: `${recipe.name} – Original-PDF`,
       });
     } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 401) return;
       Alert.alert('PDF nicht geöffnet', reason instanceof Error ? reason.message : 'Download fehlgeschlagen');
     } finally {
       if (localUri) await deleteCachedFile(localUri).catch(() => undefined);
@@ -224,7 +251,7 @@ export default function RecipeDetailScreen() {
     setBusy(true);
     try {
       const result = await api<{ rating: number }>(`/api/recipes/${recipe.id}/rating?value=${next}`, { method: 'POST' });
-      setRecipe({ ...recipe, rating: result.rating });
+      updateCachedRecipe({ ...recipe, rating: result.rating });
     } catch (reason) {
       Alert.alert('Bewertung nicht gespeichert', reason instanceof Error ? reason.message : 'Unbekannter Fehler');
     } finally {
@@ -238,7 +265,7 @@ export default function RecipeDetailScreen() {
     setBusy(true);
     try {
       const result = await api<{ verified: boolean; by?: string }>(`/api/recipes/${recipe.id}/verify?verified=${next}`, { method: 'POST' });
-      setRecipe({ ...recipe, user_verified: result.verified, verified_by: result.by && result.by !== '?' ? result.by : null });
+      updateCachedRecipe({ ...recipe, user_verified: result.verified, verified_by: result.by && result.by !== '?' ? result.by : null });
     } catch (reason) {
       Alert.alert('Prüfstatus nicht gespeichert', reason instanceof Error ? reason.message : 'Unbekannter Fehler');
     } finally {
@@ -250,7 +277,7 @@ export default function RecipeDetailScreen() {
     if (!recipe) return;
     Alert.prompt(
       'Als Variante duplizieren',
-      'Zutaten, Schritte, Tags, Cover und PDF werden kopiert. Das Originalvideo und der Quell-Link werden nicht übernommen.',
+      'Zutaten, Schritte, Tags, Cover und PDF werden kopiert. Die externe Quelle wird nicht übernommen.',
       value => void createVariant(value),
       'plain-text',
       `${recipe.name} – Variante`,
@@ -270,6 +297,7 @@ export default function RecipeDetailScreen() {
         method: 'POST',
         body: JSON.stringify({ new_name: newName }),
       });
+      await invalidateApiCacheByPrefix('recipes:');
       router.push(`/recipe/${result.recipe_id}`);
     } catch (reason) {
       Alert.alert('Variante nicht erstellt', reason instanceof Error ? reason.message : 'Bitte erneut versuchen.');
@@ -326,7 +354,10 @@ export default function RecipeDetailScreen() {
         </View>
 
         <View style={styles.ratingRow}>
-          <Text style={styles.ratingLabel}>Bewertung</Text>
+          <View>
+            <Text style={styles.ratingLabel}>Bewertung</Text>
+            <Text style={styles.ratingValue}>{recipe.rating ? `${recipe.rating} von 5 Sternen` : 'Noch nicht bewertet'}</Text>
+          </View>
           <View style={styles.stars}>
             {[1, 2, 3, 4, 5].map(value => (
               <Pressable
@@ -445,7 +476,6 @@ export default function RecipeDetailScreen() {
                 <Text style={styles.historyEmpty}>Noch nicht als gekocht gespeichert.</Text>
               )}
             </View>
-            <Text style={styles.noVideo}>Videos werden in der App bewusst nicht geladen oder abgespielt.</Text>
             {!!recipe.description_original && (
               <View style={styles.originalBlock}>
                 <Pressable
@@ -509,9 +539,9 @@ export default function RecipeDetailScreen() {
             <PrimaryButton
               label={cookingProgress
                 ? `Kochmodus fortsetzen · ${cookingProgress.completed_steps.length}/${recipe.steps.length}`
-                : 'Kochmodus starten'}
+                : originalServings ? 'Kochmodus starten' : 'Portionszahl zuerst ergänzen'}
               onPress={() => router.push(`/cook/${recipe.id}`)}
-              disabled={busy || !recipe.steps.length}
+              disabled={busy || !recipe.steps.length || !originalServings}
             />
             {recipe.steps.length ? recipe.steps.map((step, index) => (
               <View key={step.id || index} style={styles.step}>
@@ -569,6 +599,7 @@ const styles = StyleSheet.create({
   meta: { color: colors.muted, fontSize: 14 },
   ratingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 44 },
   ratingLabel: { color: colors.text, fontSize: 16, fontWeight: '800' },
+  ratingValue: { color: colors.muted, fontSize: 12, marginTop: 2 },
   stars: { flexDirection: 'row', gap: 5 },
   star: { color: colors.border, fontSize: 28 },
   starActive: { color: colors.butterPressed },
@@ -609,7 +640,6 @@ const styles = StyleSheet.create({
   identifierCard: { minHeight: 64, paddingHorizontal: 14, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface },
   identifierLabel: { color: colors.text, fontSize: 14, fontWeight: '900' },
   identifierValue: { color: colors.text, fontSize: 20, fontWeight: '900', fontVariant: ['tabular-nums'] },
-  noVideo: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center' },
   originalBlock: { marginTop: space.md, gap: 10, paddingTop: space.md, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   originalButton: { color: colors.text, minHeight: 44, paddingTop: 12, textAlign: 'center', fontWeight: '800' },
   originalText: { color: colors.muted, fontSize: 14, lineHeight: 21 },

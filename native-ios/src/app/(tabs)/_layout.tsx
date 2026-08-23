@@ -2,8 +2,10 @@ import { NativeTabs } from 'expo-router/unstable-native-tabs';
 import React from 'react';
 
 import { colors } from '@/constants/design';
+import { useAuth } from '@/lib/auth-context';
 
 export default function TabLayout() {
+  const { isAdmin } = useAuth();
   return (
     <NativeTabs
       backgroundColor={colors.surface}
@@ -22,10 +24,12 @@ export default function TabLayout() {
         <NativeTabs.Trigger.Label>Einkauf</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf={{ default: 'cart', selected: 'cart.fill' }} />
       </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="admin">
-        <NativeTabs.Trigger.Label>Admin</NativeTabs.Trigger.Label>
-        <NativeTabs.Trigger.Icon sf={{ default: 'wrench.and.screwdriver', selected: 'wrench.and.screwdriver.fill' }} />
-      </NativeTabs.Trigger>
+      {isAdmin && (
+        <NativeTabs.Trigger name="admin">
+          <NativeTabs.Trigger.Label>Admin</NativeTabs.Trigger.Label>
+          <NativeTabs.Trigger.Icon sf={{ default: 'wrench.and.screwdriver', selected: 'wrench.and.screwdriver.fill' }} />
+        </NativeTabs.Trigger>
+      )}
     </NativeTabs>
   );
 }

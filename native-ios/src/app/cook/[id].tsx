@@ -7,7 +7,15 @@ import { ServingSelector } from '@/components/serving-selector';
 import { StepTimer } from '@/components/step-timer';
 import { PrimaryButton, Screen, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
-import { api } from '@/lib/api';
+import { api, createClientRequestId } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
+import {
+  apiCached,
+  invalidateApiCache,
+  invalidateApiCacheByPrefix,
+  putApiCache,
+  readApiCache,
+} from '@/lib/cache';
 import { formatScaledAmount, normalizedServings, portionLabel } from '@/lib/servings';
 import { CookingProgress, RecipeDetail } from '@/lib/types';
 
@@ -21,33 +29,78 @@ export default function CookingModeScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const recipeId = Number(id);
   const router = useRouter();
+  const { username } = useAuth();
+  const completionStorageKey = `cooking-completion-request:${encodeURIComponent(username || 'session')}:${recipeId}`;
   const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
   const [completed, setCompleted] = useState<number[]>([]);
   const [activeStep, setActiveStep] = useState(0);
-  const [servings, setServings] = useState(2);
+  const [servings, setServings] = useState<number | null>(null);
   const [showIngredients, setShowIngredients] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState('');
+  const [loadWarning, setLoadWarning] = useState('');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [lastPayload, setLastPayload] = useState<ProgressPayload | null>(null);
   const mutationQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const mutationLocked = useRef(false);
   const saveGeneration = useRef(0);
+  const completionRequestId = useRef(createClientRequestId());
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
     setError('');
-    void Promise.all([
-      api<RecipeDetail>(`/api/recipes/${recipeId}`, {}, controller.signal),
-      api<CookingProgress>(`/api/recipes/${recipeId}/cooking-progress`, {}, controller.signal),
-    ]).then(([recipeResult, progress]) => {
+    setLoadWarning('');
+    void Promise.allSettled([
+      apiCached<RecipeDetail>(`recipe:${recipeId}`, `/api/recipes/${recipeId}`, controller.signal),
+      apiCached<CookingProgress>(
+        `cooking-progress:${recipeId}`,
+        `/api/recipes/${recipeId}/cooking-progress`,
+        controller.signal,
+      ),
+      readApiCache<string>(completionStorageKey),
+    ]).then(([recipeResultState, progressState, completionRequestState]) => {
+      if (recipeResultState.status === 'rejected') throw recipeResultState.reason;
+      const recipeResult = recipeResultState.value;
       if (!recipeResult.steps.length) throw new Error('Dieses Rezept hat noch keine Zubereitungsschritte.');
-      const original = normalizedServings(recipeResult.servings) || 2;
+      const original = normalizedServings(recipeResult.servings);
+      if (!original) {
+        throw new Error('Bitte ergänze zuerst die Portionszahl im Rezept. Ohne Ausgangsmenge können Zutaten nicht zuverlässig skaliert werden.');
+      }
+      const progress = progressState.status === 'fulfilled'
+        ? progressState.value
+        : {
+          recipe_id: recipeId,
+          username: '',
+          completed_steps: [],
+          active_step: 0,
+          servings: original,
+          exists: false,
+          step_count: recipeResult.steps.length,
+        };
       setRecipe(recipeResult);
       setCompleted(progress.completed_steps);
       setActiveStep(Math.min(progress.active_step, recipeResult.steps.length - 1));
       setServings(normalizedServings(progress.servings) || original);
+      setSaveStatus('idle');
+      const storedRequestId = completionRequestState.status === 'fulfilled'
+        && typeof completionRequestState.value === 'string'
+        && completionRequestState.value.length > 0
+        && completionRequestState.value.length <= 200
+        ? completionRequestState.value
+        : null;
+      const nextRequestId = progress.exists && storedRequestId
+        ? storedRequestId
+        : createClientRequestId();
+      completionRequestId.current = nextRequestId;
+      if (nextRequestId !== storedRequestId) {
+        void putApiCache(completionStorageKey, nextRequestId);
+      }
+      if (progressState.status === 'rejected') {
+        setLoadWarning('Kochfortschritt ist gerade nicht erreichbar. Du kannst mit dem lokal gespeicherten Rezept beginnen.');
+      }
     }).catch(reason => {
       if (!controller.signal.aborted) {
         setError(reason instanceof Error ? reason.message : 'Kochmodus konnte nicht geladen werden.');
@@ -56,9 +109,17 @@ export default function CookingModeScreen() {
       if (!controller.signal.aborted) setLoading(false);
     });
     return () => controller.abort();
-  }, [recipeId]);
+  }, [completionStorageKey, recipeId]);
+
+  function rotateCompletionRequestId() {
+    const nextRequestId = createClientRequestId();
+    completionRequestId.current = nextRequestId;
+    void putApiCache(completionStorageKey, nextRequestId);
+  }
 
   function persistProgress(nextCompleted: number[], nextStep: number, nextServings: number) {
+    if (mutationLocked.current) return;
+    mutationLocked.current = true;
     const payload: ProgressPayload = {
       completed_steps: [...new Set(nextCompleted)].sort((a, b) => a - b),
       active_step: nextStep,
@@ -69,26 +130,49 @@ export default function CookingModeScreen() {
     setServings(payload.servings);
     setLastPayload(payload);
     setError('');
+    setSaveStatus('saving');
     const generation = ++saveGeneration.current;
     setSaving(true);
     const task = mutationQueue.current
       .catch(() => undefined)
-      .then(() => api<CookingProgress>(`/api/recipes/${recipeId}/cooking-progress`, {
-        method: 'PUT',
-        body: JSON.stringify(payload),
-      }));
+      .then(async () => {
+        let optimisticCacheWrite: Promise<void> = Promise.resolve();
+        if (recipe) {
+          optimisticCacheWrite = putApiCache<CookingProgress>(`cooking-progress:${recipeId}`, {
+            recipe_id: recipeId,
+            username: '',
+            completed_steps: payload.completed_steps,
+            active_step: payload.active_step,
+            servings: payload.servings,
+            exists: true,
+            step_count: recipe.steps.length,
+            updated_at: Date.now() / 1000,
+          });
+        }
+        const result = await api<CookingProgress>(`/api/recipes/${recipeId}/cooking-progress`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        await optimisticCacheWrite;
+        await putApiCache(`cooking-progress:${recipeId}`, result);
+        return result;
+      });
     mutationQueue.current = task;
-    void task.catch(reason => {
+    void task.then(() => {
+      if (generation === saveGeneration.current) setSaveStatus('saved');
+    }).catch(reason => {
       if (generation === saveGeneration.current) {
         setError(reason instanceof Error ? reason.message : 'Fortschritt konnte nicht gespeichert werden.');
+        setSaveStatus('error');
       }
     }).finally(() => {
       if (generation === saveGeneration.current) setSaving(false);
+      mutationLocked.current = false;
     });
   }
 
   function toggleCurrentStep() {
-    if (!recipe) return;
+    if (mutationLocked.current || !recipe || servings == null) return;
     const isDone = completed.includes(activeStep);
     const nextCompleted = isDone
       ? completed.filter(index => index !== activeStep)
@@ -100,10 +184,12 @@ export default function CookingModeScreen() {
   }
 
   function selectStep(index: number) {
+    if (mutationLocked.current || servings == null) return;
     persistProgress(completed, index, servings);
   }
 
   function requestReset() {
+    if (mutationLocked.current) return;
     Alert.alert(
       'Kochfortschritt zurücksetzen?',
       'Abgehakte Schritte werden gelöscht. Die Kochhistorie bleibt erhalten.',
@@ -115,31 +201,62 @@ export default function CookingModeScreen() {
   }
 
   async function resetProgress() {
+    if (mutationLocked.current) return;
+    mutationLocked.current = true;
     setSaving(true);
     setError('');
+    const task = mutationQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        await api(`/api/recipes/${recipeId}/cooking-progress`, { method: 'DELETE' });
+        await invalidateApiCache(`cooking-progress:${recipeId}`);
+      });
+    mutationQueue.current = task;
     try {
-      await mutationQueue.current.catch(() => undefined);
-      await api(`/api/recipes/${recipeId}/cooking-progress`, { method: 'DELETE' });
+      await task;
       setCompleted([]);
       setActiveStep(0);
       setLastPayload(null);
+      rotateCompletionRequestId();
+      setSaveStatus('saved');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Fortschritt konnte nicht zurückgesetzt werden.');
+      setSaveStatus('error');
     } finally {
       setSaving(false);
+      mutationLocked.current = false;
     }
   }
 
   async function finishCooking() {
-    if (!recipe || completed.length !== recipe.steps.length) return;
+    if (
+      mutationLocked.current
+      || !recipe
+      || servings == null
+      || completed.length !== recipe.steps.length
+    ) return;
+    mutationLocked.current = true;
     setFinishing(true);
     setError('');
-    try {
-      await mutationQueue.current.catch(() => undefined);
-      await api(`/api/recipes/${recipeId}/cooking-complete`, {
-        method: 'POST',
-        body: JSON.stringify({ servings }),
+    const task = mutationQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        await api(`/api/recipes/${recipeId}/cooking-complete`, {
+          method: 'POST',
+          headers: { 'Idempotency-Key': completionRequestId.current },
+          body: JSON.stringify({ servings }),
+        });
+        await Promise.all([
+          invalidateApiCache(`cooking-progress:${recipeId}`, `recipe:${recipeId}`),
+          invalidateApiCacheByPrefix('recipes:'),
+        ]);
       });
+    mutationQueue.current = task;
+    try {
+      await task;
+      // Erst eine eindeutig bestätigte Antwort beendet diesen logischen
+      // Abschluss. Bei Timeout/Netzfehler bleibt die ID für jeden Retry stabil.
+      rotateCompletionRequestId();
       Alert.alert(
         'Guten Appetit!',
         `${recipe.name} wurde für ${portionLabel(servings)} als gekocht gespeichert.`,
@@ -149,11 +266,13 @@ export default function CookingModeScreen() {
       setError(reason instanceof Error ? reason.message : 'Kochabschluss konnte nicht gespeichert werden.');
     } finally {
       setFinishing(false);
+      mutationLocked.current = false;
     }
   }
 
   if (loading) return <Screen><StateView title="Kochmodus wird vorbereitet" loading /></Screen>;
   if (!recipe) return <Screen><StateView title="Kochmodus nicht verfügbar" message={error} action="Zurück" onAction={() => router.back()} /></Screen>;
+  if (servings == null) return <Screen><StateView title="Portionszahl fehlt" message="Bitte ergänze die Portionszahl im Rezept, bevor du den Kochmodus startest." action="Zurück zum Rezept" onAction={() => router.back()} /></Screen>;
 
   const originalServings = normalizedServings(recipe.servings) || servings;
   const multiplier = servings / originalServings;
@@ -169,13 +288,24 @@ export default function CookingModeScreen() {
         <View style={styles.progressHeader}>
           <View>
             <Text style={styles.progressTitle}>Schritt {activeStep + 1} von {recipe.steps.length}</Text>
-            <Text style={styles.progressMeta}>{completed.length} erledigt{saving ? ' · wird gespeichert …' : ' · gespeichert'}</Text>
+            <Text style={styles.progressMeta} accessibilityLiveRegion="polite">
+              {completed.length} erledigt
+              {saveStatus === 'saving' ? ' · wird gespeichert …' : saveStatus === 'saved' ? ' · gespeichert' : saveStatus === 'error' ? ' · nicht gespeichert' : ''}
+            </Text>
           </View>
           <Pressable accessibilityRole="button" disabled={saving || finishing} onPress={requestReset} style={styles.resetButton}>
             <Text style={styles.resetText}>Neu starten</Text>
           </Pressable>
         </View>
-        <View style={styles.progressTrack}><View style={[styles.progressFill, { width: progressWidth }]} /></View>
+        <View
+          accessibilityRole="progressbar"
+          accessibilityLabel="Kochfortschritt"
+          accessibilityValue={{ min: 0, max: recipe.steps.length, now: completed.length }}
+          style={styles.progressTrack}>
+          <View style={[styles.progressFill, { width: progressWidth }]} />
+        </View>
+
+        {!!loadWarning && <Text accessibilityRole="alert" style={styles.warning}>{loadWarning}</Text>}
 
         <ServingSelector
           value={servings}
@@ -197,9 +327,14 @@ export default function CookingModeScreen() {
           <Pressable
             accessibilityRole="checkbox"
             accessibilityState={{ checked: currentDone }}
-            disabled={finishing}
+            disabled={saving || finishing}
             onPress={toggleCurrentStep}
-            style={({ pressed }) => [styles.doneButton, currentDone && styles.doneButtonActive, pressed && styles.pressed]}>
+            style={({ pressed }) => [
+              styles.doneButton,
+              currentDone && styles.doneButtonActive,
+              (saving || finishing) && styles.disabled,
+              pressed && styles.pressed,
+            ]}>
             <SymbolView name={currentDone ? 'checkmark.circle.fill' : 'circle'} size={22} weight="semibold" tintColor={currentDone ? colors.success : colors.text} />
             <Text style={styles.doneText}>{currentDone ? 'Schritt wieder öffnen' : activeStep < recipe.steps.length - 1 ? 'Erledigt und weiter' : 'Letzten Schritt erledigen'}</Text>
           </Pressable>
@@ -208,17 +343,17 @@ export default function CookingModeScreen() {
         <View style={styles.navigationRow}>
           <Pressable
             accessibilityRole="button"
-            disabled={activeStep === 0 || finishing}
+            disabled={activeStep === 0 || saving || finishing}
             onPress={() => selectStep(activeStep - 1)}
-            style={({ pressed }) => [styles.navigationButton, (activeStep === 0 || finishing) && styles.disabled, pressed && styles.pressed]}>
+            style={({ pressed }) => [styles.navigationButton, (activeStep === 0 || saving || finishing) && styles.disabled, pressed && styles.pressed]}>
             <SymbolView name="chevron.left" size={17} weight="bold" tintColor={colors.text} />
             <Text style={styles.navigationText}>Zurück</Text>
           </Pressable>
           <Pressable
             accessibilityRole="button"
-            disabled={activeStep === recipe.steps.length - 1 || finishing}
+            disabled={activeStep === recipe.steps.length - 1 || saving || finishing}
             onPress={() => selectStep(activeStep + 1)}
-            style={({ pressed }) => [styles.navigationButton, (activeStep === recipe.steps.length - 1 || finishing) && styles.disabled, pressed && styles.pressed]}>
+            style={({ pressed }) => [styles.navigationButton, (activeStep === recipe.steps.length - 1 || saving || finishing) && styles.disabled, pressed && styles.pressed]}>
             <Text style={styles.navigationText}>Weiter</Text>
             <SymbolView name="chevron.right" size={17} weight="bold" tintColor={colors.text} />
           </Pressable>
@@ -227,7 +362,7 @@ export default function CookingModeScreen() {
         {!!error && (
           <View style={styles.errorBox}>
             <Text accessibilityRole="alert" style={styles.error}>{error}</Text>
-            {!!lastPayload && <PrimaryButton label="Fortschritt erneut speichern" onPress={() => persistProgress(lastPayload.completed_steps, lastPayload.active_step, lastPayload.servings)} disabled={saving} />}
+            {!!lastPayload && <PrimaryButton label="Fortschritt erneut speichern" onPress={() => persistProgress(lastPayload.completed_steps, lastPayload.active_step, lastPayload.servings)} disabled={saving || finishing} />}
           </View>
         )}
 
@@ -257,8 +392,14 @@ export default function CookingModeScreen() {
                 key={step.id || index}
                 accessibilityRole="button"
                 accessibilityState={{ selected: index === activeStep }}
+                disabled={saving || finishing}
                 onPress={() => selectStep(index)}
-                style={({ pressed }) => [styles.stepRow, index === activeStep && styles.stepRowActive, pressed && styles.pressed]}>
+                style={({ pressed }) => [
+                  styles.stepRow,
+                  index === activeStep && styles.stepRowActive,
+                  (saving || finishing) && styles.disabled,
+                  pressed && styles.pressed,
+                ]}>
                 <SymbolView name={done ? 'checkmark.circle.fill' : 'circle'} size={22} weight="semibold" tintColor={done ? colors.success : colors.muted} />
                 <Text numberOfLines={2} style={[styles.stepRowText, done && styles.stepRowDone]}>{index + 1}. {step.instruction}</Text>
               </Pressable>
@@ -300,6 +441,7 @@ const styles = StyleSheet.create({
   navigationText: { color: colors.text, fontWeight: '800' },
   errorBox: { gap: 8 },
   error: { color: colors.danger, lineHeight: 20, padding: 12, borderRadius: radii.sm, backgroundColor: colors.dangerSurface },
+  warning: { color: colors.text, lineHeight: 20, padding: 12, borderRadius: radii.sm, backgroundColor: colors.warningSurface },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   inlineAction: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },
   inlineActionText: { color: colors.text, fontWeight: '800' },

@@ -17,8 +17,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrimaryButton, StateView } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
-import { api, deleteCachedFile, downloadFileToCache } from '@/lib/api';
-import { apiCached } from '@/lib/cache';
+import {
+  ApiError,
+  api,
+  assertApiSessionEpochCurrent,
+  currentApiSessionEpoch,
+  deleteCachedFile,
+  downloadFileToCache,
+} from '@/lib/api';
+import { apiCached, invalidateApiCache, invalidateApiCacheByPrefix } from '@/lib/cache';
 import { MealPlan, MealPlanDay, MealPlanItem, RecipeListItem } from '@/lib/types';
 
 const RECIPE_PAGE_SIZE = 60;
@@ -74,6 +81,7 @@ export default function PlanScreen() {
     mutating.current.add(item.id);
     try {
       await api(`/api/meal-plan/items/${item.id}`, { method: 'DELETE' });
+      await invalidateApiCacheByPrefix('meal-plan:');
       await load(plan?.week_start || weekStart);
     } catch (reason) {
       Alert.alert('Nicht entfernt', reason instanceof Error ? reason.message : 'Änderung fehlgeschlagen');
@@ -91,6 +99,7 @@ export default function PlanScreen() {
         method: 'PATCH',
         body: JSON.stringify({ planned_servings: next }),
       });
+      await invalidateApiCacheByPrefix('meal-plan:');
       await load(plan?.week_start || weekStart);
     } catch (reason) {
       Alert.alert('Portionen nicht geändert', reason instanceof Error ? reason.message : 'Änderung fehlgeschlagen');
@@ -106,6 +115,7 @@ export default function PlanScreen() {
         method: 'POST',
         body: JSON.stringify({ week_start: plan.week_start }),
       });
+      await invalidateApiCache('cart');
       Alert.alert('Einkaufsliste ergänzt', `${result.added} neue und ${result.merged} vorhandene Artikel wurden übernommen.`);
     } catch (reason) {
       Alert.alert('Nicht möglich', reason instanceof Error ? reason.message : 'Erstellen fehlgeschlagen');
@@ -114,6 +124,7 @@ export default function PlanScreen() {
 
   async function sharePlanPdf() {
     if (!plan) return;
+    const downloadEpoch = currentApiSessionEpoch();
     setPdfBusy(true);
     let localUri = '';
     try {
@@ -121,13 +132,16 @@ export default function PlanScreen() {
         `/api/meal-plan/pdf?week_start=${encodeURIComponent(plan.week_start)}`,
         `wochenplan-${plan.week_start}.pdf`,
       );
+      assertApiSessionEpochCurrent(downloadEpoch);
       if (!await Sharing.isAvailableAsync()) throw new Error('Teilen ist auf diesem Gerät nicht verfügbar.');
+      assertApiSessionEpochCurrent(downloadEpoch);
       await Sharing.shareAsync(localUri, {
         mimeType: 'application/pdf',
         UTI: 'com.adobe.pdf',
         dialogTitle: `Wochenplan ab ${plan.week_start}`,
       });
     } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 401) return;
       Alert.alert('PDF nicht geteilt', reason instanceof Error ? reason.message : 'Download fehlgeschlagen');
     } finally {
       if (localUri) await deleteCachedFile(localUri).catch(() => undefined);
@@ -178,6 +192,7 @@ export default function PlanScreen() {
                 <Text style={styles.dayDate}>{day.date}</Text>
               </View>
               <Pressable
+                accessibilityRole="button"
                 accessibilityLabel={`Rezept zu ${day.label} hinzufügen`}
                 onPress={() => setSelectedDay(day)}
                 style={styles.plus}>
@@ -190,9 +205,23 @@ export default function PlanScreen() {
                   <Text style={styles.mealName}>{item.recipe_name}</Text>
                   <Text style={styles.servings}>{item.planned_servings} Portionen</Text>
                 </View>
-                <Pressable onPress={() => changeServings(item, -1)} style={styles.smallButton}><Text>−</Text></Pressable>
-                <Pressable onPress={() => changeServings(item, 1)} style={styles.smallButton}><Text>+</Text></Pressable>
-                <Pressable onPress={() => remove(item)} style={styles.smallButton}><Text style={styles.remove}>×</Text></Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Portionen für ${item.recipe_name} verringern`}
+                  disabled={item.planned_servings <= 1}
+                  onPress={() => changeServings(item, -1)}
+                  style={[styles.smallButton, item.planned_servings <= 1 && styles.disabled]}><Text>−</Text></Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Portionen für ${item.recipe_name} erhöhen`}
+                  disabled={item.planned_servings >= 24}
+                  onPress={() => changeServings(item, 1)}
+                  style={[styles.smallButton, item.planned_servings >= 24 && styles.disabled]}><Text>+</Text></Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`${item.recipe_name} aus ${day.label} entfernen`}
+                  onPress={() => remove(item)}
+                  style={styles.smallButton}><Text style={styles.remove}>×</Text></Pressable>
               </View>
             )) : <Text style={styles.emptyDay}>Noch nichts geplant</Text>}
           </View>
@@ -305,13 +334,18 @@ function RecipePicker({
 
   async function add(recipe: RecipeListItem) {
     if (!day) return;
+    if (!recipe.servings || recipe.servings < 1) {
+      Alert.alert('Portionszahl fehlt', 'Bitte ergänze die Portionszahl im Rezept, bevor du es einplanst.');
+      return;
+    }
     setAddingId(recipe.id);
     setError('');
     try {
       await api('/api/meal-plan/items', {
         method: 'POST',
-        body: JSON.stringify({ planned_for: day.date, recipe_id: recipe.id, planned_servings: Math.min(24, Math.max(1, recipe.servings || 2)) }),
+        body: JSON.stringify({ planned_for: day.date, recipe_id: recipe.id, planned_servings: Math.min(24, Math.max(1, recipe.servings)) }),
       });
+      await invalidateApiCacheByPrefix('meal-plan:');
       onAdded();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Rezept konnte nicht eingeplant werden');
@@ -324,7 +358,7 @@ function RecipePicker({
     <Modal visible={!!day} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <SafeAreaView style={styles.picker}>
         <View style={styles.pickerHeader}>
-          <Pressable onPress={onClose}><Text style={styles.navText}>Abbrechen</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Rezeptauswahl schließen" onPress={onClose}><Text style={styles.navText}>Abbrechen</Text></Pressable>
           <Text style={styles.pickerTitle}>Rezept für {day?.label}</Text>
           <View style={{ width: 76 }} />
         </View>
@@ -341,8 +375,9 @@ function RecipePicker({
             data={recipes}
             keyExtractor={item => String(item.id)}
             contentContainerStyle={styles.pickerList}
+            keyboardShouldPersistTaps="handled"
             renderItem={({ item }) => (
-              <Pressable disabled={addingId !== null} onPress={() => add(item)} style={styles.pickerItem}>
+              <Pressable accessibilityRole="button" accessibilityLabel={`${item.name} einplanen`} disabled={addingId !== null} onPress={() => add(item)} style={styles.pickerItem}>
                 <Text style={styles.pickerName}>{item.name}</Text>
                 {addingId === item.id ? <ActivityIndicator color={colors.text} /> : <Text style={styles.chevron}>›</Text>}
               </Pressable>
@@ -399,7 +434,8 @@ const styles = StyleSheet.create({
   mealText: { flex: 1 },
   mealName: { color: colors.text, fontSize: 16, fontWeight: '700' },
   servings: { color: colors.muted, marginTop: 2, fontSize: 12 },
-  smallButton: { width: 38, height: 44, alignItems: 'center', justifyContent: 'center' },
+  smallButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  disabled: { opacity: 0.4 },
   remove: { color: colors.danger, fontSize: 22 },
   emptyDay: { color: colors.muted, paddingVertical: 8 },
   footer: { paddingTop: space.lg, gap: 10 },

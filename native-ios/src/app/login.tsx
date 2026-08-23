@@ -22,7 +22,10 @@ export default function LoginScreen() {
     serverUrl: storedServer,
     cloudflareClientId: storedCloudflareClientId,
     cloudflareClientSecret: storedCloudflareClientSecret,
+    sessionWarning,
+    authCleanupPending,
     signIn,
+    retryAuthCleanup,
   } = useAuth();
   const [server, setServer] = useState(storedServer);
   const [username, setUsername] = useState('');
@@ -139,6 +142,19 @@ export default function LoginScreen() {
               </Text>
             </View>
           )}
+          {!!sessionWarning && (
+            <View style={styles.warningBox}>
+              <Text accessibilityRole="alert" style={styles.warning}>{sessionWarning}</Text>
+              {authCleanupPending && (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void retryAuthCleanup()}
+                  style={styles.cleanupButton}>
+                  <Text style={styles.cleanupButtonText}>Schlüsselbund erneut bereinigen</Text>
+                </Pressable>
+              )}
+            </View>
+          )}
           {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
           <PrimaryButton
             label={busy ? 'Anmelden …' : 'Anmelden'}
@@ -199,6 +215,10 @@ const styles = StyleSheet.create({
   cloudflareChevron: { color: colors.text, fontSize: 24, lineHeight: 28 },
   cloudflarePanel: { gap: 10 },
   cloudflareHint: { color: colors.muted, fontSize: 12, lineHeight: 17 },
+  warningBox: { gap: 8, padding: 12, borderRadius: radii.sm, backgroundColor: colors.warningSurface },
+  warning: { color: colors.text, lineHeight: 20 },
+  cleanupButton: { minHeight: 44, justifyContent: 'center' },
+  cleanupButtonText: { color: colors.text, fontWeight: '900', textDecorationLine: 'underline' },
   error: { color: colors.danger, lineHeight: 20 },
   privacy: { color: colors.muted, textAlign: 'center', fontSize: 12, lineHeight: 17 },
   privacyLinkButton: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },

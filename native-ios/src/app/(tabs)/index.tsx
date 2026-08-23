@@ -19,6 +19,7 @@ import { RecipeCard } from '@/components/recipe-card';
 import { StateView } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 import { apiCached } from '@/lib/cache';
 import { RecipeListItem } from '@/lib/types';
 
@@ -65,6 +66,7 @@ function FilterChip({ label, selected, onPress }: { label: string; selected: boo
 }
 
 export default function RecipesScreen() {
+  const { refreshSession, sessionChecking, sessionWarning } = useAuth();
   const [recipes, setRecipes] = useState<RecipeListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
@@ -161,12 +163,13 @@ export default function RecipesScreen() {
   }, [filters, load, query]);
 
   useFocusEffect(useCallback(() => {
+    if (sessionWarning) void refreshSession();
     if (initialLoadDone.current) {
       setFacets(null);
       void load({ refresh: recipesRef.current.length > 0 });
     }
     return () => request.current?.abort();
-  }, [load]));
+  }, [load, refreshSession, sessionWarning]));
 
   const activeFilterCount = [
     Boolean(filters.type),
@@ -241,6 +244,25 @@ export default function RecipesScreen() {
         </View>
         <Text style={styles.count}>{total}</Text>
       </View>
+      {!!sessionWarning && (
+        <View accessibilityRole="alert" style={styles.sessionBanner}>
+          <Text style={styles.sessionWarning}>{sessionWarning}</Text>
+          <Pressable
+            accessibilityRole="button"
+            disabled={sessionChecking}
+            onPress={() => void refreshSession()}
+            style={({ pressed }) => [
+              styles.sessionRetry,
+              sessionChecking && styles.disabled,
+              pressed && styles.pressed,
+            ]}>
+            {sessionChecking && <ActivityIndicator color={colors.text} size="small" />}
+            <Text style={styles.sessionRetryText}>
+              {sessionChecking ? 'Wird geprüft …' : 'Verbindung prüfen'}
+            </Text>
+          </Pressable>
+        </View>
+      )}
       <View style={styles.controls}>
         <TextInput
           accessibilityLabel="Rezepte durchsuchen"
@@ -274,7 +296,14 @@ export default function RecipesScreen() {
           contentContainerStyle={styles.list}
           ItemSeparatorComponent={() => <View style={{ height: space.md }} />}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={() => load({ search: query, refresh: true })} tintColor={colors.text} />
+            <RefreshControl
+              refreshing={refreshing || sessionChecking}
+              onRefresh={() => {
+                void refreshSession();
+                void load({ search: query, refresh: true });
+              }}
+              tintColor={colors.text}
+            />
           }
           onEndReachedThreshold={0.4}
           onEndReached={() => {
@@ -306,7 +335,11 @@ export default function RecipesScreen() {
               <Text style={styles.sheetReset}>Zurücksetzen</Text>
             </Pressable>
           </View>
-          <ScrollView contentContainerStyle={styles.sheetContent}>
+          <ScrollView
+            automaticallyAdjustKeyboardInsets
+            keyboardDismissMode="interactive"
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={styles.sheetContent}>
             <View style={styles.filterGroup}>
               <Text style={styles.filterHeading}>Schnellfilter</Text>
               <View style={styles.chipRow}>
@@ -445,6 +478,10 @@ const styles = StyleSheet.create({
   eyebrow: { color: colors.muted, fontSize: 11, letterSpacing: 1.5, fontWeight: '800' },
   title: { color: colors.text, fontSize: 36, letterSpacing: -1, fontWeight: '900' },
   count: { color: colors.text, fontSize: 17, fontWeight: '800', paddingBottom: 5 },
+  sessionBanner: { marginHorizontal: space.md, marginBottom: 12, padding: 12, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, borderRadius: radii.md, backgroundColor: colors.warningSurface },
+  sessionWarning: { flexGrow: 1, flexShrink: 1, minWidth: 180, color: colors.text, lineHeight: 20 },
+  sessionRetry: { minHeight: 44, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  sessionRetryText: { color: colors.text, fontWeight: '900' },
   controls: { paddingHorizontal: space.md, paddingBottom: 12, flexDirection: 'row', gap: 8 },
   search: {
     flex: 1,
@@ -473,6 +510,7 @@ const styles = StyleSheet.create({
   filterText: { color: colors.text, fontWeight: '800' },
   filterCount: { minWidth: 20, height: 20, paddingTop: 2, borderRadius: 10, overflow: 'hidden', color: colors.surface, backgroundColor: colors.text, fontSize: 12, fontWeight: '900', textAlign: 'center' },
   pressed: { opacity: 0.7 },
+  disabled: { opacity: 0.45 },
   list: { padding: space.md, paddingTop: 4, paddingBottom: 120 },
   pageLoader: { paddingVertical: space.lg },
   sheetSafe: { flex: 1, backgroundColor: colors.cream },

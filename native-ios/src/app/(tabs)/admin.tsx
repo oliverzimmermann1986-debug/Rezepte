@@ -9,8 +9,9 @@ import { AdminVersions } from '@/components/admin-versions';
 import { PendingEditor } from '@/components/pending-editor';
 import { PrimaryButton, Screen, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
-import { api, deleteCachedFile, uploadFile } from '@/lib/api';
+import { api, createClientRequestId, deleteCachedFile, uploadFile } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { invalidateApiCacheByPrefix } from '@/lib/cache';
 import { openExternalUrl } from '@/lib/external-links';
 import { pickEditedJpeg } from '@/lib/image-picker';
 import { FailedDownload, PendingItem } from '@/lib/types';
@@ -29,7 +30,7 @@ type Overview = {
 };
 
 export default function AdminScreen() {
-  const { username, serverUrl, sessionWarning, signOut } = useAuth();
+  const { username, serverUrl, sessionWarning, isAdmin, signOut } = useAuth();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [pending, setPending] = useState<PendingItem[]>([]);
   const [failed, setFailed] = useState<FailedDownload[]>([]);
@@ -67,8 +68,9 @@ export default function AdminScreen() {
   }, []);
 
   useFocusEffect(useCallback(() => {
+    if (!isAdmin) return;
     void load();
-  }, [load]));
+  }, [isAdmin, load]));
 
   async function openPrivacy() {
     try {
@@ -87,6 +89,7 @@ export default function AdminScreen() {
         method: 'POST',
         body: JSON.stringify({ url: source, type: 'recipe' }),
       });
+      await invalidateApiCacheByPrefix('recipes:');
       setUrl('');
       Alert.alert(
         result.ok ? 'Import übernommen' : 'Import fehlgeschlagen',
@@ -112,22 +115,41 @@ export default function AdminScreen() {
     }
   }
 
-  async function uploadSelected(file: { uri: string; name: string; mimeType: string }) {
+  async function uploadSelected(
+    file: { uri: string; name: string; mimeType: string },
+    clientRequestId = createClientRequestId(),
+  ) {
     setBusy(true);
     try {
       const result = await uploadFile<{ ok: boolean; status?: string; message?: string }>(
         '/api/pending/import-file?type=recipe',
         file,
+        clientRequestId,
       );
       Alert.alert(
         result.status === 'pending' ? 'Zur Prüfung vorgemerkt' : 'Datei importiert',
         result.message || 'Die Datei wurde verarbeitet.',
       );
+      await invalidateApiCacheByPrefix('recipes:');
+      await deleteCachedFile(file.uri).catch(() => undefined);
       await load();
     } catch (reason) {
-      Alert.alert('Upload fehlgeschlagen', reason instanceof Error ? reason.message : 'Datei konnte nicht hochgeladen werden');
+      Alert.alert(
+        'Upload fehlgeschlagen',
+        reason instanceof Error ? reason.message : 'Datei konnte nicht hochgeladen werden',
+        [
+          {
+            text: 'Abbrechen',
+            style: 'cancel',
+            onPress: () => void deleteCachedFile(file.uri).catch(() => undefined),
+          },
+          {
+            text: 'Erneut versuchen',
+            onPress: () => void uploadSelected(file, clientRequestId),
+          },
+        ],
+      );
     } finally {
-      await deleteCachedFile(file.uri).catch(() => undefined);
       setBusy(false);
     }
   }
@@ -167,6 +189,10 @@ export default function AdminScreen() {
     }
   }
 
+  if (!isAdmin) {
+    return <Screen topSafe><StateView title="Keine Admin-Berechtigung" message="Dieses Konto kann Rezepte nutzen, aber keine Server- oder Importverwaltung öffnen." /></Screen>;
+  }
+
   return (
     <Screen topSafe contentStyle={styles.content}>
       <View style={styles.header}>
@@ -174,7 +200,7 @@ export default function AdminScreen() {
           <Text style={styles.eyebrow}>SYSTEM & PFLEGE</Text>
           <Text style={styles.title}>Administration</Text>
         </View>
-        <Pressable onPress={() => load()} style={styles.refresh}><Text style={styles.refreshText}>↻</Text></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Administration aktualisieren" onPress={() => load()} style={styles.refresh}><Text style={styles.refreshText}>↻</Text></Pressable>
       </View>
 
       {!!sessionWarning && <Text accessibilityRole="alert" style={styles.warning}>{sessionWarning}</Text>}
@@ -224,7 +250,12 @@ export default function AdminScreen() {
           <View style={styles.section}>
             <Text style={sharedStyles.sectionTitle}>Manuelle Prüfung</Text>
             {!pending.length ? <Text style={styles.empty}>Keine offenen Importe.</Text> : pending.map(item => (
-              <Pressable key={item.url} onPress={() => setSelectedPending(item)} style={styles.pending}>
+              <Pressable
+                key={item.url}
+                accessibilityRole="button"
+                accessibilityLabel={`${item.ai_suggestion?.name || item.ai_suggestion?.filename || 'Unvollständiger Import'} bearbeiten`}
+                onPress={() => setSelectedPending(item)}
+                style={styles.pending}>
                 <View style={styles.pendingText}>
                   <Text style={styles.pendingTitle} numberOfLines={1}>{item.ai_suggestion?.name || item.ai_suggestion?.filename || 'Unvollständiger Import'}</Text>
                   <Text style={styles.pendingUrl} numberOfLines={2}>{item.url}</Text>
@@ -244,8 +275,8 @@ export default function AdminScreen() {
                   <Text style={styles.pendingUrl} numberOfLines={2}>{item.url}</Text>
                   {!!item.last_error && <Text style={styles.failedError} numberOfLines={2}>{item.last_error}</Text>}
                   <View style={styles.failedActions}>
-                    <Pressable onPress={() => failedAction(item, 'retry')} disabled={busy}><Text style={styles.retry}>Erneut versuchen</Text></Pressable>
-                    <Pressable onPress={() => failedAction(item, 'discard')} disabled={busy}><Text style={styles.skip}>Verwerfen</Text></Pressable>
+                    <Pressable accessibilityRole="button" accessibilityLabel={`${item.url} erneut versuchen`} onPress={() => failedAction(item, 'retry')} disabled={busy}><Text style={styles.retry}>Erneut versuchen</Text></Pressable>
+                    <Pressable accessibilityRole="button" accessibilityLabel={`${item.url} verwerfen`} onPress={() => failedAction(item, 'discard')} disabled={busy}><Text style={styles.skip}>Verwerfen</Text></Pressable>
                   </View>
                 </View>
               ))}

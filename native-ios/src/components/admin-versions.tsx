@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StateView } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { invalidateApiCacheByPrefix } from '@/lib/cache';
 
 type VersionItem = {
   id: number;
@@ -99,6 +100,7 @@ export function AdminVersions({
     setError('');
     try {
       await api(`/api/admin/versions/${item.id}/restore`, { method: 'POST' });
+      await invalidateApiCacheByPrefix('recipe:', 'recipes:');
       setDetail(null);
       await load();
       onChanged();

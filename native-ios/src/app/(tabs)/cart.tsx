@@ -8,10 +8,12 @@ import {
   Platform,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -20,7 +22,7 @@ import { PrimaryButton, StateView } from '@/components/ui';
 import { UnitPicker } from '@/components/unit-picker';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
-import { apiCached } from '@/lib/cache';
+import { apiCached, invalidateApiCache } from '@/lib/cache';
 import { isValidDateInput, localDateInput } from '@/lib/date-input';
 import { CartItem, RecurringCartItem } from '@/lib/types';
 import { normalizeUnit } from '@/lib/units';
@@ -48,6 +50,7 @@ const emptyRecurringForm = (): RecurringForm => ({
 });
 
 export default function CartScreen() {
+  const { width, fontScale } = useWindowDimensions();
   const [tab, setTab] = useState<'list' | 'recurring'>('list');
   const [items, setItems] = useState<CartItem[]>([]);
   const [recurring, setRecurring] = useState<RecurringCartItem[]>([]);
@@ -103,6 +106,7 @@ export default function CartScreen() {
     if (!next) return;
     try {
       await api('/api/cart/add', { method: 'POST', body: JSON.stringify({ name: next }) });
+      await invalidateApiCache('cart');
       setName('');
       await loadCart();
     } catch (reason) {
@@ -120,6 +124,7 @@ export default function CartScreen() {
         method: 'PATCH',
         body: JSON.stringify({ checked: nextChecked }),
       });
+      await invalidateApiCache('cart');
       await loadCart();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Änderung konnte nicht gespeichert werden');
@@ -134,6 +139,7 @@ export default function CartScreen() {
     mutating.current.add(item.id);
     try {
       await api(`/api/cart/${item.id}`, { method: 'DELETE' });
+      await invalidateApiCache('cart');
       setItems(current => current.filter(value => value.id !== item.id));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Artikel konnte nicht entfernt werden');
@@ -151,6 +157,7 @@ export default function CartScreen() {
         onPress: async () => {
           try {
             await api('/api/cart/clear', { method: 'POST', body: JSON.stringify({ only_checked: true }) });
+            await invalidateApiCache('cart');
             await loadCart();
           } catch (reason) {
             setError(reason instanceof Error ? reason.message : 'Erledigte Artikel konnten nicht entfernt werden');
@@ -208,6 +215,7 @@ export default function CartScreen() {
         method: editor.id ? 'PATCH' : 'POST',
         body,
       });
+      await invalidateApiCache('recurring-cart');
       setEditor(null);
       await loadRecurring();
     } catch (reason) {
@@ -223,6 +231,7 @@ export default function CartScreen() {
     setRecurring(current => current.map(value => value.id === item.id ? { ...value, active } : value));
     try {
       await api(`/api/cart/recurring/${item.id}`, { method: 'PATCH', body: JSON.stringify({ active }) });
+      await invalidateApiCache('recurring-cart');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Status konnte nicht gespeichert werden');
       await loadRecurring();
@@ -240,6 +249,7 @@ export default function CartScreen() {
         onPress: async () => {
           try {
             await api(`/api/cart/recurring/${item.id}`, { method: 'DELETE' });
+            await invalidateApiCache('recurring-cart');
             await loadRecurring();
           } catch (reason) {
             setError(reason instanceof Error ? reason.message : 'Wiederholung konnte nicht gelöscht werden');
@@ -256,6 +266,7 @@ export default function CartScreen() {
       const result = await api<{ count: number }>('/api/cart/recurring/run', {
         method: 'POST', body: JSON.stringify({}),
       });
+      await invalidateApiCache('cart', 'recurring-cart');
       Alert.alert(
         result.count ? 'Zur Liste hinzugefügt' : 'Nichts fällig',
         result.count === 1 ? 'Ein Artikel wurde eingetragen.' : `${result.count} Artikel wurden eingetragen.`,
@@ -317,14 +328,21 @@ export default function CartScreen() {
               contentContainerStyle={styles.list}
               renderItem={({ item }) => (
                 <View style={styles.item}>
-                  <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: item.checked }} onPress={() => toggle(item)} style={[styles.check, item.checked && styles.checkDone]}>
-                    <Text style={styles.checkText}>{item.checked ? '✓' : ''}</Text>
+                  <Pressable
+                    accessibilityRole="checkbox"
+                    accessibilityLabel={`${item.name}: ${item.checked ? 'wieder öffnen' : 'als erledigt markieren'}`}
+                    accessibilityState={{ checked: item.checked }}
+                    style={styles.itemToggle}
+                    onPress={() => toggle(item)}>
+                    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.check, item.checked && styles.checkDone]}>
+                      <Text style={styles.checkText}>{item.checked ? '✓' : ''}</Text>
+                    </View>
+                    <View style={styles.itemText}>
+                      <Text style={[styles.name, item.checked && styles.nameDone]}>{item.name}</Text>
+                      <Text style={styles.amount}>{item.amount == null ? '' : `${item.amount} `}{item.unit || ''}</Text>
+                    </View>
                   </Pressable>
-                  <Pressable style={styles.itemText} onPress={() => toggle(item)}>
-                    <Text style={[styles.name, item.checked && styles.nameDone]}>{item.name}</Text>
-                    <Text style={styles.amount}>{item.amount == null ? '' : `${item.amount} `}{item.unit || ''}</Text>
-                  </Pressable>
-                  <Pressable accessibilityLabel={`${item.name} entfernen`} onPress={() => remove(item)} hitSlop={10}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={`${item.name} entfernen`} onPress={() => remove(item)} hitSlop={10}>
                     <Text style={styles.remove}>×</Text>
                   </Pressable>
                 </View>
@@ -376,13 +394,13 @@ export default function CartScreen() {
           <SafeAreaView style={styles.modalSafe} edges={['top', 'left', 'right', 'bottom']}>
             <KeyboardAvoidingView style={styles.modalBody} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
               <View style={styles.modalHeader}>
-                <Pressable onPress={() => setEditor(null)} hitSlop={10}><Text style={styles.modalLink}>Abbrechen</Text></Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel="Wiederholung schließen" onPress={() => setEditor(null)} hitSlop={10}><Text style={styles.modalLink}>Abbrechen</Text></Pressable>
                 <Text style={styles.modalTitle}>{editor.id ? 'Wiederholung bearbeiten' : 'Neue Wiederholung'}</Text>
-                <Pressable onPress={saveRecurring} disabled={saving} hitSlop={10}><Text style={[styles.modalLink, styles.modalSave, saving && styles.disabled]}>{saving ? '…' : 'Speichern'}</Text></Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel="Wiederholung speichern" onPress={saveRecurring} disabled={saving} hitSlop={10}><Text style={[styles.modalLink, styles.modalSave, saving && styles.disabled]}>{saving ? '…' : 'Speichern'}</Text></Pressable>
               </View>
-              <View style={styles.form}>
+              <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
                 <Field label="Artikel" value={editor.name} onChangeText={value => setEditor({ ...editor, name: value })} placeholder="z. B. Hafermilch" />
-                <View style={styles.formRow}>
+                <View style={[styles.formRow, (width < 390 || fontScale > 1.15) && styles.formColumn]}>
                   <View style={styles.formHalf}><Field label="Menge" value={editor.amount} onChangeText={value => setEditor({ ...editor, amount: value })} placeholder="z. B. 2" keyboardType="decimal-pad" /></View>
                   <View style={styles.formHalf}>
                     <View style={styles.field}>
@@ -396,9 +414,9 @@ export default function CartScreen() {
                 <Field label="Nächster Termin (JJJJ-MM-TT)" value={editor.nextDueOn} onChangeText={value => setEditor({ ...editor, nextDueOn: value })} placeholder="2026-08-22" />
                 <View style={styles.activeRow}>
                   <View><Text style={styles.fieldLabel}>Aktiv</Text><Text style={styles.helper}>Pausierte Regeln bleiben gespeichert.</Text></View>
-                  <Switch value={editor.active} onValueChange={active => setEditor({ ...editor, active })} trackColor={{ false: colors.border, true: colors.butter }} />
+                  <Switch accessibilityLabel="Wiederholung aktiv" value={editor.active} onValueChange={active => setEditor({ ...editor, active })} trackColor={{ false: colors.border, true: colors.butter }} />
                 </View>
-              </View>
+              </ScrollView>
             </KeyboardAvoidingView>
           </SafeAreaView>
         )}
@@ -442,6 +460,7 @@ const styles = StyleSheet.create({
   error: { color: colors.danger, paddingHorizontal: space.md, paddingBottom: 8 },
   list: { paddingHorizontal: space.md, paddingBottom: 120, flexGrow: 1 },
   item: { minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  itemToggle: { flex: 1, minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 12 },
   check: { width: 32, height: 32, borderRadius: 11, borderWidth: 2, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.white },
   checkDone: { borderColor: colors.success, backgroundColor: colors.success },
   checkText: { color: colors.white, fontWeight: '900' },
@@ -471,6 +490,7 @@ const styles = StyleSheet.create({
   field: { gap: 6 },
   fieldLabel: { color: colors.text, fontSize: 14, fontWeight: '800' },
   formRow: { flexDirection: 'row', gap: space.sm },
+  formColumn: { flexDirection: 'column' },
   formHalf: { flex: 1 },
   activeRow: { minHeight: 62, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface },
   helper: { color: colors.muted, fontSize: 13, marginTop: 2 },

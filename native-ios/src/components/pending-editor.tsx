@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
+  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -8,14 +9,27 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
+import * as Sharing from 'expo-sharing';
 
 import { PrimaryButton, sharedStyles } from '@/components/ui';
 import { UnitPicker } from '@/components/unit-picker';
 import { colors, radii, space } from '@/constants/design';
-import { api } from '@/lib/api';
+import {
+  absoluteApiUrl,
+  ApiError,
+  api,
+  apiAuthHeaders,
+  assertApiSessionEpochCurrent,
+  currentApiSessionEpoch,
+  deleteCachedFile,
+  downloadFileToCache,
+} from '@/lib/api';
+import { invalidateApiCacheByPrefix } from '@/lib/cache';
 import {
   createIngredientRow,
   createStepRow,
@@ -34,6 +48,7 @@ type Props = {
 };
 
 export function PendingEditor({ item, onClose, onSaved }: Props) {
+  const { width, fontScale } = useWindowDimensions();
   const [name, setName] = useState('');
   const [recipeType, setRecipeType] = useState('Hauptgericht');
   const [category, setCategory] = useState('Allgemein');
@@ -44,6 +59,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   const [verified, setVerified] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [previewUnavailable, setPreviewUnavailable] = useState(false);
 
   useEffect(() => {
     if (!item) return;
@@ -57,9 +73,10 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
     setSteps(suggestion.steps?.length ? suggestion.steps.map(createStepRow) : [createStepRow()]);
     setVerified(false);
     setError('');
+    setPreviewUnavailable(false);
   }, [item]);
 
-  async function resolve(action: 'save' | 'skip') {
+  async function save() {
     if (!item) return;
     setBusy(true);
     setError('');
@@ -68,7 +85,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
         method: 'POST',
         body: JSON.stringify({
           url: item.url,
-          action,
+          action: 'save',
           name: name.trim(),
           type: recipeType.trim(),
           category: category.trim(),
@@ -92,6 +109,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
         }),
       });
       if (!result.ok) throw new Error(result.error || 'Import konnte nicht gespeichert werden');
+      await invalidateApiCacheByPrefix('recipe:', 'recipes:');
       onSaved();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Speichern fehlgeschlagen');
@@ -100,8 +118,50 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
     }
   }
 
+  function requestDiscard() {
+    if (!item || busy) return;
+    Alert.alert(
+      'Import wirklich verwerfen?',
+      'Der Eingang wird als verworfen markiert und erscheint nicht mehr in der manuellen Prüfung.',
+      [
+        { text: 'Abbrechen', style: 'cancel' },
+        { text: 'Verwerfen', style: 'destructive', onPress: () => void discard() },
+      ],
+    );
+  }
+
+  async function discard() {
+    if (!item) return;
+    setBusy(true);
+    setError('');
+    try {
+      // Beim Verwerfen werden absichtlich keine editierbaren Felder gesendet:
+      // ungültige Mengen/Timer dürfen diese unabhängige Aktion nie blockieren.
+      const result = await api<{ ok: boolean; error?: string }>('/api/pending', {
+        method: 'POST',
+        body: JSON.stringify({ url: item.url, action: 'skip' }),
+      });
+      if (!result.ok) throw new Error(result.error || 'Import konnte nicht verworfen werden');
+      onSaved();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Verwerfen fehlgeschlagen');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const externalSource = normalizedExternalUrl(item?.url);
   const hasIngredients = ingredients.some(value => value.name.trim());
+  const filename = item?.ai_suggestion?.filename?.trim() || '';
+  const extension = filename.split('.').pop()?.toLocaleLowerCase('de-DE') || '';
+  const hasLocalFile = ['manual-upload', 'mail-attachment'].includes(
+    item?.ai_suggestion?.source || '',
+  ) && Boolean(filename);
+  const isImage = ['jpg', 'jpeg', 'png'].includes(extension);
+  const localFilePath = item
+    ? `/api/pending/file?url=${encodeURIComponent(item.url)}`
+    : '';
+  const compactForm = width < 390 || fontScale > 1.15;
 
   async function openSource() {
     try {
@@ -111,12 +171,42 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
     }
   }
 
+  async function openLocalFile() {
+    if (!hasLocalFile || !localFilePath) return;
+    const downloadEpoch = currentApiSessionEpoch();
+    let localUri = '';
+    setBusy(true);
+    setError('');
+    try {
+      const mimeType = extension === 'pdf'
+        ? 'application/pdf'
+        : extension === 'png' ? 'image/png' : 'image/jpeg';
+      localUri = await downloadFileToCache(localFilePath, filename, mimeType);
+      assertApiSessionEpochCurrent(downloadEpoch);
+      if (!await Sharing.isAvailableAsync()) {
+        throw new Error('Die Dateivorschau ist auf diesem Gerät nicht verfügbar.');
+      }
+      assertApiSessionEpochCurrent(downloadEpoch);
+      await Sharing.shareAsync(localUri, {
+        mimeType,
+        UTI: extension === 'pdf' ? 'com.adobe.pdf' : 'public.image',
+        dialogTitle: filename,
+      });
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 401) return;
+      setError(reason instanceof Error ? reason.message : 'Datei konnte nicht geöffnet werden');
+    } finally {
+      if (localUri) await deleteCachedFile(localUri).catch(() => undefined);
+      setBusy(false);
+    }
+  }
+
   return (
     <Modal visible={item !== null} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <SafeAreaView style={styles.safe}>
         <KeyboardAvoidingView style={styles.safe} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.header}>
-            <Pressable onPress={onClose} hitSlop={10}><Text style={styles.cancel}>Abbrechen</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Importprüfung schließen" onPress={onClose} hitSlop={10}><Text style={styles.cancel}>Abbrechen</Text></Pressable>
             <Text style={styles.title}>Import prüfen</Text>
             <View style={{ width: 78 }} />
           </View>
@@ -124,7 +214,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
             <View style={sharedStyles.card}>
               <Text style={sharedStyles.sectionTitle}>Zuordnung</Text>
               <TextInput placeholder="Rezeptname" placeholderTextColor={colors.muted} value={name} onChangeText={setName} style={sharedStyles.input} />
-              <View style={styles.twoColumns}>
+              <View style={[styles.twoColumns, compactForm && styles.singleColumn]}>
                 <TextInput placeholder="Typ" placeholderTextColor={colors.muted} value={recipeType} onChangeText={setRecipeType} style={[sharedStyles.input, styles.flex]} />
                 <TextInput placeholder="Kategorie" placeholderTextColor={colors.muted} value={category} onChangeText={setCategory} style={[sharedStyles.input, styles.flex]} />
               </View>
@@ -143,7 +233,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
                     onChangeText={value => setIngredients(rows => rows.map(row => row.clientKey === ingredient.clientKey ? { ...row, name: value } : row))}
                     style={sharedStyles.input}
                   />
-                  <View style={styles.twoColumns}>
+                  <View style={[styles.twoColumns, compactForm && styles.singleColumn]}>
                     <TextInput
                       placeholder="Menge"
                       placeholderTextColor={colors.muted}
@@ -159,7 +249,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
                       style={styles.flex}
                     />
                   </View>
-                  <Pressable onPress={() => setIngredients(rows => rows.filter(row => row.clientKey !== ingredient.clientKey))}><Text style={styles.remove}>Entfernen</Text></Pressable>
+                  <Pressable accessibilityRole="button" accessibilityLabel={`${ingredient.name || `Zutat ${index + 1}`} entfernen`} onPress={() => setIngredients(rows => rows.filter(row => row.clientKey !== ingredient.clientKey))}><Text style={styles.remove}>Entfernen</Text></Pressable>
                 </View>
               ))}
               <PrimaryButton label="+ Zutat" onPress={() => setIngredients(rows => [...rows, createIngredientRow()])} />
@@ -185,7 +275,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
                     onChangeText={value => setSteps(rows => rows.map(row => row.clientKey === step.clientKey ? { ...row, timer_seconds: value } : row))}
                     style={sharedStyles.input}
                   />
-                  <Pressable onPress={() => setSteps(rows => rows.filter(row => row.clientKey !== step.clientKey))}><Text style={styles.remove}>Entfernen</Text></Pressable>
+                  <Pressable accessibilityRole="button" accessibilityLabel={`Schritt ${index + 1} entfernen`} onPress={() => setSteps(rows => rows.filter(row => row.clientKey !== step.clientKey))}><Text style={styles.remove}>Entfernen</Text></Pressable>
                 </View>
               ))}
               <PrimaryButton label="+ Schritt" onPress={() => setSteps(rows => [...rows, createStepRow()])} />
@@ -204,14 +294,32 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
               </View>
             </Pressable>
 
+            {hasLocalFile && (
+              <View style={styles.filePreview}>
+                <Text style={styles.fileTitle}>Importdatei · {filename}</Text>
+                {isImage && !previewUnavailable && (
+                  <Image
+                    accessibilityLabel={`Vorschau von ${filename}`}
+                    source={{ uri: absoluteApiUrl(localFilePath), headers: apiAuthHeaders() }}
+                    contentFit="contain"
+                    onError={() => setPreviewUnavailable(true)}
+                    style={styles.previewImage}
+                  />
+                )}
+                {previewUnavailable && (
+                  <Text style={styles.previewHint}>Keine direkte Vorschau verfügbar. Die Datei kann trotzdem geöffnet werden.</Text>
+                )}
+                <PrimaryButton label={busy ? 'Datei wird geöffnet …' : 'Importdatei öffnen'} onPress={() => void openLocalFile()} disabled={busy} />
+              </View>
+            )}
             {!!externalSource && (
               <Pressable accessibilityRole="link" onPress={() => void openSource()}>
                 <Text style={styles.source} numberOfLines={2}>Original bei {item?.ai_suggestion?.platform || 'der Plattform'} öffnen ↗</Text>
               </Pressable>
             )}
             {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
-            <PrimaryButton label={busy ? 'Speichert …' : 'Rezept speichern'} onPress={() => resolve('save')} disabled={busy || !name.trim()} />
-            <PrimaryButton label="Import verwerfen" onPress={() => resolve('skip')} disabled={busy} destructive />
+            <PrimaryButton label={busy ? 'Speichert …' : 'Rezept speichern'} onPress={() => void save()} disabled={busy || !name.trim()} />
+            <PrimaryButton label="Import verwerfen" onPress={requestDiscard} disabled={busy} destructive />
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -227,6 +335,7 @@ const styles = StyleSheet.create({
   content: { padding: space.md, paddingBottom: 48, gap: space.md },
   section: { gap: 10 },
   twoColumns: { flexDirection: 'row', gap: 8 },
+  singleColumn: { flexDirection: 'column' },
   flex: { flex: 1 },
   description: { minHeight: 120, paddingTop: 12, textAlignVertical: 'top' },
   rowCard: { gap: 8, padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface },
@@ -238,6 +347,10 @@ const styles = StyleSheet.create({
   verifyTitle: { color: colors.text, fontWeight: '800' },
   verifyHelp: { color: colors.muted, fontSize: 13, marginTop: 2 },
   disabled: { opacity: 0.45 },
+  filePreview: { gap: 10, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface },
+  fileTitle: { color: colors.text, fontWeight: '800' },
+  previewImage: { width: '100%', minHeight: 220, borderRadius: radii.sm, backgroundColor: colors.cream },
+  previewHint: { color: colors.muted, fontSize: 13, lineHeight: 18 },
   source: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   error: { color: colors.danger, lineHeight: 20 },
 });

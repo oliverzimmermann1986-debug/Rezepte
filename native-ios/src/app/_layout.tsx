@@ -23,7 +23,10 @@ function AuthGate({ children }: PropsWithChildren) {
     if (token && isLogin) router.replace('/(tabs)');
   }, [navigationState?.key, ready, router, segments, token]);
 
-  if (!ready) {
+  const isLogin = segments[0] === 'login';
+  const routeDoesNotMatchSession = Boolean(navigationState?.key)
+    && ((!token && !isLogin) || (token && isLogin));
+  if (!ready || !navigationState?.key || routeDoesNotMatchSession) {
     return (
       <View style={styles.loading}>
         <ActivityIndicator size="large" color={colors.text} />
@@ -66,7 +69,7 @@ function AuthenticatedTimerBar() {
 
 export default function RootLayout() {
   return (
-    <ShareIntentProvider options={{ resetOnBackground: true }}>
+    <ShareIntentProvider options={{ resetOnBackground: false }}>
       <SafeAreaProvider>
         <AuthProvider>
           <TimerProvider>

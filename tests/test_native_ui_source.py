@@ -90,3 +90,45 @@ def test_recipe_info_shows_only_a_neutral_selectable_recipe_id():
     assert ".mp4" not in detail
     assert "accessibilityLabel={`Rezept-ID ${recipe.id}`}" in detail
     assert "selectable" in detail
+
+
+def test_native_cooking_completion_retries_keep_one_persistent_request_id():
+    cooking = (NATIVE / "app" / "cook" / "[id].tsx").read_text(encoding="utf-8")
+
+    persist = cooking[cooking.index("function persistProgress"):cooking.index("function toggleCurrentStep")]
+    finish = cooking[cooking.index("async function finishCooking"):]
+    assert "cooking-completion-request:" in cooking
+    assert "readApiCache<string>(completionStorageKey)" in cooking
+    assert "putApiCache(completionStorageKey, nextRequestId)" in cooking
+    assert "rotateCompletionRequestId" not in persist
+    assert "'Idempotency-Key': completionRequestId.current" in finish
+    assert finish.index("await api(") < finish.index("rotateCompletionRequestId();")
+
+
+def test_native_authenticated_downloads_are_cancelled_on_session_change():
+    api_source = (NATIVE / "lib" / "api.ts").read_text(encoding="utf-8")
+    share_sources = [
+        NATIVE / "app" / "recipe" / "[id].tsx",
+        NATIVE / "app" / "(tabs)" / "plan.tsx",
+        NATIVE / "components" / "pending-editor.tsx",
+    ]
+
+    assert "const activeDownloads = new Map" in api_source
+    assert "cancelDownloadsFromPreviousSessions();" in api_source
+    assert "download.task.cancelAsync()" in api_source
+    assert "assertApiSessionEpochCurrent(requestEpoch);" in api_source
+    for source in share_sources:
+        code = source.read_text(encoding="utf-8")
+        share_flow = code[code.index("downloadFileToCache("):code.index("Sharing.shareAsync")]
+        assert share_flow.count("assertApiSessionEpochCurrent(downloadEpoch)") >= 2
+
+
+def test_native_cache_is_best_effort_and_follows_server_mutations():
+    cache = (NATIVE / "lib" / "cache.ts").read_text(encoding="utf-8")
+    metadata = (NATIVE / "components" / "recipe-metadata-editor.tsx").read_text(encoding="utf-8")
+
+    clear_cache = cache[cache.index("export async function clearApiCache"):]
+    assert "try {" in clear_cache
+    assert "} catch {" in clear_cache
+    assert metadata.index("/metadata`") < metadata.index("/tags`")
+    assert metadata.index("/tags`") < metadata.index("if (serverChanged)")

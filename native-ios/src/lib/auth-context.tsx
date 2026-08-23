@@ -3,9 +3,25 @@ import * as FileSystem from 'expo-file-system/legacy';
 import Constants from 'expo-constants';
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
-import React, { createContext, PropsWithChildren, useContext, useEffect, useState } from 'react';
+import React, {
+  createContext,
+  PropsWithChildren,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+import { AppState } from 'react-native';
 
-import { ApiError, api, configureApi, setUnauthorizedHandler } from './api';
+import {
+  ApiError,
+  api,
+  configureApi,
+  currentApiSessionEpoch,
+  isApiSessionEpochCurrent,
+  setUnauthorizedHandler,
+} from './api';
 import { clearApiCache } from './cache';
 
 const TOKEN_KEY = 'api-token';
@@ -30,6 +46,7 @@ const AUTH_KEYS = [
   CLOUDFLARE_CLIENT_SECRET_KEY,
   USERNAME_KEY,
 ] as const;
+const SESSION_KEYS = [TOKEN_KEY, USERNAME_KEY] as const;
 
 const secureStorage = {
   get: (key: string) => SecureStore.getItemAsync(key, KEYCHAIN_OPTIONS),
@@ -40,8 +57,39 @@ const secureStorage = {
   delete: (key: string) => SecureStore.deleteItemAsync(key, KEYCHAIN_OPTIONS),
 };
 
+async function deleteStoredKeys(keys: readonly string[]) {
+  const results = await Promise.allSettled(keys.map(key => secureStorage.delete(key)));
+  const failed = results.filter(result => result.status === 'rejected');
+  if (failed.length) {
+    throw new Error(`${failed.length} Schlüsselbund-Einträge konnten nicht gelöscht werden.`);
+  }
+}
+
 async function purgeStoredAuth() {
-  await Promise.allSettled(AUTH_KEYS.map(key => secureStorage.delete(key)));
+  await deleteStoredKeys(AUTH_KEYS);
+}
+
+async function purgeStoredSession() {
+  await deleteStoredKeys(SESSION_KEYS);
+}
+
+async function purgeStoredSessionWithRetryMarker() {
+  try {
+    await purgeStoredSession();
+  } catch (reason) {
+    // Falls die Sitzung im Schlüsselbund verblieben ist, erzwingt ein
+    // fehlender Marker beim nächsten Start eine vollständige Bereinigung.
+    await removeInstallMarker().catch(() => undefined);
+    throw reason;
+  }
+}
+
+async function removeInstallMarker() {
+  if (INSTALL_MARKER) await FileSystem.deleteAsync(INSTALL_MARKER, { idempotent: true });
+}
+
+async function writeInstallMarker() {
+  if (INSTALL_MARKER) await FileSystem.writeAsStringAsync(INSTALL_MARKER, '1');
 }
 
 async function prepareSecureStorage() {
@@ -53,7 +101,7 @@ async function prepareSecureStorage() {
   // hingegen werden entfernt; ein fehlender Marker kennzeichnet daher die erste
   // Ausführung dieser Installation und darf keine alte Sitzung wiederverwenden.
   await purgeStoredAuth();
-  await FileSystem.writeAsStringAsync(INSTALL_MARKER, '1');
+  await writeInstallMarker();
 }
 
 function normalizeServer(value: string) {
@@ -90,9 +138,12 @@ type AuthContextValue = {
   token: string | null;
   serverUrl: string;
   username: string;
+  isAdmin: boolean;
   cloudflareClientId: string;
   cloudflareClientSecret: string;
   sessionWarning: string;
+  sessionChecking: boolean;
+  authCleanupPending: boolean;
   signIn: (
     serverUrl: string,
     username: string,
@@ -101,6 +152,8 @@ type AuthContextValue = {
     nextCloudflareClientSecret: string,
   ) => Promise<void>;
   signOut: () => Promise<void>;
+  refreshSession: () => Promise<void>;
+  retryAuthCleanup: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -110,9 +163,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [token, setToken] = useState<string | null>(null);
   const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER);
   const [username, setUsername] = useState('');
+  const [isAdmin, setIsAdmin] = useState(false);
   const [cloudflareClientId, setCloudflareClientId] = useState('');
   const [cloudflareClientSecret, setCloudflareClientSecret] = useState('');
   const [sessionWarning, setSessionWarning] = useState('');
+  const [sessionChecking, setSessionChecking] = useState(false);
+  const [authCleanupPending, setAuthCleanupPending] = useState(false);
+  const sessionRefreshInFlight = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     prepareSecureStorage()
@@ -136,18 +193,31 @@ export function AuthProvider({ children }: PropsWithChildren) {
         setUsername(storedUsername || '');
         if (storedToken && server) {
           try {
-            const session = await api<{ username: string }>('/api/auth/session');
+            const session = await api<{
+              username: string;
+              role?: string;
+              is_admin?: boolean;
+            }>('/api/auth/session');
             setUsername(session.username);
+            setIsAdmin(session.is_admin === true || session.role === 'admin');
             await secureStorage.set(USERNAME_KEY, session.username);
           } catch (reason) {
-            if (reason instanceof ApiError && [401, 403].includes(reason.status)) {
-              await purgeStoredAuth();
-              configureApi('', null, null);
+            if (reason instanceof ApiError && reason.status === 401) {
+              try {
+                await purgeStoredSessionWithRetryMarker();
+                setAuthCleanupPending(false);
+              } catch {
+                setAuthCleanupPending(true);
+              }
+              configureApi(server, null, cloudflare);
               setToken(null);
               setUsername('');
-              setServerUrl(DEFAULT_SERVER);
-              setCloudflareClientId('');
-              setCloudflareClientSecret('');
+              setIsAdmin(false);
+              setSessionWarning('Deine Sitzung ist abgelaufen. Der Gerätezugang bleibt gespeichert.');
+            } else if (reason instanceof ApiError && reason.status === 403) {
+              // Cloudflare oder eine fehlende Backend-Berechtigung darf keine
+              // gültigen Gerätezugangsdaten aus dem Schlüsselbund löschen.
+              setSessionWarning('Der Server hat den Zugriff abgelehnt. Gerätezugang und Sitzung bleiben gespeichert.');
             } else {
               // Kein Netz/5xx ist keine Abmeldung. Gecachte Rezepte bleiben
               // lesbar und die Session wird beim nächsten Request erneut geprüft.
@@ -156,33 +226,129 @@ export function AuthProvider({ children }: PropsWithChildren) {
           }
         }
       })
-      .catch(async () => {
-        await purgeStoredAuth();
+      .catch(() => {
         configureApi('', null, null);
         setToken(null);
         setUsername('');
+        setIsAdmin(false);
         setServerUrl(DEFAULT_SERVER);
         setCloudflareClientId('');
         setCloudflareClientSecret('');
+        setAuthCleanupPending(true);
+        setSessionWarning('Der iOS-Schlüsselbund konnte nicht vollständig bereinigt werden. Bitte erneut versuchen.');
       })
       .finally(() => setReady(true));
   }, []);
 
   useEffect(() => {
-    setUnauthorizedHandler(async () => {
-      await purgeStoredAuth();
-      await clearApiCache();
-      configureApi('', null, null);
+    if (!ready) return;
+    setUnauthorizedHandler(async requestEpoch => {
+      if (!isApiSessionEpochCurrent(requestEpoch)) return;
+      const cloudflare = cloudflareClientId && cloudflareClientSecret
+        ? { clientId: cloudflareClientId, clientSecret: cloudflareClientSecret }
+        : null;
+      // Zuerst synchron die laufende Sitzung entwerten. Langsame oder
+      // fehlschlagende Schlüsselbund-/Cache-Operationen dürfen die UI nicht
+      // in einem halb angemeldeten Zustand lassen.
+      configureApi(serverUrl, null, cloudflare);
       setToken(null);
       setUsername('');
-      setServerUrl(DEFAULT_SERVER);
-      setCloudflareClientId('');
-      setCloudflareClientSecret('');
+      setIsAdmin(false);
       setSessionWarning('Deine Sitzung ist abgelaufen. Bitte erneut anmelden.');
       router.replace('/login');
+      try {
+        await purgeStoredSessionWithRetryMarker();
+        setAuthCleanupPending(false);
+      } catch {
+        setAuthCleanupPending(true);
+        setSessionWarning('Sitzung abgelaufen. Der Schlüsselbund konnte noch nicht vollständig bereinigt werden.');
+      }
+      await clearApiCache().catch(() => undefined);
     });
     return () => setUnauthorizedHandler(null);
-  }, []);
+  }, [cloudflareClientId, cloudflareClientSecret, ready, serverUrl]);
+
+  const refreshSession = useCallback(async () => {
+    if (!ready || !token || !serverUrl) return;
+    if (sessionRefreshInFlight.current) return sessionRefreshInFlight.current;
+
+    const requestEpoch = currentApiSessionEpoch();
+    const operation = (async () => {
+      setSessionChecking(true);
+      try {
+        const session = await api<{
+          username: string;
+          role?: string;
+          is_admin?: boolean;
+        }>('/api/auth/session');
+        // Während der Prüfung kann sich der Benutzer ab- oder neu anmelden.
+        // Eine Antwort der alten Sitzung darf die neue Rolle nicht überschreiben.
+        if (!isApiSessionEpochCurrent(requestEpoch)) return;
+        setUsername(session.username);
+        setIsAdmin(session.is_admin === true || session.role === 'admin');
+        try {
+          await secureStorage.set(USERNAME_KEY, session.username);
+          setSessionWarning('');
+        } catch {
+          setSessionWarning('Sitzung aktiv. Der Benutzername konnte lokal nicht gespeichert werden.');
+        }
+      } catch (reason) {
+        // Ein 401 kann bereits den globalen Handler ausgelöst haben. Falls er
+        // die Session-Epoch geändert hat, ist die Abmeldung vollständig und
+        // dieser alte Check darf keine weitere Zustandsänderung auslösen.
+        if (!isApiSessionEpochCurrent(requestEpoch)) return;
+        if (reason instanceof ApiError && reason.status === 401) {
+          const cloudflare = cloudflareClientId && cloudflareClientSecret
+            ? { clientId: cloudflareClientId, clientSecret: cloudflareClientSecret }
+            : null;
+          configureApi(serverUrl, null, cloudflare);
+          setToken(null);
+          setUsername('');
+          setIsAdmin(false);
+          setSessionWarning('Deine Sitzung ist abgelaufen. Bitte erneut anmelden.');
+          router.replace('/login');
+          try {
+            await purgeStoredSessionWithRetryMarker();
+            setAuthCleanupPending(false);
+          } catch {
+            setAuthCleanupPending(true);
+            setSessionWarning('Sitzung abgelaufen. Der Schlüsselbund konnte noch nicht vollständig bereinigt werden.');
+          }
+          await clearApiCache().catch(() => undefined);
+        } else if (reason instanceof ApiError && reason.status === 403) {
+          // Weder Rolle noch Cloudflare-Zugang bei einer vorübergehenden
+          // Ablehnung verwerfen. Ein späterer Fokus/Retry prüft erneut.
+          setSessionWarning('Der Server hat den Zugriff abgelehnt. Gerätezugang und Sitzung bleiben gespeichert.');
+        } else {
+          // Auch Netzwerk- und 5xx-Fehler lassen die zuletzt bestätigte Rolle
+          // unangetastet, damit ein temporärer Ausfall keine Rechte flackern lässt.
+          setSessionWarning('Server gerade nicht erreichbar – gespeicherte Inhalte werden angezeigt.');
+        }
+      } finally {
+        setSessionChecking(false);
+      }
+    })();
+    sessionRefreshInFlight.current = operation;
+    try {
+      await operation;
+    } finally {
+      if (sessionRefreshInFlight.current === operation) sessionRefreshInFlight.current = null;
+    }
+  }, [
+    cloudflareClientId,
+    cloudflareClientSecret,
+    ready,
+    serverUrl,
+    token,
+  ]);
+
+  useEffect(() => {
+    if (!ready || !token) return;
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active' && sessionWarning) void refreshSession();
+    });
+    return () => subscription.remove();
+  }, [ready, refreshSession, sessionWarning, token]);
 
   async function signIn(
     nextServer: string,
@@ -201,7 +367,12 @@ export function AuthProvider({ children }: PropsWithChildren) {
       ? { clientId: normalizedClientId, clientSecret: normalizedClientSecret }
       : null;
     configureApi(normalizedServer, null, cloudflare);
-    const result = await api<{ token: string; username: string }>('/api/auth/login', {
+    const result = await api<{
+      token: string;
+      username: string;
+      role?: string;
+      is_admin?: boolean;
+    }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username: nextUsername.trim(), password }),
     });
@@ -215,7 +386,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
       await secureStorage.set(TOKEN_KEY, result.token);
       await secureStorage.set(USERNAME_KEY, result.username);
     } catch (reason) {
-      await purgeStoredAuth();
+      const cleanup = await Promise.allSettled([removeInstallMarker(), purgeStoredAuth()]);
+      if (cleanup.some(resultState => resultState.status === 'rejected')) {
+        setAuthCleanupPending(true);
+      }
       configureApi('', null, null);
       throw reason;
     }
@@ -225,26 +399,67 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setCloudflareClientSecret(normalizedClientSecret);
     setToken(result.token);
     setUsername(result.username);
+    setIsAdmin(result.is_admin === true || result.role === 'admin');
     setSessionWarning('');
+    setAuthCleanupPending(false);
     router.replace('/(tabs)');
   }
 
   async function signOut() {
+    // Der Request startet noch mit einem Schnappschuss der alten Sitzung. Die
+    // UI wird unmittelbar danach lokal abgemeldet; eine verspätete Antwort
+    // gehört dank Session-Epoch weiterhin zur alten Sitzung.
+    const serverLogout = token
+      ? api('/api/auth/logout', { method: 'POST' }).catch(() => undefined)
+      : Promise.resolve();
+    configureApi('', null, null);
+    setToken(null);
+    setUsername('');
+    setIsAdmin(false);
+    setServerUrl(DEFAULT_SERVER);
+    setCloudflareClientId('');
+    setCloudflareClientSecret('');
+    setSessionWarning('');
+    router.replace('/login');
+    const storageCleanup = (async () => {
+      try {
+        const [markerResult, purgeResult] = await Promise.allSettled([
+          removeInstallMarker(),
+          purgeStoredAuth(),
+        ]);
+        if (markerResult.status === 'rejected' || purgeResult.status === 'rejected') {
+          throw new Error('Schlüsselbund-Bereinigung unvollständig');
+        }
+        await writeInstallMarker();
+        setAuthCleanupPending(false);
+      } catch {
+        // Der fehlende Installationsmarker erzwingt beim nächsten Start einen
+        // erneuten Löschversuch, bevor alte Zugangsdaten gelesen werden.
+        setAuthCleanupPending(true);
+        setSessionWarning('Abgemeldet. Einige Schlüsselbund-Daten konnten noch nicht gelöscht werden.');
+      }
+    })();
+    await Promise.allSettled([
+      serverLogout,
+      storageCleanup,
+      clearApiCache(),
+      Image.clearMemoryCache(),
+      Image.clearDiskCache(),
+    ]);
+  }
+
+  async function retryAuthCleanup() {
     try {
-      if (token) await api('/api/auth/logout', { method: 'POST' });
+      const cleanup = await Promise.allSettled([removeInstallMarker(), purgeStoredAuth()]);
+      if (cleanup.some(resultState => resultState.status === 'rejected')) {
+        throw new Error('Schlüsselbund-Bereinigung unvollständig');
+      }
+      await writeInstallMarker();
+      setAuthCleanupPending(false);
+      setSessionWarning('');
     } catch {
-      // Lokales Abmelden muss auch bei fehlendem Netzwerk immer funktionieren.
-    } finally {
-      await purgeStoredAuth();
-      await clearApiCache();
-      await Promise.allSettled([Image.clearMemoryCache(), Image.clearDiskCache()]);
-      configureApi('', null, null);
-      setToken(null);
-      setUsername('');
-      setServerUrl(DEFAULT_SERVER);
-      setCloudflareClientId('');
-      setCloudflareClientSecret('');
-      router.replace('/login');
+      setAuthCleanupPending(true);
+      setSessionWarning('Der Schlüsselbund konnte weiterhin nicht vollständig bereinigt werden.');
     }
   }
 
@@ -253,11 +468,16 @@ export function AuthProvider({ children }: PropsWithChildren) {
     token,
     serverUrl,
     username,
+    isAdmin,
     cloudflareClientId,
     cloudflareClientSecret,
     sessionWarning,
+    sessionChecking,
+    authCleanupPending,
     signIn,
     signOut,
+    refreshSession,
+    retryAuthCleanup,
   };
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
