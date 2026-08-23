@@ -121,6 +121,7 @@ def _render_print_html(
         html.escape(str(x)) for x in
         (recipe.get("type"), recipe.get("category")) if x
     )
+    type_cat_html = f'<span class="meta">{type_cat}</span>' if type_cat else ""
 
     url = recipe.get("url") or ""
     url_safe = html.escape(url) if url else ""
@@ -277,7 +278,7 @@ def _render_print_html(
 </div>
 {share_banner}
 <h1>{name}</h1>
-<div>{type_cat}{srv_html}</div>
+<div>{type_cat_html}{srv_html}</div>
 {img_html}
 {nutrition_html}
 {f'<p class="desc">{desc_safe}</p>' if desc_safe else ''}
@@ -335,6 +336,29 @@ class ShareRequest(BaseModel):
     expires_days: int = Field(SHARE_MAX_AGE_DAYS_DEFAULT, ge=1, le=30)
 
 
+def _public_base_url(request: Request) -> str:
+    configured_base = str(
+        get_config().get("web", "public_url", default="") or ""
+    ).strip().rstrip("/")
+    if not configured_base:
+        return str(request.base_url).rstrip("/")
+    parsed_base = urlsplit(configured_base)
+    if (
+        parsed_base.scheme.lower() != "https"
+        or not parsed_base.hostname
+        or parsed_base.username
+        or parsed_base.password
+        or parsed_base.path not in ("", "/")
+        or parsed_base.query
+        or parsed_base.fragment
+    ):
+        raise HTTPException(
+            503,
+            "web.public_url muss eine reine HTTPS-Serveradresse sein",
+        )
+    return configured_base
+
+
 @share_api_router.post("/{recipe_id}/share")
 def create_share_link(recipe_id: int, payload: ShareRequest, request: Request):
     """Generiert einen kurzlebigen öffentlichen Link ohne Benutzername."""
@@ -343,6 +367,10 @@ def create_share_link(recipe_id: int, payload: ShareRequest, request: Request):
     if not recipe or recipe.get("deleted_at") is not None:
         raise HTTPException(404, "Rezept nicht gefunden")
 
+    # Erst alle potenziell fehlschlagenden Konfigurationsprüfungen erledigen.
+    # Sonst bliebe bei ungültiger public_url ein aktiver, aber nie ausgelieferter
+    # Share-Datensatz zurück.
+    base = _public_base_url(request)
     expires_at = time.time() + payload.expires_days * 86400
     share_id = secrets.token_urlsafe(18)
     token = _serializer().dumps({
@@ -358,21 +386,7 @@ def create_share_link(recipe_id: int, payload: ShareRequest, request: Request):
         created_by=created_by,
     )
 
-    # base_url respektiert X-Forwarded-Proto + Host bei Reverse-Proxy
-    configured_base = str(get_config().get("web", "public_url", default="") or "").strip().rstrip("/")
-    if configured_base:
-        parsed_base = urlsplit(configured_base)
-        if (
-            parsed_base.scheme.lower() != "https"
-            or not parsed_base.hostname
-            or parsed_base.username
-            or parsed_base.password
-            or parsed_base.path not in ("", "/")
-            or parsed_base.query
-            or parsed_base.fragment
-        ):
-            raise HTTPException(503, "web.public_url muss eine reine HTTPS-Serveradresse sein")
-    base = configured_base or str(request.base_url).rstrip("/")
+    # request.base_url respektiert X-Forwarded-Proto + Host bei Reverse-Proxy.
     url = f"{base}/share/{token}"
     logger.info(f"Share-Link für Rezept #{recipe_id} erstellt (gültig {payload.expires_days}d)")
     return {
@@ -413,11 +427,13 @@ def share_recipe(token: str):
             "<h1>Link abgelaufen</h1><p>Dieser Share-Link ist nicht mehr gültig. "
             "Bitte den Besitzer um einen neuen.</p>",
             status_code=410,
+            headers={"Cache-Control": "private, no-store"},
         )
     except BadSignature:
         return HTMLResponse(
             "<h1>Ungültiger Link</h1><p>Der Link konnte nicht validiert werden.</p>",
             status_code=403,
+            headers={"Cache-Control": "private, no-store"},
         )
 
     rid = int(data.get("rid") or 0)
@@ -430,16 +446,20 @@ def share_recipe(token: str):
             return HTMLResponse(
                 "<h1>Rezept nicht mehr verfügbar</h1>",
                 status_code=404,
+                headers={"Cache-Control": "private, no-store"},
             )
         raise
 
     image_url = f"/share/{token}/thumb" if recipe.get("thumb_filename") else None
-    return HTMLResponse(_render_print_html(
-        recipe,
-        image_url=image_url,
-        shared_by=data.get("by"),
-        is_share=True,
-    ))
+    return HTMLResponse(
+        _render_print_html(
+            recipe,
+            image_url=image_url,
+            shared_by=data.get("by"),
+            is_share=True,
+        ),
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @public_router.get("/share/{token}/thumb")
