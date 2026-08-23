@@ -11,9 +11,9 @@ Strategy:
   brauchen keinen Login; dedizierte RBAC-Tests entfernen den Admin-Override.
 - TestClient von FastAPI für synchrone HTTP-Calls
 """
-# WICHTIG: diese Funktionen werden nur während des ersten app.main-Imports
+# WICHTIG: diese Funktionen werden während Import UND TestClient-Lifespan
 # temporär ersetzt, weil:
-# - app.main ruft migrate_security() beim Modul-Import auf
+# - app.main ruft die Migrationen beim Lifespan-Start auf
 # - api_recipes ruft sync_filesystem() bei jedem list-Endpoint mit count==0 auf
 import app.auth as _auth
 
@@ -54,10 +54,18 @@ def client(test_db: Database) -> TestClient:
     _auth.migrate_security = lambda: None
     _auth.migrate_users_to_db = lambda: None
     try:
-        from app.main import app
+        from app import main as app_main
     finally:
         _auth.migrate_security = real_migrate_security
         _auth.migrate_users_to_db = real_migrate_users
+
+    app = app_main.app
+    real_main_migrate_security = app_main.migrate_security
+    real_main_migrate_users = app_main.migrate_users_to_db
+    real_pdf_migration = app_main.migrate_pdf_quality_defaults
+    app_main.migrate_security = lambda: None
+    app_main.migrate_users_to_db = lambda: None
+    app_main.migrate_pdf_quality_defaults = lambda: False
 
     # Auth-Dependencies überschreiben: fachliche Endpoint-Tests laufen als
     # Administrator. Die Security-Suite testet die echten Dependencies separat.
@@ -72,6 +80,9 @@ def client(test_db: Database) -> TestClient:
             yield c
     finally:
         app.dependency_overrides.clear()
+        app_main.migrate_security = real_main_migrate_security
+        app_main.migrate_users_to_db = real_main_migrate_users
+        app_main.migrate_pdf_quality_defaults = real_pdf_migration
 
 
 def _create_recipe(db: Database, *, name: str, folder_path: str,

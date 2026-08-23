@@ -399,6 +399,16 @@ def test_restore_from_trash(client, test_db, tmp_path, monkeypatch):
     import app.recipes.manage as manage
 
     monkeypatch.setattr(manage, "_recipe_root", lambda: tmp_path.resolve())
+    trash_root = tmp_path / "trash"
+
+    class _TestConfig:
+        @staticmethod
+        def get(*keys, default=None):
+            if keys == ("safety", "trash_dir"):
+                return str(trash_root)
+            return default
+
+    monkeypatch.setattr(manage, "get_config", lambda: _TestConfig())
     folder = tmp_path / "r"
     folder.mkdir()
     rec = _create_recipe(test_db, name="R", folder_path=str(folder))
