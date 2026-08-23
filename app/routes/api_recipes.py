@@ -1210,7 +1210,11 @@ async def upload_thumbnail(
 
 
 @router.post("/{recipe_id}/extract-frame")
-def extract_frame(recipe_id: int, request: Request, seconds: float = 2.0) -> Dict[str, Any]:
+def extract_frame(
+    recipe_id: int,
+    request: Request,
+    seconds: float = Query(2.0, ge=0.0, le=86400.0),
+) -> Dict[str, Any]:
     """Extrahiert einen Frame aus dem Video im Recipe-Folder via ffmpeg und
     setzt diesen als Thumbnail. Alternative zu rescrape wenn die URL tot
     ist aber das Video noch lokal liegt.
@@ -1222,17 +1226,21 @@ def extract_frame(recipe_id: int, request: Request, seconds: float = 2.0) -> Dic
     rec = db.recipe_get(recipe_id)
     if not rec:
         raise HTTPException(404, "Rezept nicht gefunden")
-    folder = rec.get("folder_path")
-    if not folder or not Path(folder).exists():
-        return {"ok": False, "error": f"Folder fehlt: {folder}"}
-    folder_p = Path(folder)
+    folder_p = _safe_recipe_folder(rec)
 
-    # Video finden — erste Datei mit Video-Extension
+    # Video finden — nur reguläre Dateien innerhalb des geprüften Rezeptordners.
+    # Ein manipuliertes DB-Feld oder Symlink darf ffmpeg keine beliebige Datei
+    # außerhalb des Rezeptbestands öffnen lassen.
     video = None
     for ext in (".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi"):
         cands = list(folder_p.glob(f"*{ext}"))
-        if cands:
-            video = cands[0]
+        for candidate in cands:
+            try:
+                video = _safe_recipe_file(rec, candidate.name)
+                break
+            except HTTPException:
+                continue
+        if video is not None:
             break
     if not video:
         return {"ok": False, "error": "Kein Video im Folder gefunden (.mp4/.mov/.webm/.mkv)"}

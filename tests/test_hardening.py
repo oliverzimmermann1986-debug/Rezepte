@@ -225,3 +225,25 @@ def test_soft_delete_with_files_can_restore_quarantine(
     assert restored["files_restored"] is True
     assert folder.is_dir()
     assert test_db.recipe_get(rid)["deleted_at"] is None
+
+
+def test_extract_frame_rejects_recipe_folder_outside_root(
+    client,
+    test_db: Database,
+    tmp_path: Path,
+    monkeypatch,
+):
+    from app.routes import api_recipes
+
+    recipe_root = tmp_path / "recipes"
+    recipe_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private.mp4").write_bytes(b"not-a-real-video")
+    recipe_id = _recipe(test_db, outside, name="Unsicherer Pfad")
+    monkeypatch.setattr(api_recipes, "_recipe_root", lambda: recipe_root)
+
+    response = client.post(f"/api/recipes/{recipe_id}/extract-frame")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Rezeptordner fehlt oder ist nicht zulässig"
