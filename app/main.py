@@ -28,9 +28,6 @@ from .routes import (api_admin, api_audit, api_auth, api_browse, api_config, api
 from .security import SecurityHeadersMiddleware, client_ip, login_limiter
 
 # -------- Logging --------
-log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
-log_dir.mkdir(parents=True, exist_ok=True)
-
 # Strukturiertes Logging: rotation via RotatingFileHandler (10MB pro Datei,
 # 5 Generationen behalten = max 60MB Logs auf Disk). JSON für File-Output
 # damit Tools wie jq/grep -P darauf operieren können. Console bleibt menschen-
@@ -62,17 +59,46 @@ class JSONFormatter(logging.Formatter):
                     payload[key] = str(val)
         return json.dumps(payload, ensure_ascii=False)
 
-_file_handler = RotatingFileHandler(
-    log_dir / "web.log", maxBytes=10 * 1024 * 1024, backupCount=5,
-    encoding="utf-8"
-)
-_file_handler.setFormatter(JSONFormatter())
+
+def _create_file_log_handler(target_dir: Path):
+    """Erzeugt den rotierenden File-Handler, ohne den App-Start zu gefährden.
+
+    Container und systemd erfassen stderr/stdout bereits zuverlässig. Ein
+    vorübergehend nicht beschreibbares Volume darf deshalb nicht verhindern,
+    dass die API überhaupt startet; in diesem Fall bleibt der Console-Handler
+    aktiv und der Fehler wird dort sichtbar protokolliert.
+    """
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            target_dir / "web.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return None, exc
+    handler.setFormatter(JSONFormatter())
+    return handler, None
+
+
+log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
+_file_handler, _file_log_error = _create_file_log_handler(log_dir)
 _stream_handler = logging.StreamHandler()
 _stream_handler.setFormatter(logging.Formatter(
     "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 ))
-logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
+_logging_handlers = [_stream_handler]
+if _file_handler is not None:
+    _logging_handlers.insert(0, _file_handler)
+logging.basicConfig(level=logging.INFO, handlers=_logging_handlers)
 logger = logging.getLogger(__name__)
+if _file_log_error is not None:
+    logger.warning(
+        "File-Logging unter %s nicht verfügbar; verwende Console-Logging: %s",
+        log_dir,
+        _file_log_error,
+    )
 
 # -------- Startup-Initialisierung --------
 # Absichtlich NICHT beim Modulimport: Imports bleiben dadurch nebenwirkungsarm,

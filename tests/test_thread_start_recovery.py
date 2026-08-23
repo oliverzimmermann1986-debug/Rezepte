@@ -64,3 +64,15 @@ def test_trash_cleanup_thread_can_be_stopped_without_waiting_for_daily_sleep():
     assert main._trash_cleanup_thread.is_alive()
     assert main._stop_trash_cleanup_thread(timeout=1) is True
     assert main._trash_cleanup_thread_started is False
+
+
+def test_file_logging_failure_falls_back_without_raising(monkeypatch, tmp_path):
+    def denied_handler(*_args, **_kwargs):
+        raise PermissionError("Log-Volume ist schreibgeschützt")
+
+    monkeypatch.setattr(main, "RotatingFileHandler", denied_handler)
+
+    handler, error = main._create_file_log_handler(tmp_path / "logs")
+
+    assert handler is None
+    assert isinstance(error, PermissionError)
