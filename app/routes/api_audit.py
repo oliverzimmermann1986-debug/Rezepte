@@ -5,6 +5,7 @@ Endpoints:
   GET  /api/audit?with_ai=true          — zusätzlich KI-Namensvorschläge
   POST /api/audit/ai-sanity             — Background-Job: KI prüft Pfad+Name-Konsistenz für ALLE Rezepte
   GET  /api/audit/ai-sanity/status      — Progress des laufenden Jobs
+  GET  /api/audit/ai-sanity/findings    — leichte Vorschlagsliste für native Clients
   POST /api/audit/finding/{id}/resolve  — KI-Finding als 'erledigt' markieren
   POST /api/audit/finding/{id}/apply    — KI-Vorschlag tatsächlich auf Folder/Name anwenden
 """
@@ -50,6 +51,7 @@ _audit_cache_lock = threading.Lock()
 _audit_cache: Dict[tuple, tuple[float, Dict[str, Any]]] = {}
 _AUDIT_CACHE_TTL_SECONDS = 30.0
 _FS_AUDIT_BUDGET_SECONDS = 2.0
+_AI_FINDING_TYPES = ("category_mismatch", "name_mismatch", "folder_mismatch")
 
 
 def _audit_db_revision(db) -> tuple:
@@ -326,7 +328,8 @@ def start_ai_sanity_check() -> Dict[str, Any]:
         with db.conn() as c:
             total = int(c.execute(
                 "SELECT COUNT(*) FROM recipes "
-                "WHERE description IS NOT NULL AND length(description) >= 20"
+                "WHERE deleted_at IS NULL "
+                "AND description IS NOT NULL AND length(description) >= 20"
             ).fetchone()[0])
 
         _ai_sanity_state.update({
@@ -355,6 +358,38 @@ def ai_sanity_status() -> Dict[str, Any]:
         return dict(_ai_sanity_state)
 
 
+@router.get("/ai-sanity/findings")
+def ai_sanity_findings() -> Dict[str, Any]:
+    """Liefert nur den Stand und die offenen KI-Sortiervorschläge.
+
+    Im Gegensatz zu ``GET /api/audit`` startet dieser Endpunkt keinen teuren
+    Dubletten-/Dateisystem-Audit. Native Clients können ihn deshalb während
+    eines laufenden KI-Laufs regelmäßig pollen.
+    """
+    db = get_db()
+    with _ai_sanity_lock:
+        status = dict(_ai_sanity_state)
+    items = db.audit_ai_findings_list(only_open=True)
+    counts = {finding_type: 0 for finding_type in _AI_FINDING_TYPES}
+    for item in items:
+        finding_type = item.get("finding_type")
+        if finding_type in counts:
+            counts[finding_type] += 1
+    with db.conn() as c:
+        eligible_recipes = int(c.execute(
+            "SELECT COUNT(*) FROM recipes "
+            "WHERE deleted_at IS NULL "
+            "AND description IS NOT NULL AND length(description) >= 20"
+        ).fetchone()[0])
+    return {
+        "items": items,
+        "counts": counts,
+        "total_open": sum(counts.values()),
+        "eligible_recipes": eligible_recipes,
+        "status": status,
+    }
+
+
 def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
     """Background-Worker — iteriert alle Rezepte mit description, ruft KI,
     schreibt Findings in DB."""
@@ -370,7 +405,8 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
         with db.conn() as c:
             rows = c.execute(
                 "SELECT id, name, type, category, description, folder_path FROM recipes "
-                "WHERE description IS NOT NULL AND length(description) >= 20"
+                "WHERE deleted_at IS NULL "
+                "AND description IS NOT NULL AND length(description) >= 20"
             ).fetchall()
             recipes = [dict(r) for r in rows]
 
@@ -517,7 +553,7 @@ def _apply_finding_internal(finding_id: int) -> Dict[str, Any]:
             "SELECT f.*, r.folder_path as r_folder_path, r.name as r_name, "
             "       r.type as r_type, r.category as r_category "
             "FROM audit_ai_findings f JOIN recipes r ON r.id=f.recipe_id "
-            "WHERE f.id=?",
+            "WHERE f.id=? AND r.deleted_at IS NULL",
             (finding_id,),
         ).fetchone()
     if not row:
@@ -720,7 +756,7 @@ def apply_all_findings(finding_type: str) -> Dict[str, Any]:
     {applied, failed[]} damit das UI eine Sammelmeldung zeigen kann.
 
     Akzeptiert nur die 3 known finding_types — alles andere → 400."""
-    if finding_type not in ("category_mismatch", "name_mismatch", "folder_mismatch"):
+    if finding_type not in _AI_FINDING_TYPES:
         raise HTTPException(400, f"Unbekannter finding_type: {finding_type}")
     db = get_db()
     findings = db.audit_ai_findings_list(finding_type=finding_type, only_open=True)

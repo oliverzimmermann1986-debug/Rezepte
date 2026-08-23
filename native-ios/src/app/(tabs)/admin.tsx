@@ -4,6 +4,7 @@ import { useLocalSearchParams } from 'expo-router';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
+import { AdminAiSort } from '@/components/admin-ai-sort';
 import { AdminBulkEditor } from '@/components/admin-bulk-editor';
 import { AdminTrash } from '@/components/admin-trash';
 import { AdminVersions } from '@/components/admin-versions';
@@ -40,6 +41,7 @@ export default function AdminScreen() {
   const [showVersions, setShowVersions] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
   const [showBulkEditor, setShowBulkEditor] = useState(false);
+  const [showAiSort, setShowAiSort] = useState(false);
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -248,7 +250,8 @@ export default function AdminScreen() {
 
           <View style={sharedStyles.card}>
             <Text style={sharedStyles.sectionTitle}>Rezeptbestand pflegen</Text>
-            <Text style={styles.help}>Mehrere Rezepte auswählen, gemeinsam verschieben und eigene Tags ergänzen oder entfernen.</Text>
+            <Text style={styles.help}>Die Speisekarte per KI prüfen oder mehrere Rezepte manuell verschieben und mit Tags pflegen.</Text>
+            <PrimaryButton label="Speisekarte mit KI sortieren" onPress={() => setShowAiSort(true)} disabled={busy} />
             <PrimaryButton label="Massenpflege öffnen" onPress={() => setShowBulkEditor(true)} disabled={busy} />
           </View>
 
@@ -307,6 +310,11 @@ export default function AdminScreen() {
       />
       <AdminVersions visible={showVersions} onClose={() => setShowVersions(false)} onChanged={() => void load()} />
       <AdminTrash visible={showTrash} onClose={() => setShowTrash(false)} onChanged={() => void load()} />
+      <AdminAiSort
+        visible={showAiSort}
+        onClose={() => setShowAiSort(false)}
+        onChanged={() => void load()}
+      />
       <AdminBulkEditor
         visible={showBulkEditor}
         onClose={() => setShowBulkEditor(false)}

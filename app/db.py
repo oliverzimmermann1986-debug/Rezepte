@@ -3076,7 +3076,8 @@ class Database:
         """Liefert KI-Findings, optional gefiltert nach Typ + Status."""
         sql = ("SELECT f.*, r.name as recipe_name, r.folder_path "
                "FROM audit_ai_findings f "
-               "JOIN recipes r ON r.id = f.recipe_id WHERE 1=1")
+               "JOIN recipes r ON r.id = f.recipe_id "
+               "WHERE r.deleted_at IS NULL")
         params: list = []
         if finding_type:
             sql += " AND f.finding_type=?"; params.append(finding_type)
@@ -3096,10 +3097,13 @@ class Database:
     def audit_ai_findings_count(self, only_open: bool = True) -> Dict[str, int]:
         """Counter pro finding_type für die Audit-Summary."""
         with self.conn() as c:
-            sql = "SELECT finding_type, COUNT(*) FROM audit_ai_findings"
+            sql = (
+                "SELECT f.finding_type, COUNT(*) FROM audit_ai_findings f "
+                "JOIN recipes r ON r.id=f.recipe_id WHERE r.deleted_at IS NULL"
+            )
             if only_open:
-                sql += " WHERE resolved=0"
-            sql += " GROUP BY finding_type"
+                sql += " AND f.resolved=0"
+            sql += " GROUP BY f.finding_type"
             return {r[0]: int(r[1]) for r in c.execute(sql).fetchall()}
 
     # ─── Shopping Cart ────────────────────────────────────────────────────

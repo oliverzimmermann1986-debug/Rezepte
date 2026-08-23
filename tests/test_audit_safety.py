@@ -136,3 +136,56 @@ def test_name_finding_uses_versioned_consistent_metadata_update(
     versions = test_db.recipe_versions_list(recipe_id=recipe["id"])
     assert len(versions) == 1
     assert versions[0]["source"] == "audit"
+
+
+def test_ai_sanity_findings_returns_lightweight_open_queue(client, test_db, tmp_path):
+    first = _create_recipe(
+        test_db,
+        name="Pasta unklar",
+        folder_path=str(tmp_path / "first"),
+        description="Eine ausreichend lange Beschreibung für die KI-Prüfung.",
+    )
+    second = _create_recipe(
+        test_db,
+        name="Suppe unklar",
+        folder_path=str(tmp_path / "second"),
+        description="Auch dieses Rezept besitzt genug Text für die KI-Prüfung.",
+    )
+    deleted = _create_recipe(
+        test_db,
+        name="Gelöschtes Rezept",
+        folder_path=str(tmp_path / "deleted"),
+        description="Gelöschte Rezepte dürfen nicht mehr in KI-Vorschlägen erscheinen.",
+    )
+    with test_db.conn() as connection:
+        connection.execute("UPDATE recipes SET deleted_at=? WHERE id=?", (1.0, deleted["id"]))
+    test_db.audit_ai_finding_set(
+        first["id"], "category_mismatch", "Test/Test", "Hauptgericht/Pasta", "Passt besser"
+    )
+    test_db.audit_ai_finding_set(
+        first["id"], "name_mismatch", "Pasta unklar", "Tomatenpasta", "Präziser"
+    )
+    test_db.audit_ai_finding_set(
+        second["id"], "folder_mismatch", "Suppe_alt", "Kartoffelsuppe", "Passender"
+    )
+    test_db.audit_ai_finding_set(
+        deleted["id"], "category_mismatch", "Test/Test", "Dessert/Kuchen", "Veraltet"
+    )
+    resolved = test_db.audit_ai_findings_list("folder_mismatch")[0]
+    test_db.audit_ai_finding_resolve(resolved["id"])
+
+    response = client.get("/api/audit/ai-sanity/findings")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["eligible_recipes"] == 2
+    assert payload["total_open"] == 2
+    assert payload["counts"] == {
+        "category_mismatch": 1,
+        "name_mismatch": 1,
+        "folder_mismatch": 0,
+    }
+    assert {item["finding_type"] for item in payload["items"]} == {
+        "category_mismatch", "name_mismatch"
+    }
+    assert set(payload["status"]) >= {"running", "total", "processed", "findings", "error"}
