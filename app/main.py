@@ -473,14 +473,23 @@ Adresse in der App eingetragen wurde.</p>
 <h2>Verarbeitete Daten</h2>
 <p>Die App verarbeitet die Server-Adresse, den Benutzernamen, ein
 widerrufbares Sitzungstoken sowie die auf dem privaten Server gespeicherten
-Rezepte, Einkaufslisten und Wochenpläne. Das Passwort wird nur zur Anmeldung
-an den gewählten Server übertragen und nicht von der App gespeichert.</p>
+Rezepte, Einkaufslisten und Wochenpläne. Dazu können vom Nutzer geteilte
+Quellenlinks sowie hochgeladene Bilder und PDF-Dokumente gehören. Das Passwort
+wird nur zur Anmeldung verschlüsselt an den Rezepteserver übertragen, dort
+geprüft und nicht von der App gespeichert.</p>
 <h2>Speicherung und Übertragung</h2>
 <p>Das Sitzungstoken und – falls Cloudflare Access verwendet wird – die vom
 Nutzer eingegebenen Cloudflare-Gerätezugangsdaten werden im iOS-Schlüsselbund
 gespeichert. Das eigentliche Passwort wird nicht gespeichert. Die Kommunikation
 erfolgt über HTTPS direkt mit dem eingetragenen Rezepteserver. Die App enthält
 keine Werbung, keine Telemetrie und keine Analyse-SDKs.</p>
+<h2>KI-gestützte Verarbeitung</h2>
+<p>Wenn eine KI-Funktion verwendet wird, kann der Rezepteserver die dafür
+erforderlichen Rezepttexte, Bilder, PDF-Inhalte oder aus einer Quelle
+extrahierten Audio- und Bildinformationen an OpenAI übermitteln. Die
+Übermittlung dient ausschließlich dazu, Zutaten, Mengen, Zubereitungsschritte,
+Kategorien oder ähnliche Rezeptinformationen zu erkennen und zu ordnen. Die
+App nutzt diese Daten nicht für Werbung oder Tracking.</p>
 <h2>Externe Quellen</h2>
 <p>TikTok- und Instagram-Medien werden nicht heruntergeladen. Erst wenn
 ein Nutzer den Quellenlink antippt, wird er an die jeweilige externe App oder
@@ -496,7 +505,7 @@ sofort widerrufen werden.</p>
 Anfragen zu Auskunft oder Löschung sind an diesen Betreiber zu richten. Durch
 Abmelden werden Sitzungstoken, Cloudflare-Zugangsdaten und private
 Bildcaches vom iPhone entfernt; die Serversitzung wird widerrufen.</p>
-<p><small>Stand: 22. August 2026</small></p>
+<p><small>Stand: 24. August 2026</small></p>
 </main></body></html>"""
     )
 
