@@ -10,6 +10,10 @@ Group=videoarchive
 WorkingDirectory=/opt/video-archiver
 Environment="HOME=/var/lib/video-archiver"
 Environment="PATH=/opt/video-archiver/venv/bin:/usr/bin:/bin"
+ExecStartPre=+/opt/video-archiver/venv/bin/python -m video_archiver \
+  --queue /var/lib/video-archiver/queue.db sync \
+  --recipes-db /opt/scrapper/data/scrapper.db \
+  --queue-user videoarchive
 ExecStart=/opt/video-archiver/venv/bin/python -m video_archiver \
   --queue /var/lib/video-archiver/queue.db run \
   --archive /srv/video-archive \

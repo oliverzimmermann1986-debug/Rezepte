@@ -73,6 +73,29 @@ def _connect(path: Path) -> sqlite3.Connection:
     return connection
 
 
+def load_recipe_links(recipes_db: Path | str) -> list[tuple[int, str]]:
+    """Liest aktive Rezept-IDs und Links aus einer SQLite-DB ohne Schreibzugriff."""
+    source = Path(recipes_db).expanduser().resolve()
+    if not source.is_file():
+        raise ValueError(f"Rezeptdatenbank nicht gefunden: {source}")
+
+    uri = f"{source.as_uri()}?mode=ro"
+    with sqlite3.connect(uri, uri=True, timeout=30) as recipes:
+        recipes.row_factory = sqlite3.Row
+        columns = {
+            str(row[1]) for row in recipes.execute("PRAGMA table_info(recipes)").fetchall()
+        }
+        if not {"id", "url"}.issubset(columns):
+            raise ValueError("Rezeptdatenbank enthält keine kompatible recipes-Tabelle")
+        where = "WHERE url IS NOT NULL"
+        if "deleted_at" in columns:
+            where += " AND deleted_at IS NULL"
+        rows = recipes.execute(
+            f"SELECT id, url FROM recipes {where} ORDER BY id"  # noqa: S608
+        ).fetchall()
+    return [(row["id"], row["url"]) for row in rows]
+
+
 class ArchiveQueue:
     """Kleine SQLite-Queue mit atomarem Claim und begrenzten Wiederholungen."""
 
@@ -150,6 +173,50 @@ class ArchiveQueue:
                 (recipe_id, "info", "Auftrag eingeplant", now),
             )
         return self.get(recipe_id)
+
+    def sync_from_recipes_db(self, recipes_db: Path | str) -> dict[str, int]:
+        """Übernimmt neue Plattform-Links aus der Rezept-DB in die private Queue.
+
+        Die Quelldatenbank wird ausschließlich read-only geöffnet. Bereits
+        bekannte Kombinationen aus Rezept-ID und normalisiertem Link bleiben
+        unverändert; dadurch erzeugt der regelmäßige Abgleich weder doppelte
+        Jobs noch wiederkehrende Ereignisse.
+        """
+        return self.sync_recipe_links(load_recipe_links(recipes_db))
+
+    def sync_recipe_links(self, rows: list[tuple[int, str]]) -> dict[str, int]:
+        """Gleicht bereits gelesene Rezept-Links idempotent mit der Queue ab."""
+        with _connect(self.path) as connection:
+            known = {
+                int(row["recipe_id"]): str(row["url"])
+                for row in connection.execute("SELECT recipe_id, url FROM archive_jobs")
+            }
+
+        result = {
+            "seen": len(rows),
+            "eligible": 0,
+            "enqueued": 0,
+            "unchanged": 0,
+            "ignored": 0,
+        }
+        for row in rows:
+            try:
+                recipe_id = int(row[0])
+            except (TypeError, ValueError):
+                result["ignored"] += 1
+                continue
+            normalized = normalize_supported_url(str(row[1] or ""))
+            if recipe_id <= 0 or not normalized:
+                result["ignored"] += 1
+                continue
+            result["eligible"] += 1
+            if known.get(recipe_id) == normalized:
+                result["unchanged"] += 1
+                continue
+            self.enqueue(recipe_id, normalized)
+            known[recipe_id] = normalized
+            result["enqueued"] += 1
+        return result
 
     def get(self, recipe_id: int) -> dict[str, Any]:
         with _connect(self.path) as connection:

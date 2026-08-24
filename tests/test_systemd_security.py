@@ -29,6 +29,13 @@ def test_mutating_services_are_sandboxed_and_resource_bounded():
         assert "TasksMax=" in unit
 
 
+def test_video_archiver_syncs_read_only_recipe_links_before_download():
+    unit = (ROOT / "systemd" / "video-archiver.service").read_text(encoding="utf-8")
+    assert "ExecStartPre=+/opt/video-archiver/venv/bin/python -m video_archiver" in unit
+    assert "--recipes-db /opt/scrapper/data/scrapper.db" in unit
+    assert "--queue-user videoarchive" in unit
+
+
 def test_schedule_permissions_are_limited_to_the_single_timer():
     web = (ROOT / "systemd" / "scrapper-web.service").read_text(encoding="utf-8")
     rule = (ROOT / "systemd" / "49-scrapper-systemctl.rules").read_text(encoding="utf-8")

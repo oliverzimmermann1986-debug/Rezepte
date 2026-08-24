@@ -40,6 +40,48 @@ def test_queue_is_idempotent_and_requeues_changed_url(tmp_path: Path):
     assert changed["archive_path"] is None
 
 
+def test_queue_syncs_new_recipe_links_without_duplicate_events(tmp_path: Path):
+    recipes_db = tmp_path / "recipes.db"
+    with sqlite3.connect(recipes_db) as connection:
+        connection.execute(
+            "CREATE TABLE recipes (id INTEGER PRIMARY KEY, url TEXT, deleted_at REAL)"
+        )
+        connection.executemany(
+            "INSERT INTO recipes(id, url, deleted_at) VALUES (?, ?, ?)",
+            [
+                (202, "https://vm.tiktok.com/ZGdxp79TJ/?share=1", None),
+                (203, "https://www.instagram.com/reel/ABC/?igsh=test", None),
+                (204, "https://example.test/video", None),
+                (205, "https://www.tiktok.com/@koch/video/deleted", 1.0),
+            ],
+        )
+
+    queue = ArchiveQueue(tmp_path / "queue.db")
+    first = queue.sync_from_recipes_db(recipes_db)
+    assert first == {
+        "seen": 3,
+        "eligible": 2,
+        "enqueued": 2,
+        "unchanged": 0,
+        "ignored": 1,
+    }
+    event_count = len(queue.events())
+
+    second = queue.sync_from_recipes_db(recipes_db)
+    assert second["enqueued"] == 0
+    assert second["unchanged"] == 2
+    assert len(queue.events()) == event_count
+
+    with sqlite3.connect(recipes_db) as connection:
+        connection.execute(
+            "UPDATE recipes SET url=? WHERE id=202",
+            ("https://www.tiktok.com/@koch/video/new",),
+        )
+    changed = queue.sync_from_recipes_db(recipes_db)
+    assert changed["enqueued"] == 1
+    assert queue.get(202)["url"] == "https://www.tiktok.com/@koch/video/new"
+
+
 def test_worker_names_video_by_recipe_id_and_writes_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

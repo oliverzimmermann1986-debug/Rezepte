@@ -59,10 +59,17 @@ sudo bash video_archiver/install-host.sh
 systemctl status video-archiver.timer
 ```
 
-Aufträge werden anschließend bewusst außerhalb der Rezepte-API eingetragen:
+Vor jedem Timer-Lauf übernimmt der Worker neue TikTok-/Instagram-Links
+schreibgeschützt aus `/opt/scrapper/data/scrapper.db` in seine eigene Queue.
+Die App und die Rezepte-API erhalten dadurch weiterhin keinen Zugriff auf
+Archiv, Cookies oder Archivstatus. Bereits bekannte Links werden nicht erneut
+eingeplant.
+
+Ein einzelner Auftrag kann zusätzlich manuell eingetragen werden:
 
 ```bash
-sudo -u videoarchive /opt/video-archiver/venv/bin/python -m video_archiver \
+cd /opt/video-archiver
+sudo -u videoarchive ./venv/bin/python -m video_archiver \
   --queue /var/lib/video-archiver/queue.db enqueue \
   --id 35852573 \
   --url 'https://www.tiktok.com/@beispiel/video/123456'

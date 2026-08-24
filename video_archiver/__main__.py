@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sqlite3
 import sys
 from pathlib import Path
 
-from .worker import ArchiveQueue, VideoArchiver
+from .worker import ArchiveQueue, VideoArchiver, load_recipe_links
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -21,6 +23,15 @@ def _parser() -> argparse.ArgumentParser:
     enqueue = commands.add_parser("enqueue", help="Rezept-ID und Plattform-Link einplanen")
     enqueue.add_argument("--id", type=int, required=True, dest="recipe_id")
     enqueue.add_argument("--url", required=True)
+
+    sync = commands.add_parser(
+        "sync", help="Neue Plattform-Links read-only aus der Rezeptdatenbank übernehmen"
+    )
+    sync.add_argument("--recipes-db", type=Path, required=True)
+    sync.add_argument(
+        "--queue-user",
+        help="Nach dem Lesen der Rezeptdatenbank vor dem Queue-Zugriff zu diesem Benutzer wechseln",
+    )
 
     commands.add_parser("status", help="Queue-Zähler ausgeben")
     events = commands.add_parser("events", help="Letzte Worker-Ereignisse ausgeben")
@@ -42,12 +53,43 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _drop_privileges(username: str) -> None:
+    if os.name != "posix":
+        raise ValueError("--queue-user wird nur auf POSIX-Systemen unterstützt")
+    if os.geteuid() != 0:
+        raise ValueError("--queue-user benötigt Root-Rechte")
+    import pwd
+
+    try:
+        account = pwd.getpwnam(username)
+    except KeyError as exc:
+        raise ValueError(f"Unbekannter Queue-Benutzer: {username}") from exc
+    os.setgroups([])
+    os.setgid(account.pw_gid)
+    os.setuid(account.pw_uid)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    queue = ArchiveQueue(args.queue)
     try:
+        recipe_links = None
+        if args.command == "sync" and args.queue_user:
+            # Root darf die WAL-Quelldatenbank konsistent read-only öffnen.
+            # Vor dem ersten Zugriff auf die private Queue werden sämtliche
+            # Privilegien dauerhaft abgegeben, damit deren Dateien weiterhin
+            # dem isolierten Archiver-Benutzer gehören.
+            recipe_links = load_recipe_links(args.recipes_db)
+            _drop_privileges(args.queue_user)
+
+        queue = ArchiveQueue(args.queue)
         if args.command == "enqueue":
             result = queue.enqueue(args.recipe_id, args.url)
+        elif args.command == "sync":
+            result = (
+                queue.sync_recipe_links(recipe_links)
+                if recipe_links is not None
+                else queue.sync_from_recipes_db(args.recipes_db)
+            )
         elif args.command == "status":
             result = queue.counts()
         elif args.command == "events":
@@ -68,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             result = worker.process_one() or {"status": "idle"}
         else:  # pragma: no cover - argparse verhindert diesen Zustand
             raise ValueError(f"Unbekannter Befehl: {args.command}")
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, sqlite3.Error) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
