@@ -79,6 +79,36 @@ def test_ai_enriches_local_pdf_extraction():
     assert result.servings == 4
 
 
+def test_ai_recipe_extraction_removes_exact_ingredient_and_step_duplicates():
+    class DuplicateAnalyzer:
+        def analyze_recipe_content(self, _text, **_kwargs):
+            return {
+                "ingredients": [
+                    {"name": "Tomaten", "amount": 4, "unit": "Stück"},
+                    {"name": "Tomate", "amount": 4, "unit": "Stück"},
+                    {"name": "Tomaten", "amount": 200, "unit": "g"},
+                ],
+                "steps": [
+                    {"instruction": "Tomaten klein schneiden.", "timer_seconds": None},
+                    {"instruction": "  Tomaten   klein schneiden. ", "timer_seconds": 60},
+                ],
+            }
+
+    result = extract_recipe_data(
+        "Zutaten: 4 Tomaten. Zubereitung: Tomaten klein schneiden.",
+        analyzer=DuplicateAnalyzer(),
+    )
+
+    assert [(item["amount"], item["unit"]) for item in result.ingredients] == [
+        (4.0, "Stück"),
+        (200.0, "g"),
+    ]
+    assert result.steps == [{
+        "instruction": "Tomaten klein schneiden.",
+        "timer_seconds": 60,
+    }]
+
+
 def test_pdf_recipe_data_only_fills_missing_fields_by_default(test_db: Database, tmp_path: Path):
     recipe_id = _recipe(test_db, tmp_path)
     test_db.recipe_set_extraction_result(recipe_id, "ok", [{

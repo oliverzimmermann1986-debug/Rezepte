@@ -191,6 +191,7 @@ def parse_ingredient_lines(text: str) -> List[Dict[str, Any]]:
 
 def prepare_recipe_ingredients(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     prepared: List[Dict[str, Any]] = []
+    seen = set()
     for item in items or []:
         name = str(item.get("name") or "").strip()
         if not name:
@@ -201,13 +202,25 @@ def prepare_recipe_ingredients(items: Iterable[Dict[str, Any]]) -> List[Dict[str
                 amount = float(amount)
             except (TypeError, ValueError):
                 amount = None
-        prepared.append({
+        normalized = {
             "name": name,
             "canonical_name": canonical_name(name),
             "amount": amount,
             "unit": normalize_unit(item.get("unit")),
             "raw": (str(item.get("raw") or "").strip() or None),
-        })
+        }
+        # KI-Antworten enthalten gelegentlich dieselbe Zutat mehrfach. Exakt
+        # gleiche Mengen/Einheiten werden zusammengeführt; dieselbe Zutat mit
+        # einer anderen Menge (z.B. Teig und Füllung) bleibt bewusst erhalten.
+        key = (
+            normalized["canonical_name"] or name.casefold(),
+            normalized["amount"],
+            normalized["unit"],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        prepared.append(normalized)
     return prepared[:120]
 
 
@@ -256,6 +269,7 @@ def extract_recipe_data(text: str, *, analyzer=None,
         result.warnings.append("KI erkannte keine Zutaten; lokaler Parser wurde verwendet")
 
     steps: List[Dict[str, Any]] = []
+    step_indexes: Dict[str, int] = {}
     for item in content.get("steps") or []:
         if not isinstance(item, dict):
             continue
@@ -267,6 +281,15 @@ def extract_recipe_data(text: str, *, analyzer=None,
             timer = int(timer) if timer is not None and int(timer) > 0 else None
         except (TypeError, ValueError):
             timer = None
+        step_key = " ".join(instruction.split()).casefold()
+        duplicate_index = step_indexes.get(step_key)
+        if duplicate_index is not None:
+            # Wenn nur eine der beiden KI-Kopien einen Timer enthält, bewahren
+            # wir die informativere Variante auf.
+            if steps[duplicate_index]["timer_seconds"] is None and timer is not None:
+                steps[duplicate_index]["timer_seconds"] = timer
+            continue
+        step_indexes[step_key] = len(steps)
         steps.append({"instruction": instruction, "timer_seconds": timer})
     result.steps = steps[:100]
 

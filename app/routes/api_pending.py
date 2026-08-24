@@ -479,7 +479,7 @@ def pending_file(url: str) -> FileResponse:
     entry = get_db().pending_get(url)
     if not entry:
         raise HTTPException(404, "Nicht gefunden")
-    path_str = entry.get("video_path")
+    path_str = entry.get("video_path") or entry.get("frame_path")
     if not path_str or not _is_under_temp(path_str):
         raise HTTPException(404, "Importdatei nicht verfügbar")
     path = Path(path_str)
@@ -508,7 +508,8 @@ def pending_file(url: str) -> FileResponse:
         ".png": "image/png",
     }[ext]
     safe_name = Path(
-        (entry.get("ai_suggestion") or {}).get("filename") or path.name
+        (entry.get("ai_suggestion") or {}).get("filename")
+        or ("cover" + path.suffix if entry.get("frame_path") else path.name)
     ).name.replace('"', "").replace("\r", "").replace("\n", "")
     return FileResponse(
         path,
@@ -568,7 +569,10 @@ def resolve(body: ResolveBody):
         "servings": body.servings,
         "verified": body.verified,
     }
-    return get_scraper_job().resolve_pending(body.url, decision)
+    with file_lock_or_none("scraper") as lock:
+        if lock is None:
+            raise HTTPException(409, "Ein Import läuft bereits. Bitte gleich erneut versuchen.")
+        return get_scraper_job().resolve_pending(body.url, decision)
 
 
 class ReanalyzeRequest(BaseModel):
@@ -582,7 +586,10 @@ class FailedActionRequest(BaseModel):
 @router.post("/reanalyze", dependencies=[Depends(require_admin)])
 def reanalyze(body: ReanalyzeRequest):
     """Lässt ein Pending-Item neu durch die KI-Cascade laufen."""
-    return get_scraper_job().reanalyze_pending(body.url)
+    with file_lock_or_none("scraper") as lock:
+        if lock is None:
+            raise HTTPException(409, "Ein Import läuft bereits. Bitte gleich erneut versuchen.")
+        return get_scraper_job().reanalyze_pending(body.url)
 
 
 import logging as _logging

@@ -348,7 +348,12 @@ class ScraperJob:
             return {**result, "status": "pending", "name": "Unvollständiger Link-Import"}
 
         platform = "TikTok" if "tiktok.com" in url else "Instagram"
-        description = self._fetch_description_via_ytdlp(url)
+        metadata = self._fetch_external_link_metadata(url)
+        description = metadata.get("description_text")
+        thumbnail_bytes = metadata.get("thumbnail_bytes")
+        thumbnail_suffix = metadata.get("thumbnail_suffix")
+        if not thumbnail_bytes and existing_pending:
+            thumbnail_bytes, thumbnail_suffix = self._read_pending_thumbnail(existing_pending)
         suggestion = {
             "name": f"{platform}-Rezept prüfen",
             "type": "Sonstiges",
@@ -388,6 +393,8 @@ class ScraperJob:
                     analysis=analysis,
                     description=description,
                     structured=structured_recipe,
+                    thumbnail_bytes=thumbnail_bytes,
+                    thumbnail_suffix=thumbnail_suffix,
                 )
                 if existing_pending:
                     self.db.pending_resolve(url, status="resolved")
@@ -409,12 +416,20 @@ class ScraperJob:
                 "analysis_state": "incomplete",
             })
 
+        frame_path = None
+        if thumbnail_bytes:
+            frame_path = self._stash_external_thumbnail_for_pending(
+                thumbnail_bytes,
+                thumbnail_suffix,
+                url,
+            )
+            suggestion["has_thumbnail"] = True
         self.db.pending_add(
             url=url,
             content_type=content_type,
             description=(description or "")[:5000] or None,
             video_path=None,
-            frame_path=None,
+            frame_path=frame_path,
             ai_suggestion=suggestion,
         )
         result.update({
@@ -445,9 +460,20 @@ class ScraperJob:
         analysis: RecipeAnalysis,
         description: str,
         structured,
+        thumbnail_bytes: Optional[bytes] = None,
+        thumbnail_suffix: Optional[str] = None,
     ) -> tuple[Path, int]:
-        """Speichert ein vollständiges Link-Rezept ohne Video oder Medienkopie."""
-        from ..core.safety import atomic_write_json, atomic_write_text, write_manifest
+        """Speichert ein vollständiges Link-Rezept ohne Video, optional mit Cover."""
+        from ..core.safety import (
+            atomic_write_bytes,
+            atomic_write_json,
+            atomic_write_text,
+            write_manifest,
+        )
+
+        existing = self.db.recipe_get_by_url(url)
+        if existing:
+            return Path(existing["folder_path"]), int(existing["id"])
 
         target = (
             self.recipe_dir
@@ -479,6 +505,11 @@ class ScraperJob:
             },
         }
         try:
+            thumb_filename = None
+            if thumbnail_bytes:
+                suffix = self._safe_thumbnail_suffix(thumbnail_suffix)
+                thumb_filename = f"{target.name}{suffix}"
+                atomic_write_bytes(target / thumb_filename, thumbnail_bytes)
             atomic_write_text(target / "description.txt", description)
             atomic_write_json(target / "info.json", info)
             write_manifest(target, source={"kind": "external-link", "url": url})
@@ -489,7 +520,7 @@ class ScraperJob:
                 category=analysis.category or "Allgemein",
                 folder_path=str(target),
                 description=description,
-                thumb_filename=None,
+                thumb_filename=thumb_filename,
                 video_filename=None,
                 source_added_at=time.time(),
             )
@@ -648,6 +679,42 @@ class ScraperJob:
         target = pending_dir / f"attachment-{digest}{ext}"
         atomic_write_bytes(target, data)
         return str(target)
+
+    @staticmethod
+    def _safe_thumbnail_suffix(suffix: Optional[str]) -> str:
+        normalized = str(suffix or "").strip().lower()
+        return normalized if normalized in {".jpg", ".jpeg", ".png", ".webp"} else ".jpg"
+
+    def _stash_external_thumbnail_for_pending(
+        self,
+        data: bytes,
+        suffix: Optional[str],
+        url: str,
+    ) -> str:
+        """Bewahrt das Social-Media-Cover bis zur manuellen Freigabe auf."""
+        import hashlib
+        from ..core.safety import atomic_write_bytes
+
+        pending_dir = self.temp_dir / "pending"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+        target = pending_dir / f"external-thumb-{digest}{self._safe_thumbnail_suffix(suffix)}"
+        atomic_write_bytes(target, data)
+        return str(target)
+
+    def _read_pending_thumbnail(self, entry: Dict) -> Tuple[Optional[bytes], Optional[str]]:
+        """Liest ausschließlich ein von uns im Temp-Verzeichnis abgelegtes Cover."""
+        path = Path(str(entry.get("frame_path") or ""))
+        try:
+            if path.is_symlink():
+                raise ValueError("symlink")
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(self.temp_dir.resolve())
+            if not resolved.is_file() or resolved.stat().st_size > 10 * 1024 * 1024:
+                raise ValueError("invalid size")
+            return resolved.read_bytes(), self._safe_thumbnail_suffix(resolved.suffix)
+        except (OSError, RuntimeError, ValueError):
+            return None, None
 
     def _extract_recipe_data(self, description: str):
         """Liest Zutaten, Schritte, Portionen und Tags aus erkanntem Rezepttext.
@@ -1137,6 +1204,26 @@ class ScraperJob:
         except Exception as e:
             logger.error(f"yt-dlp metadata exception {url}: {e}")
             return None
+
+    def _fetch_external_link_metadata(self, url: str) -> Dict:
+        """Holt Caption und Cover ohne Video-Download.
+
+        ``refresh_metadata`` nutzt yt-dlp mit ``--skip-download``. Der alte
+        Description-Pfad bleibt als Fallback erhalten, damit Installationen
+        mit älterem Downloader und Tests ohne Mediendownload weiterlaufen.
+        """
+        metadata: Dict = {}
+        refresh = getattr(self.downloader, "refresh_metadata", None)
+        if callable(refresh):
+            try:
+                metadata = dict(refresh(url) or {})
+            except Exception as exc:
+                logger.warning("Social-Metadaten konnten nicht aktualisiert werden: %s", exc)
+        if not metadata.get("description_text"):
+            description = self._fetch_description_via_ytdlp(url)
+            if description:
+                metadata["description_text"] = description
+        return metadata
 
     def reanalyze_history_one(self, url: str, *, dry_run: bool = False,
                                 auto_move: bool = False) -> Dict:
@@ -1629,10 +1716,24 @@ class ScraperJob:
         entry = self.db.pending_get(url)
         if not entry:
             return {"ok": False, "error": "Pending-Eintrag nicht gefunden"}
+        if entry.get("status") != "pending":
+            existing = self.db.recipe_get_by_url(url)
+            return {
+                "ok": True,
+                "action": "already_saved",
+                "target": existing.get("folder_path") if existing else None,
+                "recipe_id": int(existing["id"]) if existing else None,
+                "message": "Dieser Eingang wurde bereits einsortiert.",
+            }
 
         suggestion = entry.get("ai_suggestion") or {}
         if suggestion.get("source") == "external-link":
-            description = self._fetch_description_via_ytdlp(url)
+            metadata = self._fetch_external_link_metadata(url)
+            description = metadata.get("description_text")
+            thumbnail_bytes = metadata.get("thumbnail_bytes")
+            thumbnail_suffix = metadata.get("thumbnail_suffix")
+            if not thumbnail_bytes:
+                thumbnail_bytes, thumbnail_suffix = self._read_pending_thumbnail(entry)
             if not description:
                 return {
                     "ok": True,
@@ -1670,8 +1771,11 @@ class ScraperJob:
                         analysis=analysis,
                         description=description,
                         structured=structured,
+                        thumbnail_bytes=thumbnail_bytes,
+                        thumbnail_suffix=thumbnail_suffix,
                     )
                     self.db.pending_resolve(url, status="resolved")
+                    self._remove_pending_files(entry)
                     return {
                         "ok": True,
                         "action": "auto_saved",
@@ -1688,12 +1792,20 @@ class ScraperJob:
                     "confidence": analysis.confidence,
                     "analysis_state": "incomplete",
                 }
+            frame_path = entry.get("frame_path")
+            if thumbnail_bytes:
+                frame_path = self._stash_external_thumbnail_for_pending(
+                    thumbnail_bytes,
+                    thumbnail_suffix,
+                    url,
+                )
+                suggestion["has_thumbnail"] = True
             self.db.pending_add(
                 url=url,
                 content_type=content_type,
                 description=description[:5000],
                 video_path=None,
-                frame_path=None,
+                frame_path=frame_path,
                 ai_suggestion=suggestion,
             )
             return {
@@ -1766,6 +1878,17 @@ class ScraperJob:
         source = str(suggestion.get("source") or "")
 
         if source == "external-link":
+            existing = self.db.recipe_get_by_url(url)
+            if existing:
+                self.db.pending_resolve(url, status="resolved")
+                self._remove_pending_files(entry)
+                return {
+                    "ok": True,
+                    "action": "already_saved",
+                    "target": existing.get("folder_path"),
+                    "recipe_id": int(existing["id"]),
+                    "message": "Dieser Eingang wurde bereits einsortiert.",
+                }
             name = str(decision.get("name") or suggestion.get("name") or "Unbekannt").strip()
             category = str(decision.get("category") or suggestion.get("category") or "Allgemein").strip()
             if entry["content_type"] == "recipe":
@@ -1773,7 +1896,12 @@ class ScraperJob:
                 target = self.recipe_dir / _sanitize(recipe_type) / _sanitize(category) / _sanitize(name)
                 if target.exists():
                     target = target.parent / f"{target.name}_{datetime.now():%Y%m%d_%H%M%S}"
-                from ..core.safety import atomic_write_json, atomic_write_text, write_manifest
+                from ..core.safety import (
+                    atomic_write_bytes,
+                    atomic_write_json,
+                    atomic_write_text,
+                    write_manifest,
+                )
                 target.mkdir(parents=True, exist_ok=False)
                 info = {
                     "url": url,
@@ -1788,6 +1916,16 @@ class ScraperJob:
                     "timestamp": datetime.now().isoformat(),
                     "is_manual": True,
                 }
+                thumb_filename = None
+                frame_path = Path(str(entry.get("frame_path") or ""))
+                if frame_path.is_file() and not frame_path.is_symlink():
+                    try:
+                        frame_path.resolve().relative_to(self.temp_dir.resolve())
+                        suffix = self._safe_thumbnail_suffix(frame_path.suffix)
+                        thumb_filename = f"{target.name}{suffix}"
+                        atomic_write_bytes(target / thumb_filename, frame_path.read_bytes())
+                    except (OSError, RuntimeError, ValueError):
+                        logger.warning("Unsicheres oder fehlendes Social-Cover für %s", url)
                 if description:
                     atomic_write_text(target / "description.txt", description)
                 atomic_write_json(target / "info.json", info)
@@ -1802,7 +1940,7 @@ class ScraperJob:
                     category=category,
                     folder_path=str(target),
                     description=description,
-                    thumb_filename=None,
+                    thumb_filename=thumb_filename,
                     video_filename=None,
                     source_added_at=time.time(),
                 )
@@ -1835,6 +1973,7 @@ class ScraperJob:
                     pass
                 self.db.history_add(url, content_type="wedding", name=name, target_dir=str(target))
             self.db.pending_resolve(url, status="resolved")
+            self._remove_pending_files(entry)
             return {
                 "ok": True,
                 "action": "saved",
@@ -1973,8 +2112,10 @@ class ScraperJob:
             self.db.recipe_set_verified(recipe_id, True, "manual-import")
 
     def _remove_pending_files(self, entry: Dict) -> None:
-        p = entry.get("video_path")
-        if p:
+        paths = {entry.get("video_path"), entry.get("frame_path")}
+        for p in paths:
+            if not p:
+                continue
             try:
                 Path(p).unlink(missing_ok=True)
             except Exception:

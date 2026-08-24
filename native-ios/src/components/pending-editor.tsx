@@ -49,7 +49,7 @@ type Props = {
 
 type ReanalyzeResult = {
   ok: boolean;
-  action?: 'auto_saved' | 'still_pending' | string;
+  action?: 'auto_saved' | 'already_saved' | 'still_pending' | string;
   error?: string;
   message?: string;
   description?: string | null;
@@ -70,6 +70,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   const [aiBusy, setAiBusy] = useState(false);
   const [error, setError] = useState('');
   const [previewUnavailable, setPreviewUnavailable] = useState(false);
+  const [hasExternalPreview, setHasExternalPreview] = useState(false);
 
   useEffect(() => {
     if (!item) return;
@@ -84,6 +85,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
     setVerified(false);
     setError('');
     setPreviewUnavailable(false);
+    setHasExternalPreview(Boolean(suggestion.has_thumbnail));
   }, [item]);
 
   async function save() {
@@ -145,7 +147,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
       );
       if (!result.ok) throw new Error(result.error || 'KI-Prüfung fehlgeschlagen');
 
-      if (result.action === 'auto_saved') {
+      if (result.action === 'auto_saved' || result.action === 'already_saved') {
         await invalidateApiCacheByPrefix('recipe:', 'recipes:');
         Alert.alert(
           'KI-Prüfung abgeschlossen',
@@ -156,6 +158,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
       }
 
       const suggestion = result.analysis || {};
+      if (suggestion.has_thumbnail) setHasExternalPreview(true);
       if (suggestion.name?.trim()) setName(suggestion.name.trim());
       if (suggestion.type?.trim()) setRecipeType(suggestion.type.trim());
       if (suggestion.category?.trim()) setCategory(suggestion.category.trim());
@@ -219,6 +222,8 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   const hasLocalFile = ['manual-upload', 'mail-attachment'].includes(
     item?.ai_suggestion?.source || '',
   ) && Boolean(filename);
+  const hasSocialCover = item?.ai_suggestion?.source === 'external-link'
+    && hasExternalPreview;
   const isImage = ['jpg', 'jpeg', 'png'].includes(extension);
   const localFilePath = item
     ? `/api/pending/file?url=${encodeURIComponent(item.url)}`
@@ -378,6 +383,18 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
                   <Text style={styles.previewHint}>Keine direkte Vorschau verfügbar. Die Datei kann trotzdem geöffnet werden.</Text>
                 )}
                 <PrimaryButton label={busy ? 'Datei wird geöffnet …' : 'Importdatei öffnen'} onPress={() => void openLocalFile()} disabled={busy} />
+              </View>
+            )}
+            {hasSocialCover && !previewUnavailable && (
+              <View style={styles.filePreview}>
+                <Text style={styles.fileTitle}>Gefundenes Vorschaubild</Text>
+                <Image
+                  accessibilityLabel="Vorschau des gefundenen Rezeptbilds"
+                  source={{ uri: absoluteApiUrl(localFilePath), headers: apiAuthHeaders() }}
+                  contentFit="contain"
+                  onError={() => setPreviewUnavailable(true)}
+                  style={styles.previewImage}
+                />
               </View>
             )}
             {!!externalSource && (

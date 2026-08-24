@@ -1687,6 +1687,15 @@ class Database:
             row = c.execute("SELECT * FROM recipes WHERE id=?", (recipe_id,)).fetchone()
             return dict(row) if row else None
 
+    def recipe_get_by_url(self, url: str) -> Optional[Dict[str, Any]]:
+        """Liefert das aktive Rezept einer Quell-URL für idempotente Importe."""
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT * FROM recipes WHERE url=? AND deleted_at IS NULL",
+                (url,),
+            ).fetchone()
+            return dict(row) if row else None
+
     def recipe_get_by_folder(self, folder_path: str) -> Optional[Dict[str, Any]]:
         with self.conn() as c:
             row = c.execute("SELECT * FROM recipes WHERE folder_path=?", (folder_path,)).fetchone()

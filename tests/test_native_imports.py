@@ -753,10 +753,81 @@ def test_complete_manual_image_reanalysis_saves_recipe_without_video(test_db, tm
     assert test_db.pending_get(url)["status"] == "resolved"
     recipe = test_db.recipe_get(result["recipe_id"])
     assert recipe["video_filename"] is None
+    assert recipe["thumb_filename"] == "Kartoffelgericht.jpg"
+    assert Path(recipe["folder_path"], recipe["thumb_filename"]).read_bytes() == b"jpeg-placeholder"
     assert recipe["servings"] == 2
     assert test_db.recipe_ingredients_get(recipe["id"])[0]["name"] == "Kartoffel"
     assert test_db.recipe_steps_get(recipe["id"])[0]["timer_seconds"] == 1200
     assert not source.exists()
+
+
+def test_social_reanalysis_preserves_cover_and_is_idempotent(test_db, tmp_path):
+    url = "https://www.tiktok.com/@koch/video/cover123"
+    test_db.pending_add(
+        url=url,
+        content_type="recipe",
+        ai_suggestion={
+            "name": "TikTok-Rezept prüfen",
+            "source": "external-link",
+            "platform": "TikTok",
+        },
+    )
+
+    class MetadataOnlyDownloader:
+        def refresh_metadata(self, _url):
+            return {
+                "description_text": "Tomatenpasta mit vier Tomaten. Tomaten einkochen.",
+                "thumbnail_bytes": b"jpeg-thumbnail",
+                "thumbnail_suffix": ".jpg",
+            }
+
+        def download(self, _url):
+            raise AssertionError("Beim Link-Import darf kein Video heruntergeladen werden")
+
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.downloader = MetadataOnlyDownloader()
+    job.temp_dir = tmp_path / "temp"
+    job.recipe_dir = tmp_path / "recipes"
+    job.wedding_dir = tmp_path / "wedding"
+    job.confidence_threshold = 0.75
+    job._analyze_recipe = lambda _text: RecipeAnalysis(
+        "Tomatenpasta", "Hauptgericht", "Pasta", 0.96,
+    )
+    job._extract_recipe_data = lambda text: ExtractedRecipeData(
+        text=text,
+        ingredients=[{"name": "Tomaten", "amount": 4, "unit": "Stück"}],
+        steps=[],
+        method="ai",
+    )
+
+    refreshed = job.reanalyze_pending(url)
+
+    assert refreshed["action"] == "still_pending"
+    pending = test_db.pending_get(url)
+    assert pending["ai_suggestion"]["has_thumbnail"] is True
+    assert Path(pending["frame_path"]).read_bytes() == b"jpeg-thumbnail"
+
+    saved = job.resolve_pending(url, {
+        "action": "save",
+        "name": "Tomatenpasta",
+        "type": "Hauptgericht",
+        "category": "Pasta",
+        "description": refreshed["description"],
+        "ingredients": [{"name": "Tomaten", "amount": 4, "unit": "Stück"}],
+        "steps": [{"instruction": "Tomaten einkochen."}],
+    })
+
+    recipe = test_db.recipe_get(saved["recipe_id"])
+    assert recipe["thumb_filename"] == "Tomatenpasta.jpg"
+    assert Path(recipe["folder_path"], recipe["thumb_filename"]).read_bytes() == b"jpeg-thumbnail"
+    assert recipe["video_filename"] is None
+    assert not Path(pending["frame_path"]).exists()
+
+    repeated = job.reanalyze_pending(url)
+    assert repeated["action"] == "already_saved"
+    with test_db.conn() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM recipes WHERE url=?", (url,)).fetchone()[0] == 1
 
 
 def test_cart_add_endpoint_returns_json(client):

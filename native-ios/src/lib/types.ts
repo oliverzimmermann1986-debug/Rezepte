@@ -79,6 +79,7 @@ export type PendingSuggestion = {
   filename?: string | null;
   source?: string | null;
   platform?: string | null;
+  has_thumbnail?: boolean;
   ingredients?: Ingredient[];
   steps?: RecipeStep[];
   servings?: number | null;
