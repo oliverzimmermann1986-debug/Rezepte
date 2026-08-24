@@ -147,3 +147,16 @@ def test_native_admin_role_refresh_remounts_the_native_tabs():
     assert "key={isAdmin ? 'admin-tabs' : 'user-tabs'}" in tabs
     assert '<NativeTabs.Trigger name="admin" hidden={!isAdmin}>' in tabs
     assert "{isAdmin && (" not in tabs
+
+
+def test_pending_editor_can_reanalyze_with_ai_using_long_request_timeout():
+    pending_editor = (NATIVE / "components" / "pending-editor.tsx").read_text(encoding="utf-8")
+    api_source = (NATIVE / "lib" / "api.ts").read_text(encoding="utf-8")
+
+    assert "Nochmals mit KI prüfen" in pending_editor
+    assert "'/api/pending/reanalyze'" in pending_editor
+    assert "120_000" in pending_editor
+    assert "setIngredients(suggestion.ingredients.map(createIngredientRow))" in pending_editor
+    assert "setSteps(suggestion.steps.map(createStepRow))" in pending_editor
+    assert "timeoutMs = REQUEST_TIMEOUT_MS" in api_source
+    assert "signal,\n    timeoutMs," in api_source

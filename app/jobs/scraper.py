@@ -1478,6 +1478,153 @@ class ScraperJob:
                 break
 
     # ---------------- Pending im Web auflösen ----------------
+    def _reanalyze_pending_attachment(self, url: str, entry: Dict,
+                                      suggestion: Dict) -> Dict:
+        """Analysiert ein zurückgehaltenes Bild/PDF erneut über die
+        aktuelle Datei- und Rezeptpipeline.
+
+        ``video_path`` enthält bei Dateiimporten aus historischen Gründen die
+        Originaldatei. Sie darf nicht durch den alten Video-Save-Pfad laufen:
+        sonst fehlen strukturierte Zutaten/Schritte und Bilder werden wie
+        Videos behandelt.
+        """
+        source_path = Path(str(entry.get("video_path") or ""))
+        try:
+            if source_path.is_symlink():
+                raise ValueError("symlink")
+            resolved_path = source_path.resolve(strict=True)
+            resolved_path.relative_to(self.temp_dir.resolve())
+        except (OSError, RuntimeError, ValueError):
+            return {"ok": False, "error": "Importdatei fehlt oder liegt außerhalb des Importbereichs"}
+        if not resolved_path.is_file():
+            return {"ok": False, "error": "Importdatei fehlt oder ist nicht sicher lesbar"}
+
+        ext = resolved_path.suffix.lower()
+        if ext not in {".pdf", ".jpg", ".jpeg", ".png"}:
+            return {"ok": False, "error": "Dieser Dateiimport kann nicht erneut per KI geprüft werden"}
+
+        try:
+            payload = resolved_path.read_bytes()
+        except OSError as exc:
+            logger.warning("Pending-Datei %s konnte nicht gelesen werden: %s", url, exc)
+            return {"ok": False, "error": "Importdatei konnte nicht gelesen werden"}
+
+        filename = str(suggestion.get("filename") or resolved_path.name)
+        subject = Path(filename).stem.replace("_", " ")
+        description = str(entry.get("description") or "").strip()
+        image_mime = None
+        if ext == ".pdf":
+            description = self._extract_pdf_text(payload) or description or subject
+        else:
+            image_mime = "image/jpeg" if ext in {".jpg", ".jpeg"} else "image/png"
+            if (
+                self.analyzer
+                and hasattr(self.analyzer, "extract_description_from_image_bytes")
+            ):
+                extracted = self.analyzer.extract_description_from_image_bytes(
+                    payload,
+                    image_mime,
+                    subject,
+                )
+                if extracted:
+                    description = extracted
+            description = description or subject
+
+        content_type = str(entry.get("content_type") or "recipe")
+        if content_type != "recipe":
+            analysis = self._analyze_wedding(description)
+            next_suggestion = {
+                **suggestion,
+                "name": analysis.name,
+                "category": analysis.category or "Sonstiges",
+                "confidence": analysis.confidence,
+                "analysis_state": "complete"
+                if not analysis.needs_manual_input(self.confidence_threshold)
+                else "incomplete",
+            }
+            self.db.pending_add(
+                url=url,
+                content_type=content_type,
+                description=description[:5000],
+                video_path=str(resolved_path),
+                frame_path=entry.get("frame_path"),
+                ai_suggestion=next_suggestion,
+            )
+            return {
+                "ok": True,
+                "action": "still_pending",
+                "analysis": next_suggestion,
+                "description": description[:5000],
+                "message": "Die Datei wurde erneut ausgewertet.",
+            }
+
+        analysis = None
+        if _has_usable_description(description, self.min_desc_len):
+            analysis = self._analyze_recipe(description)
+        elif image_mime:
+            analysis = self._analyze_image_via_openai(
+                payload,
+                image_mime,
+                "recipe",
+                subject,
+            )
+        if not analysis:
+            analysis = self._analyze_recipe(description)
+        structured = self._extract_recipe_data(description)
+        complete = self._recipe_data_complete(analysis, structured)
+        next_suggestion = {
+            **suggestion,
+            "name": analysis.name,
+            "type": analysis.type,
+            "category": analysis.category or "Allgemein",
+            "confidence": analysis.confidence,
+            "analysis_state": "complete" if complete else "incomplete",
+            "ingredients": structured.ingredients,
+            "steps": structured.steps,
+            "servings": structured.servings,
+            "tags": structured.tags,
+            "extraction_method": structured.method,
+            "warnings": structured.warnings,
+        }
+        self.db.pending_add(
+            url=url,
+            content_type=content_type,
+            description=description[:5000],
+            video_path=str(resolved_path),
+            frame_path=entry.get("frame_path"),
+            ai_suggestion=next_suggestion,
+        )
+
+        if complete:
+            saved = self.resolve_pending(url, {
+                "action": "save",
+                "name": analysis.name,
+                "type": analysis.type,
+                "category": analysis.category or "Allgemein",
+                "description": description[:5000],
+                "ingredients": structured.ingredients,
+                "steps": structured.steps,
+                "servings": structured.servings,
+                "verified": False,
+            })
+            if not saved.get("ok"):
+                return saved
+            return {
+                **saved,
+                "action": "auto_saved",
+                "analysis": next_suggestion,
+                "description": description[:5000],
+                "message": "Die KI-Prüfung ist vollständig; das Rezept wurde einsortiert.",
+            }
+
+        return {
+            "ok": True,
+            "action": "still_pending",
+            "analysis": next_suggestion,
+            "description": description[:5000],
+            "message": "Der KI-Vorschlag wurde aktualisiert und bleibt zur manuellen Prüfung offen.",
+        }
+
     def reanalyze_pending(self, url: str) -> Dict:
         entry = self.db.pending_get(url)
         if not entry:
@@ -1553,8 +1700,13 @@ class ScraperJob:
                 "ok": True,
                 "action": "still_pending",
                 "analysis": suggestion,
+                "description": description[:5000],
                 "message": "Caption wurde neu ausgewertet; fehlende Zutaten oder Schritte bleiben zur manuellen Pflege offen.",
             }
+
+        source = str(suggestion.get("source") or "")
+        if source in {"mail-attachment", "manual-upload"}:
+            return self._reanalyze_pending_attachment(url, entry, suggestion)
 
         description = entry.get("description")
         video_path = Path(entry["video_path"]) if entry.get("video_path") else None

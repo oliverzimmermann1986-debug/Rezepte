@@ -47,6 +47,15 @@ type Props = {
   onSaved: () => void;
 };
 
+type ReanalyzeResult = {
+  ok: boolean;
+  action?: 'auto_saved' | 'still_pending' | string;
+  error?: string;
+  message?: string;
+  description?: string | null;
+  analysis?: PendingItem['ai_suggestion'];
+};
+
 export function PendingEditor({ item, onClose, onSaved }: Props) {
   const { width, fontScale } = useWindowDimensions();
   const [name, setName] = useState('');
@@ -58,6 +67,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   const [steps, setSteps] = useState<EditableStep[]>([]);
   const [verified, setVerified] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
   const [error, setError] = useState('');
   const [previewUnavailable, setPreviewUnavailable] = useState(false);
 
@@ -114,6 +124,58 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Speichern fehlgeschlagen');
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reanalyze() {
+    if (!item || busy) return;
+    setBusy(true);
+    setAiBusy(true);
+    setError('');
+    try {
+      const result = await api<ReanalyzeResult>(
+        '/api/pending/reanalyze',
+        {
+          method: 'POST',
+          body: JSON.stringify({ url: item.url }),
+        },
+        undefined,
+        120_000,
+      );
+      if (!result.ok) throw new Error(result.error || 'KI-Prüfung fehlgeschlagen');
+
+      if (result.action === 'auto_saved') {
+        await invalidateApiCacheByPrefix('recipe:', 'recipes:');
+        Alert.alert(
+          'KI-Prüfung abgeschlossen',
+          result.message || 'Das vollständige Rezept wurde automatisch einsortiert.',
+        );
+        onSaved();
+        return;
+      }
+
+      const suggestion = result.analysis || {};
+      if (suggestion.name?.trim()) setName(suggestion.name.trim());
+      if (suggestion.type?.trim()) setRecipeType(suggestion.type.trim());
+      if (suggestion.category?.trim()) setCategory(suggestion.category.trim());
+      if (result.description?.trim()) setDescription(result.description.trim());
+      if (suggestion.servings) setServings(String(suggestion.servings));
+      if (suggestion.ingredients?.length) {
+        setIngredients(suggestion.ingredients.map(createIngredientRow));
+      }
+      if (suggestion.steps?.length) {
+        setSteps(suggestion.steps.map(createStepRow));
+      }
+      setVerified(false);
+      Alert.alert(
+        'KI-Vorschlag aktualisiert',
+        result.message || 'Bitte Zutaten und Zubereitung kontrollieren und anschließend speichern.',
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'KI-Prüfung fehlgeschlagen');
+    } finally {
+      setAiBusy(false);
       setBusy(false);
     }
   }
@@ -220,6 +282,12 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
               </View>
               <TextInput placeholder="Portionen" placeholderTextColor={colors.muted} keyboardType="number-pad" value={servings} onChangeText={setServings} style={sharedStyles.input} />
               <TextInput multiline placeholder="Erkannter Text" placeholderTextColor={colors.muted} value={description} onChangeText={setDescription} style={[sharedStyles.input, styles.description]} />
+              <PrimaryButton
+                label={aiBusy ? 'KI prüft erneut …' : 'Nochmals mit KI prüfen'}
+                onPress={() => void reanalyze()}
+                disabled={busy}
+              />
+              <Text style={styles.aiHelp}>Liest Link, Bild oder PDF erneut aus und ersetzt den Vorschlag erst nach erfolgreicher Analyse.</Text>
             </View>
 
             <View style={styles.section}>
@@ -338,6 +406,7 @@ const styles = StyleSheet.create({
   singleColumn: { flexDirection: 'column' },
   flex: { flex: 1 },
   description: { minHeight: 120, paddingTop: 12, textAlignVertical: 'top' },
+  aiHelp: { color: colors.muted, fontSize: 13, lineHeight: 18 },
   rowCard: { gap: 8, padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface },
   stepInput: { minHeight: 92, paddingTop: 12, textAlignVertical: 'top' },
   remove: { color: colors.danger, minHeight: 30, paddingTop: 5, fontWeight: '700' },

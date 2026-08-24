@@ -650,6 +650,115 @@ def test_manual_image_is_transcribed_and_structured_immediately(test_db, tmp_pat
     assert len(test_db.recipe_steps_get(recipe["id"])) == 2
 
 
+def test_manual_image_pending_can_be_reanalyzed_with_structured_ai_data(test_db, tmp_path):
+    class FakeAnalyzer:
+        def extract_description_from_image_bytes(self, _data, _mime, _context):
+            return "Zutaten: 500 g Kartoffeln. Kartoffeln schneiden."
+
+    url = "manual-upload://reanalyze/kartoffeln.jpg"
+    temp_dir = tmp_path / "temp"
+    pending_dir = temp_dir / "pending"
+    pending_dir.mkdir(parents=True)
+    source = pending_dir / "kartoffeln.jpg"
+    source.write_bytes(b"jpeg-placeholder")
+    test_db.pending_add(
+        url=url,
+        content_type="recipe",
+        description="Unleserlicher Erstversuch",
+        video_path=str(source),
+        ai_suggestion={
+            "name": "Unbekannt",
+            "source": "manual-upload",
+            "filename": "kartoffeln.jpg",
+            "ingredients": [],
+            "steps": [],
+        },
+    )
+
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.temp_dir = temp_dir
+    job.analyzer = FakeAnalyzer()
+    job.analyzer_enabled = True
+    job.min_desc_len = 20
+    job.confidence_threshold = 0.75
+    job._analyze_recipe = lambda _text: RecipeAnalysis(
+        "Kartoffelgericht", "Hauptgericht", "Kartoffeln", 0.94,
+    )
+    job._extract_recipe_data = lambda text: ExtractedRecipeData(
+        text=text,
+        ingredients=[{"name": "Kartoffel", "amount": 500, "unit": "g"}],
+        steps=[],
+        method="ai",
+    )
+
+    result = job.reanalyze_pending(url)
+
+    assert result["ok"] is True
+    assert result["action"] == "still_pending"
+    assert result["description"].startswith("Zutaten: 500 g Kartoffeln")
+    assert result["analysis"]["ingredients"][0]["name"] == "Kartoffel"
+    refreshed = test_db.pending_get(url)
+    assert refreshed["video_path"] == str(source.resolve())
+    assert refreshed["ai_suggestion"]["ingredients"][0]["amount"] == 500
+
+
+def test_complete_manual_image_reanalysis_saves_recipe_without_video(test_db, tmp_path):
+    class FakeAnalyzer:
+        def extract_description_from_image_bytes(self, _data, _mime, _context):
+            return "Zutaten: 500 g Kartoffeln. Zubereitung: Kartoffeln 20 Minuten kochen."
+
+    url = "manual-upload://reanalyze/complete.jpg"
+    temp_dir = tmp_path / "temp"
+    pending_dir = temp_dir / "pending"
+    pending_dir.mkdir(parents=True)
+    source = pending_dir / "complete.jpg"
+    source.write_bytes(b"jpeg-placeholder")
+    test_db.pending_add(
+        url=url,
+        content_type="recipe",
+        description="Unvollständig",
+        video_path=str(source),
+        ai_suggestion={
+            "name": "Unbekannt",
+            "source": "manual-upload",
+            "filename": "complete.jpg",
+        },
+    )
+
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.temp_dir = temp_dir
+    job.recipe_dir = tmp_path / "recipes"
+    job.wedding_dir = tmp_path / "wedding"
+    job.analyzer = FakeAnalyzer()
+    job.analyzer_enabled = True
+    job.min_desc_len = 20
+    job.confidence_threshold = 0.75
+    job._analyze_recipe = lambda _text: RecipeAnalysis(
+        "Kartoffelgericht", "Hauptgericht", "Kartoffeln", 0.94,
+    )
+    job._extract_recipe_data = lambda text: ExtractedRecipeData(
+        text=text,
+        ingredients=[{"name": "Kartoffel", "amount": 500, "unit": "g"}],
+        steps=[{"instruction": "Kartoffeln 20 Minuten kochen.", "timer_seconds": 1200}],
+        servings=2,
+        method="ai",
+    )
+
+    result = job.reanalyze_pending(url)
+
+    assert result["ok"] is True
+    assert result["action"] == "auto_saved"
+    assert test_db.pending_get(url)["status"] == "resolved"
+    recipe = test_db.recipe_get(result["recipe_id"])
+    assert recipe["video_filename"] is None
+    assert recipe["servings"] == 2
+    assert test_db.recipe_ingredients_get(recipe["id"])[0]["name"] == "Kartoffel"
+    assert test_db.recipe_steps_get(recipe["id"])[0]["timer_seconds"] == 1200
+    assert not source.exists()
+
+
 def test_cart_add_endpoint_returns_json(client):
     response = client.post("/api/cart/add", json={"name": "Kartoffel"})
 

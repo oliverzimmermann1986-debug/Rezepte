@@ -176,6 +176,7 @@ export async function api<T>(
   path: string,
   options: RequestInit = {},
   signal?: AbortSignal,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   const requestEpoch = currentApiSessionEpoch();
   const requestHadAuth = Boolean(authToken);
@@ -191,7 +192,7 @@ export async function api<T>(
   }
   return withTimeout(
     signal,
-    REQUEST_TIMEOUT_MS,
+    timeoutMs,
     async timeoutSignal => {
       const response = await fetch(absoluteApiUrl(path), {
         ...options,
