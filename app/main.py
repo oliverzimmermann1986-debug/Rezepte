@@ -288,9 +288,12 @@ async def _lifespan(app):
 
 
 # -------- FastAPI --------
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 APP_CAPABILITIES = [
     "admin-center",
+    "ai-shopping-optimization",
+    "shopping-categories",
+    "native-admin-roles",
     "pdf-processing",
     "pdf-background-jobs",
     "pdf-preflight",

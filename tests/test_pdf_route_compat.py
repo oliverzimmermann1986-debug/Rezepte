@@ -18,7 +18,10 @@ def test_pdf_admin_routes_are_registered():
 def test_health_and_system_info_report_build_version(client):
     health = client.get("/healthz")
     assert health.status_code == 200
-    assert health.json()["version"] == "1.4.0"
+    assert health.json()["version"] == "1.4.1"
+    assert "ai-shopping-optimization" in health.json()["capabilities"]
+    assert "shopping-categories" in health.json()["capabilities"]
+    assert "native-admin-roles" in health.json()["capabilities"]
     assert "pdf-preflight" in health.json()["capabilities"]
     assert "recurring-shopping" in health.json()["capabilities"]
     assert "weekly-meal-plan" in health.json()["capabilities"]
@@ -27,7 +30,7 @@ def test_health_and_system_info_report_build_version(client):
 
     info = client.get("/api/system/info")
     assert info.status_code == 200
-    assert info.json()["version"] == "1.4.0"
+    assert info.json()["version"] == "1.4.1"
     assert "pdf-background-jobs" in info.json()["capabilities"]
     assert "einkauf-proxy" in info.json()["capabilities"]
 
@@ -98,6 +101,10 @@ def test_local_updater_does_not_git_pull():
     assert "\n  git pull" not in updater
     assert "rsync -a --delete" in updater
     assert "/api/admin/pdf/preflight" in updater
+    assert "/api/cart/optimize/preview" in updater
+    assert "ai-shopping-optimization" in updater
+    assert "shopping-categories" in updater
+    assert "native-admin-roles" in updater
     assert "EXPECTED_VERSION=" in updater
     assert 'HEALTH_VERSION=' in updater
     assert '"$HEALTH_VERSION" != "$EXPECTED_VERSION"' in updater

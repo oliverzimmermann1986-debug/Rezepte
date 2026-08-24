@@ -129,6 +129,25 @@ if [[ -z "$EXPECTED_VERSION" || "$HEALTH_VERSION" != "$EXPECTED_VERSION" ]]; the
   false
 fi
 
+for REQUIRED_CAPABILITY in ai-shopping-optimization shopping-categories native-admin-roles; do
+  if ! python3 -c 'import json,sys; raise SystemExit(0 if sys.argv[2] in json.load(open(sys.argv[1])).get("capabilities", []) else 1)' \
+      /tmp/rezepte-health.json "$REQUIRED_CAPABILITY"; then
+    echo "Fehler: Backend-Faehigkeit '$REQUIRED_CAPABILITY' fehlt nach dem Update." >&2
+    journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
+    false
+  fi
+done
+
+# Die native App braucht diese Route fuer KI-Sortierung und Kategorien. Ohne
+# Cookie ist 401 korrekt; 404 oder keine Verbindung beweist einen alten Server.
+OPTIMIZER_STATUS="$(curl -sS -o /tmp/rezepte-optimizer-route.json -w '%{http_code}' \
+  -X POST http://127.0.0.1:8000/api/cart/optimize/preview || true)"
+if [[ "$OPTIMIZER_STATUS" == "404" || "$OPTIMIZER_STATUS" == "000" ]]; then
+  echo "Fehler: Einkaufslisten-KI wurde nach dem Update nicht registriert (HTTP $OPTIMIZER_STATUS)." >&2
+  journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
+  false
+fi
+
 # PDF-Route muss nach dem Neustart existieren. Ohne Cookie ist 401 korrekt;
 # nur 404 würde erneut einen gemischten Versionsstand beweisen.
 PDF_STATUS="$(curl -sS -o /tmp/rezepte-pdf-route.json -w '%{http_code}' \
@@ -142,4 +161,5 @@ fi
 trap - ERR
 echo "Update erfolgreich. Backend und Frontend laufen gemeinsam auf Version $EXPECTED_VERSION."
 echo "Gesundheit: $(cat /tmp/rezepte-health.json)"
+echo "Einkaufslisten-KI: HTTP $OPTIMIZER_STATUS (400, 401 oder 422 sind ohne Nutzdaten korrekt)"
 echo "PDF-Route: HTTP $PDF_STATUS (200 oder 401 sind korrekt)"

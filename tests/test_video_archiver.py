@@ -54,7 +54,15 @@ def test_worker_names_video_by_recipe_id_and_writes_sidecar(
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr("video_archiver.worker.subprocess.run", fake_run)
-    worker = VideoArchiver(queue, tmp_path / "archive", str(executable))
+    # Der Erfolgsfall darf nicht vom freien Speicher des Testrechners abhängen;
+    # die produktiven Grenzwerte werden separat im Low-Space-Test geprüft.
+    worker = VideoArchiver(
+        queue,
+        tmp_path / "archive",
+        str(executable),
+        max_bytes=1024,
+        free_space_reserve_bytes=1024,
+    )
     result = worker.process_one()
 
     assert result and result["status"] == "completed"
