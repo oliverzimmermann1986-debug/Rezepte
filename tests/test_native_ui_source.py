@@ -174,3 +174,34 @@ def test_native_cart_groups_categories_and_emphasizes_amounts():
     assert "formatCartAmount(item) || '—'" in cart
     assert "fontVariant: ['tabular-nums']" in cart
     assert "cartItemAccessibilityLabel(item)" in cart
+
+
+def test_native_recipe_filters_follow_a_clear_progressive_order():
+    recipes = (NATIVE / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+
+    headings = [
+        "Gericht</Text>",
+        "Status & Bewertung</Text>",
+        "Tags</Text>",
+        "Zutaten</Text>",
+    ]
+    positions = [recipes.index(heading) for heading in headings]
+    assert positions == sorted(positions)
+    assert "Grenze erst die Rezeptart ein" in recipes
+    assert "filterSection:" in recipes
+
+
+def test_native_admin_duplicate_finder_is_read_only_and_opens_candidates():
+    admin = (NATIVE / "app" / "(tabs)" / "admin.tsx").read_text(encoding="utf-8")
+    duplicates = (NATIVE / "components" / "admin-duplicates.tsx").read_text(encoding="utf-8")
+
+    assert 'label="Dubletten finden"' in admin
+    assert "<AdminDuplicates" in admin
+    assert "router.push(`/recipe/${recipeId}`)" in admin
+    assert "'/api/audit" not in duplicates
+    assert "`/api/audit?${params}`" in duplicates
+    assert "exact_duplicates" in duplicates
+    assert "url_duplicates" in duplicates
+    assert "similar_clusters" in duplicates
+    assert "Es wird nichts automatisch gelöscht" in duplicates
+    assert "method: 'DELETE'" not in duplicates

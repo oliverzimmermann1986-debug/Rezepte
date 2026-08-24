@@ -1,11 +1,12 @@
 import React, { useCallback, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
 import { AdminAiSort } from '@/components/admin-ai-sort';
 import { AdminBulkEditor } from '@/components/admin-bulk-editor';
+import { AdminDuplicates } from '@/components/admin-duplicates';
 import { AdminTrash } from '@/components/admin-trash';
 import { AdminVersions } from '@/components/admin-versions';
 import { PendingEditor } from '@/components/pending-editor';
@@ -32,6 +33,7 @@ type Overview = {
 };
 
 export default function AdminScreen() {
+  const router = useRouter();
   const { importRefresh } = useLocalSearchParams<{ importRefresh?: string }>();
   const { username, serverUrl, sessionWarning, isAdmin, signOut } = useAuth();
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -42,6 +44,7 @@ export default function AdminScreen() {
   const [showTrash, setShowTrash] = useState(false);
   const [showBulkEditor, setShowBulkEditor] = useState(false);
   const [showAiSort, setShowAiSort] = useState(false);
+  const [showDuplicates, setShowDuplicates] = useState(false);
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -250,7 +253,8 @@ export default function AdminScreen() {
 
           <View style={sharedStyles.card}>
             <Text style={sharedStyles.sectionTitle}>Rezeptbestand pflegen</Text>
-            <Text style={styles.help}>Die Speisekarte per KI prüfen oder mehrere Rezepte manuell verschieben und mit Tags pflegen.</Text>
+            <Text style={styles.help}>Dubletten vergleichen, die Speisekarte per KI prüfen oder mehrere Rezepte manuell verschieben und mit Tags pflegen.</Text>
+            <PrimaryButton label="Dubletten finden" onPress={() => setShowDuplicates(true)} disabled={busy} />
             <PrimaryButton label="Speisekarte mit KI sortieren" onPress={() => setShowAiSort(true)} disabled={busy} />
             <PrimaryButton label="Massenpflege öffnen" onPress={() => setShowBulkEditor(true)} disabled={busy} />
           </View>
@@ -314,6 +318,14 @@ export default function AdminScreen() {
         visible={showAiSort}
         onClose={() => setShowAiSort(false)}
         onChanged={() => void load()}
+      />
+      <AdminDuplicates
+        visible={showDuplicates}
+        onClose={() => setShowDuplicates(false)}
+        onOpenRecipe={recipeId => {
+          setShowDuplicates(false);
+          router.push(`/recipe/${recipeId}`);
+        }}
       />
       <AdminBulkEditor
         visible={showBulkEditor}

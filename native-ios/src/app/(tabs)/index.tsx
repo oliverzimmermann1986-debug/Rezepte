@@ -340,66 +340,76 @@ export default function RecipesScreen() {
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={styles.sheetContent}>
-            <View style={styles.filterGroup}>
-              <Text style={styles.filterHeading}>Schnellfilter</Text>
-              <View style={styles.chipRow}>
-                <FilterChip
-                  label="Nur Favoriten"
-                  selected={draftFilters.favoriteOnly}
-                  onPress={() => setDraftFilters(value => ({ ...value, favoriteOnly: !value.favoriteOnly }))}
-                />
-                <FilterChip
-                  label="Manuell pflegen"
-                  selected={draftFilters.manualOnly}
-                  onPress={() => setDraftFilters(value => ({ ...value, manualOnly: !value.manualOnly }))}
-                />
-              </View>
-            </View>
-
-            <View style={styles.filterGroup}>
-              <Text style={styles.filterHeading}>Bewertung</Text>
-              <View style={styles.chipRow}>
-                {[0, 1, 2, 3, 4, 5].map(value => (
-                  <FilterChip
-                    key={value}
-                    label={value === 0 ? 'Alle' : `${value}+ ★`}
-                    selected={draftFilters.minRating === value}
-                    onPress={() => setDraftFilters(current => ({ ...current, minRating: value }))}
-                  />
-                ))}
-              </View>
-            </View>
-
+            <Text style={styles.filterIntro}>
+              Grenze erst die Rezeptart ein und verfeinere danach nach Status, Tags oder Zutaten.
+            </Text>
             {facetsLoading && <StateView title="Filter werden geladen" loading />}
             {!!facetsError && <StateView title="Filter nicht verfügbar" message={facetsError} action="Erneut versuchen" onAction={() => { setFacets(null); openFilters(); }} />}
 
-            {!!facets?.types.length && (
-              <View style={styles.filterGroup}>
-                <Text style={styles.filterHeading}>Typ</Text>
-                <View style={styles.chipRow}>
-                  <FilterChip label="Alle" selected={!draftFilters.type} onPress={() => setDraftFilters(value => ({ ...value, type: '' }))} />
-                  {facets.types.map(value => (
-                    <FilterChip key={value} label={value} selected={draftFilters.type === value} onPress={() => setDraftFilters(current => ({ ...current, type: value }))} />
-                  ))}
-                </View>
+            {(!!facets?.types.length || !!facets?.categories.length) && (
+              <View style={styles.filterSection}>
+                <Text style={styles.filterSectionTitle}>Gericht</Text>
+                {!!facets?.types.length && (
+                  <View style={styles.filterGroup}>
+                    <Text style={styles.filterHeading}>Typ</Text>
+                    <View style={styles.chipRow}>
+                      <FilterChip label="Alle" selected={!draftFilters.type} onPress={() => setDraftFilters(value => ({ ...value, type: '' }))} />
+                      {facets.types.map(value => (
+                        <FilterChip key={value} label={value} selected={draftFilters.type === value} onPress={() => setDraftFilters(current => ({ ...current, type: value }))} />
+                      ))}
+                    </View>
+                  </View>
+                )}
+                {!!facets?.categories.length && (
+                  <View style={styles.filterGroup}>
+                    <Text style={styles.filterHeading}>Kategorie</Text>
+                    <View style={styles.chipRow}>
+                      <FilterChip label="Alle" selected={!draftFilters.category} onPress={() => setDraftFilters(value => ({ ...value, category: '' }))} />
+                      {facets.categories.map(value => (
+                        <FilterChip key={value} label={value} selected={draftFilters.category === value} onPress={() => setDraftFilters(current => ({ ...current, category: value }))} />
+                      ))}
+                    </View>
+                  </View>
+                )}
               </View>
             )}
 
-            {!!facets?.categories.length && (
+            <View style={styles.filterSection}>
+              <Text style={styles.filterSectionTitle}>Status & Bewertung</Text>
               <View style={styles.filterGroup}>
-                <Text style={styles.filterHeading}>Kategorie</Text>
+                <Text style={styles.filterHeading}>Schnellauswahl</Text>
                 <View style={styles.chipRow}>
-                  <FilterChip label="Alle" selected={!draftFilters.category} onPress={() => setDraftFilters(value => ({ ...value, category: '' }))} />
-                  {facets.categories.map(value => (
-                    <FilterChip key={value} label={value} selected={draftFilters.category === value} onPress={() => setDraftFilters(current => ({ ...current, category: value }))} />
+                  <FilterChip
+                    label="Nur Favoriten"
+                    selected={draftFilters.favoriteOnly}
+                    onPress={() => setDraftFilters(value => ({ ...value, favoriteOnly: !value.favoriteOnly }))}
+                  />
+                  <FilterChip
+                    label="Manuell pflegen"
+                    selected={draftFilters.manualOnly}
+                    onPress={() => setDraftFilters(value => ({ ...value, manualOnly: !value.manualOnly }))}
+                  />
+                </View>
+              </View>
+              <View style={styles.filterGroup}>
+                <Text style={styles.filterHeading}>Mindestbewertung</Text>
+                <View style={styles.chipRow}>
+                  {[0, 1, 2, 3, 4, 5].map(value => (
+                    <FilterChip
+                      key={value}
+                      label={value === 0 ? 'Alle' : `${value}+ ★`}
+                      selected={draftFilters.minRating === value}
+                      onPress={() => setDraftFilters(current => ({ ...current, minRating: value }))}
+                    />
                   ))}
                 </View>
               </View>
-            )}
+            </View>
 
             {!!facets?.tags.length && (
-              <View style={styles.filterGroup}>
-                <Text style={styles.filterHeading}>Tags</Text>
+              <View style={styles.filterSection}>
+                <Text style={styles.filterSectionTitle}>Tags</Text>
+                <Text style={styles.filterHelp}>Mehrere Tags können gleichzeitig ausgewählt werden.</Text>
                 <View style={styles.chipRow}>
                   {facets.tags.map(tag => (
                     <FilterChip
@@ -414,8 +424,9 @@ export default function RecipesScreen() {
             )}
 
             {!!facets?.ingredients.length && (
-              <View style={styles.filterGroup}>
-                <Text style={styles.filterHeading}>Zutaten</Text>
+              <View style={styles.filterSection}>
+                <Text style={styles.filterSectionTitle}>Zutaten</Text>
+                <Text style={styles.filterHeading}>Mit oder ohne</Text>
                 <TextInput
                   accessibilityLabel="Filterzutaten durchsuchen"
                   autoCorrect={false}
@@ -520,6 +531,9 @@ const styles = StyleSheet.create({
   sheetCancel: { color: colors.muted, fontSize: 15, fontWeight: '700' },
   sheetReset: { color: colors.text, fontSize: 14, fontWeight: '800', textAlign: 'right' },
   sheetContent: { padding: space.md, paddingBottom: space.xl, gap: space.lg },
+  filterIntro: { color: colors.muted, fontSize: 14, lineHeight: 20 },
+  filterSection: { gap: 14, paddingBottom: space.lg, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  filterSectionTitle: { color: colors.text, fontSize: 21, fontWeight: '900' },
   filterGroup: { gap: 10 },
   filterHeading: { color: colors.text, fontSize: 17, fontWeight: '900' },
   filterHelp: { color: colors.muted, fontSize: 13, lineHeight: 18 },
