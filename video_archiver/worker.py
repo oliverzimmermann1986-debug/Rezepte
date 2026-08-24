@@ -32,8 +32,8 @@ _INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com"}
 # Das Archiv liegt hinter einem zugriffsgeschützten SMB-Share. Verzeichnisse
 # und fertige Sidecars/Videos müssen deshalb für den Samba-Prozess lesbar sein,
 # ohne Schreibrechte an andere lokale Benutzer zu vergeben.
-_ARCHIVE_DIR_MODE = 0o750
-_ARCHIVE_FILE_MODE = 0o640
+_ARCHIVE_DIR_MODE = 0o755
+_ARCHIVE_FILE_MODE = 0o644
 
 
 def normalize_supported_url(value: str) -> Optional[str]:

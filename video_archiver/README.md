@@ -47,7 +47,9 @@ python -m video_archiver --queue D:\Privat\video-queue.db events --limit 20
 
 Die Queue und das Archiv gehören nicht in Git, nicht in den App-Build und nicht
 unter einen öffentlich erreichbaren Web-Pfad. Cookies dürfen ausschließlich auf
-dem Worker liegen.
+dem Worker liegen. Archivdateien sind für die geschützte SMB-Freigabe lokal
+lesbar (`0644`); den eigentlichen Zugriff begrenzen weiterhin SMB-Benutzer und
+Freigaberegeln.
 
 ## Installation auf dem Rezept-Host
 

@@ -29,7 +29,7 @@ fi
 
 install -d -m 0755 -o root -g root "$INSTALL_DIR"
 install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$STATE_DIR"
-install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$ARCHIVE_DIR"
+install -d -m 0755 -o "$SERVICE_USER" -g "$SERVICE_USER" "$ARCHIVE_DIR"
 
 rm -rf "$INSTALL_DIR/video_archiver"
 cp -a "$SOURCE_DIR/video_archiver" "$INSTALL_DIR/video_archiver"
