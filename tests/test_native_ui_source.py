@@ -160,3 +160,17 @@ def test_pending_editor_can_reanalyze_with_ai_using_long_request_timeout():
     assert "setSteps(suggestion.steps.map(createStepRow))" in pending_editor
     assert "timeoutMs = REQUEST_TIMEOUT_MS" in api_source
     assert "signal,\n    timeoutMs," in api_source
+
+
+def test_native_cart_groups_categories_and_emphasizes_amounts():
+    cart = (NATIVE / "app" / "(tabs)" / "cart.tsx").read_text(encoding="utf-8")
+
+    assert "<SectionList" in cart
+    assert "sections={cartSections}" in cart
+    assert "renderSectionHeader" in cart
+    assert "SHOPPING_CATEGORIES" in cart
+    assert "item.category?.trim() || 'Sonstiges'" in cart
+    assert "new Intl.NumberFormat('de-DE'" in cart
+    assert "formatCartAmount(item) || '—'" in cart
+    assert "fontVariant: ['tabular-nums']" in cart
+    assert "cartItemAccessibilityLabel(item)" in cart

@@ -1,5 +1,5 @@
 import { useFocusEffect } from '@react-navigation/native';
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -9,6 +9,7 @@ import {
   Pressable,
   RefreshControl,
   ScrollView,
+  SectionList,
   StyleSheet,
   Switch,
   Text,
@@ -38,6 +39,32 @@ type RecurringForm = {
   nextDueOn: string;
   active: boolean;
 };
+
+type CartSection = {
+  title: string;
+  data: CartItem[];
+  openCount: number;
+};
+
+const SHOPPING_CATEGORIES = [
+  'Obst & Gemüse',
+  'Bäckerei',
+  'Fleisch & Fisch',
+  'Kühlregal',
+  'Vorrat & Konserven',
+  'Getränke',
+  'Tiefkühl',
+  'Drogerie & Haushalt',
+  'Sonstiges',
+] as const;
+
+const CATEGORY_ORDER = new Map<string, number>(
+  SHOPPING_CATEGORIES.map((category, index) => [category, index]),
+);
+
+const amountFormatter = new Intl.NumberFormat('de-DE', {
+  maximumFractionDigits: 2,
+});
 
 const emptyRecurringForm = (): RecurringForm => ({
   id: null,
@@ -283,6 +310,24 @@ export default function CartScreen() {
 
   const openCount = items.filter(item => !item.checked).length;
   const dueCount = recurring.filter(item => item.active && item.due_in_days <= 0).length;
+  const cartSections = useMemo<CartSection[]>(() => {
+    const grouped = new Map<string, CartItem[]>();
+    for (const item of items) {
+      const category = item.category?.trim() || 'Sonstiges';
+      const group = grouped.get(category) || [];
+      group.push(item);
+      grouped.set(category, group);
+    }
+
+    return Array.from(grouped, ([title, data]) => ({
+      title,
+      data: [...data].sort((left, right) => Number(left.checked) - Number(right.checked)),
+      openCount: data.filter(item => !item.checked).length,
+    })).sort((left, right) => {
+      const rankDifference = categoryRank(left.title) - categoryRank(right.title);
+      return rankDifference || left.title.localeCompare(right.title, 'de');
+    });
+  }, [items]);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
@@ -332,16 +377,25 @@ export default function CartScreen() {
           ) : error && !items.length ? (
             <StateView title="Keine Verbindung" message={error} action="Erneut versuchen" onAction={() => loadCart()} />
           ) : (
-            <FlatList
-              data={items}
+            <SectionList
+              sections={cartSections}
               keyExtractor={item => String(item.id)}
               refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => loadCart(true)} tintColor={colors.text} />}
               contentContainerStyle={styles.list}
+              stickySectionHeadersEnabled={false}
+              renderSectionHeader={({ section }) => (
+                <View style={styles.sectionHeader} accessibilityRole="header">
+                  <Text style={styles.sectionTitle}>{section.title}</Text>
+                  <Text style={styles.sectionCount}>
+                    {section.openCount > 0 ? `${section.openCount} offen` : 'erledigt'}
+                  </Text>
+                </View>
+              )}
               renderItem={({ item }) => (
                 <View style={styles.item}>
                   <Pressable
                     accessibilityRole="checkbox"
-                    accessibilityLabel={`${item.name}: ${item.checked ? 'wieder öffnen' : 'als erledigt markieren'}`}
+                    accessibilityLabel={cartItemAccessibilityLabel(item)}
                     accessibilityState={{ checked: item.checked }}
                     style={styles.itemToggle}
                     onPress={() => toggle(item)}>
@@ -349,12 +403,11 @@ export default function CartScreen() {
                       <Text style={styles.checkText}>{item.checked ? '✓' : ''}</Text>
                     </View>
                     <View style={styles.itemText}>
-                      <Text style={[styles.name, item.checked && styles.nameDone]}>{item.name}</Text>
-                      <Text style={styles.amount}>
-                        {[
-                          item.amount == null ? item.unit || '' : `${item.amount} ${item.unit || ''}`.trim(),
-                          item.category || '',
-                        ].filter(Boolean).join(' · ')}
+                      <Text numberOfLines={2} style={[styles.name, item.checked && styles.nameDone]}>{item.name}</Text>
+                    </View>
+                    <View style={[styles.amountBadge, !formatCartAmount(item) && styles.amountBadgeEmpty]}>
+                      <Text style={[styles.amountValue, item.checked && styles.amountDone]}>
+                        {formatCartAmount(item) || '—'}
                       </Text>
                     </View>
                   </Pressable>
@@ -461,6 +514,24 @@ function dueLabel(item: RecurringCartItem) {
   return `in ${item.due_in_days} Tagen fällig`;
 }
 
+function formatCartAmount(item: Pick<CartItem, 'amount' | 'unit'>) {
+  const unit = item.unit?.trim() || '';
+  if (item.amount == null) return unit;
+  return `${amountFormatter.format(item.amount)} ${unit}`.trim();
+}
+
+function categoryRank(category: string) {
+  if (category === 'Sonstiges') return SHOPPING_CATEGORIES.length;
+  return CATEGORY_ORDER.get(category) ?? SHOPPING_CATEGORIES.length - 1;
+}
+
+function cartItemAccessibilityLabel(item: CartItem) {
+  const category = item.category?.trim() || 'Sonstiges';
+  const amount = formatCartAmount(item) || 'ohne Mengenangabe';
+  const action = item.checked ? 'wieder öffnen' : 'als erledigt markieren';
+  return `${item.name}, ${amount}, ${category}: ${action}`;
+}
+
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.cream },
   header: { paddingHorizontal: space.md, paddingTop: 10, paddingBottom: 12, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
@@ -483,15 +554,21 @@ const styles = StyleSheet.create({
   disabled: { opacity: 0.4 },
   error: { color: colors.danger, paddingHorizontal: space.md, paddingBottom: 8 },
   list: { paddingHorizontal: space.md, paddingBottom: 120, flexGrow: 1 },
-  item: { minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 12 },
-  itemToggle: { flex: 1, minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  sectionHeader: { minHeight: 42, paddingTop: 14, paddingBottom: 7, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', backgroundColor: colors.cream },
+  sectionTitle: { flex: 1, color: colors.text, fontSize: 15, fontWeight: '900' },
+  sectionCount: { color: colors.muted, fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  item: { minHeight: 68, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  itemToggle: { flex: 1, minHeight: 68, flexDirection: 'row', alignItems: 'center', gap: 12 },
   check: { width: 32, height: 32, borderRadius: 11, borderWidth: 2, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.white },
   checkDone: { borderColor: colors.success, backgroundColor: colors.success },
   checkText: { color: colors.white, fontWeight: '900' },
-  itemText: { flex: 1, minHeight: 48, justifyContent: 'center' },
+  itemText: { flex: 1, minWidth: 0, minHeight: 48, justifyContent: 'center' },
   name: { color: colors.text, fontSize: 17, fontWeight: '700' },
   nameDone: { color: colors.muted, textDecorationLine: 'line-through' },
-  amount: { color: colors.muted, marginTop: 2 },
+  amountBadge: { minWidth: 58, maxWidth: 108, minHeight: 34, paddingHorizontal: 10, paddingVertical: 7, justifyContent: 'center', borderRadius: radii.sm, backgroundColor: colors.warningSurface },
+  amountBadgeEmpty: { backgroundColor: colors.surface },
+  amountValue: { color: colors.text, fontSize: 14, fontWeight: '900', textAlign: 'right', fontVariant: ['tabular-nums'] },
+  amountDone: { color: colors.muted },
   remove: { color: colors.muted, fontSize: 26, minWidth: 36, textAlign: 'center' },
   separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: 44 },
   footer: { paddingVertical: space.lg },
