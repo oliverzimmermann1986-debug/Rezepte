@@ -8,6 +8,7 @@ export default function TabLayout() {
   const { isAdmin } = useAuth();
   return (
     <NativeTabs
+      key={isAdmin ? 'admin-tabs' : 'user-tabs'}
       backgroundColor={colors.surface}
       iconColor={{ default: colors.muted, selected: colors.text }}
       labelStyle={{ default: { color: colors.muted }, selected: { color: colors.text } }}
@@ -24,12 +25,10 @@ export default function TabLayout() {
         <NativeTabs.Trigger.Label>Einkauf</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf={{ default: 'cart', selected: 'cart.fill' }} />
       </NativeTabs.Trigger>
-      {isAdmin && (
-        <NativeTabs.Trigger name="admin">
-          <NativeTabs.Trigger.Label>Admin</NativeTabs.Trigger.Label>
-          <NativeTabs.Trigger.Icon sf={{ default: 'wrench.and.screwdriver', selected: 'wrench.and.screwdriver.fill' }} />
-        </NativeTabs.Trigger>
-      )}
+      <NativeTabs.Trigger name="admin" hidden={!isAdmin}>
+        <NativeTabs.Trigger.Label>Admin</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf={{ default: 'wrench.and.screwdriver', selected: 'wrench.and.screwdriver.fill' }} />
+      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }

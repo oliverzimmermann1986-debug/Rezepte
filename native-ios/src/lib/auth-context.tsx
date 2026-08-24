@@ -345,10 +345,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!ready || !token) return;
     const subscription = AppState.addEventListener('change', state => {
-      if (state === 'active' && sessionWarning) void refreshSession();
+      // Rollen können sich serverseitig ändern, ohne dass die bisherige
+      // Sitzung fehlschlägt. Deshalb bei jedem Zurückkehren prüfen und nicht
+      // nur dann, wenn bereits eine Warnung sichtbar ist.
+      if (state === 'active') void refreshSession();
     });
     return () => subscription.remove();
-  }, [ready, refreshSession, sessionWarning, token]);
+  }, [ready, refreshSession, token]);
 
   async function signIn(
     nextServer: string,

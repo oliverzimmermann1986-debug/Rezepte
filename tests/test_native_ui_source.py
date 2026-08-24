@@ -135,3 +135,15 @@ def test_native_cache_is_best_effort_and_follows_server_mutations():
     assert "} catch {" in clear_cache
     assert metadata.index("/metadata`") < metadata.index("/tags`")
     assert metadata.index("/tags`") < metadata.index("if (serverChanged)")
+
+
+def test_native_admin_role_refresh_remounts_the_native_tabs():
+    auth = (NATIVE / "lib" / "auth-context.tsx").read_text(encoding="utf-8")
+    tabs = (NATIVE / "app" / "(tabs)" / "_layout.tsx").read_text(encoding="utf-8")
+
+    assert "if (state === 'active') void refreshSession();" in auth
+    assert "state === 'active' && sessionWarning" not in auth
+    assert "[ready, refreshSession, token]" in auth
+    assert "key={isAdmin ? 'admin-tabs' : 'user-tabs'}" in tabs
+    assert '<NativeTabs.Trigger name="admin" hidden={!isAdmin}>' in tabs
+    assert "{isAdmin && (" not in tabs
