@@ -306,6 +306,33 @@ export default function RecipeDetailScreen() {
     }
   }
 
+  function confirmDeleteRecipe() {
+    if (!recipe) return;
+    Alert.alert(
+      'Rezept löschen?',
+      `„${recipe.name}“ wird in den Papierkorb verschoben und kann dort 30 Tage lang wiederhergestellt werden.`,
+      [
+        { text: 'Abbrechen', style: 'cancel' },
+        { text: 'In Papierkorb', style: 'destructive', onPress: () => void deleteRecipe() },
+      ],
+    );
+  }
+
+  async function deleteRecipe() {
+    if (!recipe) return;
+    setBusy(true);
+    try {
+      await api(`/api/recipes/${recipe.id}?delete_files=true`, { method: 'DELETE' });
+      await invalidateApiCacheByPrefix('recipe:', 'recipes:', 'meal-plan', 'cart', 'admin:');
+      router.back();
+      Alert.alert('In Papierkorb verschoben', `„${recipe.name}“ kann im Admin-Bereich wiederhergestellt werden.`);
+    } catch (reason) {
+      Alert.alert('Rezept nicht gelöscht', reason instanceof Error ? reason.message : 'Bitte erneut versuchen.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (loading && !recipe) return <Screen><StateView title="Rezept wird geladen" loading /></Screen>;
   if (error && !recipe) {
     return <Screen><StateView title="Rezept nicht verfügbar" message={error} action="Erneut versuchen" onAction={load} /></Screen>;
@@ -487,6 +514,21 @@ export default function RecipeDetailScreen() {
                 {showOriginal && <Text selectable style={styles.originalText}>{recipe.description_original}</Text>}
               </View>
             )}
+            <View style={styles.deleteCard}>
+              <View style={styles.deleteCopy}>
+                <Text style={styles.deleteTitle}>Rezept löschen</Text>
+                <Text style={styles.deleteHelp}>Das Rezept bleibt 30 Tage im Papierkorb und kann wiederhergestellt werden.</Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${recipe.name} in den Papierkorb verschieben`}
+                disabled={busy}
+                onPress={confirmDeleteRecipe}
+                style={({ pressed }) => [styles.deleteButton, pressed && styles.actionPressed, busy && styles.disabled]}>
+                <SymbolView name="trash" size={18} weight="semibold" tintColor={colors.danger} />
+                <Text style={styles.deleteButtonText}>In Papierkorb</Text>
+              </Pressable>
+            </View>
           </View>
         )}
 
@@ -643,6 +685,12 @@ const styles = StyleSheet.create({
   originalBlock: { marginTop: space.md, gap: 10, paddingTop: space.md, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   originalButton: { color: colors.text, minHeight: 44, paddingTop: 12, textAlign: 'center', fontWeight: '800' },
   originalText: { color: colors.muted, fontSize: 14, lineHeight: 21 },
+  deleteCard: { marginTop: space.md, paddingTop: space.md, gap: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  deleteCopy: { gap: 3 },
+  deleteTitle: { color: colors.text, fontSize: 16, fontWeight: '900' },
+  deleteHelp: { color: colors.muted, fontSize: 13, lineHeight: 18 },
+  deleteButton: { minHeight: 48, paddingHorizontal: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderColor: colors.danger, borderRadius: radii.md, backgroundColor: colors.dangerSurface },
+  deleteButtonText: { color: colors.danger, fontWeight: '900' },
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   tag: { color: colors.text, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#EFE5D8' },
   historyBlock: { gap: 8, padding: 14, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface },

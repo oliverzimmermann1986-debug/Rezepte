@@ -322,6 +322,7 @@ export default function AdminScreen() {
       <AdminDuplicates
         visible={showDuplicates}
         onClose={() => setShowDuplicates(false)}
+        onChanged={() => void load()}
         onOpenRecipe={recipeId => {
           setShowDuplicates(false);
           router.push(`/recipe/${recipeId}`);

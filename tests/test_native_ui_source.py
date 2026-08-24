@@ -191,7 +191,7 @@ def test_native_recipe_filters_follow_a_clear_progressive_order():
     assert "filterSection:" in recipes
 
 
-def test_native_admin_duplicate_finder_is_read_only_and_opens_candidates():
+def test_native_admin_duplicate_finder_opens_and_soft_deletes_candidates():
     admin = (NATIVE / "app" / "(tabs)" / "admin.tsx").read_text(encoding="utf-8")
     duplicates = (NATIVE / "components" / "admin-duplicates.tsx").read_text(encoding="utf-8")
 
@@ -203,5 +203,19 @@ def test_native_admin_duplicate_finder_is_read_only_and_opens_candidates():
     assert "exact_duplicates" in duplicates
     assert "url_duplicates" in duplicates
     assert "similar_clusters" in duplicates
-    assert "Es wird nichts automatisch gelöscht" in duplicates
-    assert "method: 'DELETE'" not in duplicates
+    assert "Löschen verschiebt ein Rezept zunächst für 30 Tage in den Papierkorb" in duplicates
+    assert "?delete_files=true" in duplicates
+    assert "method: 'DELETE'" in duplicates
+    assert "hard=true" not in duplicates
+    assert "onChanged" in duplicates
+
+
+def test_native_recipe_detail_can_move_recipe_to_trash():
+    detail = (NATIVE / "app" / "recipe" / "[id].tsx").read_text(encoding="utf-8")
+
+    assert "Rezept löschen?" in detail
+    assert "30 Tage lang wiederhergestellt" in detail
+    assert "?delete_files=true" in detail
+    assert "method: 'DELETE'" in detail
+    assert "hard=true" not in detail
+    assert "router.back()" in detail

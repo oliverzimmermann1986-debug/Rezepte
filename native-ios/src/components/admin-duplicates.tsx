@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { StateView } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
+import { invalidateApiCacheByPrefix } from '@/lib/cache';
 
 type DuplicateRecipe = {
   id: number;
@@ -95,13 +96,16 @@ export function AdminDuplicates({
   visible,
   onClose,
   onOpenRecipe,
+  onChanged,
 }: {
   visible: boolean;
   onClose: () => void;
   onOpenRecipe: (recipeId: number) => void;
+  onChanged: () => void;
 }) {
   const [audit, setAudit] = useState<DuplicateAudit | null>(null);
   const [loading, setLoading] = useState(false);
+  const [busyId, setBusyId] = useState<number | null>(null);
   const [error, setError] = useState('');
 
   const load = useCallback(async (refresh = false) => {
@@ -128,6 +132,33 @@ export function AdminDuplicates({
     [groups],
   );
 
+  function confirmDelete(recipe: DuplicateRecipe) {
+    Alert.alert(
+      'Rezept löschen?',
+      `„${recipe.name}“ wird in den Papierkorb verschoben und kann dort 30 Tage lang wiederhergestellt werden.`,
+      [
+        { text: 'Abbrechen', style: 'cancel' },
+        { text: 'In Papierkorb', style: 'destructive', onPress: () => void deleteRecipe(recipe) },
+      ],
+    );
+  }
+
+  async function deleteRecipe(recipe: DuplicateRecipe) {
+    setBusyId(recipe.id);
+    setError('');
+    try {
+      await api(`/api/recipes/${recipe.id}?delete_files=true`, { method: 'DELETE' });
+      await invalidateApiCacheByPrefix('recipe:', 'recipes:', 'meal-plan', 'cart', 'admin:');
+      await load(true);
+      onChanged();
+      Alert.alert('In Papierkorb verschoben', `„${recipe.name}“ kann im Admin-Bereich wiederhergestellt werden.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Rezept konnte nicht gelöscht werden');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <SafeAreaView style={styles.safe} edges={['top', 'bottom', 'left', 'right']}>
@@ -153,7 +184,7 @@ export function AdminDuplicates({
               <View style={styles.intro}>
                 <Text style={styles.introTitle}>{groups.length} Gruppen · {candidateCount} Rezepte</Text>
                 <Text style={styles.introText}>
-                  Gleiche Links und Namen sind starke Hinweise. Ähnliche Namen sind nur Vorschläge und müssen verglichen werden. Es wird nichts automatisch gelöscht.
+                  Gleiche Links und Namen sind starke Hinweise. Ähnliche Namen sind nur Vorschläge und müssen verglichen werden. Löschen verschiebt ein Rezept zunächst für 30 Tage in den Papierkorb.
                 </Text>
                 {!!audit.audit_meta?.similarity_partial && (
                   <Text style={styles.warning}>Die Ähnlichkeitssuche wurde aus Zeitgründen nur teilweise ausgeführt.</Text>
@@ -170,12 +201,9 @@ export function AdminDuplicates({
                 <Text style={styles.groupDetail} numberOfLines={2}>{group.detail}</Text>
                 <View style={styles.recipes}>
                   {group.items.map(recipe => (
-                    <Pressable
+                    <View
                       key={recipe.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={`${recipe.name}, Rezept ${recipe.id} öffnen`}
-                      onPress={() => onOpenRecipe(recipe.id)}
-                      style={({ pressed }) => [styles.recipe, pressed && styles.pressed]}>
+                      style={styles.recipe}>
                       <View style={styles.recipeText}>
                         <Text style={styles.recipeName} numberOfLines={2}>{recipe.name}</Text>
                         <Text style={styles.recipeMeta} numberOfLines={1}>
@@ -183,8 +211,25 @@ export function AdminDuplicates({
                         </Text>
                         {!!recipe.url && <Text style={styles.recipeSource} numberOfLines={1}>{compactSource(recipe.url)}</Text>}
                       </View>
-                      <Text style={styles.chevron}>›</Text>
-                    </Pressable>
+                      <View style={styles.recipeActions}>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`${recipe.name}, Rezept ${recipe.id} öffnen`}
+                          disabled={busyId !== null}
+                          onPress={() => onOpenRecipe(recipe.id)}
+                          style={({ pressed }) => [styles.openButton, pressed && styles.pressed, busyId !== null && styles.disabled]}>
+                          <Text style={styles.openText}>Öffnen</Text>
+                        </Pressable>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`${recipe.name}, Rezept ${recipe.id} löschen`}
+                          disabled={busyId !== null}
+                          onPress={() => confirmDelete(recipe)}
+                          style={({ pressed }) => [styles.deleteButton, pressed && styles.pressed, busyId !== null && styles.disabled]}>
+                          <Text style={styles.deleteText}>{busyId === recipe.id ? '…' : 'Löschen'}</Text>
+                        </Pressable>
+                      </View>
+                    </View>
                   ))}
                 </View>
               </View>
@@ -221,11 +266,15 @@ const styles = StyleSheet.create({
   groupTitle: { color: colors.text, fontSize: 18, fontWeight: '900' },
   groupDetail: { color: colors.muted, lineHeight: 18 },
   recipes: { gap: 7, paddingTop: 4 },
-  recipe: { minHeight: 66, padding: 11, flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: radii.sm, backgroundColor: colors.cream },
+  recipe: { minHeight: 66, padding: 11, gap: 10, borderRadius: radii.sm, backgroundColor: colors.cream },
   recipeText: { flex: 1, gap: 3 },
   recipeName: { color: colors.text, fontSize: 15, fontWeight: '900' },
   recipeMeta: { color: colors.muted, fontSize: 12 },
   recipeSource: { color: colors.success, fontSize: 11 },
-  chevron: { color: colors.muted, fontSize: 25 },
+  recipeActions: { flexDirection: 'row', gap: 8 },
+  openButton: { flex: 1, minHeight: 42, alignItems: 'center', justifyContent: 'center', borderRadius: radii.sm, backgroundColor: colors.butter },
+  openText: { color: colors.text, fontWeight: '900' },
+  deleteButton: { minWidth: 92, minHeight: 42, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.danger, borderRadius: radii.sm },
+  deleteText: { color: colors.danger, fontWeight: '900' },
   pressed: { opacity: 0.7 },
 });
