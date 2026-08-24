@@ -364,6 +364,33 @@ def test_min_rating_filter_via_api(client, test_db):
     assert body["items"][0]["name"] == "Fuenf"
 
 
+def test_multi_category_rating_filter_and_live_count(client, test_db):
+    pasta = _create_recipe(
+        test_db, name="Pasta Fuenf", folder_path="/tmp/pasta-five", category="Pasta",
+    )
+    suppe = _create_recipe(
+        test_db, name="Suppe Eins", folder_path="/tmp/suppe-one", category="Suppe",
+    )
+    salat = _create_recipe(
+        test_db, name="Salat Drei", folder_path="/tmp/salat-three", category="Salat",
+    )
+    client.post(f"/api/recipes/{pasta['id']}/rating?value=5")
+    client.post(f"/api/recipes/{suppe['id']}/rating?value=1")
+    client.post(f"/api/recipes/{salat['id']}/rating?value=3")
+    query = "category=Pasta&category=Suppe&rating=1&rating=5"
+
+    response = client.get(f"/api/recipes?{query}")
+    assert response.status_code == 200
+    assert {item["name"] for item in response.json()["items"]} == {
+        "Pasta Fuenf", "Suppe Eins",
+    }
+
+    count = client.get(f"/api/recipes/count?{query}")
+    assert count.status_code == 200
+    assert count.json() == {"total": 2}
+    assert client.get("/api/recipes/count?rating=6").status_code == 422
+
+
 def test_favorite_only_filter_via_api(client, test_db):
     r1 = _create_recipe(test_db, name="A", folder_path="/tmp/a")
     _create_recipe(test_db, name="B", folder_path="/tmp/b")

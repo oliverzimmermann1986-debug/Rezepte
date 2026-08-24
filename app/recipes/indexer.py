@@ -40,6 +40,7 @@ from ..db import Database, get_db
 from .canonical import canonical_name as _canonical
 from .units import normalize_unit
 from .image_cache import ensure_thumbnail
+from .video_recipe_extract import analyze_recipe_with_video_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -227,9 +228,17 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
     if info_file.exists():
         try:
             info = json.loads(info_file.read_text(encoding="utf-8"))
+            # Alte Rezeptordner besitzen häufig eine info.json ohne URL-Feld.
+            # Ein fehlender Key bedeutet "unbekannt" und darf eine bereits in
+            # der DB bekannte Quell-URL nicht löschen. Ein explizites
+            # ``"url": null`` bleibt dagegen wirksam (z. B. bei Varianten).
+            if "url" not in info:
+                preserve_existing.add("url")
         except Exception as e:
             logger.warning(f"info.json kaputt in {folder}: {e}")
             preserve_existing.update(("name", "url"))
+    else:
+        preserve_existing.add("url")
 
     description = None
     if desc_file.exists():
@@ -457,25 +466,15 @@ def _extract_for_recipe(
                     c.execute("UPDATE recipes SET description=? WHERE id=?", (desc, rid))
                 logger.info(f"Rezept #{rid}: Media-Extract erfolgreich ({len(desc)} chars)")
 
-    # Wenn immer noch nichts: skipped (kein .txt, kein PDF mit Text, kein verwertbares Bild)
-    if len(desc.strip()) < 20:
-        db.recipe_set_extraction_result(
-            rid,
-            status="skipped",
-            ingredients=[],
-            claim_owner=claim_owner,
-        )
-        logger.debug(f"Rezept #{rid} '{recipe.get('name')}': description zu kurz, skipped")
-        return
-
     # Pre-translate für Bestands-Rezepte: italienische/englische Captions
     # werden hier nachträglich nach Deutsch umgesetzt, damit die Zutaten-
     # Extraktion auf dem konsistenten deutschen Text läuft.
-    try:
-        translated = analyzer.translate_to_german(desc)
-    except Exception as e:
-        logger.warning(f"Rezept #{rid}: Translate-Call failed (behalte Original): {e}")
-        translated = None
+    translated = None
+    if len(desc.strip()) >= 20:
+        try:
+            translated = analyzer.translate_to_german(desc)
+        except Exception as e:
+            logger.warning(f"Rezept #{rid}: Translate-Call failed (behalte Original): {e}")
 
     if translated:
         desc = translated
@@ -516,12 +515,27 @@ def _extract_for_recipe(
         logger.warning(f"Rezept #{rid}: existing-Stammdaten-Lookup failed: {e}")
         existing_tags, existing_canonical = [], []
 
+    current_ingredients = db.recipe_ingredients_get(rid)
+    current_steps = db.recipe_steps_get(rid)
+    current_tags = db.recipe_tags_get(rid)
+    ai_cfg = get_config().get("ai", default={}) or {}
+    recipe_root = Path(
+        get_config().get("paths", "recipe_dir", default="/mnt/rezepte")
+    )
+
     try:
-        content = analyzer.analyze_recipe_content(
-            desc, existing_tags=existing_tags, existing_canonical=existing_canonical,
+        video_result = analyze_recipe_with_video_fallback(
+            analyzer,
+            recipe,
+            recipe_root=recipe_root,
+            ai_config=ai_cfg,
+            existing_tags=existing_tags,
+            existing_canonical=existing_canonical,
+            description=desc,
         )
+        content = video_result.content
     except Exception as e:
-        logger.warning(f"Rezept #{rid}: KI-Call failed: {e}")
+        logger.warning(f"Rezept #{rid}: KI-/Video-Call failed: {e}")
         db.recipe_set_extraction_result(
             rid, status="error", ingredients=[], claim_owner=claim_owner
         )
@@ -530,16 +544,21 @@ def _extract_for_recipe(
     # KI hat None returnt = _call failed (timeout/length-trunc/etc).
     # Lieber als error markieren damit der Audit-Tab das sichtbar macht.
     if content is None:
-        logger.warning(f"Rezept #{rid}: analyze_recipe_content returnt None")
+        status = "skipped" if len(desc.strip()) < 20 and not video_result.used_video else "error"
+        logger.warning(
+            "Rezept #%s: kein verwertbares KI-Ergebnis (%s)",
+            rid,
+            video_result.reason,
+        )
         db.recipe_set_extraction_result(
-            rid, status="error", ingredients=[], claim_owner=claim_owner
+            rid, status=status, ingredients=[], claim_owner=claim_owner
         )
         return
 
     # canonical_name + unit-normalize beim Insert mit dranhängen
-    prepared = []
+    extracted_ingredients = []
     for it in (content.get("ingredients") or []):
-        prepared.append({
+        extracted_ingredients.append({
             "name": it.get("name") or "",
             "canonical_name": _canonical(it.get("name") or ""),
             "amount": it.get("amount"),
@@ -551,7 +570,11 @@ def _extract_for_recipe(
     # sicher etwas schiefgelaufen (KI hat verweigert oder nichts erkannt).
     # Status auf 'error' damit Audit das aufzeigt und User es nochmal triggern
     # kann. Vorher wurde status='ok' gesetzt → Rezept fiel durchs Raster.
-    if not prepared and desc and len(desc.strip()) > 100:
+    prepared = current_ingredients or extracted_ingredients
+    steps = current_steps or (content.get("steps") or [])
+    servings = recipe.get("servings") or content.get("servings")
+
+    if not prepared and (len(desc.strip()) > 100 or video_result.used_video):
         logger.warning(
             f"Rezept #{rid}: 0 Zutaten extrahiert obwohl description "
             f"{len(desc)} chars hat — markiere als 'error' statt 'ok'"
@@ -561,24 +584,26 @@ def _extract_for_recipe(
         )
         return
 
-    # Schritte + Portionen aus dem gleichen Call übernehmen
-    steps = content.get("steps") or []
-    servings = content.get("servings")
-
     # Auto-Tags: KI-Tags (stilistisch) + Regel-Tags (Diät/Allergene)
     # Vereinigt unter einer Tabelle, mit auto=1 markiert. User-Tags
     # (auto=0) bleiben dabei unangetastet.
     from .auto_tags import compute_diet_tags
     ki_tags = content.get("tags") or []
     diet_tags = compute_diet_tags([p["canonical_name"] for p in prepared])
-    all_auto_tags = sorted(set(ki_tags) | set(diet_tags))
+    previous_auto_tags = [t["name"] for t in current_tags if t.get("auto")]
+    all_auto_tags = sorted(set(previous_auto_tags) | set(ki_tags) | set(diet_tags))
+    final_status = "ok" if prepared and steps else "error"
     applied = db.recipe_apply_extraction_result(
         rid,
-        ingredients=prepared,
-        steps=steps,
+        ingredients=extracted_ingredients,
+        steps=content.get("steps") or [],
         servings=servings,
         auto_tags=all_auto_tags,
         claim_owner=claim_owner,
+        status=final_status,
+        replace_ingredients=not bool(current_ingredients),
+        replace_steps=not bool(current_steps),
+        replace_servings=not bool(recipe.get("servings")),
     )
     if not applied:
         logger.warning(
@@ -606,8 +631,9 @@ def _extract_for_recipe(
 
     logger.info(
         f"Rezept #{rid} '{recipe.get('name')}': "
-        f"{len(prepared)} Zutaten, {len(steps)} Schritte, "
+        f"{len(prepared)} Zutaten, {len(steps)} Schritte, status={final_status}, "
         f"servings={servings or '?'}, "
         f"{len(all_auto_tags)} Auto-Tags ({len(ki_tags)} KI + {len(diet_tags)} Diät)"
-        f"{nutrition_msg}"
+        f", Video={video_result.reason}, Frames={video_result.frame_text_count}, "
+        f"Audio={'ja' if video_result.transcribed else 'nein'}{nutrition_msg}"
     )

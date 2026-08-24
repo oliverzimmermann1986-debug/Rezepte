@@ -32,26 +32,56 @@ type RecipeFacets = {
 };
 type RecipeFilters = {
   type: string;
-  category: string;
+  categories: string[];
   tagIds: number[];
   includedIngredients: string[];
   excludedIngredients: string[];
   favoriteOnly: boolean;
   manualOnly: boolean;
-  minRating: number;
+  ratings: number[];
 };
 
 const EMPTY_FILTERS: RecipeFilters = {
   type: '',
-  category: '',
+  categories: [],
   tagIds: [],
   includedIngredients: [],
   excludedIngredients: [],
   favoriteOnly: false,
   manualOnly: false,
-  minRating: 0,
+  ratings: [],
 };
 const PAGE_SIZE = 60;
+
+function appendRecipeFilters(params: URLSearchParams, filters: RecipeFilters) {
+  if (filters.type) params.set('type', filters.type);
+  filters.categories.forEach(value => params.append('category', value));
+  if (filters.favoriteOnly) params.set('favorite_only', 'true');
+  if (filters.manualOnly) params.set('needs_manual_care', 'true');
+  filters.ratings.forEach(value => params.append('rating', String(value)));
+  filters.tagIds.forEach(value => params.append('tag_id', String(value)));
+  filters.includedIngredients.forEach(value => params.append('ingredient', value));
+  filters.excludedIngredients.forEach(value => params.append('exclude_ingredient', value));
+}
+
+function activeFilterCount(filters: RecipeFilters) {
+  return [
+    Boolean(filters.type),
+    ...filters.categories.map(() => true),
+    ...filters.tagIds.map(() => true),
+    ...filters.includedIngredients.map(() => true),
+    ...filters.excludedIngredients.map(() => true),
+    filters.favoriteOnly,
+    filters.manualOnly,
+    ...filters.ratings.map(() => true),
+  ].filter(Boolean).length;
+}
+
+function toggleValue<T>(values: T[], value: T) {
+  return values.includes(value)
+    ? values.filter(item => item !== value)
+    : [...values, value];
+}
 
 function FilterChip({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
   return (
@@ -76,12 +106,17 @@ export default function RecipesScreen() {
   const [facets, setFacets] = useState<RecipeFacets | null>(null);
   const [facetsLoading, setFacetsLoading] = useState(false);
   const [facetsError, setFacetsError] = useState('');
+  const [draftTotal, setDraftTotal] = useState<number | null>(null);
+  const [draftTotalLoading, setDraftTotalLoading] = useState(false);
+  const [draftTotalError, setDraftTotalError] = useState('');
+  const [expandedAdvanced, setExpandedAdvanced] = useState<'tags' | 'ingredients' | null>(null);
   const [ingredientQuery, setIngredientQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const request = useRef<AbortController | null>(null);
+  const countRequest = useRef<AbortController | null>(null);
   const requestGeneration = useRef(0);
   const recipesRef = useRef<RecipeListItem[]>([]);
   const filtersRef = useRef(filters);
@@ -119,14 +154,7 @@ export default function RecipesScreen() {
         offset: String(append ? recipesRef.current.length : 0),
       });
       if (search.trim()) params.set('search', search.trim());
-      if (active.type) params.set('type', active.type);
-      if (active.category) params.set('category', active.category);
-      if (active.favoriteOnly) params.set('favorite_only', 'true');
-      if (active.manualOnly) params.set('needs_manual_care', 'true');
-      if (active.minRating) params.set('min_rating', String(active.minRating));
-      active.tagIds.forEach(value => params.append('tag_id', String(value)));
-      active.includedIngredients.forEach(value => params.append('ingredient', value));
-      active.excludedIngredients.forEach(value => params.append('exclude_ingredient', value));
+      appendRecipeFilters(params, active);
       const path = `/api/recipes?${params}`;
       const result = append
         ? await api<RecipeResponse>(path, {}, controller.signal)
@@ -171,19 +199,17 @@ export default function RecipesScreen() {
     return () => request.current?.abort();
   }, [load, refreshSession, sessionWarning]));
 
-  const activeFilterCount = [
-    Boolean(filters.type),
-    Boolean(filters.category),
-    ...filters.tagIds.map(() => true),
-    ...filters.includedIngredients.map(() => true),
-    ...filters.excludedIngredients.map(() => true),
-    filters.favoriteOnly,
-    filters.manualOnly,
-    filters.minRating > 0,
-  ].filter(Boolean).length;
+  const appliedFilterCount = activeFilterCount(filters);
 
   async function openFilters() {
     setDraftFilters(filters);
+    setDraftTotal(total);
+    setDraftTotalError('');
+    setExpandedAdvanced(
+      filters.includedIngredients.length || filters.excludedIngredients.length
+        ? 'ingredients'
+        : filters.tagIds.length ? 'tags' : null,
+    );
     setIngredientQuery('');
     setFilterOpen(true);
     if (facets || facetsLoading) return;
@@ -198,16 +224,42 @@ export default function RecipesScreen() {
     }
   }
 
-  const draftActiveFilterCount = [
-    Boolean(draftFilters.type),
-    Boolean(draftFilters.category),
-    ...draftFilters.tagIds.map(() => true),
-    ...draftFilters.includedIngredients.map(() => true),
-    ...draftFilters.excludedIngredients.map(() => true),
-    draftFilters.favoriteOnly,
-    draftFilters.manualOnly,
-    draftFilters.minRating > 0,
-  ].filter(Boolean).length;
+  const draftActiveFilterCount = activeFilterCount(draftFilters);
+
+  useEffect(() => {
+    if (!filterOpen) {
+      countRequest.current?.abort();
+      return;
+    }
+    const controller = new AbortController();
+    countRequest.current?.abort();
+    countRequest.current = controller;
+    const timer = setTimeout(async () => {
+      setDraftTotalLoading(true);
+      setDraftTotalError('');
+      try {
+        const params = new URLSearchParams();
+        if (query.trim()) params.set('search', query.trim());
+        appendRecipeFilters(params, draftFilters);
+        const result = await api<{ total: number }>(
+          `/api/recipes/count?${params}`,
+          {},
+          controller.signal,
+        );
+        if (!controller.signal.aborted) setDraftTotal(result.total);
+      } catch (reason) {
+        if (!controller.signal.aborted) {
+          setDraftTotalError(reason instanceof Error ? reason.message : 'Trefferzahl nicht verfügbar');
+        }
+      } finally {
+        if (!controller.signal.aborted) setDraftTotalLoading(false);
+      }
+    }, 180);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [draftFilters, filterOpen, query]);
 
   const filteredIngredients = (facets?.ingredients || []).filter(ingredient => {
     const needle = ingredientQuery.trim().toLocaleLowerCase('de');
@@ -276,12 +328,12 @@ export default function RecipesScreen() {
         />
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={activeFilterCount ? `Filter, ${activeFilterCount} aktiv` : 'Filter'}
+          accessibilityLabel={appliedFilterCount ? `Filter, ${appliedFilterCount} aktiv` : 'Filter'}
           onPress={openFilters}
-          style={({ pressed }) => [styles.filter, activeFilterCount > 0 && styles.filterActive, pressed && styles.pressed]}>
+          style={({ pressed }) => [styles.filter, appliedFilterCount > 0 && styles.filterActive, pressed && styles.pressed]}>
           <SymbolView name="line.3.horizontal.decrease" size={18} tintColor={colors.text} />
           <Text style={styles.filterText}>Filter</Text>
-          {activeFilterCount > 0 && <Text style={styles.filterCount}>{activeFilterCount}</Text>}
+          {appliedFilterCount > 0 && <Text style={styles.filterCount}>{appliedFilterCount}</Text>}
         </Pressable>
       </View>
       {loading && !recipes.length ? (
@@ -315,7 +367,7 @@ export default function RecipesScreen() {
           ListEmptyComponent={
             <StateView
               title={filters.manualOnly ? 'Alles gepflegt' : 'Keine Rezepte gefunden'}
-              message={activeFilterCount ? 'Passe die aktiven Filter an.' : 'Versuche einen anderen Suchbegriff.'}
+              message={appliedFilterCount ? 'Passe die aktiven Filter an.' : 'Versuche einen anderen Suchbegriff.'}
             />
           }
         />
@@ -330,8 +382,8 @@ export default function RecipesScreen() {
             <Pressable accessibilityRole="button" onPress={() => setFilterOpen(false)} style={styles.sheetHeaderAction}>
               <Text style={styles.sheetCancel}>Abbrechen</Text>
             </Pressable>
-            <Text style={styles.sheetTitle}>{draftActiveFilterCount ? `${draftActiveFilterCount} aktiv` : 'Rezepte filtern'}</Text>
-            <Pressable accessibilityRole="button" onPress={() => setDraftFilters({ ...EMPTY_FILTERS, tagIds: [], includedIngredients: [], excludedIngredients: [] })} style={styles.sheetHeaderAction}>
+            <Text style={styles.sheetTitle}>Filter</Text>
+            <Pressable accessibilityRole="button" onPress={() => setDraftFilters({ ...EMPTY_FILTERS, categories: [], ratings: [], tagIds: [], includedIngredients: [], excludedIngredients: [] })} style={styles.sheetHeaderAction}>
               <Text style={styles.sheetReset}>Zurücksetzen</Text>
             </Pressable>
           </View>
@@ -340,11 +392,36 @@ export default function RecipesScreen() {
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={styles.sheetContent}>
-            <Text style={styles.filterIntro}>
-              Grenze erst die Rezeptart ein und verfeinere danach nach Status, Tags oder Zutaten.
-            </Text>
             {facetsLoading && <StateView title="Filter werden geladen" loading />}
             {!!facetsError && <StateView title="Filter nicht verfügbar" message={facetsError} action="Erneut versuchen" onAction={() => { setFacets(null); openFilters(); }} />}
+
+            <View accessibilityLiveRegion="polite" style={styles.filterSummary}>
+              <View>
+                <Text style={styles.filterTotal}>{draftTotal ?? '–'}</Text>
+                <Text style={styles.filterTotalLabel}>{draftTotal === 1 ? 'Rezept gefunden' : 'Rezepte gefunden'}</Text>
+              </View>
+              <Text style={styles.activeSummary}>
+                {draftActiveFilterCount ? `${draftActiveFilterCount} ausgewählt` : 'Keine Filter aktiv'}
+              </Text>
+            </View>
+            {!!draftTotalError && <Text accessibilityRole="alert" style={styles.countError}>{draftTotalError}</Text>}
+
+            <View style={styles.filterSection}>
+              <Text style={styles.filterSectionTitle}>Status</Text>
+              <Text style={styles.filterHelp}>Häufig verwendete Filter für den schnellen Zugriff.</Text>
+              <View style={styles.chipRow}>
+                <FilterChip
+                  label="Nur Favoriten"
+                  selected={draftFilters.favoriteOnly}
+                  onPress={() => setDraftFilters(value => ({ ...value, favoriteOnly: !value.favoriteOnly }))}
+                />
+                <FilterChip
+                  label="Manuell pflegen"
+                  selected={draftFilters.manualOnly}
+                  onPress={() => setDraftFilters(value => ({ ...value, manualOnly: !value.manualOnly }))}
+                />
+              </View>
+            </View>
 
             {(!!facets?.types.length || !!facets?.categories.length) && (
               <View style={styles.filterSection}>
@@ -362,11 +439,17 @@ export default function RecipesScreen() {
                 )}
                 {!!facets?.categories.length && (
                   <View style={styles.filterGroup}>
-                    <Text style={styles.filterHeading}>Kategorie</Text>
+                    <Text style={styles.filterHeading}>Kategorien</Text>
+                    <Text style={styles.filterHelp}>Mehrere Kategorien werden gemeinsam angezeigt.</Text>
                     <View style={styles.chipRow}>
-                      <FilterChip label="Alle" selected={!draftFilters.category} onPress={() => setDraftFilters(value => ({ ...value, category: '' }))} />
+                      <FilterChip label="Alle" selected={!draftFilters.categories.length} onPress={() => setDraftFilters(value => ({ ...value, categories: [] }))} />
                       {facets.categories.map(value => (
-                        <FilterChip key={value} label={value} selected={draftFilters.category === value} onPress={() => setDraftFilters(current => ({ ...current, category: value }))} />
+                        <FilterChip
+                          key={value}
+                          label={value}
+                          selected={draftFilters.categories.includes(value)}
+                          onPress={() => setDraftFilters(current => ({ ...current, categories: toggleValue(current.categories, value) }))}
+                        />
                       ))}
                     </View>
                   </View>
@@ -375,87 +458,112 @@ export default function RecipesScreen() {
             )}
 
             <View style={styles.filterSection}>
-              <Text style={styles.filterSectionTitle}>Status & Bewertung</Text>
-              <View style={styles.filterGroup}>
-                <Text style={styles.filterHeading}>Schnellauswahl</Text>
-                <View style={styles.chipRow}>
+              <Text style={styles.filterSectionTitle}>Bewertung</Text>
+              <Text style={styles.filterHelp}>Wähle eine oder mehrere genaue Bewertungen.</Text>
+              <View style={styles.chipRow}>
+                <FilterChip label="Alle" selected={!draftFilters.ratings.length} onPress={() => setDraftFilters(value => ({ ...value, ratings: [] }))} />
+                {[5, 4, 3, 2, 1].map(value => (
                   <FilterChip
-                    label="Nur Favoriten"
-                    selected={draftFilters.favoriteOnly}
-                    onPress={() => setDraftFilters(value => ({ ...value, favoriteOnly: !value.favoriteOnly }))}
+                    key={value}
+                    label={`${value} ★`}
+                    selected={draftFilters.ratings.includes(value)}
+                    onPress={() => setDraftFilters(current => ({ ...current, ratings: toggleValue(current.ratings, value) }))}
                   />
-                  <FilterChip
-                    label="Manuell pflegen"
-                    selected={draftFilters.manualOnly}
-                    onPress={() => setDraftFilters(value => ({ ...value, manualOnly: !value.manualOnly }))}
-                  />
-                </View>
-              </View>
-              <View style={styles.filterGroup}>
-                <Text style={styles.filterHeading}>Mindestbewertung</Text>
-                <View style={styles.chipRow}>
-                  {[0, 1, 2, 3, 4, 5].map(value => (
-                    <FilterChip
-                      key={value}
-                      label={value === 0 ? 'Alle' : `${value}+ ★`}
-                      selected={draftFilters.minRating === value}
-                      onPress={() => setDraftFilters(current => ({ ...current, minRating: value }))}
-                    />
-                  ))}
-                </View>
+                ))}
+                <FilterChip
+                  label="Unbewertet"
+                  selected={draftFilters.ratings.includes(0)}
+                  onPress={() => setDraftFilters(current => ({ ...current, ratings: toggleValue(current.ratings, 0) }))}
+                />
               </View>
             </View>
 
-            {!!facets?.tags.length && (
+            {(!!facets?.tags.length || !!facets?.ingredients.length) && (
               <View style={styles.filterSection}>
-                <Text style={styles.filterSectionTitle}>Tags</Text>
-                <Text style={styles.filterHelp}>Mehrere Tags können gleichzeitig ausgewählt werden.</Text>
-                <View style={styles.chipRow}>
-                  {facets.tags.map(tag => (
-                    <FilterChip
-                      key={tag.id}
-                      label={`${tag.name} · ${tag.n}`}
-                      selected={draftFilters.tagIds.includes(tag.id)}
-                      onPress={() => toggleTag(tag.id)}
-                    />
-                  ))}
-                </View>
-              </View>
-            )}
+                <Text style={styles.filterSectionTitle}>Weitere Filter</Text>
+                {!!facets?.tags.length && (
+                  <>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ expanded: expandedAdvanced === 'tags' }}
+                      onPress={() => setExpandedAdvanced(value => value === 'tags' ? null : 'tags')}
+                      style={({ pressed }) => [styles.disclosure, pressed && styles.pressed]}>
+                      <View>
+                        <Text style={styles.disclosureTitle}>Tags</Text>
+                        <Text style={styles.disclosureMeta}>{draftFilters.tagIds.length ? `${draftFilters.tagIds.length} ausgewählt` : 'Optional'}</Text>
+                      </View>
+                      <SymbolView name={expandedAdvanced === 'tags' ? 'chevron.up' : 'chevron.down'} size={17} tintColor={colors.text} />
+                    </Pressable>
+                    {expandedAdvanced === 'tags' && (
+                      <View style={styles.disclosureContent}>
+                        <Text style={styles.filterHelp}>Mehrere Tags können gleichzeitig ausgewählt werden.</Text>
+                        <View style={styles.chipRow}>
+                          {facets.tags.map(tag => (
+                            <FilterChip
+                              key={tag.id}
+                              label={`${tag.name} · ${tag.n}`}
+                              selected={draftFilters.tagIds.includes(tag.id)}
+                              onPress={() => toggleTag(tag.id)}
+                            />
+                          ))}
+                        </View>
+                      </View>
+                    )}
+                  </>
+                )}
 
-            {!!facets?.ingredients.length && (
-              <View style={styles.filterSection}>
-                <Text style={styles.filterSectionTitle}>Zutaten</Text>
-                <Text style={styles.filterHeading}>Mit oder ohne</Text>
-                <TextInput
-                  accessibilityLabel="Filterzutaten durchsuchen"
-                  autoCorrect={false}
-                  placeholder="Zutat suchen"
-                  placeholderTextColor={colors.muted}
-                  value={ingredientQuery}
-                  onChangeText={setIngredientQuery}
-                  style={styles.ingredientSearch}
-                />
-                <Text style={styles.filterHelp}>„Mit“ verlangt die Zutat, „Ohne“ schließt sie aus.</Text>
-                {filteredIngredients.map(ingredient => (
-                  <View key={ingredient.canonical_name} style={styles.ingredientFilterRow}>
-                    <Text style={styles.ingredientFilterName} numberOfLines={2}>
-                      {ingredient.display_name} <Text style={styles.ingredientCount}>· {ingredient.n}</Text>
-                    </Text>
-                    <View style={styles.ingredientChoices}>
-                      <FilterChip
-                        label="Mit"
-                        selected={draftFilters.includedIngredients.includes(ingredient.canonical_name)}
-                        onPress={() => setIngredientChoice(ingredient.canonical_name, 'include')}
-                      />
-                      <FilterChip
-                        label="Ohne"
-                        selected={draftFilters.excludedIngredients.includes(ingredient.canonical_name)}
-                        onPress={() => setIngredientChoice(ingredient.canonical_name, 'exclude')}
-                      />
-                    </View>
-                  </View>
-                ))}
+                {!!facets?.ingredients.length && (
+                  <>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ expanded: expandedAdvanced === 'ingredients' }}
+                      onPress={() => setExpandedAdvanced(value => value === 'ingredients' ? null : 'ingredients')}
+                      style={({ pressed }) => [styles.disclosure, pressed && styles.pressed]}>
+                      <View>
+                        <Text style={styles.disclosureTitle}>Zutaten</Text>
+                        <Text style={styles.disclosureMeta}>
+                          {draftFilters.includedIngredients.length + draftFilters.excludedIngredients.length
+                            ? `${draftFilters.includedIngredients.length + draftFilters.excludedIngredients.length} ausgewählt`
+                            : 'Mit oder ohne Zutat'}
+                        </Text>
+                      </View>
+                      <SymbolView name={expandedAdvanced === 'ingredients' ? 'chevron.up' : 'chevron.down'} size={17} tintColor={colors.text} />
+                    </Pressable>
+                    {expandedAdvanced === 'ingredients' && (
+                      <View style={styles.disclosureContent}>
+                        <TextInput
+                          accessibilityLabel="Filterzutaten durchsuchen"
+                          autoCorrect={false}
+                          placeholder="Zutat suchen"
+                          placeholderTextColor={colors.muted}
+                          value={ingredientQuery}
+                          onChangeText={setIngredientQuery}
+                          style={styles.ingredientSearch}
+                        />
+                        <Text style={styles.filterHelp}>„Mit“ verlangt die Zutat, „Ohne“ schließt sie aus.</Text>
+                        {filteredIngredients.map(ingredient => (
+                          <View key={ingredient.canonical_name} style={styles.ingredientFilterRow}>
+                            <Text style={styles.ingredientFilterName} numberOfLines={2}>
+                              {ingredient.display_name} <Text style={styles.ingredientCount}>· {ingredient.n}</Text>
+                            </Text>
+                            <View style={styles.ingredientChoices}>
+                              <FilterChip
+                                label="Mit"
+                                selected={draftFilters.includedIngredients.includes(ingredient.canonical_name)}
+                                onPress={() => setIngredientChoice(ingredient.canonical_name, 'include')}
+                              />
+                              <FilterChip
+                                label="Ohne"
+                                selected={draftFilters.excludedIngredients.includes(ingredient.canonical_name)}
+                                onPress={() => setIngredientChoice(ingredient.canonical_name, 'exclude')}
+                              />
+                            </View>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </>
+                )}
               </View>
             )}
           </ScrollView>
@@ -467,7 +575,10 @@ export default function RecipesScreen() {
                 setFilterOpen(false);
               }}
               style={({ pressed }) => [styles.applyButton, pressed && styles.pressed]}>
-              <Text style={styles.applyText}>Filter anwenden</Text>
+              {draftTotalLoading && <ActivityIndicator color={colors.text} size="small" />}
+              <Text style={styles.applyText}>
+                {draftTotal === null ? 'Filter anwenden' : draftTotal === 1 ? '1 Rezept anzeigen' : `${draftTotal} Rezepte anzeigen`}
+              </Text>
             </Pressable>
           </View>
         </SafeAreaView>
@@ -531,7 +642,11 @@ const styles = StyleSheet.create({
   sheetCancel: { color: colors.muted, fontSize: 15, fontWeight: '700' },
   sheetReset: { color: colors.text, fontSize: 14, fontWeight: '800', textAlign: 'right' },
   sheetContent: { padding: space.md, paddingBottom: space.xl, gap: space.lg },
-  filterIntro: { color: colors.muted, fontSize: 14, lineHeight: 20 },
+  filterSummary: { minHeight: 84, paddingHorizontal: space.md, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 16, borderRadius: radii.md, backgroundColor: colors.butter },
+  filterTotal: { color: colors.text, fontSize: 30, lineHeight: 32, letterSpacing: -0.8, fontWeight: '900' },
+  filterTotalLabel: { color: colors.text, fontSize: 13, fontWeight: '700' },
+  activeSummary: { flexShrink: 1, color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: '800', textAlign: 'right' },
+  countError: { marginTop: -12, color: colors.danger, fontSize: 13, lineHeight: 18 },
   filterSection: { gap: 14, paddingBottom: space.lg, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
   filterSectionTitle: { color: colors.text, fontSize: 21, fontWeight: '900' },
   filterGroup: { gap: 10 },
@@ -542,12 +657,16 @@ const styles = StyleSheet.create({
   chipActive: { borderColor: colors.butterPressed, backgroundColor: colors.butter },
   chipText: { color: colors.muted, fontSize: 15, fontWeight: '700' },
   chipTextActive: { color: colors.text, fontWeight: '900' },
+  disclosure: { minHeight: 56, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  disclosureTitle: { color: colors.text, fontSize: 16, fontWeight: '900' },
+  disclosureMeta: { marginTop: 2, color: colors.muted, fontSize: 13, lineHeight: 18 },
+  disclosureContent: { gap: 12, paddingBottom: 8 },
   ingredientSearch: { minHeight: 48, paddingHorizontal: 14, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.white, color: colors.text, fontSize: 16 },
   ingredientFilterRow: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
   ingredientFilterName: { flex: 1, color: colors.text, fontSize: 15, fontWeight: '700' },
   ingredientCount: { color: colors.muted, fontWeight: '600' },
   ingredientChoices: { flexDirection: 'row', gap: 6 },
   sheetFooter: { padding: space.md, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, backgroundColor: colors.surface },
-  applyButton: { minHeight: 52, alignItems: 'center', justifyContent: 'center', borderRadius: radii.md, backgroundColor: colors.butter },
+  applyButton: { minHeight: 52, flexDirection: 'row', gap: 9, alignItems: 'center', justifyContent: 'center', borderRadius: radii.md, backgroundColor: colors.butter },
   applyText: { color: colors.text, fontSize: 16, fontWeight: '900' },
 });

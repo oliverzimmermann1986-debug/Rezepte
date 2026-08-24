@@ -1913,6 +1913,7 @@ class Database:
         *,
         type: Optional[str] = None,
         category: Optional[str] = None,
+        categories: Optional[List[str]] = None,
         folder_prefix: Optional[str] = None,
         tag_ids: Optional[List[int]] = None,
         ingredient_canonical: Optional[List[str]] = None,
@@ -1922,6 +1923,7 @@ class Database:
         verified: Optional[bool] = None,
         favorite_only: bool = False,
         min_rating: int = 0,
+        ratings: Optional[List[int]] = None,
         needs_manual_care: Optional[bool] = None,
         include_deleted: bool = False,
         only_deleted: bool = False,
@@ -1933,6 +1935,7 @@ class Database:
         where_sql, where_params = build_recipe_filters(self,
             type=type,
             category=category,
+            categories=categories,
             folder_prefix=folder_prefix,
             tag_ids=tag_ids,
             ingredient_canonical=ingredient_canonical,
@@ -1942,6 +1945,7 @@ class Database:
             verified=verified,
             favorite_only=favorite_only,
             min_rating=min_rating,
+            ratings=ratings,
             needs_manual_care=needs_manual_care,
             include_deleted=include_deleted,
             only_deleted=only_deleted,
@@ -1978,6 +1982,7 @@ class Database:
         *,
         type: Optional[str] = None,
         category: Optional[str] = None,
+        categories: Optional[List[str]] = None,
         folder_prefix: Optional[str] = None,
         tag_ids: Optional[List[int]] = None,
         ingredient_canonical: Optional[List[str]] = None,
@@ -1987,6 +1992,7 @@ class Database:
         verified: Optional[bool] = None,
         favorite_only: bool = False,
         min_rating: int = 0,
+        ratings: Optional[List[int]] = None,
         needs_manual_care: Optional[bool] = None,
         include_deleted: bool = False,
         only_deleted: bool = False,
@@ -1996,6 +2002,7 @@ class Database:
         where_sql, params = build_recipe_filters(self,
             type=type,
             category=category,
+            categories=categories,
             folder_prefix=folder_prefix,
             tag_ids=tag_ids,
             ingredient_canonical=ingredient_canonical,
@@ -2005,6 +2012,7 @@ class Database:
             verified=verified,
             favorite_only=favorite_only,
             min_rating=min_rating,
+            ratings=ratings,
             needs_manual_care=needs_manual_care,
             include_deleted=include_deleted,
             only_deleted=only_deleted,
@@ -2150,8 +2158,20 @@ class Database:
         servings: Optional[int],
         auto_tags: List[str],
         claim_owner: Optional[str] = None,
+        status: str = "ok",
+        replace_ingredients: bool = True,
+        replace_steps: bool = True,
+        replace_servings: bool = True,
+        replace_auto_tags: bool = True,
     ) -> bool:
-        """Ersetzt das komplette KI-Ergebnis atomar und setzt erst zuletzt ok."""
+        """Wendet ein KI-Ergebnis atomar an und setzt erst zuletzt den Status.
+
+        Die replace-Schalter erlauben einen verlustfreien Fill-only-Lauf für
+        manuell gepflegte Rezepte: vorhandene Zutaten/Schritte bleiben dann
+        byte-for-byte erhalten (inklusive Kalorien und Sortierung).
+        """
+        if status not in {"ok", "error", "skipped"}:
+            raise ValueError("Ungültiger Extraktionsstatus")
         if servings is not None:
             try:
                 servings = int(servings)
@@ -2171,67 +2191,71 @@ class Database:
                 if not owned:
                     return False
 
-            c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
-            for idx, ing in enumerate(ingredients):
-                c.execute(
-                    "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, "
-                    "amount, unit, raw, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        recipe_id,
-                        ing.get("name") or "",
-                        ing.get("canonical_name"),
-                        ing.get("amount"),
-                        ing.get("unit"),
-                        ing.get("raw"),
-                        idx,
-                    ),
-                )
-
-            c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
-            for idx, step in enumerate(steps, start=1):
-                instruction = (step.get("instruction") or "").strip()
-                if not instruction:
-                    continue
-                timer = step.get("timer_seconds")
-                try:
-                    timer = int(timer) if timer is not None else None
-                    if timer is not None and timer <= 0:
-                        timer = None
-                except (TypeError, ValueError):
-                    timer = None
-                c.execute(
-                    "INSERT INTO recipe_steps "
-                    "(recipe_id, step_number, instruction, timer_seconds) "
-                    "VALUES (?, ?, ?, ?)",
-                    (recipe_id, idx, instruction, timer),
-                )
-
-            c.execute("UPDATE recipes SET servings=? WHERE id=?", (servings, recipe_id))
-            c.execute(
-                "DELETE FROM recipe_tags WHERE recipe_id=? AND auto=1",
-                (recipe_id,),
-            )
-            for raw in auto_tags:
-                name = (raw or "").strip()
-                if not name:
-                    continue
-                c.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
-                tag = c.execute(
-                    "SELECT id FROM tags WHERE name=? COLLATE NOCASE",
-                    (name,),
-                ).fetchone()
-                if tag:
+            if replace_ingredients:
+                c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
+                for idx, ing in enumerate(ingredients):
                     c.execute(
-                        "INSERT OR IGNORE INTO recipe_tags "
-                        "(recipe_id, tag_id, auto) VALUES (?, ?, 1)",
-                        (recipe_id, int(tag["id"])),
+                        "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, "
+                        "amount, unit, raw, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            recipe_id,
+                            ing.get("name") or "",
+                            ing.get("canonical_name"),
+                            ing.get("amount"),
+                            ing.get("unit"),
+                            ing.get("raw"),
+                            idx,
+                        ),
                     )
 
+            if replace_steps:
+                c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
+                for idx, step in enumerate(steps, start=1):
+                    instruction = (step.get("instruction") or "").strip()
+                    if not instruction:
+                        continue
+                    timer = step.get("timer_seconds")
+                    try:
+                        timer = int(timer) if timer is not None else None
+                        if timer is not None and timer <= 0:
+                            timer = None
+                    except (TypeError, ValueError):
+                        timer = None
+                    c.execute(
+                        "INSERT INTO recipe_steps "
+                        "(recipe_id, step_number, instruction, timer_seconds) "
+                        "VALUES (?, ?, ?, ?)",
+                        (recipe_id, idx, instruction, timer),
+                    )
+
+            if replace_servings:
+                c.execute("UPDATE recipes SET servings=? WHERE id=?", (servings, recipe_id))
+            if replace_auto_tags:
+                c.execute(
+                    "DELETE FROM recipe_tags WHERE recipe_id=? AND auto=1",
+                    (recipe_id,),
+                )
+                for raw in auto_tags:
+                    name = (raw or "").strip()
+                    if not name:
+                        continue
+                    c.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+                    tag = c.execute(
+                        "SELECT id FROM tags WHERE name=? COLLATE NOCASE",
+                        (name,),
+                    ).fetchone()
+                    if tag:
+                        c.execute(
+                            "INSERT OR IGNORE INTO recipe_tags "
+                            "(recipe_id, tag_id, auto) VALUES (?, ?, 1)",
+                            (recipe_id, int(tag["id"])),
+                        )
+
             cur = c.execute(
-                "UPDATE recipes SET ingredients_status='ok', "
+                "UPDATE recipes SET ingredients_status=?, "
                 "ingredients_extracted_at=?, extraction_claimed_at=NULL, "
                 "extraction_claim_owner=NULL WHERE id=?",
-                (time.time(), recipe_id),
+                (status, time.time(), recipe_id),
             )
             return bool(cur.rowcount)
 
@@ -2605,6 +2629,7 @@ class Database:
         *,
         type: Optional[str] = None,
         category: Optional[str] = None,
+        categories: Optional[List[str]] = None,
         folder_prefix: Optional[str] = None,
         tag_ids: Optional[List[int]] = None,
         ingredient_canonical: Optional[List[str]] = None,
@@ -2614,6 +2639,7 @@ class Database:
         verified: Optional[bool] = None,
         favorite_only: bool = False,
         min_rating: int = 0,
+        ratings: Optional[List[int]] = None,
         include_deleted: bool = False,
         only_deleted: bool = False,
     ):
@@ -2626,6 +2652,7 @@ class Database:
             self,
             type=type,
             category=category,
+            categories=categories,
             folder_prefix=folder_prefix,
             tag_ids=tag_ids,
             ingredient_canonical=ingredient_canonical,
@@ -2635,6 +2662,7 @@ class Database:
             verified=verified,
             favorite_only=favorite_only,
             min_rating=min_rating,
+            ratings=ratings,
             include_deleted=include_deleted,
             only_deleted=only_deleted,
         )
@@ -2645,6 +2673,7 @@ class Database:
         *,
         type: Optional[str] = None,
         category: Optional[str] = None,
+        categories: Optional[List[str]] = None,
         ingredient_canonical: Optional[List[str]] = None,
         ingredient_excluded: Optional[List[str]] = None,
         search: Optional[str] = None,
@@ -2652,16 +2681,18 @@ class Database:
         verified: Optional[bool] = None,
         favorite_only: bool = False,
         min_rating: int = 0,
+        ratings: Optional[List[int]] = None,
         **_ignore,
     ) -> List[Dict[str, Any]]:
         """Tags mit Recipe-Count unter den aktiven Filtern — der Tag-Filter selbst
         wird ausgeklammert (Standard-Facetten-Drilldown). Tags ohne Treffer
         fallen raus, die Liste schrumpft also passend mit."""
         where, params = self._recipe_where(
-            type=type, category=category, ingredient_canonical=ingredient_canonical,
+            type=type, category=category, categories=categories,
+            ingredient_canonical=ingredient_canonical,
             ingredient_excluded=ingredient_excluded,
             search=search, ingredients_status=ingredients_status, verified=verified,
-            favorite_only=favorite_only, min_rating=min_rating,
+            favorite_only=favorite_only, min_rating=min_rating, ratings=ratings,
         )
         sql = (
             "SELECT t.id, t.name, COUNT(DISTINCT r.id) AS n "
@@ -2678,20 +2709,22 @@ class Database:
         *,
         type: Optional[str] = None,
         category: Optional[str] = None,
+        categories: Optional[List[str]] = None,
         tag_ids: Optional[List[int]] = None,
         search: Optional[str] = None,
         ingredients_status: Optional[str] = None,
         verified: Optional[bool] = None,
         favorite_only: bool = False,
         min_rating: int = 0,
+        ratings: Optional[List[int]] = None,
         **_ignore,
     ) -> List[Dict[str, Any]]:
         """Zutaten mit Recipe-Count unter den aktiven Filtern — der Zutaten-Filter
         selbst wird ausgeklammert. Zutaten ohne Treffer fallen raus."""
         where, params = self._recipe_where(
-            type=type, category=category, tag_ids=tag_ids,
+            type=type, category=category, categories=categories, tag_ids=tag_ids,
             search=search, ingredients_status=ingredients_status, verified=verified,
-            favorite_only=favorite_only, min_rating=min_rating,
+            favorite_only=favorite_only, min_rating=min_rating, ratings=ratings,
         )
         sql = (
             "SELECT ing.canonical_name, MIN(ing.name) AS display_name, "

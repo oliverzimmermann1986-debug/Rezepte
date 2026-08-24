@@ -200,11 +200,11 @@ class MailAccount:
         self.delete_processed = bool(cfg.get("delete_processed", False))
 
     @contextmanager
-    def _connect(self):
+    def _connect(self, *, readonly: bool = False):
         mail = imaplib.IMAP4_SSL(self.host, self.port, timeout=30)
         try:
             mail.login(self.username, self.password)
-            mail.select(self.folder)
+            mail.select(self.folder, readonly=readonly)
             yield mail
         finally:
             try:
@@ -219,6 +219,33 @@ class MailAccount:
 
     def fetch_all(self) -> Dict[str, List[Dict]]:
         """Holt URLs UND Attachments. Returnt {'urls': [...], 'attachments': [...]}."""
+        return self._fetch_all_with_retries(readonly=False)
+
+    def fetch_all_readonly(
+        self,
+        *,
+        max_mails: Optional[int] = None,
+        include_attachments: bool = True,
+    ) -> Dict[str, List[Dict]]:
+        """Inventarisiert Mails, ohne Flags oder Mailbox-Inhalt zu verändern.
+
+        IMAP ``EXAMINE`` (``readonly=True``) und ``BODY.PEEK[]`` verhindern,
+        dass der Abgleich Nachrichten als gelesen markiert. Diese Methode ist
+        für Audits/Reconciliation gedacht und löscht niemals Mails.
+        """
+        return self._fetch_all_with_retries(
+            readonly=True,
+            max_mails=max_mails,
+            include_attachments=include_attachments,
+        )
+
+    def _fetch_all_with_retries(
+        self,
+        *,
+        readonly: bool,
+        max_mails: Optional[int] = None,
+        include_attachments: bool = True,
+    ) -> Dict[str, List[Dict]]:
         if not self.enabled or not self.username or not self.password:
             return {"urls": [], "attachments": []}
         # 3 Versuche mit exponentiellem Backoff. Gmail wirft sporadisch
@@ -230,7 +257,11 @@ class MailAccount:
                 logger.info(f"[{self.name}] IMAP-Retry {attempt}/3 nach {sleep_s}s")
                 time.sleep(sleep_s)
             try:
-                return self._fetch_all_once()
+                return self._fetch_all_once(
+                    readonly=readonly,
+                    max_mails=max_mails,
+                    include_attachments=include_attachments,
+                )
             except (imaplib.IMAP4.abort, imaplib.IMAP4.error,
                     OSError, ConnectionError) as e:
                 last_error = e
@@ -242,20 +273,28 @@ class MailAccount:
         logger.error(f"[{self.name}] IMAP nach 3 Versuchen aufgegeben: {last_error}")
         return {"urls": [], "attachments": []}
 
-    def _fetch_all_once(self) -> Dict[str, List[Dict]]:
+    def _fetch_all_once(
+        self,
+        *,
+        readonly: bool = False,
+        max_mails: Optional[int] = None,
+        include_attachments: bool = True,
+    ) -> Dict[str, List[Dict]]:
         """Ein Fetch-Durchgang. Liest URLs aus Body + Attachments aus PDF/JPG."""
         urls: List[Dict] = []
         attachments: List[Dict] = []
         seen_urls: set[str] = set()
         seen_attach: set[str] = set()   # (mail-msgid, filename) Tupel-Hash
 
-        with self._connect() as mail:
+        with self._connect(readonly=readonly) as mail:
             _, data = mail.search(None, "ALL")
-            ids = data[0].split()[-self.max_mails:]
+            limit = self.max_mails if max_mails is None else max(1, int(max_mails))
+            ids = data[0].split()[-limit:]
             logger.info(f"[{self.name}] Verarbeite {len(ids)} Mails")
             for mid in ids:
                 try:
-                    _, msg_data = mail.fetch(mid, "(RFC822)")
+                    fetch_query = "(BODY.PEEK[])" if readonly else "(RFC822)"
+                    _, msg_data = mail.fetch(mid, fetch_query)
                     if not msg_data or not msg_data[0]:
                         continue
                     msg = email.message_from_bytes(msg_data[0][1])
@@ -285,7 +324,7 @@ class MailAccount:
                         })
 
                     # 2. Attachments (PDF/JPG/PNG)
-                    if msg.is_multipart():
+                    if include_attachments and msg.is_multipart():
                         for part in msg.walk():
                             ctype = part.get_content_type()
                             disp = (part.get("Content-Disposition") or "").lower()

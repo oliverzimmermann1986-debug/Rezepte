@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import time
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -96,6 +98,11 @@ class OpenAIAnalyzer:
         """Einziger OpenAI-Transportpfad für öffentliche und interne Ziele."""
         normalized_path = "/" + (path or "").lstrip("/")
         headers = dict(self._headers)
+        # requests setzt für Multipart-Uploads den Content-Type inklusive
+        # Boundary selbst. Ein festes application/json macht Audio-Uploads
+        # sonst für die Transcriptions-API unlesbar.
+        if kwargs.get("files"):
+            headers.pop("Content-Type", None)
         headers.update(kwargs.pop("headers", {}) or {})
         return server_configured_request(
             method,
@@ -105,6 +112,61 @@ class OpenAIAnalyzer:
             **kwargs,
         )
 
+    @staticmethod
+    def _retry_delay(response: requests.Response, attempt: int) -> float:
+        """Liest OpenAI-Wartehinweise und begrenzt das Backoff."""
+        raw = response.headers.get("retry-after-ms")
+        if raw:
+            try:
+                return max(1.5, min(12.0, float(raw) / 1000.0 + 0.5))
+            except (TypeError, ValueError):
+                pass
+        raw = response.headers.get("retry-after")
+        if raw:
+            try:
+                return max(1.5, min(12.0, float(raw) + 0.5))
+            except (TypeError, ValueError):
+                pass
+        match = re.search(
+            r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|s)",
+            response.text or "",
+            flags=re.IGNORECASE,
+        )
+        if match:
+            value = float(match.group(1))
+            if match.group(2).lower() == "ms":
+                value /= 1000.0
+            return max(1.5, min(12.0, value + 0.5))
+        return min(12.0, 1.5 * (2 ** attempt))
+
+    def _request_with_retry(self, method: str, path: str, **kwargs) -> requests.Response:
+        """Wiederholt ausschließlich temporäre API-Antworten mit kurzem Backoff."""
+        retryable = {429, 500, 502, 503, 504}
+        attempts = 6
+        response: Optional[requests.Response] = None
+        for attempt in range(attempts):
+            response = self.request(method, path, **kwargs)
+            if response.status_code not in retryable or attempt == attempts - 1:
+                return response
+            delay = self._retry_delay(response, attempt)
+            logger.warning(
+                "OpenAI HTTP %s, Wiederholung %s/%s in %.2fs",
+                response.status_code,
+                attempt + 1,
+                attempts - 1,
+                delay,
+            )
+            time.sleep(delay)
+            # Multipart-Dateihandles wurden beim vorherigen Versuch gelesen.
+            for value in (kwargs.get("files") or {}).values():
+                handle = value[1] if isinstance(value, tuple) and len(value) > 1 else value
+                try:
+                    handle.seek(0)
+                except (AttributeError, OSError):
+                    pass
+        assert response is not None
+        return response
+
     def _call(self, system: str, user: str) -> Optional[str]:
         # max_tokens=6000: bei gpt-4o-mini gibt's 16k Output-Limit, 6k ist
         # also überdimensioniert. Output-Kosten bei mini sind ~$0.0006/1k,
@@ -112,7 +174,7 @@ class OpenAIAnalyzer:
         # Vorher: 300 → 2000, beides zu wenig für lange Rezepte mit vielen
         # Schritten. Logging unten verrät wie groß die Antworten wirklich sind.
         try:
-            r = self.request(
+            r = self._request_with_retry(
                 "POST",
                 "/chat/completions",
                 json={
@@ -159,7 +221,11 @@ class OpenAIAnalyzer:
             return content
         except requests.exceptions.HTTPError as e:
             # 401/403/429 sind häufig und sollten verständlich loggen
-            logger.error("OpenAI HTTP %s", e.response.status_code if e.response else "?")
+            logger.error(
+                "OpenAI HTTP %s: %s",
+                e.response.status_code if e.response is not None else "?",
+                (e.response.text or "")[:300] if e.response is not None else str(e),
+            )
             return None
         except Exception as e:
             logger.error(f"OpenAI Call: {e}")
@@ -254,12 +320,88 @@ class OpenAIAnalyzer:
             return None
         return text.strip()
 
+    def extract_text_from_video_frame_bytes(
+        self,
+        image_bytes: bytes,
+        mime_type: str = "image/jpeg",
+        context: str = "",
+    ) -> Optional[str]:
+        """Liest ausschließlich sichtbaren Rezepttext aus einem Videoframe.
+
+        Die engere Anweisung verhindert, dass aus dem gezeigten Essen Zutaten
+        geraten werden. Mehrere Frames werden später dedupliziert und gemeinsam
+        durch die normale strukturierte Rezeptanalyse geschickt.
+        """
+        if not image_bytes:
+            return None
+        import base64
+
+        normalized_mime = (mime_type or "image/jpeg").lower()
+        image_format = normalized_mime.removeprefix("image/")
+        if image_format == "jpg":
+            image_format = "jpeg"
+        prompt = (
+            "Lies ausschließlich den im Videoframe sichtbar eingeblendeten Text. "
+            "Übernimm Zutaten, Mengen, Zeiten und Zubereitungshinweise exakt, "
+            "soweit sie lesbar sind. Erfinde nichts aus dem gezeigten Essen oder "
+            "aus Personen im Bild. Wenn kein verwertbarer Rezepttext sichtbar ist, "
+            "antworte exakt mit: KEINE_REZEPT_DATEN"
+        )
+        if context.strip():
+            prompt += f"\nKontext: {context.strip()[:200]}"
+        text = self._call_vision(
+            base64.b64encode(image_bytes).decode("ascii"),
+            image_format,
+            prompt,
+        )
+        if not text or "KEINE_REZEPT_DATEN" in text or len(text.strip()) < 3:
+            return None
+        return text.strip()
+
+    def transcribe_audio(
+        self,
+        audio_path,
+        *,
+        model: str = "gpt-4o-mini-transcribe",
+    ) -> Optional[str]:
+        """Transkribiert eine lokal extrahierte Audiospur per OpenAI API."""
+        from pathlib import Path as _P
+
+        path = _P(audio_path)
+        if not path.is_file() or path.stat().st_size <= 0:
+            return None
+        try:
+            with path.open("rb") as handle:
+                r = self._request_with_retry(
+                    "POST",
+                    "/audio/transcriptions",
+                    files={"file": (path.name, handle, "audio/mpeg")},
+                    data={
+                        "model": (model or "gpt-4o-mini-transcribe").strip(),
+                        "response_format": "json",
+                    },
+                    timeout=max(90, self.timeout),
+                )
+            r.raise_for_status()
+            text = (r.json().get("text") or "").strip()
+            return text if len(text) >= 3 else None
+        except requests.exceptions.HTTPError as e:
+            logger.error(
+                "OpenAI Audio HTTP %s: %s",
+                e.response.status_code if e.response is not None else "?",
+                (e.response.text or "")[:300] if e.response is not None else str(e),
+            )
+            return None
+        except Exception as e:
+            logger.error("OpenAI Audio Call: %s", e)
+            return None
+
     def _call_vision(self, b64_data: str, mime: str, prompt: str) -> Optional[str]:
         """Multimodal-Call: prompt + 1 Bild als base64. Kein response_format
         (Vision liefert Freitext, kein JSON). Höherer max_tokens damit lange
         Caption-Bilder vollständig transkribiert werden."""
         try:
-            r = self.request(
+            r = self._request_with_retry(
                 "POST",
                 "/chat/completions",
                 json={
@@ -285,8 +427,9 @@ class OpenAIAnalyzer:
             return (choices[0].get("message") or {}).get("content", "").strip()
         except requests.exceptions.HTTPError as e:
             logger.error(
-                "OpenAI Vision HTTP %s",
-                e.response.status_code if e.response else "?",
+                "OpenAI Vision HTTP %s: %s",
+                e.response.status_code if e.response is not None else "?",
+                (e.response.text or "")[:300] if e.response is not None else str(e),
             )
             return None
         except Exception as e:

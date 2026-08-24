@@ -180,14 +180,19 @@ def test_native_recipe_filters_follow_a_clear_progressive_order():
     recipes = (NATIVE / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
 
     headings = [
+        "Status</Text>",
         "Gericht</Text>",
-        "Status & Bewertung</Text>",
-        "Tags</Text>",
-        "Zutaten</Text>",
+        "Bewertung</Text>",
+        "Weitere Filter</Text>",
     ]
     positions = [recipes.index(heading) for heading in headings]
     assert positions == sorted(positions)
-    assert "Grenze erst die Rezeptart ein" in recipes
+    assert "Mehrere Kategorien werden gemeinsam angezeigt." in recipes
+    assert "Wähle eine oder mehrere genaue Bewertungen." in recipes
+    assert "`/api/recipes/count?${params}`" in recipes
+    assert "draftTotalLoading" in recipes
+    assert "expandedAdvanced === 'tags'" in recipes
+    assert "expandedAdvanced === 'ingredients'" in recipes
     assert "filterSection:" in recipes
 
 

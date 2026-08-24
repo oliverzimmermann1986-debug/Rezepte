@@ -52,10 +52,12 @@ logger = logging.getLogger(__name__)
 from ..recipes.indexer import (
     ensure_extraction_running,
     is_extraction_running,
+    _try_media_extract,
 )
 from ..recipes.units import normalize_unit
 from ..recipes.sync_manager import request_sync, sync_status
 from ..recipes.image_cache import ensure_thumbnail, invalidate_thumbnail_cache, normalize_image
+from ..recipes.video_recipe_extract import analyze_recipe_with_video_fallback
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"], dependencies=[Depends(require_auth)])
 
@@ -134,7 +136,7 @@ _FACET_CACHE = TTLCache(ttl_seconds=5.0, max_entries=128)
 @router.get("")
 def list_recipes(
     type: Optional[str] = Query(None),
-    category: Optional[str] = Query(None),
+    category: Optional[List[str]] = Query(None),
     folder: Optional[str] = Query(None, description="Pfad-Präfix, z.B. /mnt/rezepte/Hauptgericht"),
     tag_id: Optional[List[int]] = Query(None),
     ingredient: Optional[List[str]] = Query(None, description="canonical_name(s), AND-verknüpft"),
@@ -151,6 +153,10 @@ def list_recipes(
         description="Nur favorisierte Rezepte (is_favorite=1)"),
     min_rating: int = Query(0, ge=0, le=5,
         description="Mindestbewertung (0=alle, 1-5=Sterne)"),
+    rating: Optional[List[int]] = Query(
+        None,
+        description="Exakte Bewertungen (0=unbewertet, mehrfach erlaubt)",
+    ),
     needs_manual_care: Optional[bool] = Query(None,
         description="True=nur Rezepte ohne Zutaten oder ohne Schritte, "
                     "False=nur vollständige. Wird serverseitig gefiltert, damit "
@@ -160,13 +166,15 @@ def list_recipes(
 ):
     """Hauptlisten-Endpoint. Lazy-Sync + lazy-Extraction Trigger."""
     db = get_db()
+    if rating and any(value < 0 or value > 5 for value in rating):
+        raise HTTPException(422, "Bewertungen müssen zwischen 0 und 5 liegen")
 
     # Lazy-Background-Extraction starten (no-op wenn nichts pending)
     ensure_extraction_running()
 
     items = db.recipe_list(
         type=type,
-        category=category,
+        categories=category,
         folder_prefix=folder,
         tag_ids=tag_id,
         ingredient_canonical=ingredient,
@@ -176,13 +184,14 @@ def list_recipes(
         verified=verified,
         favorite_only=favorite_only,
         min_rating=min_rating,
+        ratings=rating,
         needs_manual_care=needs_manual_care,
         limit=limit,
         offset=offset,
     )
     total = db.recipe_count(
         type=type,
-        category=category,
+        categories=category,
         folder_prefix=folder,
         tag_ids=tag_id,
         ingredient_canonical=ingredient,
@@ -192,6 +201,7 @@ def list_recipes(
         verified=verified,
         favorite_only=favorite_only,
         min_rating=min_rating,
+        ratings=rating,
         needs_manual_care=needs_manual_care,
     )
 
@@ -205,20 +215,20 @@ def list_recipes(
         if suggestion and suggestion.corrected_query:
             effective_search = suggestion.corrected_query
             items = db.recipe_list(
-                type=type, category=category, folder_prefix=folder, tag_ids=tag_id,
+                type=type, categories=category, folder_prefix=folder, tag_ids=tag_id,
                 ingredient_canonical=ingredient, search=effective_search,
                 ingredient_excluded=exclude_ingredient,
                 ingredients_status=ingredients_status, verified=verified,
-                favorite_only=favorite_only, min_rating=min_rating,
+                favorite_only=favorite_only, min_rating=min_rating, ratings=rating,
                 needs_manual_care=needs_manual_care,
                 limit=limit, offset=offset,
             )
             total = db.recipe_count(
-                type=type, category=category, folder_prefix=folder, tag_ids=tag_id,
+                type=type, categories=category, folder_prefix=folder, tag_ids=tag_id,
                 ingredient_canonical=ingredient, search=effective_search,
                 ingredient_excluded=exclude_ingredient,
                 ingredients_status=ingredients_status, verified=verified,
-                favorite_only=favorite_only, min_rating=min_rating,
+                favorite_only=favorite_only, min_rating=min_rating, ratings=rating,
                 needs_manual_care=needs_manual_care,
             )
             if total:
@@ -262,7 +272,7 @@ def list_recipes(
 @router.get("/facets")
 def facets(
     type: Optional[str] = Query(None),
-    category: Optional[str] = Query(None),
+    category: Optional[List[str]] = Query(None),
     tag_id: Optional[List[int]] = Query(None),
     ingredient: Optional[List[str]] = Query(None),
     exclude_ingredient: Optional[List[str]] = Query(None),
@@ -271,16 +281,19 @@ def facets(
     verified: Optional[bool] = Query(None),
     favorite_only: bool = Query(False),
     min_rating: int = Query(0, ge=0, le=5),
+    rating: Optional[List[int]] = Query(None),
 ):
     """Filter-Optionen für die Sidebar. Tag-/Zutaten-Counts sind cross-gefiltert:
        jede Option zeigt die Treffer unter den übrigen aktiven Filtern, sodass
        die Zahlen beim Setzen eines Filters in den anderen Feldern schrumpfen.
        Types/Categories bleiben die volle Distinct-Liste (keine Counts in der UI)."""
+    if rating and any(value < 0 or value > 5 for value in rating):
+        raise HTTPException(422, "Bewertungen müssen zwischen 0 und 5 liegen")
     cache_key = (
-        type or "", category or "", tuple(sorted(tag_id or [])),
+        type or "", tuple(sorted(category or [])), tuple(sorted(tag_id or [])),
         tuple(sorted(ingredient or [])), tuple(sorted(exclude_ingredient or [])),
         search or "", ingredients_status or "",
-        verified, bool(favorite_only), int(min_rating),
+        verified, bool(favorite_only), int(min_rating), tuple(sorted(rating or [])),
     )
     cached = _FACET_CACHE.get(cache_key)
     if cached is not None:
@@ -297,10 +310,10 @@ def facets(
             "AND category IS NOT NULL AND category != '' ORDER BY category"
         ).fetchall()]
     flt = dict(
-        type=type, category=category, tag_ids=tag_id, ingredient_canonical=ingredient,
+        type=type, categories=category, tag_ids=tag_id, ingredient_canonical=ingredient,
         ingredient_excluded=exclude_ingredient,
         search=search, ingredients_status=ingredients_status, verified=verified,
-        favorite_only=favorite_only, min_rating=min_rating,
+        favorite_only=favorite_only, min_rating=min_rating, ratings=rating,
     )
     result = {
         "types": types,
@@ -310,6 +323,40 @@ def facets(
     }
     _FACET_CACHE.set(cache_key, result)
     return result
+
+
+@router.get("/count")
+def count_recipes(
+    type: Optional[str] = Query(None),
+    category: Optional[List[str]] = Query(None),
+    tag_id: Optional[List[int]] = Query(None),
+    ingredient: Optional[List[str]] = Query(None),
+    exclude_ingredient: Optional[List[str]] = Query(None),
+    search: Optional[str] = Query(None),
+    ingredients_status: Optional[str] = Query(None),
+    verified: Optional[bool] = Query(None),
+    favorite_only: bool = Query(False),
+    min_rating: int = Query(0, ge=0, le=5),
+    rating: Optional[List[int]] = Query(None),
+    needs_manual_care: Optional[bool] = Query(None),
+):
+    """Leichtgewichtige Live-Trefferzahl für den nativen Filterdialog."""
+    if rating and any(value < 0 or value > 5 for value in rating):
+        raise HTTPException(422, "Bewertungen müssen zwischen 0 und 5 liegen")
+    return {"total": get_db().recipe_count(
+        type=type,
+        categories=category,
+        tag_ids=tag_id,
+        ingredient_canonical=ingredient,
+        ingredient_excluded=exclude_ingredient,
+        search=search,
+        ingredients_status=ingredients_status,
+        verified=verified,
+        favorite_only=favorite_only,
+        min_rating=min_rating,
+        ratings=rating,
+        needs_manual_care=needs_manual_care,
+    )}
 
 
 # ── Detail ──────────────────────────────────────────────────────────────
@@ -1410,18 +1457,22 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
             409,
             "Für dieses Rezept läuft bereits eine Extraktion",
         )
-    _version_before(recipe_id, request, "KI-Inhalte neu extrahiert", source="ai")
-
     desc = recipe.get("description") or ""
-    if len(desc.strip()) < 20:
-        db.recipe_set_extraction_result(recipe_id, status="skipped", ingredients=[])
-        return {"ok": True, "status": "skipped", "reason": "Beschreibung zu kurz"}
-
     cfg = get_config()
     try:
         analyzer = build_analyzer(cfg.get("ai", default={}) or {})
     except Exception as e:
         raise HTTPException(500, f"Analyzer-Setup fehlgeschlagen: {e}")
+
+    # Auch der manuelle Trigger darf bei kurzer/leerer Caption ein bereits
+    # hochgeladenes Bild oder PDF als erste, günstige Quelle verwenden.
+    if len(desc.strip()) < 20:
+        try:
+            media_text = _try_media_extract(_safe_recipe_folder(recipe), analyzer)
+        except HTTPException:
+            media_text = None
+        if media_text:
+            desc = media_text
 
     try:
         with db.conn() as c:
@@ -1435,45 +1486,70 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
     except Exception:
         existing_tags, existing_canonical = [], []
 
+    current_ingredients = db.recipe_ingredients_get(recipe_id)
+    current_steps = db.recipe_steps_get(recipe_id)
+    current_tags = db.recipe_tags_get(recipe_id)
+
     try:
-        content = analyzer.analyze_recipe_content(
-            desc, existing_tags=existing_tags, existing_canonical=existing_canonical,
+        video_result = analyze_recipe_with_video_fallback(
+            analyzer,
+            recipe,
+            recipe_root=_recipe_root(),
+            ai_config=cfg.get("ai", default={}) or {},
+            existing_tags=existing_tags,
+            existing_canonical=existing_canonical,
+            description=desc,
         )
+        content = video_result.content
     except Exception as e:
         db.recipe_set_extraction_result(recipe_id, status="error", ingredients=[])
         raise HTTPException(502, f"KI-Call fehlgeschlagen: {e}")
     if content is None:
-        db.recipe_set_extraction_result(recipe_id, status="error", ingredients=[])
-        raise HTTPException(502, "KI lieferte kein verwertbares Ergebnis")
+        status = "skipped" if len(desc.strip()) < 20 and not video_result.used_video else "error"
+        db.recipe_set_extraction_result(recipe_id, status=status, ingredients=[])
+        return {
+            "ok": True,
+            "status": status,
+            "reason": video_result.reason or "KI lieferte kein verwertbares Ergebnis",
+        }
 
-    prepared = []
+    extracted_ingredients = []
     for it in (content.get("ingredients") or []):
-        prepared.append({
+        extracted_ingredients.append({
             "name": it.get("name") or "",
             "canonical_name": _canonical(it.get("name") or ""),
             "amount": it.get("amount"),
             "unit": normalize_unit(it.get("unit")),
             "raw": it.get("raw"),
         })
-    steps = content.get("steps") or []
-    servings = content.get("servings")
+    prepared = current_ingredients or extracted_ingredients
+    steps = current_steps or (content.get("steps") or [])
+    servings = recipe.get("servings") or content.get("servings")
 
     # Auto-Tags (KI + Regel-Pass)
     from ..recipes.auto_tags import compute_diet_tags
     ki_tags = content.get("tags") or []
-    diet_tags = compute_diet_tags([p["canonical_name"] for p in prepared])
-    all_auto_tags = sorted(set(ki_tags) | set(diet_tags))
+    diet_tags = compute_diet_tags([p.get("canonical_name") or "" for p in prepared])
+    previous_auto_tags = [t["name"] for t in current_tags if t.get("auto")]
+    all_auto_tags = sorted(set(previous_auto_tags) | set(ki_tags) | set(diet_tags))
+    final_status = "ok" if prepared and steps else "error"
+
+    _version_before(recipe_id, request, "KI-Inhalte neu extrahiert", source="ai")
     db.recipe_apply_extraction_result(
         recipe_id,
-        ingredients=prepared,
-        steps=steps,
+        ingredients=extracted_ingredients,
+        steps=content.get("steps") or [],
         servings=servings,
         auto_tags=all_auto_tags,
+        status=final_status,
+        replace_ingredients=not bool(current_ingredients),
+        replace_steps=not bool(current_steps),
+        replace_servings=not bool(recipe.get("servings")),
     )
 
     return {
         "ok": True,
-        "status": "ok",
+        "status": final_status,
         "ingredients_count": len(prepared),
         "steps_count": len(steps),
         "servings": servings,
@@ -1481,6 +1557,12 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
         "ingredients": db.recipe_ingredients_get(recipe_id),
         "steps": db.recipe_steps_get(recipe_id),
         "tags": db.recipe_tags_get(recipe_id),
+        "video_fallback": {
+            "used": video_result.used_video,
+            "frames_with_text": video_result.frame_text_count,
+            "audio_transcribed": video_result.transcribed,
+            "reason": video_result.reason,
+        },
     }
 
 

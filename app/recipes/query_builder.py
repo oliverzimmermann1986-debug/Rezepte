@@ -19,6 +19,7 @@ def build_recipe_filters(
     *,
     type: Optional[str] = None,
     category: Optional[str] = None,
+    categories: Optional[List[str]] = None,
     folder_prefix: Optional[str] = None,
     tag_ids: Optional[List[int]] = None,
     ingredient_canonical: Optional[List[str]] = None,
@@ -28,6 +29,7 @@ def build_recipe_filters(
     verified: Optional[bool] = None,
     favorite_only: bool = False,
     min_rating: int = 0,
+    ratings: Optional[List[int]] = None,
     needs_manual_care: Optional[bool] = None,
     include_deleted: bool = False,
     only_deleted: bool = False,
@@ -37,9 +39,15 @@ def build_recipe_filters(
     if type:
         where.append("r.type = ?")
         params.append(type)
-    if category:
-        where.append("r.category = ?")
-        params.append(category)
+    category_values = list(dict.fromkeys(
+        value.strip()
+        for value in ([category] if category else []) + list(categories or [])
+        if value and value.strip()
+    ))
+    if category_values:
+        placeholders = ",".join("?" for _ in category_values)
+        where.append(f"r.category IN ({placeholders})")
+        params.extend(category_values)
     if folder_prefix:
         where.append("r.folder_path LIKE ?")
         params.append(folder_prefix + "%")
@@ -74,7 +82,14 @@ def build_recipe_filters(
         params.append(1 if verified else 0)
     if favorite_only:
         where.append("r.is_favorite = 1")
-    if min_rating > 0:
+    rating_values = sorted(set(int(value) for value in (ratings or [])))
+    if any(value < 0 or value > 5 for value in rating_values):
+        raise ValueError("Bewertungen müssen zwischen 0 und 5 liegen")
+    if rating_values:
+        placeholders = ",".join("?" for _ in rating_values)
+        where.append(f"COALESCE(r.rating, 0) IN ({placeholders})")
+        params.extend(rating_values)
+    elif min_rating > 0:
         where.append("r.rating >= ?")
         params.append(min_rating)
     if needs_manual_care is not None:

@@ -144,6 +144,7 @@ def pinned_https_request(
     headers: Mapping[str, str] | None = None,
     json: Any = None,
     data: Any = None,
+    files: Any = None,
     params: Any = None,
     timeout: Any = 10,
 ) -> requests.Response:
@@ -164,6 +165,7 @@ def pinned_https_request(
                 headers=dict(headers or {}),
                 json=json,
                 data=data,
+                files=files,
                 params=params,
             )
         )
@@ -294,6 +296,7 @@ def server_configured_request(
     headers: Mapping[str, str] | None = None,
     json: Any = None,
     data: Any = None,
+    files: Any = None,
     params: Any = None,
     timeout: Any = 10,
 ) -> requests.Response:
@@ -327,6 +330,7 @@ def server_configured_request(
                 headers=dict(headers or {}),
                 json=json,
                 data=data,
+                files=files,
                 params=params,
                 timeout=timeout,
                 allow_redirects=False,
@@ -340,6 +344,7 @@ def server_configured_request(
         headers=headers,
         json=json,
         data=data,
+        files=files,
         params=params,
         timeout=timeout,
     )

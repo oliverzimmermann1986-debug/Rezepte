@@ -123,6 +123,24 @@ def test_min_rating_filter(db):
     assert names == ["3Star", "5Star"]
 
 
+def test_multi_category_and_exact_rating_filters(db):
+    _upsert(db, name="Pasta5", folder_path="/tmp/pasta5", category="Pasta")
+    _upsert(db, name="Suppe1", folder_path="/tmp/suppe1", category="Suppe")
+    _upsert(db, name="Salat3", folder_path="/tmp/salat3", category="Salat")
+    _upsert(db, name="Pasta0", folder_path="/tmp/pasta0", category="Pasta")
+    with db.conn() as c:
+        for path, rating in [
+            ("/tmp/pasta5", 5),
+            ("/tmp/suppe1", 1),
+            ("/tmp/salat3", 3),
+        ]:
+            c.execute("UPDATE recipes SET rating=? WHERE folder_path=?", (rating, path))
+
+    selected = db.recipe_list(categories=["Pasta", "Suppe"], ratings=[1, 5])
+    assert {recipe["name"] for recipe in selected} == {"Pasta5", "Suppe1"}
+    assert db.recipe_count(categories=["Pasta"], ratings=[0, 5]) == 2
+
+
 # ─── Count konsistent mit List ──────────────────────────────────────────────
 
 def test_recipe_count_matches_list_length(db):

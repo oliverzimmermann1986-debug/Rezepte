@@ -93,6 +93,15 @@ ai:
   # Auto-Übersetzung nicht-deutscher Captions ins Deutsche. Das Original
   # bleibt als description_original.txt im Rezept-Ordner erhalten.
   auto_translate: true
+  # Nur bei fehlenden Zutaten oder Schritten: wenige lokale Videoframes auf
+  # eingeblendeten Text prüfen, danach bei Bedarf die Audiospur transkribieren.
+  # Das Video wird weder in der iPhone-App noch über eine API ausgeliefert.
+  video_fallback:
+    enabled: true
+    max_frames: 6
+    max_seconds: 600
+    transcription_model: gpt-4o-mini-transcribe
+    cache_filename: .video-ai-evidence.json
 
 # PDF-Verarbeitung. Falsch gedrehte Seiten werden beim Mail-Import
 # automatisch ausgerichtet. Text-PDFs werden lokal über den Text-Layer
