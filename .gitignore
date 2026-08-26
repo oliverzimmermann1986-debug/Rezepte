@@ -8,6 +8,7 @@ venv/
 htmlcov/
 .pytest_cache/
 .ruff_cache/
+.tmp/
 
 # Runtime
 data/*.db
@@ -17,6 +18,11 @@ logs/
 temp/
 *.log
 video-archive/
+
+# Local tool/build output
+.codex-release-assets/pytest/
+.impeccable/questions/
+native-ios/dist*/
 
 # IDE
 .vscode/
