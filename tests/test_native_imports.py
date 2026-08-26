@@ -12,6 +12,7 @@ from app.core.analyzer import RecipeAnalysis
 from app.core.email_processor import normalize_content_url
 from app.jobs.scraper import ScraperJob
 from app.recipes.pdf_recipe_extract import ExtractedRecipeData
+from app.recipes.video_recipe_extract import VideoAnalysisResult
 
 
 def _jpeg_bytes(color: str = "red") -> bytes:
@@ -74,6 +75,65 @@ def test_native_file_upload_returns_conflict_when_scraper_is_busy(client, monkey
     )
     assert response.status_code == 409
     assert "Import läuft bereits" in response.json()["detail"]
+
+
+def test_pending_photo_upload_targets_existing_item_and_starts_vision(client, test_db, monkeypatch):
+    import app.routes.api_pending as api_pending
+
+    url = "https://www.tiktok.com/@koch/video/photo-scan"
+    test_db.pending_add(
+        url,
+        "recipe",
+        ai_suggestion={"name": "TikTok-Rezept prüfen", "source": "external-link"},
+    )
+    captured = {}
+
+    class FakeJob:
+        def attach_pending_photo(self, item_url, data, suffix, filename):
+            captured.update(
+                url=item_url,
+                data=data,
+                suffix=suffix,
+                filename=filename,
+            )
+            return {
+                "ok": True,
+                "action": "still_pending",
+                "message": "Foto erkannt",
+            }
+
+    @contextmanager
+    def available_lock(_name):
+        yield object()
+
+    monkeypatch.setattr(api_pending, "get_scraper_job", lambda: FakeJob())
+    monkeypatch.setattr(api_pending, "file_lock_or_none", available_lock)
+    jpeg = _jpeg_bytes("blue")
+    response = client.post(
+        "/api/pending/scan-photo",
+        params={"url": url},
+        files={"file": ("Rezept Foto.jpg", jpeg, "image/jpeg")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["action"] == "still_pending"
+    assert captured == {
+        "url": url,
+        "data": jpeg,
+        "suffix": ".jpg",
+        "filename": "Rezept Foto.jpg",
+    }
+
+
+def test_pending_photo_upload_requires_open_recipe_item(client):
+    response = client.post(
+        "/api/pending/scan-photo",
+        params={"url": "https://www.tiktok.com/@koch/video/missing"},
+        files={"file": ("rezept.jpg", _jpeg_bytes(), "image/jpeg")},
+    )
+
+    assert response.status_code == 404
+    assert "Prüfeintrag" in response.json()["detail"]
 
 
 def test_file_import_offloads_blocking_pipeline_to_threadpool():
@@ -523,10 +583,11 @@ def test_native_social_import_is_visible_before_background_analysis(
     assert queued["payload"]["url"] == "https://www.instagram.com/reel/ABC123/"
 
 
-def test_social_metadata_ai_keeps_incomplete_recipe_pending_without_video(test_db):
+def test_social_metadata_ai_imports_named_incomplete_recipe_without_video(test_db, tmp_path):
     url = "https://www.tiktok.com/@koch/video/987"
     job = object.__new__(ScraperJob)
     job.db = test_db
+    job.recipe_dir = tmp_path / "recipes"
     job.confidence_threshold = 0.75
     job.downloader = type("NoMediaDownloader", (), {
         "download": lambda *_args: (_ for _ in ()).throw(
@@ -547,12 +608,13 @@ def test_social_metadata_ai_keeps_incomplete_recipe_pending_without_video(test_d
 
     result = job.process_url({"url": url, "type": "recipe"})
 
-    assert result["status"] == "pending"
-    pending = test_db.pending_get(url)
-    assert pending["description"].startswith("Tomatensuppe")
-    assert pending["ai_suggestion"]["ingredients"][0]["name"] == "Tomaten"
-    assert pending["ai_suggestion"]["steps"] == []
-    assert pending["video_path"] is None
+    assert result["status"] == "auto"
+    assert result["needs_manual_care"] is True
+    recipe = test_db.recipe_get(result["recipe_id"])
+    assert recipe["name"] == "Tomatensuppe"
+    assert test_db.recipe_ingredients_get(recipe["id"])[0]["name"] == "Tomaten"
+    assert test_db.recipe_steps_get(recipe["id"]) == []
+    assert recipe["video_filename"] is None
 
 
 def test_social_metadata_ai_saves_complete_recipe_without_video(test_db, tmp_path):
@@ -589,6 +651,74 @@ def test_social_metadata_ai_saves_complete_recipe_without_video(test_db, tmp_pat
     target = Path(result["target"])
     assert not list(target.glob("*.mp4"))
     assert (target / "description.txt").exists()
+
+
+def test_social_video_frames_and_audio_enrich_first_import(test_db, tmp_path, monkeypatch):
+    import app.jobs.scraper as scraper_module
+
+    url = "https://www.tiktok.com/@koch/video/FRAMEAUDIO"
+    temp_dir = tmp_path / "temp"
+
+    class Downloader:
+        def download(self, _url):
+            folder = temp_dir / "downloaded"
+            folder.mkdir(parents=True)
+            video = folder / "video.mp4"
+            video.write_bytes(b"temporary-video")
+            return video
+
+    captured = {}
+
+    def fake_video_analysis(_analyzer, video, **kwargs):
+        captured.update(video=video, description=kwargs["description"])
+        return VideoAnalysisResult(
+            content={
+                "ingredients": [
+                    {"name": "Kartoffel", "amount": 500, "unit": "g"},
+                    {"name": "Brühe", "amount": 1, "unit": "l"},
+                ],
+                "steps": [{"instruction": "Alles 20 Minuten kochen.", "timer_seconds": 1200}],
+                "servings": 2,
+                "tags": ["suppe"],
+            },
+            used_video=True,
+            frame_text_count=3,
+            transcribed=True,
+            reason="video_complete",
+            evidence_text=(
+                "Kartoffelsuppe. EINGEBLENDETER TEXT: 500 g Kartoffeln, 1 l Brühe. "
+                "GESPROCHENER TEXT: Alles 20 Minuten kochen."
+            ),
+        )
+
+    monkeypatch.setattr(scraper_module, "analyze_recipe_video_file", fake_video_analysis)
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.downloader = Downloader()
+    job.temp_dir = temp_dir
+    job.recipe_dir = tmp_path / "recipes"
+    job.confidence_threshold = 0.75
+    job.analyzer = object()
+    job._fetch_description_via_ytdlp = lambda _url: "Kartoffelsuppe ohne Mengenangaben."
+    job._analyze_recipe = lambda _text: RecipeAnalysis(
+        "Kartoffelsuppe", "Hauptgericht", "Suppe", 0.96,
+    )
+    job._extract_recipe_data = lambda text: ExtractedRecipeData(text=text, method="ai")
+
+    result = job.process_url({"url": url, "type": "recipe"})
+
+    assert result["status"] == "auto"
+    assert result["needs_manual_care"] is False
+    assert result["video_frames_with_text"] == 3
+    assert result["audio_transcribed"] is True
+    recipe = test_db.recipe_get(result["recipe_id"])
+    assert recipe["video_filename"] is None
+    assert [item["name"] for item in test_db.recipe_ingredients_get(recipe["id"])] == [
+        "Kartoffel", "Brühe",
+    ]
+    assert test_db.recipe_steps_get(recipe["id"])[0]["timer_seconds"] == 1200
+    assert captured["description"].startswith("Kartoffelsuppe")
+    assert not captured["video"].parent.exists()
 
 
 def test_manual_image_is_transcribed_and_structured_immediately(test_db, tmp_path):
@@ -648,6 +778,44 @@ def test_manual_image_is_transcribed_and_structured_immediately(test_db, tmp_pat
         "Kartoffel", "Brühe",
     ]
     assert len(test_db.recipe_steps_get(recipe["id"])) == 2
+
+
+def test_image_only_import_saves_named_recipe_for_manual_care(test_db, tmp_path):
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.recipe_dir = tmp_path / "recipes"
+    job.wedding_dir = tmp_path / "wedding"
+    job.temp_dir = tmp_path / "temp"
+    job.analyzer = object()
+    job.analyzer_enabled = True
+    job.min_desc_len = 20
+    job.confidence_threshold = 0.75
+    job.pdf_keep_original = True
+    job._extract_recipe_data = lambda text: ExtractedRecipeData(text=text, method="none")
+    job._analyze_image_via_openai = lambda *_args, **_kwargs: RecipeAnalysis(
+        "Schokoladenkuchen", "Nachspeise", "Kuchen", 0.83,
+    )
+
+    result = job.process_attachment(
+        {
+            "filename": "schokoladenkuchen.jpg",
+            "ext": ".jpg",
+            "type": "recipe",
+            "source": "manual-upload",
+            "data": b"food-photo",
+            "subject": "Kuchenfoto",
+            "body_excerpt": "",
+        },
+        "manual-upload://image-only/schokoladenkuchen.jpg",
+    )
+
+    assert result["status"] == "auto"
+    assert result["needs_manual_care"] is True
+    recipe = test_db.recipe_get(result["recipe_id"])
+    assert recipe["name"] == "Schokoladenkuchen"
+    assert recipe["video_filename"] is None
+    assert test_db.recipe_ingredients_get(recipe["id"]) == []
+    assert test_db.recipe_steps_get(recipe["id"]) == []
 
 
 def test_manual_image_pending_can_be_reanalyzed_with_structured_ai_data(test_db, tmp_path):
@@ -761,6 +929,132 @@ def test_complete_manual_image_reanalysis_saves_recipe_without_video(test_db, tm
     assert not source.exists()
 
 
+def test_attached_photo_scans_legacy_pending_and_becomes_recipe_image(test_db, tmp_path):
+    class FakeAnalyzer:
+        def extract_description_from_image_bytes(self, data, mime, context):
+            assert data == b"photo-payload"
+            assert mime == "image/jpeg"
+            assert context == "handschrift.jpg"
+            return "Zutaten: 500 g Kartoffeln. Zubereitung: Kartoffeln 20 Minuten kochen."
+
+    url = "legacy://missing-video/photo-rescue"
+    test_db.pending_add(
+        url=url,
+        content_type="recipe",
+        description="Alter unvollständiger Import",
+        video_path=str(tmp_path / "temp" / "missing.mp4"),
+        ai_suggestion={"name": "Unbekannt", "source": "legacy-video"},
+    )
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.temp_dir = tmp_path / "temp"
+    job.recipe_dir = tmp_path / "recipes"
+    job.wedding_dir = tmp_path / "wedding"
+    job.analyzer = FakeAnalyzer()
+    job.confidence_threshold = 0.75
+    job._analyze_recipe = lambda _text: RecipeAnalysis(
+        "Kartoffelsuppe", "Hauptgericht", "Suppe", 0.97,
+    )
+    job._extract_recipe_data = lambda text: ExtractedRecipeData(
+        text=text,
+        ingredients=[{"name": "Kartoffel", "amount": 500, "unit": "g"}],
+        steps=[{"instruction": "Kartoffeln 20 Minuten kochen.", "timer_seconds": 1200}],
+        servings=2,
+        method="ai",
+    )
+
+    result = job.attach_pending_photo(
+        url,
+        b"photo-payload",
+        ".jpg",
+        "handschrift.jpg",
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "auto_saved"
+    recipe = test_db.recipe_get(result["recipe_id"])
+    assert recipe["thumb_filename"] == "Kartoffelsuppe.jpg"
+    assert Path(recipe["folder_path"], recipe["thumb_filename"]).read_bytes() == b"photo-payload"
+    assert test_db.recipe_ingredients_get(recipe["id"])[0]["name"] == "Kartoffel"
+    assert test_db.recipe_steps_get(recipe["id"])[0]["timer_seconds"] == 1200
+    assert test_db.pending_get(url)["status"] == "resolved"
+
+
+def test_named_incomplete_pending_photo_is_imported_for_manual_care(test_db, tmp_path):
+    class FakeAnalyzer:
+        def extract_description_from_image_bytes(self, data, mime, context):
+            return "Cremige Pilzsuppe"
+
+    url = "legacy://missing-video/named-photo"
+    test_db.pending_add(
+        url=url,
+        content_type="recipe",
+        ai_suggestion={"name": "Unbekannt", "source": "legacy-video"},
+    )
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.temp_dir = tmp_path / "temp"
+    job.recipe_dir = tmp_path / "recipes"
+    job.wedding_dir = tmp_path / "wedding"
+    job.analyzer = FakeAnalyzer()
+    job.confidence_threshold = 0.75
+    job._analyze_recipe = lambda _text: RecipeAnalysis(
+        "Cremige Pilzsuppe", "Hauptgericht", "Suppe", 0.91,
+    )
+    job._extract_recipe_data = lambda text: ExtractedRecipeData(text=text, method="ai")
+
+    result = job.attach_pending_photo(url, b"photo-payload", ".jpg", "pilzsuppe.jpg")
+
+    assert result["ok"] is True
+    assert result["action"] == "auto_saved"
+    assert result["needs_manual_care"] is True
+    recipe = test_db.recipe_get(result["recipe_id"])
+    assert recipe["name"] == "Cremige Pilzsuppe"
+    assert recipe["ingredients_status"] == "pending"
+    assert test_db.recipe_ingredients_get(recipe["id"]) == []
+    assert test_db.recipe_steps_get(recipe["id"]) == []
+    assert test_db.pending_get(url)["status"] == "resolved"
+
+
+def test_named_dish_photo_without_text_is_imported_for_manual_care(test_db, tmp_path):
+    class FakeAnalyzer:
+        def extract_description_from_image_bytes(self, data, mime, context):
+            return ""
+
+    url = "legacy://missing-video/named-dish-photo"
+    test_db.pending_add(
+        url=url,
+        content_type="recipe",
+        description="Gerichtsfoto ohne eingeblendeten Text",
+        ai_suggestion={
+            "name": "Räucherlachs-Bagel",
+            "type": "Hauptgericht",
+            "category": "Fisch",
+            "confidence": 0.86,
+            "source": "external-link",
+        },
+    )
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.temp_dir = tmp_path / "temp"
+    job.recipe_dir = tmp_path / "recipes"
+    job.wedding_dir = tmp_path / "wedding"
+    job.analyzer = FakeAnalyzer()
+    job.confidence_threshold = 0.75
+
+    result = job.attach_pending_photo(url, b"dish-photo", ".jpg", "bagel.jpg")
+
+    assert result["action"] == "auto_saved"
+    assert result["needs_manual_care"] is True
+    recipe = test_db.recipe_get(result["recipe_id"])
+    assert recipe["name"] == "Räucherlachs-Bagel"
+    assert recipe["thumb_filename"] == "Räucherlachs-Bagel.jpg"
+    assert Path(recipe["folder_path"], recipe["thumb_filename"]).read_bytes() == b"dish-photo"
+    assert test_db.recipe_ingredients_get(recipe["id"]) == []
+    assert test_db.recipe_steps_get(recipe["id"]) == []
+    assert test_db.pending_get(url)["status"] == "resolved"
+
+
 def test_social_reanalysis_preserves_cover_and_is_idempotent(test_db, tmp_path):
     url = "https://www.tiktok.com/@koch/video/cover123"
     test_db.pending_add(
@@ -782,7 +1076,7 @@ def test_social_reanalysis_preserves_cover_and_is_idempotent(test_db, tmp_path):
             }
 
         def download(self, _url):
-            raise AssertionError("Beim Link-Import darf kein Video heruntergeladen werden")
+            return None
 
     job = object.__new__(ScraperJob)
     job.db = test_db
@@ -803,26 +1097,14 @@ def test_social_reanalysis_preserves_cover_and_is_idempotent(test_db, tmp_path):
 
     refreshed = job.reanalyze_pending(url)
 
-    assert refreshed["action"] == "still_pending"
-    pending = test_db.pending_get(url)
-    assert pending["ai_suggestion"]["has_thumbnail"] is True
-    assert Path(pending["frame_path"]).read_bytes() == b"jpeg-thumbnail"
-
-    saved = job.resolve_pending(url, {
-        "action": "save",
-        "name": "Tomatenpasta",
-        "type": "Hauptgericht",
-        "category": "Pasta",
-        "description": refreshed["description"],
-        "ingredients": [{"name": "Tomaten", "amount": 4, "unit": "Stück"}],
-        "steps": [{"instruction": "Tomaten einkochen."}],
-    })
-
-    recipe = test_db.recipe_get(saved["recipe_id"])
+    assert refreshed["action"] == "auto_saved"
+    assert refreshed["needs_manual_care"] is True
+    recipe = test_db.recipe_get(refreshed["recipe_id"])
     assert recipe["thumb_filename"] == "Tomatenpasta.jpg"
     assert Path(recipe["folder_path"], recipe["thumb_filename"]).read_bytes() == b"jpeg-thumbnail"
     assert recipe["video_filename"] is None
-    assert not Path(pending["frame_path"]).exists()
+    assert test_db.recipe_steps_get(recipe["id"]) == []
+    assert test_db.pending_get(url)["status"] == "resolved"
 
     repeated = job.reanalyze_pending(url)
     assert repeated["action"] == "already_saved"
@@ -838,7 +1120,7 @@ def test_cart_add_endpoint_returns_json(client):
     assert response.json()["ok"] is True
 
 
-def test_social_import_is_link_only_and_never_calls_downloader(test_db):
+def test_social_import_without_analyzer_stays_pending_and_clears_old_failure(test_db):
     class FailingDownloader:
         def download(self, _url):
             raise AssertionError("Social-Medien dürfen nicht heruntergeladen werden")

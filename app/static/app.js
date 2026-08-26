@@ -1930,6 +1930,39 @@ function scrapperApp() {
         // ------------- Pending Reanalyze -------------
     reanalyzing: {},
     reanalyzingAll: false,
+    async scanPendingPhoto(item, event) {
+      const input = event && event.target;
+      const file = input && input.files && input.files[0];
+      if (input) input.value = '';
+      if (!file || this.reanalyzing[item.url]) return;
+      this.reanalyzing[item.url] = true;
+      try {
+        const form = new FormData();
+        form.append('file', file, file.name || 'rezeptfoto.jpg');
+        const endpoint = '/api/pending/scan-photo?url=' + encodeURIComponent(item.url);
+        const response = await fetch(endpoint, { method: 'POST', body: form });
+        if (response.status === 401) {
+          window.location = '/login';
+          return;
+        }
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) {
+          const detail = result.detail || result.error || `HTTP ${response.status}`;
+          throw new Error(this.apiErrorMessage(detail, 'Foto-Scan fehlgeschlagen'));
+        }
+        if (result.action === 'auto_saved' || result.action === 'already_saved') {
+          this.showToast(result.message || 'Foto erkannt und Rezept einsortiert', 'ok');
+        } else {
+          this.showToast(result.message || 'Foto erkannt; KI-Vorschlag aktualisiert', 'ok');
+        }
+        await this.loadPending();
+        await this.refreshStatus();
+      } catch (error) {
+        this.showToast('Foto-Scan: ' + (error && error.message || error), 'error');
+      } finally {
+        delete this.reanalyzing[item.url];
+      }
+    },
     async reanalyzeOne(item) {
       this.reanalyzing[item.url] = true;
       try {

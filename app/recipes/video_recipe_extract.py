@@ -28,7 +28,7 @@ CACHE_VERSION = 1
 @dataclass(frozen=True)
 class VideoFallbackSettings:
     enabled: bool = True
-    max_frames: int = 6
+    max_frames: int = 10
     max_seconds: int = 600
     transcription_model: str = "gpt-4o-mini-transcribe"
     cache_filename: str = ".video-ai-evidence.json"
@@ -41,7 +41,7 @@ class VideoFallbackSettings:
             cache_name = cls.cache_filename
         return cls(
             enabled=bool(raw.get("enabled", True)),
-            max_frames=max(1, min(10, int(raw.get("max_frames") or 6))),
+            max_frames=max(1, min(10, int(raw.get("max_frames") or 10))),
             max_seconds=max(30, min(900, int(raw.get("max_seconds") or 600))),
             transcription_model=str(
                 raw.get("transcription_model") or "gpt-4o-mini-transcribe"
@@ -57,6 +57,7 @@ class VideoAnalysisResult:
     frame_text_count: int = 0
     transcribed: bool = False
     reason: Optional[str] = None
+    evidence_text: str = ""
 
 
 def _empty_content() -> dict:
@@ -166,7 +167,11 @@ def _probe_duration(video: Path, max_seconds: int) -> float:
 
 
 def _frame_timestamps(duration: float, max_frames: int) -> list[float]:
-    count = min(max_frames, max(1, int(math.ceil(duration / 8.0))))
+    # Kurze Social-Videos blenden Zutaten oft nur für wenige Sekunden ein.
+    # Vier-Sekunden-Abstände treffen diese Tafeln deutlich zuverlässiger als
+    # die frühere Acht-Sekunden-Abtastung, bleiben aber hart auf zehn Frames
+    # und damit auf kalkulierbare Vision-Kosten begrenzt.
+    count = min(max_frames, max(1, int(math.ceil(duration / 4.0))))
     if duration <= 0.5:
         return [0.0]
     return [
@@ -246,6 +251,103 @@ def _combined_text(description: str, frame_texts: list[str], transcript: Optiona
     return "\n\n".join(parts)[:30000]
 
 
+def analyze_recipe_video_file(
+    analyzer,
+    video: Path,
+    *,
+    ai_config: Optional[dict] = None,
+    existing_tags: Optional[list[str]] = None,
+    existing_canonical: Optional[list[str]] = None,
+    description: Optional[str] = None,
+) -> VideoAnalysisResult:
+    """Analysiert eine explizite Videodatei für den Erst- oder Nachimport.
+
+    Der Aufrufer ist für die sichere Herkunft des Pfads verantwortlich. Der
+    bestehende Rezept-Fallback löst den Pfad weiterhin selbst innerhalb des
+    konfigurierten Rezeptwurzelverzeichnisses auf.
+    """
+    settings = VideoFallbackSettings.from_ai_config(ai_config)
+    source_text = (description or "").strip()
+    content: Optional[dict] = None
+    if len(source_text) >= 20:
+        content = analyzer.analyze_recipe_content(
+            source_text,
+            existing_tags=existing_tags,
+            existing_canonical=existing_canonical,
+        )
+        if _is_complete(content):
+            return VideoAnalysisResult(
+                content=content,
+                reason="caption_complete",
+                evidence_text=source_text,
+            )
+
+    if not settings.enabled:
+        return VideoAnalysisResult(
+            content=content,
+            reason="video_fallback_disabled",
+            evidence_text=source_text,
+        )
+    if not video.is_file():
+        return VideoAnalysisResult(
+            content=content,
+            reason="video_missing",
+            evidence_text=source_text,
+        )
+
+    cache = _load_cache(video, settings)
+    frame_texts = [str(item).strip() for item in cache.get("frame_texts") or [] if str(item).strip()]
+    if not frame_texts and not cache.get("frames_attempted"):
+        frame_texts = _extract_frame_texts(analyzer, video, settings)
+        cache["frame_texts"] = frame_texts
+        cache["frames_attempted"] = True
+        _save_cache(video, settings, cache)
+
+    if frame_texts:
+        frame_evidence = _combined_text(source_text, frame_texts, None)
+        frame_content = analyzer.analyze_recipe_content(
+            frame_evidence,
+            existing_tags=existing_tags,
+            existing_canonical=existing_canonical,
+        )
+        content = _merge_missing(content, frame_content)
+        if _is_complete(content):
+            return VideoAnalysisResult(
+                content=content,
+                used_video=True,
+                frame_text_count=len(frame_texts),
+                reason="frames_complete",
+                evidence_text=frame_evidence,
+            )
+
+    transcript = (cache.get("transcript") or "").strip() or None
+    if not transcript and not cache.get("transcription_attempted"):
+        transcript = _extract_transcript(analyzer, video, settings)
+        cache["transcript"] = transcript
+        cache["transcription_attempted"] = True
+        _save_cache(video, settings, cache)
+
+    if transcript:
+        combined_evidence = _combined_text(source_text, frame_texts, transcript)
+        audio_content = analyzer.analyze_recipe_content(
+            combined_evidence,
+            existing_tags=existing_tags,
+            existing_canonical=existing_canonical,
+        )
+        content = _merge_missing(content, audio_content)
+    else:
+        combined_evidence = _combined_text(source_text, frame_texts, None)
+
+    return VideoAnalysisResult(
+        content=content,
+        used_video=bool(frame_texts or transcript),
+        frame_text_count=len(frame_texts),
+        transcribed=bool(transcript),
+        reason="video_complete" if _is_complete(content) else "video_incomplete",
+        evidence_text=combined_evidence,
+    )
+
+
 def analyze_recipe_with_video_fallback(
     analyzer,
     recipe: dict,
@@ -257,66 +359,28 @@ def analyze_recipe_with_video_fallback(
     description: Optional[str] = None,
 ) -> VideoAnalysisResult:
     """Analysiert Caption, dann Frames und zuletzt bei Bedarf die Audiospur."""
-    settings = VideoFallbackSettings.from_ai_config(ai_config)
-    source_text = (description if description is not None else recipe.get("description") or "").strip()
-    content: Optional[dict] = None
-    if len(source_text) >= 20:
-        content = analyzer.analyze_recipe_content(
-            source_text,
-            existing_tags=existing_tags,
-            existing_canonical=existing_canonical,
-        )
-        if _is_complete(content):
-            return VideoAnalysisResult(content=content, reason="caption_complete")
-
-    if not settings.enabled:
-        return VideoAnalysisResult(content=content, reason="video_fallback_disabled")
+    source_text = (
+        description if description is not None else recipe.get("description") or ""
+    ).strip()
     video = find_recipe_video(recipe, recipe_root)
     if video is None:
-        return VideoAnalysisResult(content=content, reason="video_missing")
-
-    cache = _load_cache(video, settings)
-    frame_texts = [str(item).strip() for item in cache.get("frame_texts") or [] if str(item).strip()]
-    if not frame_texts and not cache.get("frames_attempted"):
-        frame_texts = _extract_frame_texts(analyzer, video, settings)
-        cache["frame_texts"] = frame_texts
-        cache["frames_attempted"] = True
-        _save_cache(video, settings, cache)
-
-    if frame_texts:
-        frame_content = analyzer.analyze_recipe_content(
-            _combined_text(source_text, frame_texts, None),
-            existing_tags=existing_tags,
-            existing_canonical=existing_canonical,
-        )
-        content = _merge_missing(content, frame_content)
-        if _is_complete(content):
-            return VideoAnalysisResult(
-                content=content,
-                used_video=True,
-                frame_text_count=len(frame_texts),
-                reason="frames_complete",
+        content: Optional[dict] = None
+        if len(source_text) >= 20:
+            content = analyzer.analyze_recipe_content(
+                source_text,
+                existing_tags=existing_tags,
+                existing_canonical=existing_canonical,
             )
-
-    transcript = (cache.get("transcript") or "").strip() or None
-    if not transcript and not cache.get("transcription_attempted"):
-        transcript = _extract_transcript(analyzer, video, settings)
-        cache["transcript"] = transcript
-        cache["transcription_attempted"] = True
-        _save_cache(video, settings, cache)
-
-    if transcript:
-        audio_content = analyzer.analyze_recipe_content(
-            _combined_text(source_text, frame_texts, transcript),
-            existing_tags=existing_tags,
-            existing_canonical=existing_canonical,
+        return VideoAnalysisResult(
+            content=content,
+            reason="caption_complete" if _is_complete(content) else "video_missing",
+            evidence_text=source_text,
         )
-        content = _merge_missing(content, audio_content)
-
-    return VideoAnalysisResult(
-        content=content,
-        used_video=bool(frame_texts or transcript),
-        frame_text_count=len(frame_texts),
-        transcribed=bool(transcript),
-        reason="video_complete" if _is_complete(content) else "video_incomplete",
+    return analyze_recipe_video_file(
+        analyzer,
+        video,
+        ai_config=ai_config,
+        existing_tags=existing_tags,
+        existing_canonical=existing_canonical,
+        description=source_text,
     )

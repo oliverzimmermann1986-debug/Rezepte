@@ -176,6 +176,14 @@ actor APIClient {
         try await send("/api/recipes/\(id)")
     }
 
+    func deleteRecipe(id: Int) async throws -> APIResult {
+        try await send(
+            "/api/recipes/\(id)",
+            method: "DELETE",
+            query: [URLQueryItem(name: "delete_files", value: "true")]
+        )
+    }
+
     func toggleFavorite(id: Int) async throws -> APIResult {
         try await send("/api/recipes/\(id)/favorite", method: "POST", body: EmptyBody())
     }
@@ -299,6 +307,37 @@ actor APIClient {
         body.append("\r\n--\(boundary)--\r\n")
 
         var request = URLRequest(url: try endpoint("/api/pending/import-file"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 180
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        authorize(&request, includeBearer: true)
+        return try await execute(request)
+    }
+
+    func scanPendingPhoto(
+        url: String,
+        data: Data,
+        filename: String,
+        mimeType: String
+    ) async throws -> APIResult {
+        let boundary = "RezepteBoundary-\(UUID().uuidString)"
+        let safeFilename = filename
+            .replacingOccurrences(of: "\"", with: "_")
+            .replacingOccurrences(of: "\r", with: "_")
+            .replacingOccurrences(of: "\n", with: "_")
+        var body = Data()
+        body.append("--\(boundary)\r\n")
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(safeFilename)\"\r\n")
+        body.append("Content-Type: \(mimeType)\r\n\r\n")
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n")
+
+        var request = URLRequest(url: try endpoint(
+            "/api/pending/scan-photo",
+            query: [URLQueryItem(name: "url", value: url)]
+        ))
         request.httpMethod = "POST"
         request.timeoutInterval = 180
         request.setValue("application/json", forHTTPHeaderField: "Accept")

@@ -28,6 +28,7 @@ import {
   currentApiSessionEpoch,
   deleteCachedFile,
   downloadFileToCache,
+  uploadFile,
 } from '@/lib/api';
 import { invalidateApiCacheByPrefix } from '@/lib/cache';
 import {
@@ -40,6 +41,7 @@ import { normalizedExternalUrl, openExternalUrl } from '@/lib/external-links';
 import { optionalInteger, optionalNumber } from '@/lib/numbers';
 import { PendingItem } from '@/lib/types';
 import { normalizeUnit } from '@/lib/units';
+import { pickEditedJpeg } from '@/lib/image-picker';
 
 type Props = {
   item: PendingItem | null;
@@ -68,9 +70,11 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   const [verified, setVerified] = useState(false);
   const [busy, setBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
+  const [photoBusy, setPhotoBusy] = useState(false);
   const [error, setError] = useState('');
   const [previewUnavailable, setPreviewUnavailable] = useState(false);
   const [hasExternalPreview, setHasExternalPreview] = useState(false);
+  const [previewRevision, setPreviewRevision] = useState(0);
 
   useEffect(() => {
     if (!item) return;
@@ -86,7 +90,45 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
     setError('');
     setPreviewUnavailable(false);
     setHasExternalPreview(Boolean(suggestion.has_thumbnail));
+    setPreviewRevision(0);
   }, [item]);
+
+  async function applyReanalysisResult(result: ReanalyzeResult, title: string) {
+    if (!result.ok) throw new Error(result.error || 'KI-Prüfung fehlgeschlagen');
+
+    if (result.action === 'auto_saved' || result.action === 'already_saved') {
+      await invalidateApiCacheByPrefix('recipe:', 'recipes:');
+      Alert.alert(
+        title,
+        result.message || 'Das vollständige Rezept wurde automatisch einsortiert.',
+      );
+      onSaved();
+      return;
+    }
+
+    const suggestion = result.analysis || {};
+    if (suggestion.has_thumbnail) {
+      setHasExternalPreview(true);
+      setPreviewUnavailable(false);
+      setPreviewRevision(Date.now());
+    }
+    if (suggestion.name?.trim()) setName(suggestion.name.trim());
+    if (suggestion.type?.trim()) setRecipeType(suggestion.type.trim());
+    if (suggestion.category?.trim()) setCategory(suggestion.category.trim());
+    if (result.description?.trim()) setDescription(result.description.trim());
+    if (suggestion.servings) setServings(String(suggestion.servings));
+    if (suggestion.ingredients?.length) {
+      setIngredients(suggestion.ingredients.map(createIngredientRow));
+    }
+    if (suggestion.steps?.length) {
+      setSteps(suggestion.steps.map(createStepRow));
+    }
+    setVerified(false);
+    Alert.alert(
+      title,
+      result.message || 'Bitte Zutaten und Zubereitung kontrollieren und anschließend speichern.',
+    );
+  }
 
   async function save() {
     if (!item) return;
@@ -145,40 +187,36 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
         undefined,
         120_000,
       );
-      if (!result.ok) throw new Error(result.error || 'KI-Prüfung fehlgeschlagen');
-
-      if (result.action === 'auto_saved' || result.action === 'already_saved') {
-        await invalidateApiCacheByPrefix('recipe:', 'recipes:');
-        Alert.alert(
-          'KI-Prüfung abgeschlossen',
-          result.message || 'Das vollständige Rezept wurde automatisch einsortiert.',
-        );
-        onSaved();
-        return;
-      }
-
-      const suggestion = result.analysis || {};
-      if (suggestion.has_thumbnail) setHasExternalPreview(true);
-      if (suggestion.name?.trim()) setName(suggestion.name.trim());
-      if (suggestion.type?.trim()) setRecipeType(suggestion.type.trim());
-      if (suggestion.category?.trim()) setCategory(suggestion.category.trim());
-      if (result.description?.trim()) setDescription(result.description.trim());
-      if (suggestion.servings) setServings(String(suggestion.servings));
-      if (suggestion.ingredients?.length) {
-        setIngredients(suggestion.ingredients.map(createIngredientRow));
-      }
-      if (suggestion.steps?.length) {
-        setSteps(suggestion.steps.map(createStepRow));
-      }
-      setVerified(false);
-      Alert.alert(
-        'KI-Vorschlag aktualisiert',
-        result.message || 'Bitte Zutaten und Zubereitung kontrollieren und anschließend speichern.',
-      );
+      await applyReanalysisResult(result, 'KI-Vorschlag aktualisiert');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'KI-Prüfung fehlgeschlagen');
     } finally {
       setAiBusy(false);
+      setBusy(false);
+    }
+  }
+
+  async function scanPhoto() {
+    if (!item || busy) return;
+    let picked: Awaited<ReturnType<typeof pickEditedJpeg>> = null;
+    try {
+      picked = await pickEditedJpeg('pending-rezept');
+      if (!picked) return;
+      setBusy(true);
+      setPhotoBusy(true);
+      setError('');
+      const result = await uploadFile<ReanalyzeResult>(
+        `/api/pending/scan-photo?url=${encodeURIComponent(item.url)}`,
+        picked,
+        undefined,
+        180_000,
+      );
+      await applyReanalysisResult(result, 'Foto-Scan abgeschlossen');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Foto-Scan fehlgeschlagen');
+    } finally {
+      if (picked?.uri) await deleteCachedFile(picked.uri).catch(() => undefined);
+      setPhotoBusy(false);
       setBusy(false);
     }
   }
@@ -222,11 +260,10 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   const hasLocalFile = ['manual-upload', 'mail-attachment'].includes(
     item?.ai_suggestion?.source || '',
   ) && Boolean(filename);
-  const hasSocialCover = item?.ai_suggestion?.source === 'external-link'
-    && hasExternalPreview;
+  const hasPendingPhoto = hasExternalPreview;
   const isImage = ['jpg', 'jpeg', 'png'].includes(extension);
   const localFilePath = item
-    ? `/api/pending/file?url=${encodeURIComponent(item.url)}`
+    ? `/api/pending/file?url=${encodeURIComponent(item.url)}&v=${previewRevision}`
     : '';
   const compactForm = width < 390 || fontScale > 1.15;
 
@@ -288,11 +325,16 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
               <TextInput placeholder="Portionen" placeholderTextColor={colors.muted} keyboardType="number-pad" value={servings} onChangeText={setServings} style={sharedStyles.input} />
               <TextInput multiline placeholder="Erkannter Text" placeholderTextColor={colors.muted} value={description} onChangeText={setDescription} style={[sharedStyles.input, styles.description]} />
               <PrimaryButton
+                label={photoBusy ? 'Foto wird gescannt …' : 'Foto hinzufügen und scannen'}
+                onPress={() => void scanPhoto()}
+                disabled={busy}
+              />
+              <PrimaryButton
                 label={aiBusy ? 'KI prüft erneut …' : 'Nochmals mit KI prüfen'}
                 onPress={() => void reanalyze()}
                 disabled={busy}
               />
-              <Text style={styles.aiHelp}>Liest Link, Bild oder PDF erneut aus und ersetzt den Vorschlag erst nach erfolgreicher Analyse.</Text>
+              <Text style={styles.aiHelp}>Das Foto wird als Rezeptbild gespeichert und für Zutaten und Schritte gelesen. „Nochmals mit KI prüfen“ verwendet danach dieses Foto erneut.</Text>
             </View>
 
             <View style={styles.section}>
@@ -385,9 +427,9 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
                 <PrimaryButton label={busy ? 'Datei wird geöffnet …' : 'Importdatei öffnen'} onPress={() => void openLocalFile()} disabled={busy} />
               </View>
             )}
-            {hasSocialCover && !previewUnavailable && (
+            {hasPendingPhoto && !hasLocalFile && !previewUnavailable && (
               <View style={styles.filePreview}>
-                <Text style={styles.fileTitle}>Gefundenes Vorschaubild</Text>
+                <Text style={styles.fileTitle}>Rezeptbild für den Foto-Scan</Text>
                 <Image
                   accessibilityLabel="Vorschau des gefundenen Rezeptbilds"
                   source={{ uri: absoluteApiUrl(localFilePath), headers: apiAuthHeaders() }}

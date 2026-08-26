@@ -225,6 +225,22 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(facets.ingredients.first?.canonicalName, "salz")
     }
 
+    func testRecipeDeleteMovesRecipeToTrashWithFiles() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: """
+        {"ok":true}
+        """)
+
+        let result = try await client.deleteRecipe(id: 42)
+
+        XCTAssertEqual(result.ok, true)
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "DELETE")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42")
+        XCTAssertEqual(MockURLProtocol.lastQueryItems()["delete_files"], "true")
+    }
+
     func testFileImportUsesAuthenticatedMultipartRequest() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
@@ -297,6 +313,7 @@ final class MockURLProtocol: URLProtocol {
 
     static func lastBody() -> Data { requestBody }
     static func lastMethod() -> String { requestMethod }
+    static func lastPath() -> String? { lastRequestURL?.path }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
 

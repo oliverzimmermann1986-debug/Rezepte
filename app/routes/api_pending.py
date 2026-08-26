@@ -73,6 +73,7 @@ class ImportUrlBody(BaseModel):
 
 _UPLOAD_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 _UPLOAD_LIMIT = 25 * 1024 * 1024
+_PHOTO_SCAN_LIMIT = 10 * 1024 * 1024
 _UPLOAD_FREE_RESERVE = 512 * 1024 * 1024
 _UPLOAD_MULTIPART_OVERHEAD = 2 * 1024 * 1024
 _UPLOAD_PDF_MAX_PAGES = 100
@@ -439,6 +440,63 @@ async def import_file(
         if result.get("status") == "auto"
         else "Datei wurde übernommen und wartet auf manuelle Prüfung."
     )
+    return result
+
+
+@router.post("/scan-photo", dependencies=[Depends(require_admin)])
+async def scan_pending_photo(
+    request: Request,
+    url: str = Query(..., min_length=1),
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    """Hängt ein Foto an einen offenen Prüfeintrag und analysiert es sofort.
+
+    Im Unterschied zu ``import-file`` entsteht kein neuer Eingang. Das Foto
+    ergänzt genau den ausgewählten Pending-Eintrag, dient als späteres
+    Rezeptbild und wird über die Vision-/Rezeptpipeline ausgewertet.
+    """
+    try:
+        content_length = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        content_length = 0
+    if content_length > _PHOTO_SCAN_LIMIT + _UPLOAD_MULTIPART_OVERHEAD:
+        raise HTTPException(413, "Das Foto ist größer als 10 MB")
+
+    filename = _safe_upload_filename(file.filename)
+    ext = Path(filename).suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png"}:
+        raise HTTPException(415, "Erlaubt sind JPG, JPEG und PNG")
+    data = await file.read(_PHOTO_SCAN_LIMIT + 1)
+    if not data:
+        raise HTTPException(400, "Die Datei ist leer")
+    if len(data) > _PHOTO_SCAN_LIMIT:
+        raise HTTPException(413, "Das Foto ist größer als 10 MB")
+    detected = _detected_upload_type(data)
+    expected = ".jpg" if ext in {".jpg", ".jpeg"} else ext
+    if detected not in {".jpg", ".png"} or detected != expected:
+        raise HTTPException(415, "Dateiendung und tatsächliches Bildformat stimmen nicht überein")
+    _validate_upload_payload(data, detected)
+    _assert_upload_capacity(len(data))
+
+    db = get_db()
+    entry = db.pending_get(url)
+    if not entry or entry.get("status") != "pending":
+        raise HTTPException(404, "Offener Prüfeintrag nicht gefunden")
+    if (entry.get("content_type") or "recipe") != "recipe":
+        raise HTTPException(400, "Der Foto-Scan ist derzeit nur für Rezepte verfügbar")
+
+    with file_lock_or_none("scraper") as lock:
+        if lock is None:
+            raise HTTPException(409, "Ein Import läuft bereits. Bitte gleich erneut versuchen.")
+        # Vision und strukturierte Rezeptanalyse sind blockierend. Wie beim
+        # Dateiimport bleibt der Event-Loop währenddessen frei.
+        result = await run_in_threadpool(
+            get_scraper_job().attach_pending_photo,
+            url,
+            data,
+            detected,
+            filename,
+        )
     return result
 
 

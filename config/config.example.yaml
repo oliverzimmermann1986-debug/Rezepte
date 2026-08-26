@@ -98,7 +98,7 @@ ai:
   # Das Video wird weder in der iPhone-App noch über eine API ausgeliefert.
   video_fallback:
     enabled: true
-    max_frames: 6
+    max_frames: 10
     max_seconds: 600
     transcription_model: gpt-4o-mini-transcribe
     cache_filename: .video-ai-evidence.json

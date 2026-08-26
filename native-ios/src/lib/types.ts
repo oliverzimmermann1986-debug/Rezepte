@@ -80,6 +80,10 @@ export type PendingSuggestion = {
   source?: string | null;
   platform?: string | null;
   has_thumbnail?: boolean;
+  attached_photo?: boolean;
+  attached_photo_filename?: string | null;
+  photo_scan_state?: string | null;
+  photo_scan_error?: string | null;
   ingredients?: Ingredient[];
   steps?: RecipeStep[];
   servings?: number | null;

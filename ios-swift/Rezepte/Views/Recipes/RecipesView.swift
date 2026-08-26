@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct RecipesView: View {
@@ -98,6 +99,12 @@ struct RecipesView: View {
             }
             .onChange(of: search) { _, newValue in
                 if newValue.isEmpty { Task { await load() } }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { _ in
+                Task {
+                    await load()
+                    await loadFacets()
+                }
             }
         }
     }

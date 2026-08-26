@@ -29,6 +29,11 @@ def test_mutating_services_are_sandboxed_and_resource_bounded():
         assert "TasksMax=" in unit
 
 
+def test_scheduled_scraper_uses_the_installed_playwright_browsers():
+    unit = (ROOT / "systemd" / "scrapper-job.service").read_text(encoding="utf-8")
+    assert 'Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/scrapper/playwright-browsers"' in unit
+
+
 def test_video_archiver_syncs_read_only_recipe_links_before_download():
     unit = (ROOT / "systemd" / "video-archiver.service").read_text(encoding="utf-8")
     assert "ExecStartPre=+/opt/video-archiver/venv/bin/python -m video_archiver" in unit

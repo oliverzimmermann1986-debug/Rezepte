@@ -4,6 +4,7 @@ struct RecipeDetailView: View {
     let recipeID: Int
 
     @EnvironmentObject private var session: SessionStore
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var recipe: Recipe?
     @State private var isLoading = true
@@ -12,6 +13,8 @@ struct RecipeDetailView: View {
     @State private var showStepsEditor = false
     @State private var cartConfirmation = false
     @State private var showOriginalText = false
+    @State private var showDeleteConfirmation = false
+    @State private var isDeleting = false
 
     var body: some View {
         Group {
@@ -57,6 +60,19 @@ struct RecipeDetailView: View {
                         }
 
                         originalTextSection(recipe)
+
+                        Button(role: .destructive) {
+                            showDeleteConfirmation = true
+                        } label: {
+                            Label(
+                                isDeleting ? "Rezept wird gelöscht …" : "Rezept löschen",
+                                systemImage: "trash"
+                            )
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+                        .disabled(isDeleting)
                     }
                     .padding()
                 }
@@ -103,6 +119,18 @@ struct RecipeDetailView: View {
                     await load()
                 }
             }
+        }
+        .confirmationDialog(
+            "Rezept löschen?",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("In Papierkorb verschieben", role: .destructive) {
+                Task { await deleteRecipe() }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Das Rezept kann 30 Tage lang im Admin-Bereich wiederhergestellt werden.")
         }
         .task { await load() }
     }
@@ -243,6 +271,19 @@ struct RecipeDetailView: View {
         do {
             _ = try await session.api.toggleFavorite(id: recipeID)
             await load()
+        } catch {
+            session.handle(error)
+        }
+    }
+
+    private func deleteRecipe() async {
+        guard recipe != nil, !isDeleting else { return }
+        isDeleting = true
+        defer { isDeleting = false }
+        do {
+            _ = try await session.api.deleteRecipe(id: recipeID)
+            NotificationCenter.default.post(name: .recipesChanged, object: recipeID)
+            dismiss()
         } catch {
             session.handle(error)
         }

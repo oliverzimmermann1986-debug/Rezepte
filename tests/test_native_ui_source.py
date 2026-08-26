@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "native-ios" / "src"
+SWIFT = ROOT / "ios-swift" / "Rezepte"
 
 
 def test_native_ingredient_editors_use_one_unit_picker():
@@ -162,6 +163,24 @@ def test_pending_editor_can_reanalyze_with_ai_using_long_request_timeout():
     assert "signal,\n    timeoutMs," in api_source
 
 
+def test_manual_review_offers_photo_scan_in_both_native_clients_and_web():
+    pending_editor = (NATIVE / "components" / "pending-editor.tsx").read_text(encoding="utf-8")
+    api_source = (NATIVE / "lib" / "api.ts").read_text(encoding="utf-8")
+    swift_editor = (SWIFT / "Views" / "Admin" / "PendingEditorView.swift").read_text(encoding="utf-8")
+    swift_api = (SWIFT / "Networking" / "APIClient.swift").read_text(encoding="utf-8")
+    web_html = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    web_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "Foto hinzufügen und scannen" in pending_editor
+    assert "'/api/pending/scan-photo?url='" not in pending_editor
+    assert "/api/pending/scan-photo?url=${encodeURIComponent(item.url)}" in pending_editor
+    assert "timeoutMs = UPLOAD_TIMEOUT_MS" in api_source
+    assert "Foto hinzufügen und scannen" in swift_editor
+    assert '"/api/pending/scan-photo"' in swift_api
+    assert "📷 Foto scannen" in web_html
+    assert "async scanPendingPhoto(item, event)" in web_js
+
+
 def test_native_cart_groups_categories_and_emphasizes_amounts():
     cart = (NATIVE / "app" / "(tabs)" / "cart.tsx").read_text(encoding="utf-8")
 
@@ -224,3 +243,18 @@ def test_native_recipe_detail_can_move_recipe_to_trash():
     assert "method: 'DELETE'" in detail
     assert "hard=true" not in detail
     assert "router.back()" in detail
+
+
+def test_swift_recipe_detail_can_move_recipe_to_trash_and_refresh_the_list():
+    detail = (SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift").read_text(encoding="utf-8")
+    recipes = (SWIFT / "Views" / "Recipes" / "RecipesView.swift").read_text(encoding="utf-8")
+    api = (SWIFT / "Networking" / "APIClient.swift").read_text(encoding="utf-8")
+
+    assert "Rezept löschen?" in detail
+    assert "In Papierkorb verschieben" in detail
+    assert "30 Tage" in detail
+    assert "session.api.deleteRecipe" in detail
+    assert "dismiss()" in detail
+    assert 'method: "DELETE"' in api
+    assert 'URLQueryItem(name: "delete_files", value: "true")' in api
+    assert "publisher(for: .recipesChanged)" in recipes

@@ -79,6 +79,44 @@ def test_cooking_completion_dedupe_table_is_recreated_on_upgrade(tmp_path):
         ).fetchone()[0] == CURRENT_SCHEMA_VERSION
 
 
+def test_upgrade_normalizes_existing_recipe_display_names(tmp_path):
+    path = tmp_path / "legacy-recipe-names.db"
+    database = Database(path)
+    recipe_id = database.recipe_upsert(
+        url="https://example.test/underscores",
+        name="Vorhandener Name",
+        type="Hauptgericht",
+        category="Test",
+        folder_path="/tmp/Omas_Kuchen",
+        description=None,
+        thumb_filename=None,
+        video_filename=None,
+        source_added_at=None,
+    )
+    with database.conn() as connection:
+        connection.execute(
+            "UPDATE recipes SET name='Omas__Kuchen_' WHERE id=?",
+            (recipe_id,),
+        )
+        connection.execute(
+            "DELETE FROM schema_migrations WHERE version=?",
+            (CURRENT_SCHEMA_VERSION,),
+        )
+
+    Database(path)
+
+    with sqlite3.connect(path) as connection:
+        stored = connection.execute(
+            "SELECT name, folder_path FROM recipes WHERE id=?",
+            (recipe_id,),
+        ).fetchone()
+        assert stored == ("Omas Kuchen", "/tmp/Omas_Kuchen")
+        assert connection.execute(
+            "SELECT name FROM schema_migrations WHERE version=?",
+            (CURRENT_SCHEMA_VERSION,),
+        ).fetchone()[0] == "normalize_recipe_display_names"
+
+
 def test_concurrent_recipe_upserts_converge_on_one_row(tmp_path):
     database = Database(tmp_path / "upsert.db")
 

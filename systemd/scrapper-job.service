@@ -10,6 +10,7 @@ WorkingDirectory=/opt/scrapper
 Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
 Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
 Environment="OMP_THREAD_LIMIT=1"
+Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/scrapper/playwright-browsers"
 ExecStart=/opt/scrapper/venv/bin/python -m app.jobs.scraper_cli
 TimeoutStartSec=3600
 

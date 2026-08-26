@@ -217,6 +217,7 @@ export async function uploadFile<T>(
   path: string,
   file: { uri: string; name: string; mimeType: string },
   clientRequestId = createClientRequestId(),
+  timeoutMs = UPLOAD_TIMEOUT_MS,
 ): Promise<T> {
   const requestEpoch = currentApiSessionEpoch();
   const requestHadAuth = Boolean(authToken);
@@ -238,7 +239,7 @@ export async function uploadFile<T>(
   }
   return withTimeout(
     undefined,
-    UPLOAD_TIMEOUT_MS,
+    timeoutMs,
     async timeoutSignal => {
       const response = await fetch(absoluteApiUrl(path), {
         method: 'POST',

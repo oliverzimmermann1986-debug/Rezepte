@@ -52,6 +52,19 @@ def test_recipe_upsert_and_get(db):
     assert rec["deleted_at"] is None
 
 
+def test_recipe_upsert_normalizes_underscores_only_in_display_name(db):
+    folder_path = "/tmp/test/knusprige_Pizza"
+    _upsert(
+        db,
+        name="knusprige__Pizza_ Deluxe",
+        folder_path=folder_path,
+    )
+
+    rec = db.recipe_get_by_folder(folder_path)
+    assert rec["name"] == "knusprige Pizza Deluxe"
+    assert rec["folder_path"] == folder_path
+
+
 def test_recipe_list_excludes_soft_deleted_by_default(db):
     _upsert(db, name="Active", folder_path="/tmp/active")
     _upsert(db, name="Deleted", folder_path="/tmp/deleted")

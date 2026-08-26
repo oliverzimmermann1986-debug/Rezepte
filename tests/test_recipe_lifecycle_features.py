@@ -356,13 +356,16 @@ def test_duplicate_recipe_creates_video_free_independent_variant(
 
     response = client.post(
         f"/api/recipes/{recipe_id}/duplicate",
-        json={"new_name": "Original mild"},
+        json={"new_name": "Original__mild_"},
     )
 
     assert response.status_code == 200
     payload = response.json()
     variant = test_db.recipe_get(payload["recipe_id"])
     target = Path(variant["folder_path"])
+    assert variant["name"] == "Original mild"
+    assert payload["name"] == "Original mild"
+    assert target.name == "Original_mild"
     assert variant["url"] is None
     assert variant["video_filename"] is None
     assert variant["thumb_filename"] == "Original.jpg"

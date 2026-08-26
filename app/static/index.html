@@ -232,7 +232,12 @@
                     x-text="formatAge(item.created_at)"></span>
             </div>
             <div class="preview">
-              <div class="placeholder pending-source-placeholder" style="display:flex">
+              <img x-show="item.ai_suggestion && item.ai_suggestion.has_thumbnail"
+                   :src="'/api/pending/file?url=' + encodeURIComponent(item.url) + '&v=' + (item._previewVersion || 0)"
+                   alt="Rezeptbild für die manuelle Prüfung">
+              <div class="placeholder pending-source-placeholder"
+                   x-show="!(item.ai_suggestion && item.ai_suggestion.has_thumbnail)"
+                   style="display:flex">
                 <span>Quellenlink gespeichert</span>
                 <small>Kein Video in der App</small>
               </div>
@@ -299,6 +304,15 @@
 
               <div class="actions">
                 <button class="btn btn-primary" @click="resolveItem(item, 'save')">✓ Speichern</button>
+                <label class="btn" x-show="item.content_type === 'recipe'"
+                       :class="{disabled: reanalyzing[item.url]}"
+                       title="Foto anhängen, Zutaten und Schritte daraus erkennen">
+                  <span x-show="!reanalyzing[item.url]">📷 Foto scannen</span>
+                  <span x-show="reanalyzing[item.url]">… scannt</span>
+                  <input type="file" accept="image/jpeg,image/png" hidden
+                         :disabled="reanalyzing[item.url]"
+                         @change="scanPendingPhoto(item, $event)">
+                </label>
                 <button class="btn" @click="reanalyzeOne(item)" :disabled="reanalyzing[item.url]" title="Mit aktueller KI-Cascade nochmal analysieren">
                   <span x-show="!reanalyzing[item.url]">🔄 KI</span>
                   <span x-show="reanalyzing[item.url]">…</span>

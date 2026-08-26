@@ -34,6 +34,7 @@ from ..core.safety import (
     atomic_write_text,
 )
 from ..db import Database
+from .naming import normalize_recipe_name
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ def safe_rename_recipe(
     rename_folder: bool = True,
 ) -> Dict[str, Any]:
     """Benennt über den rollback-fähigen Metadatenpfad um."""
-    new_name = (new_name or "").strip()
+    new_name = normalize_recipe_name(new_name)
     if not new_name:
         raise ValueError("new_name darf nicht leer sein")
     if len(new_name) > 200:
@@ -150,7 +151,7 @@ def safe_update_recipe_metadata(
     zurückgerollt.
     """
     values = {
-        "name": (name or "").strip(),
+        "name": normalize_recipe_name(name),
         "type": (recipe_type or "").strip(),
         "category": (category or "").strip(),
     }
@@ -316,7 +317,7 @@ def safe_duplicate_recipe(
     übernommen; Videodateien und Quell-URL bewusst nicht. Schlägt der DB-Klon
     danach fehl, wird ausschließlich der gerade erzeugte Zielordner entfernt.
     """
-    name = (new_name or "").strip()
+    name = normalize_recipe_name(new_name)
     if not name:
         raise ValueError("Der Name der Variante darf nicht leer sein")
     if len(name) > 200:

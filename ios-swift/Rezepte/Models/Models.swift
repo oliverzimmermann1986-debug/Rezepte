@@ -252,6 +252,7 @@ struct FailedDownload: Codable, Identifiable {
 
 struct APIResult: Codable {
     let ok: Bool?
+    let action: String?
     let message: String?
     let status: String?
     let added: Int?

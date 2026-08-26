@@ -5,6 +5,16 @@ import json
 from app.recipes import indexer, manage
 
 
+def test_mail_attachment_placeholder_still_triggers_media_extraction():
+    recipe = {"url": "mail-attachment://message::recipe-card.jpg"}
+    placeholder = "Importierter Mail-Anhang: recipe-card.jpg"
+
+    assert indexer._needs_media_extract(recipe, placeholder) is True
+    assert indexer._needs_media_extract(
+        {"url": "https://example.test/recipe"}, placeholder
+    ) is False
+
+
 def test_indexer_preserves_known_metadata_when_sidecar_and_scan_fail(test_db, tmp_path, monkeypatch):
     folder = tmp_path / "Hauptgericht" / "Pasta" / "Ordnername"
     folder.mkdir(parents=True)
@@ -80,12 +90,13 @@ def test_display_only_rename_is_persisted_in_atomic_sidecar(test_db, tmp_path, m
     monkeypatch.setattr(manage, "_assert_inside_root", lambda path: path.resolve())
 
     result = manage.safe_rename_recipe(
-        test_db, recipe_id, "Neuer Anzeigename", rename_folder=False
+        test_db, recipe_id, "Neuer__Anzeigename_", rename_folder=False
     )
 
     assert result["ok"] is True
     assert test_db.recipe_get(recipe_id)["name"] == "Neuer Anzeigename"
     assert json.loads(info_file.read_text(encoding="utf-8"))["name"] == "Neuer Anzeigename"
+    assert result["new_name"] == "Neuer Anzeigename"
     assert not list(folder.glob(".info.json.tmp-*"))
 
 

@@ -17,8 +17,10 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from .recipes.naming import normalize_recipe_name
+
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 190
+CURRENT_SCHEMA_VERSION = 200
 _MIGRATION_THREAD_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -852,8 +854,27 @@ class Database:
         )
         c.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
-            (CURRENT_SCHEMA_VERSION, "ai_shopping_list_optimization", time.time()),
+            (190, "ai_shopping_list_optimization", time.time()),
         )
+
+        recipe_name_migration = c.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?",
+            (200,),
+        ).fetchone()
+        if recipe_name_migration is None:
+            for recipe_id, stored_name in c.execute(
+                "SELECT id, name FROM recipes"
+            ).fetchall():
+                clean_name = normalize_recipe_name(stored_name) or "Unbekannt"
+                if clean_name != stored_name:
+                    c.execute(
+                        "UPDATE recipes SET name=? WHERE id=?",
+                        (clean_name, recipe_id),
+                    )
+            c.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                (200, "normalize_recipe_display_names", time.time()),
+            )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
             defaults = {
@@ -1630,6 +1651,7 @@ class Database:
         Zutaten-Status wird NICHT überschrieben — ein bereits extrahiertes
         Rezept bleibt ohne erneuten KI-Lauf bestehen, auch wenn der Indexer
         es nochmal sieht (z.B. nach FS-Resync)."""
+        name = normalize_recipe_name(name) or "Unbekannt"
         now = time.time()
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")

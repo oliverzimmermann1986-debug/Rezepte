@@ -188,6 +188,17 @@ def _try_media_extract(folder: Path, analyzer) -> Optional[str]:
     return None
 
 
+def _needs_media_extract(recipe: dict, description: str) -> bool:
+    """Erkennt Quellen, deren Beschreibung kein Rezeptinhalt sein kann.
+
+    Mail-Anhänge erhalten beim Import eine technische Platzhalterbeschreibung.
+    Diese kann länger als die allgemeine Mindestlänge sein, darf den eigentlichen
+    Bild-/PDF-Scan aber nicht verhindern.
+    """
+    source_url = str(recipe.get("url") or "").strip().lower()
+    return len(description.strip()) < 20 or source_url.startswith("mail-attachment://")
+
+
 def _pdf_thumb(folder: Path) -> Optional[str]:
     """Rendert Seite 1 des ersten PDFs im Ordner nach thumb.jpg (pdftoppm).
     Für PDF-Rezepte ohne Bild. Returns 'thumb.jpg' bei Erfolg, sonst None.
@@ -450,7 +461,7 @@ def _extract_for_recipe(
     # Indexer eingebaut, blockierte aber den Sync bei vielen Bilder-Rezepten.
     # Jetzt hier im Worker — der läuft asynchron und macht jeweils 1 Rezept,
     # Frontend bleibt responsive.
-    if len(desc.strip()) < 20:
+    if _needs_media_extract(recipe, desc):
         from pathlib import Path as _P
         folder = _P(recipe.get("folder_path") or "")
         if folder.exists():
