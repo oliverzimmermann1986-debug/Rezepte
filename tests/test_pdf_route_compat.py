@@ -18,7 +18,7 @@ def test_pdf_admin_routes_are_registered():
 def test_health_and_system_info_report_build_version(client):
     health = client.get("/healthz")
     assert health.status_code == 200
-    assert health.json()["version"] == "1.5.7"
+    assert health.json()["version"] == "1.5.8"
     assert "ai-shopping-optimization" in health.json()["capabilities"]
     assert "shopping-categories" in health.json()["capabilities"]
     assert "native-admin-roles" in health.json()["capabilities"]
@@ -30,7 +30,7 @@ def test_health_and_system_info_report_build_version(client):
 
     info = client.get("/api/system/info")
     assert info.status_code == 200
-    assert info.json()["version"] == "1.5.7"
+    assert info.json()["version"] == "1.5.8"
     assert "pdf-background-jobs" in info.json()["capabilities"]
     assert "einkauf-proxy" in info.json()["capabilities"]
 
@@ -106,6 +106,7 @@ def test_local_updater_does_not_git_pull():
     assert "shopping-categories" in updater
     assert "native-admin-roles" in updater
     assert "EXPECTED_VERSION=" in updater
+    assert 'app/__init__.py' in updater
     assert 'HEALTH_VERSION=' in updater
     assert '"$HEALTH_VERSION" != "$EXPECTED_VERSION"' in updater
     assert 'ln -s "$APP_DIR/venv" "$APP_DIR/venv.next"' in updater
