@@ -135,11 +135,11 @@ def _dismiss_overlays(page: Any) -> None:
 
 
 def _target_article(page: Any, url: str) -> Any:
-    match = re.search(r"/@([^/]+)/video/(\d+)", urlparse(url).path)
+    match = re.search(r"/@([^/]+)/(video|photo)/(\d+)", urlparse(url).path)
     if match:
-        username, video_id = match.groups()
+        username, post_type, post_id = match.groups()
         for selector in (
-            f'article:has(a[href*="/video/{video_id}"])',
+            f'article:has(a[href*="/{post_type}/{post_id}"])',
             f'article:has(a[href^="/@{username}"])',
         ):
             candidate = page.locator(selector)

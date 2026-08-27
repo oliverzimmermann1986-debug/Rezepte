@@ -1,11 +1,13 @@
 from pathlib import Path
 
 from app.core.tiktok_caption import (
+    _target_article,
     caption_from_article_text,
     clean_expanded_caption,
     is_tiktok_url,
     parse_netscape_cookies,
 )
+from app.jobs.scraper import ScraperJob
 
 
 def test_caption_from_article_text_uses_page_title_as_ui_boundary():
@@ -90,6 +92,92 @@ def test_tiktok_url_detection_rejects_lookalike_hosts():
     assert is_tiktok_url("https://m.tiktok.com/v/123")
     assert not is_tiktok_url("https://tiktok.com.example.org/@cook/video/123")
     assert not is_tiktok_url("https://example.org/video/123")
+
+
+def test_target_article_matches_direct_tiktok_photo_post():
+    selectors = []
+    expected = object()
+
+    class Candidate:
+        first = expected
+
+        @staticmethod
+        def count():
+            return 1
+
+    class Page:
+        @staticmethod
+        def locator(selector):
+            selectors.append(selector)
+            return Candidate()
+
+    article = _target_article(
+        Page(),
+        "https://www.tiktok.com/@koch/photo/7650432038700404000",
+    )
+
+    assert article is expected
+    assert selectors == [
+        'article:has(a[href*="/photo/7650432038700404000"])',
+    ]
+
+
+def test_first_import_prefers_expanded_caption_for_tiktok_photo(
+    tmp_path: Path, monkeypatch
+):
+    import app.core.tiktok_caption as tiktok_caption
+
+    url = "https://www.tiktok.com/@koch/photo/7650432038700404000"
+    short_caption = "Kurze Caption"
+    long_caption = (
+        "Kartoffelauflauf für vier Personen.\n\n"
+        "Zutaten: 1 kg Kartoffeln, 250 ml Sahne und 150 g Käse.\n"
+        "Zubereitung: Kartoffeln schneiden, schichten und 45 Minuten backen."
+    )
+    calls = []
+
+    class Downloader:
+        cookies_file = str(tmp_path / "cookies.txt")
+
+        @staticmethod
+        def refresh_metadata(_url):
+            return {"description_text": short_caption}
+
+    class Config:
+        @staticmethod
+        def get(*keys, default=None):
+            if keys == ("ytdlp",):
+                return {
+                    "expanded_tiktok_caption": True,
+                    "browser_timeout_seconds": 12,
+                }
+            return default
+
+    monkeypatch.setattr(
+        tiktok_caption,
+        "fetch_expanded_tiktok_caption",
+        lambda fetched_url, **kwargs: calls.append((fetched_url, kwargs)) or long_caption,
+    )
+    job = object.__new__(ScraperJob)
+    job.cfg = Config()
+    job.downloader = Downloader()
+    job._fetch_description_via_ytdlp = lambda _url: None
+
+    metadata = job._fetch_external_link_metadata(url)
+
+    assert metadata["description_text"] == long_caption
+    assert metadata["description_source"] == "tiktok-browser"
+    assert calls == [
+        (
+            url,
+            {
+                "fallback_text": short_caption,
+                "cookies_file": Downloader.cookies_file,
+                "timeout_seconds": 12,
+                "executable_path": None,
+            },
+        )
+    ]
 
 
 def test_rescrape_prefers_expanded_caption_and_queues_extraction(
