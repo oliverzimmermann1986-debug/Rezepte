@@ -1559,26 +1559,49 @@ class ScraperJob:
                 metadata = dict(refresh(url) or {})
             except Exception as exc:
                 logger.warning("Social-Metadaten konnten nicht aktualisiert werden: %s", exc)
-        if not metadata.get("description_text"):
-            description = self._fetch_description_via_ytdlp(url)
-            if description:
-                metadata["description_text"] = description
         cfg = getattr(self, "cfg", None)
         if cfg is not None:
             ytdlp_cfg = cfg.get("ytdlp", default={}) or {}
-            if ytdlp_cfg.get("expanded_tiktok_caption", True):
-                from ..core.tiktok_caption import (
-                    fetch_expanded_tiktok_caption,
-                    is_tiktok_url,
-                )
+            from ..core.tiktok_caption import (
+                fetch_expanded_tiktok_caption,
+                fetch_tiktok_player_metadata,
+                is_tiktok_url,
+            )
 
-                if is_tiktok_url(url):
-                    try:
-                        timeout_seconds = int(
-                            ytdlp_cfg.get("browser_timeout_seconds", 35)
-                        )
-                    except (TypeError, ValueError):
-                        timeout_seconds = 35
+            if is_tiktok_url(url):
+                try:
+                    timeout_seconds = int(
+                        ytdlp_cfg.get("browser_timeout_seconds", 35)
+                    )
+                except (TypeError, ValueError):
+                    timeout_seconds = 35
+                player_meta = fetch_tiktok_player_metadata(
+                    url,
+                    timeout_seconds=timeout_seconds,
+                )
+                player_description = str(
+                    player_meta.get("description_text") or ""
+                ).strip()
+                current_description = str(
+                    metadata.get("description_text") or ""
+                ).strip()
+                if player_description and len(player_description) >= len(current_description):
+                    metadata["description_text"] = player_description
+                    metadata["description_source"] = "tiktok-player"
+                for key in ("canonical_url", "thumbnail_bytes", "thumbnail_suffix"):
+                    if player_meta.get(key) and not metadata.get(key):
+                        metadata[key] = player_meta[key]
+
+                # Der strukturierte Player enthält bei Foto-Posts bereits
+                # vollständige Caption und Cover. Playwright bleibt als
+                # Fallback für Videos/gesperrte Player-Antworten erhalten.
+                if (
+                    ytdlp_cfg.get("expanded_tiktok_caption", True)
+                    and not (
+                        player_meta.get("thumbnail_bytes")
+                        and player_description
+                    )
+                ):
                     expanded = fetch_expanded_tiktok_caption(
                         url,
                         fallback_text=str(metadata.get("description_text") or ""),
@@ -1591,6 +1614,10 @@ class ScraperJob:
                     if expanded:
                         metadata["description_text"] = expanded
                         metadata["description_source"] = "tiktok-browser"
+        if not metadata.get("description_text"):
+            description = self._fetch_description_via_ytdlp(url)
+            if description:
+                metadata["description_text"] = description
         return metadata
 
     def reanalyze_history_one(self, url: str, *, dry_run: bool = False,

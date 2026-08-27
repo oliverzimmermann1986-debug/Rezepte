@@ -23,6 +23,18 @@ _CHALLENGE_MARKERS = (
     "drag the slider",
     "captcha",
 )
+_TIKTOK_CDN_DOMAINS = (
+    "tiktokcdn.com",
+    "tiktokcdn-eu.com",
+    "tiktokcdn-us.com",
+    "tiktokcdn-in.com",
+)
+_MAX_PLAYER_JSON_BYTES = 2 * 1024 * 1024
+_MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+)
 
 
 def is_tiktok_url(url: str) -> bool:
@@ -97,6 +109,167 @@ def _caption_from_player_payload(payload: Any) -> str:
             if isinstance(value, str) and value.strip():
                 return clean_expanded_caption(value)
     return ""
+
+
+def _metadata_from_player_payload(payload: Any) -> Dict[str, str]:
+    """Liest Caption und erstes Foto aus der strukturierten Player-Antwort."""
+    result: Dict[str, str] = {}
+    if not isinstance(payload, dict):
+        return result
+    items = payload.get("item_list") or payload.get("items")
+    if not isinstance(items, list):
+        return result
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        caption = _caption_from_player_payload({"items": [item]})
+        if caption:
+            result["description_text"] = caption
+
+        image_info = item.get("image_post_info")
+        if isinstance(image_info, dict):
+            candidates: List[Any] = []
+            images = image_info.get("images")
+            if isinstance(images, list) and images:
+                first_image = images[0]
+                if isinstance(first_image, dict):
+                    candidates.extend((
+                        first_image.get("display_image"),
+                        first_image.get("thumbnail"),
+                    ))
+            candidates.append(image_info.get("cover"))
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                urls = candidate.get("url_list")
+                if not isinstance(urls, list):
+                    continue
+                thumbnail_url = next((
+                    str(value).strip()
+                    for value in urls
+                    if isinstance(value, str) and value.strip()
+                ), "")
+                if thumbnail_url:
+                    result["thumbnail_url"] = thumbnail_url
+                    break
+        return result
+    return result
+
+
+def _is_allowed_tiktok_cdn_url(url: str) -> bool:
+    """Begrenzt den serverseitigen Bildabruf auf TikToks HTTPS-CDNs."""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            return False
+        if parsed.username or parsed.password or parsed.port not in (None, 443):
+            return False
+    except ValueError:
+        return False
+    host = parsed.hostname.lower().rstrip(".")
+    return any(host == domain or host.endswith(f".{domain}") for domain in _TIKTOK_CDN_DOMAINS)
+
+
+def fetch_tiktok_player_metadata(
+    url: str,
+    *,
+    timeout_seconds: int = 20,
+) -> Dict[str, Any]:
+    """Holt Caption und erstes Foto über TikToks offiziellen Embed-Player.
+
+    Foto-Posts werden von ``yt-dlp`` nicht zuverlässig unterstützt. Der
+    öffentliche Player liefert dafür strukturierte ``items`` samt signierter
+    CDN-URL. Redirect-Ziel, JSON-Größe, CDN-Host, MIME-Typ und Bildgröße werden
+    vor dem Speichern begrenzt.
+    """
+    if not is_tiktok_url(url):
+        return {}
+    try:
+        import requests
+    except ImportError:
+        return {}
+
+    timeout = max(5, min(int(timeout_seconds), 60))
+    headers = {"User-Agent": _BROWSER_USER_AGENT, "Accept": "application/json,image/*;q=0.9,*/*;q=0.5"}
+    post_id = _tiktok_post_id(url)
+    resolved_url = url
+    try:
+        if not post_id:
+            with requests.get(
+                url,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=True,
+                stream=True,
+            ) as resolved:
+                resolved_url = str(resolved.url or url)
+            if not is_tiktok_url(resolved_url):
+                return {}
+            post_id = _tiktok_post_id(resolved_url)
+        if not post_id:
+            return {}
+
+        response = requests.get(
+            "https://www.tiktok.com/player/api/v1/items",
+            params={"item_ids": post_id},
+            headers=headers,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        if len(response.content) > _MAX_PLAYER_JSON_BYTES:
+            logger.warning("TikTok-Player-Antwort zu groß: %s Bytes", len(response.content))
+            return {}
+        metadata: Dict[str, Any] = _metadata_from_player_payload(response.json())
+        if _tiktok_post_id(resolved_url) == post_id:
+            metadata["canonical_url"] = resolved_url
+
+        thumbnail_url = str(metadata.pop("thumbnail_url", "") or "")
+        if not thumbnail_url or not _is_allowed_tiktok_cdn_url(thumbnail_url):
+            return metadata
+        with requests.get(
+            thumbnail_url,
+            headers=headers,
+            timeout=timeout,
+            allow_redirects=True,
+            stream=True,
+        ) as thumbnail:
+            thumbnail.raise_for_status()
+            if not _is_allowed_tiktok_cdn_url(str(thumbnail.url or thumbnail_url)):
+                return metadata
+            content_type = str(thumbnail.headers.get("content-type") or "").split(";", 1)[0].lower()
+            suffix_by_type = {
+                "image/jpeg": ".jpg",
+                "image/png": ".png",
+                "image/webp": ".webp",
+            }
+            suffix = suffix_by_type.get(content_type)
+            if not suffix:
+                logger.warning("TikTok-Player-Cover mit unerwartetem MIME-Typ: %s", content_type)
+                return metadata
+            try:
+                declared_size = int(thumbnail.headers.get("content-length") or 0)
+            except (TypeError, ValueError):
+                declared_size = 0
+            if declared_size > _MAX_THUMBNAIL_BYTES:
+                logger.warning("TikTok-Player-Cover zu groß: %s Bytes", declared_size)
+                return metadata
+            chunks: List[bytes] = []
+            total = 0
+            for chunk in thumbnail.iter_content(64 * 1024):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > _MAX_THUMBNAIL_BYTES:
+                    logger.warning("TikTok-Player-Cover überschreitet Größenlimit")
+                    return metadata
+                chunks.append(chunk)
+            if total:
+                metadata["thumbnail_bytes"] = b"".join(chunks)
+                metadata["thumbnail_suffix"] = suffix
+        return metadata
+    except Exception as exc:
+        logger.warning("TikTok-Player-Metadaten konnten nicht geladen werden: %s", exc)
+        return {}
 
 
 def _fetch_tiktok_player_caption(page: Any, post_id: str, timeout_ms: int) -> str:

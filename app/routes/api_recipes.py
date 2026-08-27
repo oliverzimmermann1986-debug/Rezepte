@@ -1089,23 +1089,52 @@ def rescrape_recipe(
     dl = VideoDownloader(ytdlp_path=ytdlp_path, temp_dir=temp_dir,
                           cookies_file=cookies_file)
 
-    meta = dl.refresh_metadata(url) or {}
+    try:
+        meta = dl.refresh_metadata(url) or {}
+    except Exception as exc:
+        logger.warning("Re-Scrape: yt-dlp-Metadaten fehlgeschlagen: %s", exc)
+        meta = {}
     description_source = "yt-dlp"
 
-    # TikTok exposes only the short first line through public metadata in some
-    # posts. Its website renders the long recipe caption after clicking "mehr".
-    if ytdlp_cfg.get("expanded_tiktok_caption", True):
-        from ..core.tiktok_caption import fetch_expanded_tiktok_caption
-        expanded = fetch_expanded_tiktok_caption(
+    # TikTok-Fotoposts werden von yt-dlp nicht unterstützt. Der offizielle
+    # Embed-Player liefert dafür Caption und erstes Bild strukturiert.
+    from ..core.tiktok_caption import (
+        fetch_expanded_tiktok_caption,
+        fetch_tiktok_player_metadata,
+        is_tiktok_url,
+    )
+    if is_tiktok_url(url):
+        try:
+            timeout_seconds = int(ytdlp_cfg.get("browser_timeout_seconds", 35))
+        except (TypeError, ValueError):
+            timeout_seconds = 35
+        player_meta = fetch_tiktok_player_metadata(
             url,
-            fallback_text=str(meta.get("description_text") or ""),
-            cookies_file=cookies_file,
-            timeout_seconds=int(ytdlp_cfg.get("browser_timeout_seconds", 35)),
-            executable_path=str(ytdlp_cfg.get("browser_executable_path") or "").strip() or None,
+            timeout_seconds=timeout_seconds,
         )
-        if expanded:
-            meta["description_text"] = expanded
-            description_source = "tiktok-browser"
+        player_description = str(player_meta.get("description_text") or "").strip()
+        current_description = str(meta.get("description_text") or "").strip()
+        if player_description and len(player_description) >= len(current_description):
+            meta["description_text"] = player_description
+            description_source = "tiktok-player"
+        for key in ("canonical_url", "thumbnail_bytes", "thumbnail_suffix"):
+            if player_meta.get(key) and not meta.get(key):
+                meta[key] = player_meta[key]
+
+        if (
+            ytdlp_cfg.get("expanded_tiktok_caption", True)
+            and not (player_meta.get("thumbnail_bytes") and player_description)
+        ):
+            expanded = fetch_expanded_tiktok_caption(
+                url,
+                fallback_text=str(meta.get("description_text") or ""),
+                cookies_file=cookies_file,
+                timeout_seconds=timeout_seconds,
+                executable_path=str(ytdlp_cfg.get("browser_executable_path") or "").strip() or None,
+            )
+            if expanded:
+                meta["description_text"] = expanded
+                description_source = "tiktok-browser"
     if not meta:
         return {"ok": False, "error": "yt-dlp lieferte nichts — URL down/geo-blocked/login nötig?"}
 
