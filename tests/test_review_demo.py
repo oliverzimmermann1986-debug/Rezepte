@@ -45,6 +45,7 @@ def _review_inputs(tmp_path: Path) -> dict:
         "config_path": config,
         "credential_output": tmp_path / "credentials.txt",
         "public_url": "https://rezepte-review.mausbaeren.me",
+        "trusted_proxy_cidr": "192.168.1.141/32",
         "hostname": "rezepte-review",
     }
 
@@ -68,6 +69,11 @@ def test_review_demo_is_artificial_complete_and_sanitized(tmp_path: Path):
     assert "Password:" in inputs["credential_output"].read_text(encoding="utf-8")
     assert config["web"]["auth_disabled"] is False
     assert config["web"]["public_url"] == inputs["public_url"]
+    assert config["web"]["trusted_proxies"] == [
+        "127.0.0.1/32",
+        "::1/128",
+        inputs["trusted_proxy_cidr"],
+    ]
     assert config["mail"]["recipe"]["enabled"] is False
     assert config["mail"]["wedding"]["enabled"] is False
     assert config["ai"]["openai"]["api_key"] == ""

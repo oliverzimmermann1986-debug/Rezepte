@@ -5,6 +5,7 @@ set -Eeuo pipefail
 APP_DIR="${APP_DIR:-/opt/scrapper}"
 APP_USER="${APP_USER:-scrapper}"
 EXPECTED_HOST="rezepte-review"
+REVERSE_PROXY_IP="${REVERSE_PROXY_IP:-192.168.1.141}"
 
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo "Fehler: Bitte als root ausführen." >&2
@@ -22,7 +23,12 @@ fi
 systemctl stop scrapper-web.service
 systemctl disable --now scrapper-job.timer
 
-sudo -u "$APP_USER" "$APP_DIR/venv/bin/python" -m tools.setup_app_review_demo
+sudo -u "$APP_USER" "$APP_DIR/venv/bin/python" -m tools.setup_app_review_demo \
+  --trusted-proxy-cidr "$REVERSE_PROXY_IP/32"
+
+printf 'SCRAPPER_FORWARDED_ALLOW_IPS=%s\n' "$REVERSE_PROXY_IP" > "$APP_DIR/data/web.env"
+chown "$APP_USER:$APP_USER" "$APP_DIR/data/web.env"
+chmod 0600 "$APP_DIR/data/web.env"
 
 chown -R "$APP_USER:$APP_USER" \
   "$APP_DIR/data" "$APP_DIR/files/rezepte" "$APP_DIR/logs" "$APP_DIR/temp"

@@ -176,13 +176,14 @@ def _assert_empty_review_data(db: Database, recipe_root: Path) -> None:
         raise RuntimeError(f"Abbruch: Review-Rezeptordner ist nicht leer: {recipe_root}")
 
 
-def _sanitize_config(config_path: Path, public_url: str) -> None:
+def _sanitize_config(config_path: Path, public_url: str, trusted_proxy_cidr: str) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     web = config.setdefault("web", {})
     web.update({
         "auth_disabled": False,
         "external_logout_url": "",
         "public_url": public_url,
+        "trusted_proxies": ["127.0.0.1/32", "::1/128", trusted_proxy_cidr],
     })
     for mailbox in ("recipe", "wedding"):
         section = config.setdefault("mail", {}).setdefault(mailbox, {})
@@ -226,6 +227,7 @@ def seed_review_demo(
     config_path: Path,
     credential_output: Path,
     public_url: str,
+    trusted_proxy_cidr: str,
     hostname: str,
 ) -> dict[str, Any]:
     _assert_review_environment(hostname, public_url)
@@ -238,7 +240,7 @@ def seed_review_demo(
     db = Database(db_path)
     _assert_empty_review_data(db, recipe_root)
     recipe_root.mkdir(parents=True, exist_ok=True)
-    _sanitize_config(config_path, public_url)
+    _sanitize_config(config_path, public_url, trusted_proxy_cidr)
 
     password = secrets.token_urlsafe(20)
     password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("ascii")
@@ -356,6 +358,7 @@ def main() -> int:
         default=Path("/root/rezepte-app-review-credentials.txt"),
     )
     parser.add_argument("--public-url", default="https://rezepte-review.mausbaeren.me")
+    parser.add_argument("--trusted-proxy-cidr", default="192.168.1.141/32")
     args = parser.parse_args()
     result = seed_review_demo(
         db_path=args.db,
@@ -364,6 +367,7 @@ def main() -> int:
         config_path=args.config,
         credential_output=args.credential_output,
         public_url=args.public_url,
+        trusted_proxy_cidr=args.trusted_proxy_cidr,
         hostname=socket.gethostname(),
     )
     print(json.dumps(result, ensure_ascii=False))

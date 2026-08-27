@@ -19,6 +19,9 @@ Zielzustand:
 2. Repository und Abhängigkeiten mit `proxmox/install.sh` installieren.
 3. Sicherstellen, dass der Hostname exakt `rezepte-review` ist.
 4. `proxmox/setup-review-instance.sh` einmal als root ausführen.
+   Standardmäßig wird die cloudflared-LXC-IP `192.168.1.141` als direkter,
+   vertrauenswürdiger Proxy gesetzt. Bei abweichender Topologie vorher
+   `REVERSE_PROXY_IP` setzen.
 5. Im Cloudflare-Tunnel-Hub einen öffentlichen Hostname auf die neue LXC-IP und
    Port `8000` routen. Für den nativen Client keine interaktive Access-Policy
    vorschalten.
