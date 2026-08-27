@@ -18,7 +18,7 @@ def test_pdf_admin_routes_are_registered():
 def test_health_and_system_info_report_build_version(client):
     health = client.get("/healthz")
     assert health.status_code == 200
-    assert health.json()["version"] == "1.4.1"
+    assert health.json()["version"] == "1.5.0"
     assert "ai-shopping-optimization" in health.json()["capabilities"]
     assert "shopping-categories" in health.json()["capabilities"]
     assert "native-admin-roles" in health.json()["capabilities"]
@@ -30,7 +30,7 @@ def test_health_and_system_info_report_build_version(client):
 
     info = client.get("/api/system/info")
     assert info.status_code == 200
-    assert info.json()["version"] == "1.4.1"
+    assert info.json()["version"] == "1.5.0"
     assert "pdf-background-jobs" in info.json()["capabilities"]
     assert "einkauf-proxy" in info.json()["capabilities"]
 
@@ -39,7 +39,7 @@ def test_logout_clears_browser_state_and_redirects_to_login(client, monkeypatch)
     import app.main as main
 
     monkeypatch.setattr(main, "auth_disabled", lambda: False)
-    response = client.get("/logout", follow_redirects=False)
+    response = client.post("/logout", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
     assert response.headers["cache-control"] == "no-store"
@@ -61,7 +61,7 @@ def test_browser_logout_revokes_server_sessions(client, monkeypatch):
     monkeypatch.setattr(main, "request_user", lambda _request: "anna")
     monkeypatch.setattr(main, "get_db", lambda: FakeDb())
 
-    response = client.get("/logout", follow_redirects=False)
+    response = client.post("/logout", follow_redirects=False)
 
     assert response.status_code == 303
     assert revoked == ["anna"]
@@ -73,7 +73,7 @@ def test_logout_delegates_to_cloudflare_when_internal_auth_is_disabled(
     import app.main as main
 
     monkeypatch.setattr(main, "auth_disabled", lambda: True)
-    response = client.get("/logout", follow_redirects=False)
+    response = client.post("/logout", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/cdn-cgi/access/logout"
     assert response.headers["clear-site-data"] == '"cache", "storage"'

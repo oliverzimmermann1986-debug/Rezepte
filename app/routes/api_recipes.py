@@ -20,6 +20,7 @@ Endpoint schnell auch bei 500+ Rezepten.
 from __future__ import annotations
 
 import logging
+import subprocess
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
@@ -38,7 +39,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from ..auth import require_auth
+from ..auth import require_admin, require_auth
 from ..core.analyzer import build_analyzer
 from ..core.safety import resolve_directory_under, resolve_regular_file_under
 from ..core.ttl_cache import TTLCache
@@ -56,7 +57,12 @@ from ..recipes.indexer import (
 )
 from ..recipes.units import normalize_unit
 from ..recipes.sync_manager import request_sync, sync_status
-from ..recipes.image_cache import ensure_thumbnail, invalidate_thumbnail_cache, normalize_image
+from ..recipes.image_cache import (
+    ensure_pdf_first_page,
+    ensure_thumbnail,
+    invalidate_thumbnail_cache,
+    normalize_image,
+)
 from ..recipes.video_recipe_extract import analyze_recipe_with_video_fallback
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"], dependencies=[Depends(require_auth)])
@@ -72,6 +78,30 @@ def _safe_recipe_folder(recipe: Dict[str, Any]) -> Path:
     except (KeyError, OSError, ValueError) as exc:
         logger.warning("Unsicherer/fehlender Rezeptordner für #%s: %s", recipe.get("id"), exc)
         raise HTTPException(404, "Rezeptordner fehlt oder ist nicht zulässig") from exc
+
+
+def _publish_thumbnail(db, recipe_id: int, staged: Path, target: Path) -> None:
+    """Veröffentlicht Bild und DB-Zeiger mit kompensierendem Rollback."""
+    rollback = target.parent / f".thumb-rollback-{time.time_ns()}{target.suffix}"
+    had_target = target.is_file()
+    if had_target:
+        target.replace(rollback)
+    try:
+        staged.replace(target)
+        with db.conn() as connection:
+            updated = connection.execute(
+                "UPDATE recipes SET thumb_filename=? WHERE id=?",
+                (target.name, recipe_id),
+            ).rowcount
+            if not updated:
+                raise LookupError(f"Rezept #{recipe_id} nicht mehr vorhanden")
+    except Exception:
+        target.unlink(missing_ok=True)
+        if had_target and rollback.exists():
+            rollback.replace(target)
+        raise
+    finally:
+        rollback.unlink(missing_ok=True)
 
 
 def _safe_recipe_file(recipe: Dict[str, Any], filename: str) -> Path:
@@ -456,7 +486,7 @@ def _normalized_user_tags(tags: List[str]) -> List[str]:
     return normalized
 
 
-@router.put("/{recipe_id}/tags")
+@router.put("/{recipe_id}/tags", dependencies=[Depends(require_admin)])
 def update_tags(recipe_id: int, payload: TagsUpdate, request: Request):
     db = get_db()
     if not db.recipe_get(recipe_id):
@@ -475,7 +505,7 @@ class BulkRecipeUpdate(BaseModel):
     remove_tags: List[str] = Field(default_factory=list, max_length=30)
 
 
-@router.post("/bulk-edit")
+@router.post("/bulk-edit", dependencies=[Depends(require_admin)])
 def bulk_edit_recipes(payload: BulkRecipeUpdate, request: Request) -> Dict[str, Any]:
     """Ändert Kategorie und User-Tags für bis zu 100 Rezepte.
 
@@ -611,7 +641,7 @@ def _metadata_source_url(value: Optional[str]) -> Optional[str]:
     return value
 
 
-@router.put("/{recipe_id}/metadata")
+@router.put("/{recipe_id}/metadata", dependencies=[Depends(require_admin)])
 def update_metadata(recipe_id: int, payload: MetadataUpdate, request: Request):
     from ..recipes.manage import safe_update_recipe_metadata
 
@@ -804,7 +834,7 @@ def _replace_ingredients_and_reset_verification(
         )
 
 
-@router.put("/{recipe_id}/ingredients")
+@router.put("/{recipe_id}/ingredients", dependencies=[Depends(require_admin)])
 def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Request):
     """Manuelle Override der Zutatenliste. Setzt ingredients_status='ok',
     sodass der Background-Worker das Rezept nicht überschreibt.
@@ -887,7 +917,7 @@ def _replace_steps_and_clear_progress(
     return max(0, int(cleared))
 
 
-@router.put("/{recipe_id}/steps")
+@router.put("/{recipe_id}/steps", dependencies=[Depends(require_admin)])
 def update_steps(recipe_id: int, payload: StepsUpdate, request: Request):
     """Manuelles Override der Zubereitungs-Schritte. step_number wird beim
     Insert automatisch aus der Listen-Position abgeleitet (1-basiert),
@@ -910,7 +940,7 @@ class ServingsUpdate(BaseModel):
     servings: Optional[int] = Field(None, ge=1, le=50)
 
 
-@router.put("/{recipe_id}/servings")
+@router.put("/{recipe_id}/servings", dependencies=[Depends(require_admin)])
 def update_servings(recipe_id: int, payload: ServingsUpdate, request: Request):
     db = get_db()
     if not db.recipe_get(recipe_id):
@@ -922,7 +952,7 @@ def update_servings(recipe_id: int, payload: ServingsUpdate, request: Request):
 
 # ── Sync + Extraction ──────────────────────────────────────────────────
 
-@router.post("/sync", status_code=202)
+@router.post("/sync", status_code=202, dependencies=[Depends(require_admin)])
 def post_sync():
     """Plant einen manuellen FS→DB-Resync ein und kehrt sofort zurück."""
     return request_sync(reason="manual", force=True, db=get_db())
@@ -943,7 +973,7 @@ def extraction_status():
     }
 
 
-@router.post("/recover-empty")
+@router.post("/recover-empty", dependencies=[Depends(require_admin)])
 def recover_empty(request: Request) -> Dict[str, Any]:
     """Setzt ingredients_status='pending' für alle aktiven Rezepte die status IN
     ('ok','error','skipped') haben aber 0 Zutaten in recipe_ingredients. Meist alte
@@ -1009,7 +1039,7 @@ def recover_empty(request: Request) -> Dict[str, Any]:
         raise HTTPException(500, f"recover-empty failed: {type(e).__name__}: {e}")
 
 
-@router.post("/{recipe_id}/rescrape")
+@router.post("/{recipe_id}/rescrape", dependencies=[Depends(require_admin)])
 def rescrape_recipe(
     recipe_id: int,
     request: Request,
@@ -1036,6 +1066,14 @@ def rescrape_recipe(
     url = rec.get("url")
     if not url:
         return {"ok": False, "error": "Rezept hat keine URL (manuell angelegt?)"}
+    from ..core.email_processor import normalize_content_url
+    normalized_url = normalize_content_url(str(url))
+    if not normalized_url:
+        raise HTTPException(
+            400,
+            "Re-Scrape ist nur für validierte TikTok-/Instagram-Beitragslinks erlaubt",
+        )
+    url = normalized_url
     try:
         folder_p = _safe_recipe_folder(rec)
     except HTTPException:
@@ -1136,10 +1174,7 @@ def rescrape_recipe(
                 source="import",
             )
             _backup_thumbnail_version(rec, version_id)
-            normalized_thumb.replace(target_thumb)
-            with db.conn() as c:
-                c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?",
-                          ("thumb.jpg", recipe_id))
+            _publish_thumbnail(db, recipe_id, normalized_thumb, target_thumb)
             # Erst nach erfolgreicher Normalisierung + DB-Aktualisierung alte
             # Varianten entfernen. Das funktionierende Bild bleibt bei Fehlern
             # dadurch erhalten.
@@ -1181,7 +1216,7 @@ def rescrape_recipe(
     }
 
 
-@router.post("/{recipe_id}/upload-thumbnail")
+@router.post("/{recipe_id}/upload-thumbnail", dependencies=[Depends(require_admin)])
 async def upload_thumbnail(
     recipe_id: int,
     request: Request,
@@ -1223,7 +1258,7 @@ async def upload_thumbnail(
 
         version_id = _version_before(recipe_id, request, "Coverbild ersetzt")
         _backup_thumbnail_version(rec, version_id)
-        staged_target.replace(target)
+        _publish_thumbnail(db, recipe_id, staged_target, target)
 
         # Erst nach erfolgreichem atomaren Austausch alte Varianten entfernen.
         for old in folder_p.glob("thumb.*"):
@@ -1235,8 +1270,6 @@ async def upload_thumbnail(
         invalidate_thumbnail_cache(folder_p)
         ensure_thumbnail(target, 400)
         ensure_thumbnail(target, 800)
-        with db.conn() as c:
-            c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?", (target.name, recipe_id))
         logger.info("thumbnail upload #%s '%s' → %s (%s B)", recipe_id, rec.get("name"), target.name, size)
         return {
             "ok": True,
@@ -1256,7 +1289,7 @@ async def upload_thumbnail(
             pass
 
 
-@router.post("/{recipe_id}/extract-frame")
+@router.post("/{recipe_id}/extract-frame", dependencies=[Depends(require_admin)])
 def extract_frame(
     recipe_id: int,
     request: Request,
@@ -1323,22 +1356,19 @@ def extract_frame(
 
     version_id = _version_before(recipe_id, request, "Coverbild aus Video ersetzt")
     _backup_thumbnail_version(rec, version_id)
-    staged_target.replace(target)
+    _publish_thumbnail(db, recipe_id, staged_target, target)
     for old in folder_p.glob("thumb.*"):
         if old != target and old.is_file() and not old.is_symlink():
             old.unlink(missing_ok=True)
     invalidate_thumbnail_cache(folder_p)
 
-    with db.conn() as c:
-        c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?",
-                  ("thumb.jpg", recipe_id))
     logger.info(f"frame #{recipe_id} '{rec.get('name')}' @ {seconds}s → {target.name}")
     return {"ok": True, "thumbnail": "thumb.jpg", "video": video.name,
             "seconds": seconds, "size_bytes": target.stat().st_size,
             "version_id": version_id}
 
 
-@router.post("/{recipe_id}/verify")
+@router.post("/{recipe_id}/verify", dependencies=[Depends(require_admin)])
 def toggle_verify(recipe_id: int, request: Request,
                     verified: bool = Query(True)) -> Dict[str, Any]:
     """Markiert ausschließlich die Zutatenliste als manuell geprüft."""
@@ -1364,7 +1394,7 @@ def toggle_verify(recipe_id: int, request: Request,
     return {"ok": True, "verified": verified, "by": username}
 
 
-@router.post("/{recipe_id}/nutrition")
+@router.post("/{recipe_id}/nutrition", dependencies=[Depends(require_admin)])
 def compute_nutrition_for(recipe_id: int, request: Request) -> Dict[str, Any]:
     """On-Demand Nährwert-Berechnung für ein Rezept. KI-Single-Call.
     Setzt calories_per_serving + protein/carbs/fat_g + computed_at."""
@@ -1380,28 +1410,40 @@ def compute_nutrition_for(recipe_id: int, request: Request) -> Dict[str, Any]:
     ings = db.recipe_ingredients_get(recipe_id)
     if len(ings) < 3:
         raise HTTPException(400, f"Zu wenig Zutaten ({len(ings)}) für sinnvolle Schätzung")
+    claim_owner = f"nutrition-one:{time.time_ns()}"
+    if not db.recipe_claim_nutrition(recipe_id, claim_owner):
+        raise HTTPException(409, "Für dieses Rezept läuft bereits eine Nährwertberechnung")
     cfg = get_config()
     try:
-        analyzer = build_analyzer(cfg.get("ai", default={}) or {})
-    except Exception as e:
-        raise HTTPException(500, f"Analyzer-Setup fehlgeschlagen: {e}")
-
-    nutr = analyzer.compute_nutrition(ings, recipe.get("servings"))
-    if not nutr:
-        raise HTTPException(502, "KI konnte keine Nährwerte berechnen (zu wenig Info?)")
-
-    _version_before(recipe_id, request, "Nährwerte neu berechnet", source="ai")
-    db.recipe_set_nutrition(
-        recipe_id, nutr["calories"], nutr["protein_g"],
-        nutr["carbs_g"], nutr["fat_g"],
-    )
-    for idx, kcal in (nutr.get("per_ingredient") or {}).items():
-        if 0 <= idx < len(ings):
-            db.recipe_ingredient_set_calories(ings[idx]["id"], kcal)
+        try:
+            analyzer = build_analyzer(cfg.get("ai", default={}) or {})
+        except Exception as e:
+            raise HTTPException(500, f"Analyzer-Setup fehlgeschlagen: {e}") from e
+        nutr = analyzer.compute_nutrition(ings, recipe.get("servings"))
+        if not nutr:
+            raise HTTPException(502, "KI konnte keine Nährwerte berechnen (zu wenig Info?)")
+        per_ingredient = {}
+        for raw_idx, kcal in (nutr.get("per_ingredient") or {}).items():
+            try:
+                idx = int(raw_idx)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < len(ings):
+                per_ingredient[int(ings[idx]["id"])] = kcal
+        _version_before(recipe_id, request, "Nährwerte neu berechnet", source="ai")
+        db.recipe_set_nutrition(
+            recipe_id, nutr["calories"], nutr["protein_g"],
+            nutr["carbs_g"], nutr["fat_g"],
+            ingredient_calories=per_ingredient,
+            claim_owner=claim_owner,
+        )
+    except Exception:
+        db.recipe_release_nutrition_claim(recipe_id, claim_owner)
+        raise
     return {"ok": True, **nutr}
 
 
-@router.post("/compute-nutrition-bulk")
+@router.post("/compute-nutrition-bulk", dependencies=[Depends(require_admin)])
 def compute_nutrition_bulk(request: Request, limit: int = Query(50, ge=1, le=200)) -> Dict[str, Any]:
     """Bulk: bis zu N Rezepte ohne Nährwerte berechnen. Synchroner Lauf —
     bei vielen Rezepten >30s, daher mit Limit. UI ruft das wiederholt auf
@@ -1413,7 +1455,8 @@ def compute_nutrition_bulk(request: Request, limit: int = Query(50, ge=1, le=200
     except Exception as e:
         raise HTTPException(500, f"Analyzer-Setup fehlgeschlagen: {e}")
 
-    pending = db.recipes_pending_nutrition(limit=limit)
+    claim_owner = f"nutrition-bulk:{time.time_ns()}"
+    pending = db.recipes_claim_pending_nutrition(limit=limit, owner=claim_owner)
     computed = 0
     failed = []
     for r in pending:
@@ -1421,30 +1464,39 @@ def compute_nutrition_bulk(request: Request, limit: int = Query(50, ge=1, le=200
         try:
             nutr = analyzer.compute_nutrition(ings, r.get("servings"))
             if nutr:
+                per_ingredient = {}
+                for raw_idx, kcal in (nutr.get("per_ingredient") or {}).items():
+                    try:
+                        idx = int(raw_idx)
+                    except (TypeError, ValueError):
+                        continue
+                    if 0 <= idx < len(ings):
+                        per_ingredient[int(ings[idx]["id"])] = kcal
                 _version_before(int(r["id"]), request, "Nährwerte gesammelt berechnet", source="ai")
                 db.recipe_set_nutrition(
                     int(r["id"]), nutr["calories"], nutr["protein_g"],
                     nutr["carbs_g"], nutr["fat_g"],
+                    ingredient_calories=per_ingredient,
+                    claim_owner=claim_owner,
                 )
-                for idx, kcal in (nutr.get("per_ingredient") or {}).items():
-                    if 0 <= idx < len(ings):
-                        db.recipe_ingredient_set_calories(ings[idx]["id"], kcal)
                 computed += 1
             else:
                 failed.append({"id": r["id"], "name": r["name"], "reason": "KI-leer"})
+                db.recipe_release_nutrition_claim(int(r["id"]), claim_owner)
         except Exception as e:
             failed.append({"id": r["id"], "name": r["name"], "reason": str(e)[:100]})
+            db.recipe_release_nutrition_claim(int(r["id"]), claim_owner)
     logger.info(f"compute-nutrition-bulk: {computed}/{len(pending)} berechnet")
     return {
         "ok": True,
         "computed": computed,
         "processed": len(pending),
         "failed": failed,
-        "remaining": max(0, db.recipe_count() - computed) if computed else None,
+        "remaining": db.recipes_pending_nutrition_count(),
     }
 
 
-@router.post("/{recipe_id}/extract")
+@router.post("/{recipe_id}/extract", dependencies=[Depends(require_admin)])
 def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Request):
     """Manueller Trigger: extrahiert (oder re-extrahiert) Zutaten + Schritte +
     Portionen für EIN Rezept synchron. Single KI-Call via analyze_recipe_content."""
@@ -1463,6 +1515,9 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
         analyzer = build_analyzer(cfg.get("ai", default={}) or {})
     except Exception as e:
         raise HTTPException(500, f"Analyzer-Setup fehlgeschlagen: {e}")
+    claim_owner = f"nutrition:{recipe_id}:{time.time_ns()}"
+    if not db.recipe_claim_nutrition(recipe_id, claim_owner):
+        raise HTTPException(409, "Für dieses Rezept läuft bereits eine Nährwertberechnung")
 
     # Auch der manuelle Trigger darf bei kurzer/leerer Caption ein bereits
     # hochgeladenes Bild oder PDF als erste, günstige Quelle verwenden.
@@ -1580,7 +1635,7 @@ class DuplicatePayload(BaseModel):
     new_name: str = Field(min_length=1, max_length=200)
 
 
-@router.post("/{recipe_id}/duplicate")
+@router.post("/{recipe_id}/duplicate", dependencies=[Depends(require_admin)])
 def duplicate_recipe(recipe_id: int, payload: DuplicatePayload) -> Dict[str, Any]:
     from ..recipes.manage import safe_duplicate_recipe
 
@@ -1594,7 +1649,7 @@ def duplicate_recipe(recipe_id: int, payload: DuplicatePayload) -> Dict[str, Any
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.put("/{recipe_id}/rename")
+@router.put("/{recipe_id}/rename", dependencies=[Depends(require_admin)])
 def rename_recipe(recipe_id: int, payload: RenamePayload, request: Request):
     from ..recipes.manage import safe_rename_recipe
     _version_before(recipe_id, request, "Rezept umbenannt")
@@ -1615,7 +1670,7 @@ class DeletePayload(BaseModel):
     delete_files: bool = True
 
 
-@router.delete("/{recipe_id}")
+@router.delete("/{recipe_id}", dependencies=[Depends(require_admin)])
 def delete_recipe(recipe_id: int, request: Request, delete_files: bool = False, hard: bool = False):
     """Soft-Delete in Papierkorb (Default). Mit ?hard=true endgültig.
     ?delete_files=true entfernt den Folder zusätzlich (auch beim Soft-Delete —
@@ -1654,7 +1709,7 @@ def trash_list(limit: int = Query(200, ge=1, le=500),
     return {"items": items, "total": total}
 
 
-@router.post("/{recipe_id}/restore")
+@router.post("/{recipe_id}/restore", dependencies=[Depends(require_admin)])
 def restore_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
     """Aus Papierkorb wiederherstellen (deleted_at = NULL)."""
     from ..recipes.manage import safe_restore_recipe
@@ -1674,7 +1729,7 @@ def restore_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.delete("/trash/empty")
+@router.delete("/trash/empty", dependencies=[Depends(require_admin)])
 def empty_trash(delete_files: bool = True) -> Dict[str, Any]:
     """Papierkorb endgültig leeren — alle Rezepte mit deleted_at IS NOT NULL
     werden HARD-DELETE'd. delete_files=True entfernt zusätzlich die FS-Folder
@@ -1708,7 +1763,7 @@ class MergePayload(BaseModel):
     delete_source: bool = True
 
 
-@router.post("/merge")
+@router.post("/merge", dependencies=[Depends(require_admin)])
 def merge_recipes(payload: MergePayload, request: Request):
     from ..recipes.manage import safe_merge_recipes
     _version_before(payload.source_id, request, f"Mit Rezept #{payload.target_id} zusammengeführt")
@@ -1770,7 +1825,9 @@ def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
     ffmpeg-Aufruf mehr. ETag basiert auf Source-mtime damit invalidiert
     wenn das Original ersetzt wird."""
     from pathlib import Path
-    import subprocess as _sp
+    allowed_widths = {400, 500, 800, 900, 1000, 1400}
+    if w is not None and w not in allowed_widths:
+        raise HTTPException(422, f"w muss einer von {sorted(allowed_widths)} sein")
     db = get_db()
     r = db.recipe_get(recipe_id)
     if not r:
@@ -1815,14 +1872,8 @@ def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
                     # an wenn man -o mit vollem Namen nutzt → wir geben den
                     # Prefix ohne .jpg an, pdftoppm ergänzt es.
                     try:
-                        _sp.run(
-                            ["pdftoppm", "-jpeg", "-r", "150", "-f", "1", "-l", "1",
-                             "-singlefile", str(pdf), str(folder / "pdf-page1")],
-                            check=True, timeout=20,
-                        )
-                        if rendered.exists():
-                            src = rendered
-                    except (_sp.CalledProcessError, _sp.TimeoutExpired, FileNotFoundError) as e:
+                        src = ensure_pdf_first_page(pdf, rendered)
+                    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                         logger.warning(f"pdf-render fail für #{recipe_id}: {e}")
 
     if src is None:

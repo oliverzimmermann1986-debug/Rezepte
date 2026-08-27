@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 from .worker import ArchiveQueue, VideoArchiver, load_recipe_links
@@ -29,6 +30,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     sync.add_argument("--recipes-db", type=Path, required=True)
     sync.add_argument(
+        "--min-interval",
+        type=int,
+        default=0,
+        help="Vollständigen DB-Abgleich höchstens alle N Sekunden ausführen",
+    )
+    sync.add_argument(
         "--queue-user",
         help="Nach dem Lesen der Rezeptdatenbank vor dem Queue-Zugriff zu diesem Benutzer wechseln",
     )
@@ -45,6 +52,10 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--max-attempts", type=int, default=3)
     run.add_argument("--max-size-mb", type=int, default=1000)
     run.add_argument("--min-free-mb", type=int, default=512)
+    run.add_argument(
+        "--max-jobs", type=int, default=1,
+        help="Pro Aufruf höchstens N verfügbare Queue-Einträge verarbeiten",
+    )
     run.add_argument(
         "--confirm-rights",
         action="store_true",
@@ -69,27 +80,57 @@ def _drop_privileges(username: str) -> None:
     os.setuid(account.pw_uid)
 
 
+def _recent_sync_exists(queue_path: Path, min_interval: int) -> bool:
+    """Prüft die Sync-Sperre read-only, bevor Root die große Quell-DB liest."""
+    if min_interval <= 0:
+        return False
+    path = queue_path.expanduser().resolve()
+    if not path.is_file():
+        return False
+    try:
+        uri = f"{path.as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=5) as connection:
+            row = connection.execute(
+                "SELECT value FROM archive_state WHERE key='last_recipe_sync'"
+            ).fetchone()
+        last_sync = float(row[0]) if row else 0.0
+    except (sqlite3.Error, TypeError, ValueError):
+        return False
+    return time.time() - last_sync < min_interval
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         recipe_links = None
+        skip_recipe_sync = False
         if args.command == "sync" and args.queue_user:
             # Root darf die WAL-Quelldatenbank konsistent read-only öffnen.
             # Vor dem ersten Zugriff auf die private Queue werden sämtliche
             # Privilegien dauerhaft abgegeben, damit deren Dateien weiterhin
             # dem isolierten Archiver-Benutzer gehören.
-            recipe_links = load_recipe_links(args.recipes_db)
+            skip_recipe_sync = _recent_sync_exists(
+                args.queue, max(0, args.min_interval),
+            )
+            if not skip_recipe_sync:
+                recipe_links = load_recipe_links(args.recipes_db)
             _drop_privileges(args.queue_user)
 
         queue = ArchiveQueue(args.queue)
         if args.command == "enqueue":
             result = queue.enqueue(args.recipe_id, args.url)
         elif args.command == "sync":
-            result = (
-                queue.sync_recipe_links(recipe_links)
-                if recipe_links is not None
-                else queue.sync_from_recipes_db(args.recipes_db)
-            )
+            if skip_recipe_sync:
+                result = {"seen": 0, "eligible": 0, "enqueued": 0,
+                          "unchanged": 0, "ignored": 0, "skipped": 1}
+            elif recipe_links is not None:
+                result = queue.sync_recipe_links(recipe_links)
+                queue.mark_recipe_sync()
+            else:
+                result = queue.sync_from_recipes_db(
+                    args.recipes_db,
+                    min_interval_seconds=max(0, args.min_interval),
+                )
         elif args.command == "status":
             result = queue.counts()
         elif args.command == "events":
@@ -107,13 +148,34 @@ def main(argv: list[str] | None = None) -> int:
                 max_bytes=args.max_size_mb * 1024 * 1024,
                 free_space_reserve_bytes=args.min_free_mb * 1024 * 1024,
             )
-            result = worker.process_one() or {"status": "idle"}
+            max_jobs = max(1, min(50, int(args.max_jobs)))
+            processed = []
+            for _ in range(max_jobs):
+                item = worker.process_one()
+                if item is None:
+                    break
+                processed.append(item)
+            if max_jobs == 1:
+                result = processed[0] if processed else {"status": "idle"}
+            else:
+                failed = sum(
+                    1 for item in processed
+                    if item.get("status") in {"queued", "failed"}
+                )
+                result = {
+                    "status": "partial" if failed else ("completed" if processed else "idle"),
+                    "processed": len(processed),
+                    "failed": failed,
+                    "items": processed,
+                }
         else:  # pragma: no cover - argparse verhindert diesen Zustand
             raise ValueError(f"Unbekannter Befehl: {args.command}")
     except (OSError, ValueError, sqlite3.Error) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.command == "run" and result.get("status") in {"queued", "failed", "partial"}:
+        return 1
     return 0
 
 

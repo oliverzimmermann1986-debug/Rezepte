@@ -39,7 +39,7 @@ from ..config_store import get_config
 from ..db import Database, get_db
 from .canonical import canonical_name as _canonical
 from .units import normalize_unit
-from .image_cache import ensure_thumbnail
+from .image_cache import ensure_pdf_first_page, ensure_thumbnail
 from .video_recipe_extract import analyze_recipe_with_video_fallback
 
 logger = logging.getLogger(__name__)
@@ -78,15 +78,15 @@ def sync_filesystem(db: Optional[Database] = None) -> dict:
     # Layout: /mnt/rezepte/<Typ>/<Kategorie>/<Name>/{name.mp4, name.jpg, info.json, description.txt}
     # Wir gehen 3 Ebenen tief.
     for type_dir in _safe_iterdir(recipe_root):
-        if not type_dir.is_dir():
+        if not type_dir.is_dir() or type_dir.name.startswith("."):
             continue
         type_name = type_dir.name
         for cat_dir in _safe_iterdir(type_dir):
-            if not cat_dir.is_dir():
+            if not cat_dir.is_dir() or cat_dir.name.startswith("."):
                 continue
             cat_name = cat_dir.name
             for recipe_dir in _safe_iterdir(cat_dir):
-                if not recipe_dir.is_dir():
+                if not recipe_dir.is_dir() or recipe_dir.name.startswith("."):
                     continue
                 counters["scanned"] += 1
                 # try/except um _index_one — sonst bricht ein einzelner Crash
@@ -210,21 +210,19 @@ def _pdf_thumb(folder: Path) -> Optional[str]:
         return None
     target = folder / "thumb.jpg"
     try:
-        r = subprocess.run(
-            ["pdftoppm", "-jpeg", "-scale-to", "1024", "-f", "1", "-l", "1",
-             "-singlefile", str(pdfs[0]), str(folder / "thumb")],
-            capture_output=True, text=True, timeout=60,
-        )
+        ensure_pdf_first_page(pdfs[0], target, dpi=150, timeout=60)
     except FileNotFoundError:
         logger.warning("pdftoppm nicht installiert — PDF-Thumbnail übersprungen")
         return None
     except subprocess.TimeoutExpired:
         logger.warning(f"pdftoppm Timeout: {folder.name}")
         return None
-    if r.returncode == 0 and target.exists():
+    except (OSError, RuntimeError) as exc:
+        logger.warning(f"pdftoppm fehlgeschlagen ({folder.name}): {str(exc)[:120]}")
+        return None
+    if target.exists():
         logger.info(f"PDF-Thumbnail erzeugt: {folder.name}")
         return target.name
-    logger.warning(f"pdftoppm fehlgeschlagen ({folder.name}): {(r.stderr or '').strip()[:120]}")
     return None
 
 
@@ -258,6 +256,11 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
         except Exception as e:
             logger.warning(f"description.txt unlesbar in {folder}: {e}")
             preserve_existing.add("description")
+    else:
+        # Das Dateisystem ist für dieses Feld nur dann autoritativ, wenn ein
+        # Sidecar tatsächlich existiert. Ein fehlendes description.txt darf
+        # keine zuvor in der DB gespeicherte Beschreibung löschen.
+        preserve_existing.add("description")
 
     folder_items, folder_scan_ok = _safe_iterdir_checked(folder)
     if not folder_scan_ok:
@@ -282,6 +285,8 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
             best = max(candidates, key=lambda f: f.stat().st_size)
             try:
                 description = best.read_text(encoding="utf-8").strip()
+                if description:
+                    preserve_existing.discard("description")
                 logger.info(f"Description-Fallback in {folder.name}: {best.name}")
             except Exception as e:
                 logger.warning(f"Fallback-Text {best} unlesbar: {e}")

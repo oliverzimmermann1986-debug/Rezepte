@@ -8,7 +8,7 @@ set -euo pipefail
 # --------- KONFIGURATION (anpassen!) ---------
 CTID="${CTID:-200}"
 HOSTNAME="${HOSTNAME:-scrapper}"
-PASSWORD="${PASSWORD:-changeme}"
+PASSWORD="${PASSWORD:-}"
 STORAGE="${STORAGE:-local-lvm}"
 DISK_SIZE="${DISK_SIZE:-16}"
 MEMORY="${MEMORY:-2048}"
@@ -19,6 +19,11 @@ IP_ADDR="${IP_ADDR:-dhcp}"             # z.B. "192.168.178.50/24,gw=192.168.178.
 TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
 # Template: wenn nicht via Env gesetzt, automatisch neueste Debian-12-Version finden
 TEMPLATE="${TEMPLATE:-}"
+if [[ -z "$PASSWORD" || "$PASSWORD" == "changeme" ]]; then
+  echo "❌ Setze PASSWORD auf ein starkes, eindeutiges Root-Passwort." >&2
+  echo "   Beispiel: PASSWORD='...' ./create-container.sh" >&2
+  exit 1
+fi
 if [[ -z "$TEMPLATE" ]]; then
   pveam update >/dev/null
   TEMPLATE=$(pveam available --section system 2>/dev/null \

@@ -14,24 +14,22 @@ Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
 Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/scrapper/playwright-browsers"
 # Sicherer Default: nur ein lokaler Reverse-Proxy darf Uvicorns Forwarded-
 # Header auswerten. Bei einem separaten cloudflared-LXC exakt dessen IP in
-# /opt/scrapper/data/web.env setzen, z.B.
+# /etc/scrapper/web.env setzen, z.B.
 # SCRAPPER_FORWARDED_ALLOW_IPS=192.168.1.31
 Environment="SCRAPPER_FORWARDED_ALLOW_IPS=127.0.0.1"
-EnvironmentFile=-/opt/scrapper/data/web.env
+# Sicherer Bind-Default. Ein separater Reverse-Proxy-LXC muss Bind-Adresse,
+# vertrauenswürdige Proxy-IP und eine enge Host-Firewall explizit konfigurieren.
+Environment="SCRAPPER_BIND_HOST=127.0.0.1"
+# Root-verwaltete Overrides kommen nach den Defaults und können beide Werte
+# ersetzen, ohne dass der App-Benutzer die Proxy-Vertrauensgrenze persistiert.
+EnvironmentFile=-/etc/scrapper/web.env
 # Begrenzung pro OCR-Prozess; verhindert CPU-/RAM-Spitzen bei PDF-Bestandsläufen.
 Environment="OMP_THREAD_LIMIT=1"
-# Bind-Adresse:
-#   - 127.0.0.1  wenn der Reverse-Proxy / Cloudflare-Tunnel IM SELBEN Container läuft
-#   - 0.0.0.0    wenn er in einem ANDEREN Container/Host läuft und über LAN zugreift
-#
-# Default: 0.0.0.0, weil das die häufigere Topologie ist (Proxmox: cloudflared
-# meist in eigenem LXC). Externer Schutz erfolgt über Cloudflare Access + ggf.
-# eine LAN-Firewall die Port 8000 nur für die cloudflared-Container-IP öffnet.
-# --proxy-headers + --forwarded-allow-ips lässt FastAPI dem CF-Tunnel die echte
-# Client-IP via X-Forwarded-For/CF-Connecting-IP zuordnen.
-ExecStart=/opt/scrapper/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=${SCRAPPER_FORWARDED_ALLOW_IPS}
+ExecStart=/opt/scrapper/venv/bin/uvicorn app.main:app --host ${SCRAPPER_BIND_HOST} --port 8000 --proxy-headers --forwarded-allow-ips=${SCRAPPER_FORWARDED_ALLOW_IPS}
 Restart=on-failure
 RestartSec=5
+WatchdogSec=60
+TimeoutStopSec=90
 StandardOutput=journal
 StandardError=journal
 
@@ -43,7 +41,7 @@ ProtectSystem=strict
 # /home/scrapper/. ProtectHome=true wäre komplett unsichtbar - mit
 # 'read-only' kann gelesen, aber nicht geschrieben werden.
 ProtectHome=read-only
-ReadWritePaths=/opt/scrapper /mnt /etc/systemd/system/scrapper-job.timer
+ReadWritePaths=/opt/scrapper/data /opt/scrapper/logs /opt/scrapper/temp /opt/scrapper/files /mnt
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

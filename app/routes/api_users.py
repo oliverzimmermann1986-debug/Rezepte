@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -53,11 +54,15 @@ def create_user(payload: UserCreate, current=Depends(require_admin)):
     if db.user_get_by_name(username):
         raise HTTPException(409, f"User '{username}' existiert bereits")
 
-    user_id = db.user_create(
-        username,
-        hash_password(payload.password),
-        role=payload.role,
-    )
+    try:
+        user_id = db.user_create(
+            username,
+            hash_password(payload.password),
+            role=payload.role,
+        )
+    except sqlite3.IntegrityError as exc:
+        # Der NOCASE-Unique-Index ist auch die Race-sichere letzte Grenze.
+        raise HTTPException(409, f"User '{username}' existiert bereits") from exc
     logger.info(
         "User '%s' mit Rolle '%s' angelegt von '%s'",
         username,

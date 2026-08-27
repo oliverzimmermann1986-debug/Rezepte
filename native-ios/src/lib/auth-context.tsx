@@ -200,7 +200,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         const cloudflare = storedClientId && storedClientSecret
           ? { clientId: storedClientId, clientSecret: storedClientSecret }
           : null;
-        configureApi(server, storedToken, cloudflare);
+        configureApi(server, storedToken, cloudflare, storedUsername || '');
         setToken(storedToken);
         setServerUrl(server);
         setCloudflareClientId(storedClientId || '');
@@ -411,7 +411,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       configureApi('', null, null);
       throw reason;
     }
-    configureApi(normalizedServer, result.token, cloudflare);
+    configureApi(normalizedServer, result.token, cloudflare, result.username);
     setServerUrl(normalizedServer);
     setCloudflareClientId(normalizedClientId);
     setCloudflareClientSecret(normalizedClientSecret);

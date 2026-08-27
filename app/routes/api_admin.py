@@ -45,12 +45,54 @@ router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(re
 # PDF-Bestandsläufe dürfen nicht an einem HTTP-/Reverse-Proxy-Timeout hängen.
 # Ein einzelner Worker hält Speicher- und CPU-Verbrauch kontrollierbar; Fortschritt
 # und Ergebnis werden in maintenance_runs persistiert.
-_PDF_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdf-admin")
+_PDF_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_PDF_EXECUTOR_LOCK = threading.Lock()
 _PDF_JOB_LOCK = threading.Lock()
 _PDF_PROCESS_LOCK = threading.Lock()
+_PDF_STOP = threading.Event()
 _PDF_ACTIVE_RUN_ID: Optional[int] = None
 
 _PdfEndpoint = TypeVar("_PdfEndpoint", bound=Callable[..., Any])
+
+
+def _pdf_executor() -> ThreadPoolExecutor:
+    global _PDF_EXECUTOR
+    with _PDF_EXECUTOR_LOCK:
+        if _PDF_EXECUTOR is None:
+            _PDF_EXECUTOR = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="pdf-admin",
+            )
+        return _PDF_EXECUTOR
+
+
+def reset_pdf_runtime() -> None:
+    """Setzt den Shutdown-Marker beim Start eines neuen App-Lifespans zurück."""
+    _PDF_STOP.clear()
+
+
+def stop_pdf_executor(timeout: float = 15.0) -> bool:
+    """Bricht PDF-Batches an der nächsten Dateigrenze ab und wartet begrenzt."""
+    global _PDF_EXECUTOR
+    _PDF_STOP.set()
+    with _PDF_JOB_LOCK:
+        run_id = _PDF_ACTIVE_RUN_ID
+    if run_id is not None:
+        try:
+            get_db().maintenance_finish(
+                run_id,
+                ok=False,
+                result={"ok": False, "status": "cancelled", "error": "App-Shutdown"},
+            )
+        except Exception:
+            logger.exception("PDF-Lauf #%s konnte beim Shutdown nicht beendet werden", run_id)
+    with _PDF_EXECUTOR_LOCK:
+        executor, _PDF_EXECUTOR = _PDF_EXECUTOR, None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
+    deadline = time.time() + max(0.0, timeout)
+    while _PDF_PROCESS_LOCK.locked() and time.time() < deadline:
+        time.sleep(0.05)
+    return not _PDF_PROCESS_LOCK.locked()
 
 
 def _claim_pdf_run(db: Any, kind: str, actor: str) -> int:
@@ -449,6 +491,7 @@ def _process_pdf_targets(
     *,
     run_id: Optional[int] = None,
     actor: str = "system",
+    stop_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
     db = get_db(); cfg = get_config()
     pdf_cfg = cfg.get("pdf", default={}) or {}
@@ -469,6 +512,9 @@ def _process_pdf_targets(
             )
 
     for index, path in enumerate(targets, start=1):
+        if stop_event is not None and stop_event.is_set():
+            result["cancelled"] = True
+            break
         result["current_file"] = str(path)
         if run_id is not None:
             db.maintenance_progress(run_id, result)
@@ -564,8 +610,12 @@ def _process_pdf_targets(
             db.maintenance_progress(run_id, result)
 
     result["current_file"] = None
-    result["status"] = "ok" if result["errors"] == 0 else "error"
-    result["ok"] = result["errors"] == 0
+    if result.get("cancelled"):
+        result["status"] = "cancelled"
+        result["ok"] = False
+    else:
+        result["status"] = "ok" if result["errors"] == 0 else "error"
+        result["ok"] = result["errors"] == 0
     return result
 
 
@@ -574,7 +624,13 @@ def _run_pdf_background(payload_data: Dict[str, Any], targets: List[Path], run_i
     try:
         payload = PdfBatchPayload.model_validate(payload_data)
         with _PDF_PROCESS_LOCK:
-            result = _process_pdf_targets(payload, targets, run_id=run_id, actor=actor)
+            result = _process_pdf_targets(
+                payload,
+                targets,
+                run_id=run_id,
+                actor=actor,
+                stop_event=_PDF_STOP,
+            )
         db.maintenance_finish(run_id, ok=result["ok"], result=result)
     except Exception as exc:
         logger.exception("PDF-Hintergrundlauf #%s abgebrochen", run_id)
@@ -591,6 +647,7 @@ def _run_pdf_background(payload_data: Dict[str, Any], targets: List[Path], run_i
 @router.post("/pdf/process")
 def process_pdfs(payload: PdfBatchPayload, request: Request, response: Response) -> Dict[str, Any]:
     db = get_db(); actor = _username(request)
+    _PDF_STOP.clear()
     preflight = _pdf_preflight(
         require_backup=bool(not payload.dry_run and payload.keep_original),
         require_recipe_write=bool(not payload.dry_run),
@@ -628,7 +685,9 @@ def process_pdfs(payload: PdfBatchPayload, request: Request, response: Response)
         initial = _pdf_result_base(payload, targets)
         initial["preflight"] = preflight
         db.maintenance_progress(run_id, initial)
-        _PDF_EXECUTOR.submit(_run_pdf_background, payload.model_dump(), targets, run_id, actor)
+        _pdf_executor().submit(
+            _run_pdf_background, payload.model_dump(), targets, run_id, actor,
+        )
     except Exception as exc:
         db.maintenance_finish(
             run_id,

@@ -3,6 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 
 let authToken: string | null = null;
 let configuredUrl = '';
+let configuredIdentity = '';
 let cloudflareClientId = '';
 let cloudflareClientSecret = '';
 let sessionEpoch = 0;
@@ -34,10 +35,12 @@ export function configureApi(
   baseUrl: string,
   token: string | null,
   cloudflare?: { clientId: string; clientSecret: string } | null,
+  identity = '',
 ) {
   sessionEpoch += 1;
   cancelDownloadsFromPreviousSessions();
   configuredUrl = baseUrl.trim().replace(/\/+$/, '');
+  configuredIdentity = identity.trim().toLowerCase();
   authToken = token;
   cloudflareClientId = cloudflare?.clientId.trim() || '';
   cloudflareClientSecret = cloudflare?.clientSecret.trim() || '';
@@ -92,6 +95,10 @@ async function notifyUnauthorized(requestEpoch: number) {
 
 export function apiBaseUrl() {
   return configuredUrl || String(Constants.expoConfig?.extra?.apiUrl || '').replace(/\/+$/, '');
+}
+
+export function apiCacheNamespace() {
+  return `${apiBaseUrl()}\u0000${configuredIdentity || 'anonymous'}`;
 }
 
 export function absoluteApiUrl(path: string) {
@@ -200,6 +207,7 @@ export async function api<T>(
         headers,
         signal: timeoutSignal,
       });
+      assertApiSessionEpochCurrent(requestEpoch);
       if (response.status === 401 && requestHadAuth && path !== '/api/auth/login') {
         await notifyUnauthorized(requestEpoch);
       }
@@ -248,6 +256,7 @@ export async function uploadFile<T>(
         body,
         signal: timeoutSignal,
       });
+      assertApiSessionEpochCurrent(requestEpoch);
       if (response.status === 401 && requestHadAuth) await notifyUnauthorized(requestEpoch);
       return readResponse<T>(response);
     },

@@ -13,12 +13,14 @@ Environment="PATH=/opt/video-archiver/venv/bin:/usr/bin:/bin"
 ExecStartPre=+/opt/video-archiver/venv/bin/python -m video_archiver \
   --queue /var/lib/video-archiver/queue.db sync \
   --recipes-db /opt/scrapper/data/scrapper.db \
+  --min-interval 3600 \
   --queue-user videoarchive
 ExecStart=/opt/video-archiver/venv/bin/python -m video_archiver \
   --queue /var/lib/video-archiver/queue.db run \
   --archive /srv/video-archive \
   --yt-dlp /opt/video-archiver/venv/bin/yt-dlp \
   --max-size-mb 1000 \
+  --max-jobs 4 \
   --confirm-rights
 TimeoutStartSec=1800
 UMask=0027

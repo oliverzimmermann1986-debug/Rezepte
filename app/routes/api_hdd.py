@@ -36,5 +36,11 @@ def shelly_toggle() -> Dict:
     cur = ctl.shelly_status()
     if cur is None:
         raise HTTPException(503, "Shelly nicht erreichbar")
+    if cur and ctl.is_mounted():
+        raise HTTPException(
+            409,
+            "Direktes Ausschalten abgelehnt: Datenträger ist noch eingehängt. "
+            "Bitte power-off verwenden.",
+        )
     ok = ctl.shelly_switch(not cur)
     return {"ok": ok, "shelly_on": not cur if ok else cur}

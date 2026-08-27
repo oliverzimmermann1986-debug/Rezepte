@@ -1,8 +1,7 @@
-"""yt-dlp Wrapper.
+"""Begrenzter yt-dlp-Wrapper für die lokale Quellenverarbeitung.
 
-Frame-Extraktion und Vision-Analyse wurden entfernt - der KI-Cascade
-besteht jetzt nur noch aus Ollama (fast) + Ollama (fallback). Pending-Items
-werden im Web-UI über ein <video>-Element angezeigt, kein Standbild nötig.
+Die anschließende Klassifizierung ist ein separater OpenAI-Pfad. Dieser Wrapper
+startet nur den Downloader und trifft selbst keine Aussage über Datenübertragung.
 """
 from __future__ import annotations
 

@@ -20,7 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 200
+CURRENT_SCHEMA_VERSION = 210
 _MIGRATION_THREAD_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -116,10 +116,14 @@ CREATE TABLE IF NOT EXISTS recipes (
   ingredients_extracted_at REAL,            -- NULL = noch nicht durch KI
   ingredients_status TEXT DEFAULT 'pending',-- pending | running | ok | error | skipped
   extraction_claimed_at REAL,
-  extraction_claim_owner TEXT
+  extraction_claim_owner TEXT,
+  nutrition_claimed_at REAL,
+  nutrition_claim_owner TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_recipes_type     ON recipes(type, category);
 CREATE INDEX IF NOT EXISTS idx_recipes_added    ON recipes(source_added_at DESC);
+CREATE INDEX IF NOT EXISTS idx_recipes_effective_added
+  ON recipes(COALESCE(source_added_at, indexed_at) DESC);
 CREATE INDEX IF NOT EXISTS idx_recipes_extract  ON recipes(ingredients_status, ingredients_extracted_at);
 -- idx_recipes_deleted wird in _migrate erstellt NACHDEM die deleted_at-Spalte
 -- via ALTER COLUMN hinzugefügt ist (DDL läuft auf bestehender DB sonst vor Migration).
@@ -137,6 +141,20 @@ CREATE TABLE IF NOT EXISTS recipe_share_links (
 );
 CREATE INDEX IF NOT EXISTS idx_recipe_share_links_recipe
   ON recipe_share_links(recipe_id, created_at DESC);
+
+-- Getrennte Share-Sheet-Zugangsdaten. Secrets werden nur als Hash gespeichert,
+-- sodass einzelne Geräte widerrufen werden können.
+CREATE TABLE IF NOT EXISTS share_intake_tokens (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  created_by TEXT,
+  last_used_at REAL,
+  revoked_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_share_intake_tokens_active
+  ON share_intake_tokens(revoked_at, created_at DESC);
 
 -- recipe_ingredients: pro Rezept N Zutaten. Kein FK auf eine Master-Tabelle —
 -- canonical_name reicht für Merge & Filter und ist robust gegen Tippfehler
@@ -289,7 +307,7 @@ CREATE INDEX IF NOT EXISTS idx_cooking_completion_history
 -- Datensatz bleibt für Audit-Trail.
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT NOT NULL UNIQUE,
+  username TEXT NOT NULL COLLATE NOCASE UNIQUE,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'user',           -- Legacy, nicht mehr ausgewertet
   disabled INTEGER NOT NULL DEFAULT 0,
@@ -545,6 +563,8 @@ class Database:
             ("carbs_g", "REAL"),
             ("fat_g", "REAL"),
             ("nutrition_computed_at", "REAL"),
+            ("nutrition_claimed_at", "REAL"),
+            ("nutrition_claim_owner", "TEXT"),
             # User-Verifikations-Flag: 1 = vom User manuell als 'ok' geprüft.
             # Verifizierte Rezepte werden aus den Daten-Lücken-Detections
             # ausgeschlossen — User-Override über die KI-Heuristik.
@@ -581,6 +601,10 @@ class Database:
         c.execute("CREATE INDEX IF NOT EXISTS idx_recipes_deleted ON recipes(deleted_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_recipes_favorite ON recipes(is_favorite) WHERE is_favorite=1")
         c.execute("CREATE INDEX IF NOT EXISTS idx_recipes_rating ON recipes(rating) WHERE rating>0")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recipes_effective_added "
+            "ON recipes(COALESCE(source_added_at, indexed_at) DESC)"
+        )
         c.execute(
             "UPDATE recipes SET deleted_url=url, "
             "deleted_folder_path=folder_path, url=NULL, "
@@ -637,6 +661,33 @@ class Database:
         c.execute(
             "UPDATE users SET role='user' "
             "WHERE role IS NULL OR role NOT IN ('user', 'admin')"
+        )
+        duplicate_names = c.execute(
+            "SELECT username FROM users GROUP BY username COLLATE NOCASE HAVING COUNT(*)>1"
+        ).fetchall()
+        for duplicate in duplicate_names:
+            duplicate_name = duplicate[0]
+            rows = c.execute(
+                "SELECT id, username, role, disabled FROM users "
+                "WHERE username=? COLLATE NOCASE "
+                "ORDER BY disabled, CASE role WHEN 'admin' THEN 0 ELSE 1 END, id",
+                (duplicate_name,),
+            ).fetchall()
+            for row in rows[1:]:
+                user_id = int(row[0])
+                replacement = f"{row[1]}~duplicate-{user_id}"
+                c.execute(
+                    "UPDATE users SET username=?, disabled=1, "
+                    "session_version=session_version+1 WHERE id=?",
+                    (replacement, user_id),
+                )
+                logger.warning(
+                    "Case-insensitives Doppel-Konto #%s als %s deaktiviert",
+                    user_id, replacement,
+                )
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_name_nocase "
+            "ON users(username COLLATE NOCASE)"
         )
 
         task_cols = {
@@ -861,7 +912,11 @@ class Database:
             "SELECT 1 FROM schema_migrations WHERE version=?",
             (200,),
         ).fetchone()
-        if recipe_name_migration is None:
+        hardening_migration = c.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?",
+            (210,),
+        ).fetchone()
+        if recipe_name_migration is None or hardening_migration is None:
             for recipe_id, stored_name in c.execute(
                 "SELECT id, name FROM recipes"
             ).fetchall():
@@ -871,10 +926,16 @@ class Database:
                         "UPDATE recipes SET name=? WHERE id=?",
                         (clean_name, recipe_id),
                     )
+        if recipe_name_migration is None:
             c.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
                 (200, "normalize_recipe_display_names", time.time()),
             )
+
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (210, "transactional_boundaries_and_runtime_hardening", time.time()),
+        )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
             defaults = {
@@ -1093,15 +1154,16 @@ class Database:
             ).fetchone()
             return int(row["attempts"]) if row else 1
 
-    def download_failure_reset(self, url: str) -> None:
+    def download_failure_reset(self, url: str) -> bool:
         """Setzt den Versuchszähler zurück, behält die Zeile. Der nächste
         Scraper-Lauf nimmt die URL als Retry-Kandidat wieder auf — die
         Quell-Mail ist nach Auto-Delete nicht mehr nötig."""
         with self.conn() as c:
-            c.execute(
+            updated = c.execute(
                 "UPDATE download_failures SET attempts=0, last_error='(retry angefordert)' WHERE url=?",
                 (url,),
-            )
+            ).rowcount
+            return bool(updated)
 
     def download_failures_retry_candidates(self, max_attempts: int) -> List[Dict[str, Any]]:
         """URLs mit attempts < max — werden vom Scraper-Lauf erneut versucht.
@@ -1121,9 +1183,30 @@ class Database:
             ).fetchone()
             return int(row["attempts"]) if row else 0
 
-    def download_failure_clear(self, url: str) -> None:
+    def download_failure_clear(self, url: str) -> bool:
         with self.conn() as c:
+            return bool(c.execute(
+                "DELETE FROM download_failures WHERE url=?", (url,)
+            ).rowcount)
+
+    def download_failure_discard(self, url: str) -> bool:
+        """Verwerfen und History-Markierung als eine Transaktion."""
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute(
+                "SELECT content_type FROM download_failures WHERE url=?", (url,)
+            ).fetchone()
+            if not row:
+                return False
+            c.execute(
+                "INSERT INTO history(url, processed_at, content_type, name, target_dir) "
+                "VALUES (?, ?, ?, '(verworfen)', '') "
+                "ON CONFLICT(url) DO UPDATE SET processed_at=excluded.processed_at, "
+                "content_type=excluded.content_type, name=excluded.name, target_dir=''",
+                (url, time.time(), row["content_type"] or "recipe"),
+            )
             c.execute("DELETE FROM download_failures WHERE url=?", (url,))
+            return True
 
     def download_failures_list(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Liste aller URLs die mehrfach fehlgeschlagen sind. Für Re-Process-UI."""
@@ -1146,6 +1229,13 @@ class Database:
     # ---------------- Jobs ----------------
     def job_start(self, kind: str, log_file: str = "") -> int:
         with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            active = c.execute(
+                "SELECT id FROM jobs WHERE kind=? AND status='running' LIMIT 1",
+                (kind,),
+            ).fetchone()
+            if active:
+                raise RuntimeError(f"{kind}-Job #{int(active['id'])} läuft bereits")
             cur = c.execute(
                 "INSERT INTO jobs (kind, started_at, status, log_file) VALUES (?, ?, 'running', ?)",
                 (kind, time.time(), log_file),
@@ -1154,21 +1244,26 @@ class Database:
 
     def job_set_log_file(self, job_id: int, log_file: str) -> None:
         with self.conn() as c:
-            c.execute("UPDATE jobs SET log_file=? WHERE id=?", (log_file, job_id))
+            c.execute(
+                "UPDATE jobs SET log_file=? WHERE id=? AND status='running'",
+                (log_file, job_id),
+            )
 
     def job_update_summary(self, job_id: int, summary: Dict[str, Any]) -> None:
         with self.conn() as c:
             c.execute(
-                "UPDATE jobs SET summary=? WHERE id=?",
+                "UPDATE jobs SET summary=? WHERE id=? AND status='running'",
                 (json.dumps(summary, ensure_ascii=False), job_id),
             )
 
-    def job_finish(self, job_id: int, status: str, summary: Dict[str, Any]) -> None:
+    def job_finish(self, job_id: int, status: str, summary: Dict[str, Any]) -> bool:
         with self.conn() as c:
-            c.execute(
-                "UPDATE jobs SET ended_at=?, status=?, summary=? WHERE id=?",
+            cur = c.execute(
+                "UPDATE jobs SET ended_at=?, status=?, summary=? "
+                "WHERE id=? AND status='running'",
                 (time.time(), status, json.dumps(summary, ensure_ascii=False), job_id),
             )
+            return bool(cur.rowcount)
 
     def job_list(self, kind: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
         with self.conn() as c:
@@ -1308,6 +1403,7 @@ class Database:
         payload: Dict[str, Any],
         *,
         dedupe_key: Optional[str] = None,
+        max_active: Optional[int] = None,
     ) -> int:
         """Reiht einen Task ein oder liefert den gleichartigen aktiven Task.
 
@@ -1327,6 +1423,16 @@ class Database:
                 ).fetchone()
                 if existing:
                     return int(existing["id"])
+            if max_active is not None:
+                active = c.execute(
+                    "SELECT COUNT(*) AS n FROM background_tasks "
+                    "WHERE kind=? AND status IN ('queued', 'running')",
+                    (kind,),
+                ).fetchone()["n"]
+                if int(active) >= max(1, int(max_active)):
+                    raise OverflowError(
+                        f"Queue-Limit für {kind} erreicht ({int(active)})"
+                    )
             cur = c.execute(
                 "INSERT INTO background_tasks("
                 "kind, payload_json, dedupe_key, status, created_at"
@@ -1580,12 +1686,21 @@ class Database:
                 with gzip.open(tmp_out, "rb") as check_gzip:
                     while check_gzip.read(1024 * 1024):
                         pass
+                try:
+                    os.chmod(tmp_out, 0o600)
+                except OSError:
+                    pass
                 os.replace(tmp_out, dest)
                 tmp_db.unlink(missing_ok=True)
             else:
                 with open(tmp_db, "rb") as raw:
                     os.fsync(raw.fileno())
                 os.replace(tmp_db, dest)
+
+            try:
+                os.chmod(dest, 0o600)
+            except OSError:
+                pass
 
             return {
                 "ok": True,
@@ -1781,6 +1896,89 @@ class Database:
         via recipe_soft_delete laufen, nicht hier."""
         with self.conn() as c:
             c.execute("DELETE FROM recipes WHERE id=?", (recipe_id,))
+
+    def recipe_delete_with_history(
+        self,
+        recipe_id: int,
+        *,
+        hard: bool,
+        files_deleted: bool,
+        history_entry: Optional[Dict[str, Any]] = None,
+        quarantine_path: str = "",
+        reason: str = "manual_delete",
+    ) -> Dict[str, Any]:
+        """Persistiert Cart-Bereinigung, Delete-Status und History atomar.
+
+        Der Filesystem-Move wird vom Aufrufer vor dieser Transaktion erledigt
+        und bei einem Fehler kompensiert. So kann kein erfolgreicher DB-Delete
+        ohne Cart-Bereinigung oder Restore-Verweis sichtbar werden.
+        """
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            recipe = c.execute(
+                "SELECT deleted_at, url, deleted_url, folder_path, "
+                "deleted_folder_path FROM recipes WHERE id=?",
+                (recipe_id,),
+            ).fetchone()
+            if not recipe:
+                raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
+            if not hard and recipe["deleted_at"] is not None:
+                return {"cart_entries_updated": 0, "history_id": None,
+                        "already_deleted": True}
+
+            cart_updates = 0
+            rows = c.execute(
+                "SELECT id, source_recipe_ids FROM shopping_cart "
+                "WHERE source_recipe_ids LIKE ?",
+                (f"%{recipe_id}%",),
+            ).fetchall()
+            for row in rows:
+                try:
+                    source_ids = json.loads(row["source_recipe_ids"] or "[]")
+                except (TypeError, ValueError):
+                    source_ids = []
+                if recipe_id not in source_ids:
+                    continue
+                c.execute(
+                    "UPDATE shopping_cart SET source_recipe_ids=? WHERE id=?",
+                    (json.dumps([item for item in source_ids if item != recipe_id]),
+                     row["id"]),
+                )
+                cart_updates += 1
+
+            history_id: Optional[int] = None
+            if history_entry is not None:
+                cur = c.execute(
+                    "INSERT INTO deleted_history "
+                    "(url, deleted_at, content_type, name, target_dir, "
+                    "quarantine_path, reason, metadata) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        history_entry.get("url"), time.time(),
+                        history_entry.get("content_type"), history_entry.get("name"),
+                        history_entry.get("target_dir"), quarantine_path, reason,
+                        json.dumps(history_entry.get("metadata") or {}, ensure_ascii=False),
+                    ),
+                )
+                history_id = int(cur.lastrowid)
+
+            if hard:
+                c.execute("DELETE FROM recipes WHERE id=?", (recipe_id,))
+            else:
+                c.execute(
+                    "UPDATE recipes SET deleted_at=?, files_deleted=?, "
+                    "deleted_url=url, deleted_folder_path=folder_path, "
+                    "url=NULL, folder_path=? WHERE id=?",
+                    (
+                        time.time(), 1 if files_deleted else 0,
+                        f"__trash__/{recipe_id}", recipe_id,
+                    ),
+                )
+            return {
+                "cart_entries_updated": cart_updates,
+                "history_id": history_id,
+                "already_deleted": False,
+            }
 
     def recipe_soft_delete(self, recipe_id: int, files_deleted: bool = False) -> None:
         """Markiert Rezept als gelöscht (deleted_at = now). Wird in Listings
@@ -2873,15 +3071,62 @@ class Database:
                 )
 
     # ─── Nährwerte ──────────────────────────────────────────────────────
-    def recipe_set_nutrition(self, recipe_id: int, calories: int,
-                              protein_g: float, carbs_g: float, fat_g: float) -> None:
+    def recipe_set_nutrition(
+        self,
+        recipe_id: int,
+        calories: int,
+        protein_g: float,
+        carbs_g: float,
+        fat_g: float,
+        *,
+        ingredient_calories: Optional[Dict[int, Any]] = None,
+        claim_owner: Optional[str] = None,
+    ) -> None:
         """Schreibt die KI-geschätzten Nährwerte + Zeitstempel.
         Aufgerufen vom Worker nach Extract und vom on-demand-Endpoint."""
         with self.conn() as c:
-            c.execute(
+            c.execute("BEGIN IMMEDIATE")
+            params: List[Any] = [
+                calories, protein_g, carbs_g, fat_g, time.time(), recipe_id,
+            ]
+            owner_sql = ""
+            if claim_owner is not None:
+                owner_sql = " AND nutrition_claim_owner=?"
+                params.append(claim_owner)
+            updated = c.execute(
                 "UPDATE recipes SET calories_per_serving=?, protein_g=?, "
-                "carbs_g=?, fat_g=?, nutrition_computed_at=? WHERE id=?",
-                (calories, protein_g, carbs_g, fat_g, time.time(), recipe_id),
+                "carbs_g=?, fat_g=?, nutrition_computed_at=?, "
+                "nutrition_claimed_at=NULL, nutrition_claim_owner=NULL "
+                f"WHERE id=?{owner_sql}",
+                params,
+            ).rowcount
+            if not updated:
+                raise RuntimeError("Nährwert-Claim ist nicht mehr gültig")
+            for ingredient_id, ingredient_kcal in (ingredient_calories or {}).items():
+                c.execute(
+                    "UPDATE recipe_ingredients SET calories=? "
+                    "WHERE id=? AND recipe_id=?",
+                    (ingredient_kcal, int(ingredient_id), recipe_id),
+                )
+
+    def recipe_claim_nutrition(self, recipe_id: int, owner: str) -> bool:
+        cutoff = time.time() - 30 * 60
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            updated = c.execute(
+                "UPDATE recipes SET nutrition_claimed_at=?, nutrition_claim_owner=? "
+                "WHERE id=? AND (nutrition_claim_owner IS NULL "
+                "OR nutrition_claimed_at<?) AND ingredients_status!='running'",
+                (time.time(), owner, recipe_id, cutoff),
+            ).rowcount
+            return bool(updated)
+
+    def recipe_release_nutrition_claim(self, recipe_id: int, owner: str) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE recipes SET nutrition_claimed_at=NULL, nutrition_claim_owner=NULL "
+                "WHERE id=? AND nutrition_claim_owner=?",
+                (recipe_id, owner),
             )
 
     def recipes_pending_nutrition(self, limit: int = 50) -> List[Dict[str, Any]]:
@@ -2905,9 +3150,8 @@ class Database:
     def user_get_by_name(self, username: str) -> Optional[Dict[str, Any]]:
         """Liefert User-Row inkl. password_hash. Auch disabled-Users werden
         zurückgegeben — Caller entscheidet (Login: ablehnen; Settings: anzeigen).
-        Username-Match ist case-insensitiv (COLLATE NOCASE) — 'Admin', 'admin'
-        und 'ADMIN' treffen denselben User. Das UNIQUE-Constraint auf username
-        bleibt case-sensitiv (BINARY), daher hier explizit NOCASE im WHERE."""
+        Username-Match und Unique-Index sind case-insensitiv — 'Admin', 'admin'
+        und 'ADMIN' bezeichnen deshalb immer dasselbe Konto."""
         with self.conn() as c:
             row = c.execute(
                 "SELECT * FROM users WHERE username=? COLLATE NOCASE", (username,)
@@ -2922,6 +3166,43 @@ class Database:
                 "FROM users ORDER BY username"
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def recipes_claim_pending_nutrition(
+        self, *, limit: int, owner: str,
+    ) -> List[Dict[str, Any]]:
+        """Claimt einen disjunkten Bulk-Batch auch über Prozesse hinweg."""
+        cutoff = time.time() - 30 * 60
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            rows = c.execute(
+                "SELECT r.id, r.name, r.servings, "
+                "(SELECT COUNT(*) FROM recipe_ingredients "
+                " WHERE recipe_id=r.id) AS ing_count "
+                "FROM recipes r WHERE r.calories_per_serving IS NULL "
+                "AND r.ingredients_status='ok' "
+                "AND (r.nutrition_claim_owner IS NULL OR r.nutrition_claimed_at<?) "
+                "GROUP BY r.id HAVING ing_count>=3 ORDER BY r.id LIMIT ?",
+                (cutoff, max(1, int(limit))),
+            ).fetchall()
+            ids = [int(row["id"]) for row in rows]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                c.execute(
+                    f"UPDATE recipes SET nutrition_claimed_at=?, nutrition_claim_owner=? "
+                    f"WHERE id IN ({placeholders})",
+                    (time.time(), owner, *ids),
+                )
+            return [dict(row) for row in rows]
+
+    def recipes_pending_nutrition_count(self) -> int:
+        with self.conn() as c:
+            return int(c.execute(
+                "SELECT COUNT(*) FROM recipes r "
+                "WHERE r.calories_per_serving IS NULL "
+                "AND r.ingredients_status='ok' "
+                "AND (SELECT COUNT(*) FROM recipe_ingredients i "
+                "     WHERE i.recipe_id=r.id)>=3"
+            ).fetchone()[0])
 
     def user_create(self, username: str, password_hash: str,
                      role: str = "user") -> int:
@@ -3241,6 +3522,7 @@ class Database:
                         (canonical_name, unit),
                     ).fetchone()
             if existing:
+                existing = dict(existing)
                 new_amount = (existing.get("amount") or 0) + (amount or 0) if amount is not None else existing.get("amount")
                 src_ids = json.loads(existing.get("source_recipe_ids") or "[]")
                 if source_recipe_id and source_recipe_id not in src_ids:
@@ -3257,6 +3539,19 @@ class Database:
                 (name, canonical_name, amount, unit, time.time(), src_json),
             )
             return int(cur.lastrowid)
+
+    def job_reset_running(self, kind: str, reason: str) -> int:
+        with self.conn() as c:
+            cur = c.execute(
+                "UPDATE jobs SET status='error', ended_at=?, summary=? "
+                "WHERE kind=? AND status='running'",
+                (
+                    time.time(),
+                    json.dumps({"error": reason}, ensure_ascii=False),
+                    kind,
+                ),
+            )
+            return int(cur.rowcount)
 
     # ─── Wiederkehrende Einkäufe ────────────────────────────────────
     def recurring_list(self) -> List[Dict[str, Any]]:
@@ -3486,6 +3781,7 @@ class Database:
         merged = 0
         now = time.time()
         with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
             for item in items:
                 name = item.get("name") or "?"
                 canonical = item.get("canonical_name")
@@ -3703,6 +3999,58 @@ class Database:
                 (time.time(), share_id, int(recipe_id)),
             )
             return cur.rowcount > 0
+
+    def share_intake_token_create(
+        self, token_id: str, token_hash: str, name: str, created_by: str,
+    ) -> None:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO share_intake_tokens "
+                "(id, token_hash, name, created_at, created_by) VALUES (?, ?, ?, ?, ?)",
+                (token_id, token_hash, name, time.time(), created_by),
+            )
+
+    def share_intake_token_consume(self, token_hash: str) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute(
+                "SELECT id, name FROM share_intake_tokens "
+                "WHERE token_hash=? AND revoked_at IS NULL",
+                (token_hash,),
+            ).fetchone()
+            if not row:
+                return None
+            c.execute(
+                "UPDATE share_intake_tokens SET last_used_at=? WHERE id=?",
+                (time.time(), row["id"]),
+            )
+            return dict(row)
+
+    def share_intake_tokens_list(self, limit: int = 100) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT id, name, created_at, created_by, last_used_at, revoked_at "
+                "FROM share_intake_tokens ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(500, int(limit))),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def share_intake_token_revoke(self, token_id: str) -> bool:
+        with self.conn() as c:
+            cur = c.execute(
+                "UPDATE share_intake_tokens SET revoked_at=COALESCE(revoked_at, ?) "
+                "WHERE id=?",
+                (time.time(), token_id),
+            )
+            return bool(cur.rowcount)
+
+    def share_intake_tokens_revoke_all(self) -> int:
+        with self.conn() as c:
+            cur = c.execute(
+                "UPDATE share_intake_tokens SET revoked_at=? WHERE revoked_at IS NULL",
+                (time.time(),),
+            )
+            return int(cur.rowcount)
 
     def recipe_version_get(self, version_id: int) -> Optional[Dict[str, Any]]:
         with self.conn() as c:
@@ -3988,6 +4336,19 @@ class Database:
             )
             return int(cur.lastrowid)
 
+    def reset_stale_maintenance(self) -> int:
+        """Schließt nach einem Prozessneustart verwaiste Wartungsläufe."""
+        with self.conn() as c:
+            cur = c.execute(
+                "UPDATE maintenance_runs SET status='error', ended_at=?, "
+                "result_json=? WHERE status='running'",
+                (
+                    time.time(),
+                    json.dumps({"error": "Prozessneustart während des Laufs"}),
+                ),
+            )
+            return int(cur.rowcount)
+
     def maintenance_progress(self, run_id: int, result: Dict[str, Any]) -> None:
         """Persistiert Zwischenstände langer Wartungsläufe.
 
@@ -4004,7 +4365,8 @@ class Database:
     def maintenance_finish(self, run_id: int, *, ok: bool, result: Dict[str, Any]) -> None:
         with self.conn() as c:
             c.execute(
-                "UPDATE maintenance_runs SET ended_at=?, status=?, result_json=? WHERE id=?",
+                "UPDATE maintenance_runs SET ended_at=?, status=?, result_json=? "
+                "WHERE id=? AND status='running'",
                 (time.time(), "ok" if ok else "error",
                  json.dumps(result, ensure_ascii=False, default=str), run_id),
             )

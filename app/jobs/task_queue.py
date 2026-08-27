@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any, Dict
 
 from ..db import get_db
@@ -12,6 +13,9 @@ _stop = threading.Event()
 _wake = threading.Event()
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
+_last_heartbeat = 0.0
+_last_error: str | None = None
+_started_at = 0.0
 
 
 def enqueue(
@@ -19,18 +23,20 @@ def enqueue(
     payload: Dict[str, Any],
     *,
     dedupe_key: str | None = None,
+    max_active: int | None = None,
 ) -> int:
     task_id = get_db().background_task_enqueue(
         kind,
         payload,
         dedupe_key=dedupe_key,
+        max_active=max_active,
     )
     _wake.set()
     return task_id
 
 
 def start_worker() -> None:
-    global _thread
+    global _thread, _last_error, _last_heartbeat, _started_at
     with _lock:
         if _thread and _thread.is_alive():
             return
@@ -38,11 +44,14 @@ def start_worker() -> None:
         if recovered:
             logger.warning("%s Background-Task(s) nach Neustart erneut eingereiht", recovered)
         _stop.clear()
+        _last_error = None
+        _last_heartbeat = time.time()
+        _started_at = _last_heartbeat
         _thread = threading.Thread(target=_worker_loop, name="background-task-worker", daemon=True)
         _thread.start()
 
 
-def stop_worker(timeout: float = 5.0) -> None:
+def stop_worker(timeout: float = 5.0) -> bool:
     global _thread
     _stop.set()
     _wake.set()
@@ -51,11 +60,22 @@ def stop_worker(timeout: float = 5.0) -> None:
         thread.join(timeout=max(0.0, timeout))
     if thread and not thread.is_alive():
         _thread = None
+    return not (thread and thread.is_alive())
 
 
 def _worker_loop() -> None:
+    global _last_error, _last_heartbeat
     while not _stop.is_set():
-        task = get_db().background_task_claim_next()
+        _last_heartbeat = time.time()
+        try:
+            task = get_db().background_task_claim_next()
+            _last_error = None
+        except Exception as exc:
+            _last_error = f"{type(exc).__name__}: {exc}"
+            logger.exception("Background-Task-Queue konnte keinen Task claimen")
+            _wake.wait(timeout=1.0)
+            _wake.clear()
+            continue
         if not task:
             _wake.wait(timeout=5.0)
             _wake.clear()
@@ -93,9 +113,23 @@ def _worker_loop() -> None:
             )
         except Exception as exc:
             logger.exception("Background-Task #%s (%s) fehlgeschlagen", task_id, task["kind"])
-            get_db().background_task_finish(
-                task_id, ok=False, result={}, error=f"{type(exc).__name__}: {exc}"
-            )
+            _last_error = f"{type(exc).__name__}: {exc}"
+            try:
+                get_db().background_task_finish(
+                    task_id, ok=False, result={}, error=_last_error
+                )
+            except Exception:
+                logger.exception("Fehlerstatus für Background-Task #%s nicht speicherbar", task_id)
+
+
+def worker_status() -> Dict[str, Any]:
+    thread = _thread
+    return {
+        "running": bool(thread and thread.is_alive()),
+        "started_at": _started_at or None,
+        "last_heartbeat": _last_heartbeat or None,
+        "last_error": _last_error,
+    }
 
 
 def _dispatch(kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:

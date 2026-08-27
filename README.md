@@ -81,7 +81,7 @@ Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Butto
 - Log-Rotation aller Job-Logs (älter als 30 Tage werden bei jedem Job-Start aufgeräumt)
 - Link-only-Import ohne Plattformmedien oder versteckte Videodateien
 - IMAP-Retry mit Backoff (3 Versuche, 1s/4s)
-- Ollama-Health-Check beim Job-Start (bricht ab statt 50 sinnlose Pending-Items zu erzeugen)
+- OpenAI-Health-Check beim Job-Start (bricht ab statt 50 sinnlose Pending-Items zu erzeugen)
 - Thread-safe Cancel für laufende Import- und Analysejobs
 - Async Telegram raus, alle Notifications nur noch in Web-UI
 
@@ -90,7 +90,9 @@ Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Butto
 
 ## Admin-Zentrale
 
-Der Reiter **Admin** ist für alle angemeldeten Benutzer sichtbar. Er bündelt bewusst alle technischen und qualitätssichernden Funktionen, damit die normale Rezeptansicht übersichtlich bleibt.
+Der Reiter **Admin** ist ausschließlich für aktive Konten mit der Rolle
+`admin` sichtbar. Normale Benutzer können Rezepte, Einkauf und Wochenplanung
+nutzen, aber keine Server-, Import- oder Benutzerverwaltung ausführen.
 
 - **Importzentrale:** offene Prüfungen, verbliebene Altfehler, laufende Jobs und letzte Importe
 - **Qualität:** bestehende KI-Prüfungen, Duplikate und Qualitätsfunde
@@ -128,7 +130,7 @@ Das Install-Script erzeugt automatisch:
 - einen `scrapper`-User
 - ein **zufälliges Initial-Passwort** (gespeichert in `data/.initial-password`)
 - ein **zufälliges `secret_key`** (48 Zeichen)
-- die systemd-Units (`scrapper-web`, `scrapper-job.timer`)
+- die systemd-Units für Web, Scraper, Backups und den eng begrenzten Schedule-Helper
 
 ```
 🌐 Web-Interface (LOKAL):    http://127.0.0.1:8000
@@ -136,11 +138,9 @@ Das Install-Script erzeugt automatisch:
 🔑 Initial-Passwort:         (siehe Ausgabe oder data/.initial-password)
 ```
 
-Der uvicorn-Bind ist standardmäßig **`0.0.0.0:8000`**, weil die häufigste
-Proxmox-Topologie cloudflared in einem **separaten Container** hat
-(siehe Variante B unten). Wenn du cloudflared im selben Container laufen
-lässt, kannst du auf `--host 127.0.0.1` umstellen — siehe Kommentare in
-`systemd/scrapper-web.service`.
+Der uvicorn-Bind ist standardmäßig **`127.0.0.1:8000`**. Abweichungen werden
+nur root-verwaltet in `/etc/scrapper/web.env` konfiguriert. Damit macht eine
+Neuinstallation den Port nicht unbeabsichtigt im LAN erreichbar.
 
 ### 3. Cloudflare-Tunnel + Access (empfohlen)
 
@@ -169,8 +169,7 @@ ingress:
 cloudflared service install
 ```
 
-Wenn du diese Variante nutzt, kannst du in `systemd/scrapper-web.service`
-auf `--host 127.0.0.1` umstellen — dann ist Port 8000 nur lokal sichtbar.
+Für diese Variante ist keine Bind-Override-Datei nötig.
 
 #### Variante B — cloudflared in eigenem Container (häufiger bei Proxmox)
 
@@ -187,11 +186,20 @@ ingress:
   - service: http_status:404
 ```
 
-Der `bind_host` in unserer `scrapper-web.service` muss in diesem Fall
-`0.0.0.0` bleiben (Default), damit der cloudflared-Container über LAN
-zugreifen kann. **Wichtig**: setze eine LAN-Firewall (z.B. UFW im
-scrapper-Container) die Port 8000 nur für die cloudflared-Container-IP
-freigibt:
+Für diese Topologie muss root beide Vertrauensgrenzen explizit setzen:
+
+```bash
+sudo install -d -m 0755 /etc/scrapper
+sudo tee /etc/scrapper/web.env >/dev/null <<'EOF'
+SCRAPPER_BIND_HOST=0.0.0.0
+SCRAPPER_FORWARDED_ALLOW_IPS=192.168.1.<cloudflared-ip>
+EOF
+sudo chmod 0600 /etc/scrapper/web.env
+sudo systemctl restart scrapper-web
+```
+
+**Wichtig**: Setze zusätzlich eine LAN-Firewall, die Port 8000 ausschließlich
+für die cloudflared-Container-IP freigibt:
 
 ```bash
 apt install -y ufw
@@ -215,7 +223,7 @@ Damit hast du MFA vor der App, **ohne** die App selbst anzupassen.
 
 Im Web-UI → „Einstellungen":
 - **E-Mail-Konten** (IMAP-App-Passwords für Gmail)
-- **Ollama-URL** und Modell-Namen (Default: `qwen2.5:7b-instruct`, optional `fallback_model`)
+- **OpenAI API-Key** und Modell (Default: `gpt-4o-mini`; optionale Base-URL nur mit erneuter Key-Eingabe änderbar)
 - **Schedule** (systemd-OnCalendar-Expression für den Importdienst)
 
 ---
@@ -277,12 +285,17 @@ Backup-Timer mindestens einmal lief).
 ### 1. Backups regelmäßig off-site sichern
 
 Die täglichen Backups landen in `data/backups/daily/scrapper-YYYY-MM-DD.db.gz`.
-Sichere die idealerweise **außerhalb** des Containers. Optionen:
+Sie enthalten **nur SQLite**, keine Rezeptordner, Bilder/PDFs, `config.yaml`
+oder Dateien des Video-Archivers. Sichere Datenbank, Konfiguration und die in
+`paths.recipe_dir`/`paths.wedding_dir` konfigurierten Medien daher gemeinsam
+**außerhalb** des Containers. Optionen:
 
 ```bash
 # Variante B: cron-Job der das täglich nach 04:30 macht
 cat > /etc/cron.d/scrapper-offsite-backup <<'EOF'
 30 4 * * * scrapper rsync -a /opt/scrapper/data/backups/ /mnt/offsite/rezepte-backups/
+# Zusätzlich die tatsächlichen Rezept-/Hochzeitsordner und config.yaml sichern.
+# Externe Mounts brauchen einen eigenen Snapshot/Backup-Job.
 EOF
 
 # Variante C: Proxmox-Backup vom kompletten Container (vzdump)
@@ -304,25 +317,24 @@ git clone https://github.com/oliverzimmermann1986-debug/Rezepte.git scrapper
 cd scrapper
 bash proxmox/install.sh
 
-# Schritt 2: Backup zurückspielen
+# Schritt 2: Config zuerst zurückspielen
 sudo systemctl stop scrapper-web
-# - DB-Backup aus deiner Off-Site-Sicherung nach data/backups/daily kopieren
-# - Restore
-sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-restore \
-    /opt/scrapper/data/backups/daily/scrapper-2026-05-22.db.gz
-
-# Schritt 3: Config zurückspielen
-# Sichere config.yaml aus dem letzten Off-Site-Backup übertragen
 sudo cp /tmp/backup-config.yaml /opt/scrapper/data/config.yaml
 sudo chown scrapper:scrapper /opt/scrapper/data/config.yaml
 sudo chmod 600 /opt/scrapper/data/config.yaml
 
+# Schritt 3: Medienordner aus demselben Sicherungsstand zurückspielen, dann DB.
+# db-restore rotiert danach bewusst secret_key und widerruft alte Sessions/Shares.
+sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-restore \
+    /opt/scrapper/data/backups/daily/scrapper-2026-05-22.db.gz
 
 # Schritt 4: Im Web-UI einloggen und Mail-/KI-Verbindungen testen
 ```
 
 ### 3. Was nicht im Backup ist
 
+- **Rezept-, Bild-, PDF- und Hochzeitsdateien** in den konfigurierten Datei-/Mountpfaden
+- **`config.yaml` und Secrets** (separat verschlüsselt sichern)
 - **Cookies und Dateien des optionalen Video-Archivers** (liegen bewusst außerhalb der Anwendung)
 - **systemd-Customizations** (falls du die Unit-Files manuell angepasst hast - normalerweise nicht nötig da `cp systemd/* /etc/systemd/system/` reicht)
 
@@ -342,17 +354,18 @@ Rezepte-API und sein Archiv darf nicht öffentlich bereitgestellt werden.
 
 ## Monitoring
 
-Die App stellt mehrere Endpoints für externes Monitoring bereit:
+Die App stellt einen öffentlichen Minimal-Healthcheck sowie geschützte
+Diagnose- und Metrikendpunkte bereit:
 
 ```bash
 # Healthcheck (HTTP 200 wenn ok, 503 wenn DB nicht erreichbar)
 curl -s http://127.0.0.1:8000/healthz
 
-# Tiefer Check (DB + KI + Disk) - immer 200, Details im Body
-curl -s http://127.0.0.1:8000/healthz/deep | jq
+# Tiefer Check (DB + KI + Disk) mit gültiger Login-Session
+curl -s -b rezepte.cookies http://127.0.0.1:8000/healthz/deep | jq
 
-# Prometheus-Metriken (für Grafana / Alertmanager)
-curl -s http://127.0.0.1:8000/metrics
+# Prometheus-Metriken sind nur für Administrator-Sessions freigegeben
+curl -s -b rezepte.cookies http://127.0.0.1:8000/metrics
 ```
 
 Verfügbare Metriken: `scrapper_pending_count`, `scrapper_pending_oldest_seconds`,
@@ -360,18 +373,9 @@ Verfügbare Metriken: `scrapper_pending_count`, `scrapper_pending_oldest_seconds
 `scrapper_history_total`, `scrapper_download_failures_total`,
 `scrapper_last_run_age_seconds`, `scrapper_last_run_duration_seconds`.
 
-Prometheus-Scrape-Config:
-```yaml
-scrape_configs:
-  - job_name: scrapper
-    metrics_path: /metrics
-    static_configs:
-      - targets: ['scrapper.lan:8000']
-```
-
-Wenn dein cloudflared im selben Container läuft (`bind_host: 127.0.0.1`),
-scrape Prometheus von einem anderen Container über Cloudflare Access oder
-über das LAN-IP des Container-Bridges.
+Für automatisches Prometheus-Scraping muss der Betreiber die Authentisierung
+am vorgeschalteten, privaten Monitoring-Proxy lösen. `/metrics` darf nicht
+ungefiltert ins LAN oder Internet freigegeben werden.
 
 ---
 
@@ -384,8 +388,6 @@ web:
   username: admin
   password: $2b$12$...   # bcrypt-Hash, von der App selbst geschrieben
   secret_key: <48 random chars>
-  bind_host: 127.0.0.1
-  bind_port: 8000
   trusted_proxies: [127.0.0.1/32, "::1/128"]
 
 paths:
@@ -441,21 +443,28 @@ pdf:
 ## Was nicht (mehr) drin ist
 
 - **Keine Telegram-Benachrichtigungen** — Status nur im Web-UI
-- **Keine OpenAI Vision** — Klassifizierung nur per Ollama-Cascade. Wenn beide Modelle unter Confidence-Threshold liegen, landet das Item in Pending zur manuellen Auflösung
-- **Keine Frame-Extraktion** — Pending-Items werden als `<video>` im Web-UI angezeigt, `<img>`-Thumbs sind raus
+- **Kein lokaler Ollama-Pfad** — KI-Analyse einschließlich Vision nutzt OpenAI. Bei zu niedriger Confidence landet das Item in Pending zur manuellen Auflösung
+- **Begrenzter Video-Fallback** — nur temporär für Transkript/Frame-OCR; Videos werden weder an die native App noch über öffentliche Medienrouten ausgeliefert
 - **Keine NAS-Annahme** — Pfade sind generisch konfigurierbar und können auf lokale Mounts zeigen
 
 ---
 
 ## Lizenz / Verantwortung
 
-Self-hosted Setup. Vor produktivem Einsatz: das Hardening-Checklist im `data/config.yaml` durchgehen, Initial-Passwort ändern, Cloudflare-Access (oder ein Äquivalent) davorstellen, regelmäßig `git pull` für Updates.
+Self-hosted Setup. Vor produktivem Einsatz: das Hardening-Checklist im `data/config.yaml` durchgehen, Initial-Passwort ändern, Cloudflare-Access (oder ein Äquivalent) davorstellen und Updates über `proxmox/install.sh` beziehungsweise `proxmox/update-local.sh` einspielen.
+
+KI-Inhalte werden an OpenAI übermittelt. Der Betreiber muss vor produktiver
+Nutzung die passende Rechtsgrundlage sowie die erforderlichen Datenschutz-
+Nachweise (insbesondere AVV/DPA, SCC und gegebenenfalls eine DSFA) selbst prüfen
+und dokumentieren; die Software kann diese externe Prüfung nicht ersetzen.
 
 Bei Fragen / Issues / PRs → GitHub.
 
 ## Admin Center
 
-Direktaufruf: `/admin`, PDF-Werkzeuge: `/admin/pdf`. Der Menüpunkt ist für jeden aktiven, angemeldeten Benutzer sichtbar. Es gibt keine Admin-Rollen mehr; alle Konten haben denselben Vollzugriff.
+Direktaufruf: `/admin`, PDF-Werkzeuge: `/admin/pdf`. Beide Bereiche erfordern
+ein aktives Administratorkonto; normale Konten erhalten keinen Zugriff auf
+mutierende Verwaltungs-, Import- und Wartungsfunktionen.
 
 ```bash
 # Benutzer und Aktivstatus anzeigen

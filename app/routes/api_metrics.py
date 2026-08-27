@@ -12,12 +12,13 @@ from __future__ import annotations
 import time
 from typing import List
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 
+from ..auth import require_admin
 from ..db import get_db
 
 
-router = APIRouter(tags=["metrics"])
+router = APIRouter(tags=["metrics"], dependencies=[Depends(require_admin)])
 
 
 def _line(name: str, value, *, help_text: str = "", mtype: str = "gauge", labels: dict = None) -> List[str]:
@@ -38,9 +39,9 @@ def _line(name: str, value, *, help_text: str = "", mtype: str = "gauge", labels
 def metrics() -> Response:
     """Prometheus-Exposition.
 
-    Bewusst KEINE Auth-Pflicht (das ist Prometheus-Konvention für /metrics).
-    Wenn du das öffentlich exposed haben willst, blocke es im Reverse-Proxy
-    oder lass den Endpoint hinter Cloudflare-Access für /metrics frei.
+    Der Endpoint enthält interne Betriebsdaten und verlangt deshalb eine
+    Administrator-Sitzung. Monitoring sollte einen kurzlebigen Bearer-Token
+    beziehungsweise die vorgeschaltete Access-Grenze verwenden.
     """
     db = get_db()
     lines: List[str] = []

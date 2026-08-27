@@ -37,6 +37,9 @@ def main() -> int:
             return 0  # exit 0 - kein Fehler, nur "nicht jetzt"
 
         db = get_db()
+        # Der prozessübergreifende Lock beweist, dass kein Scraper mehr aktiv
+        # ist; ein verbliebener running-Eintrag stammt daher von einem Crash.
+        db.job_reset_running("scraper", "Verwaister Lauf vor CLI-Neustart")
         job_id = db.job_start("scraper", log_file=str(log_file))
         logger.info(f"Scraper-Job gestartet (ID={job_id}, via CLI)")
 

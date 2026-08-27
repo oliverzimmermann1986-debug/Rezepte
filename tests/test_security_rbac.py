@@ -231,7 +231,11 @@ def test_bearer_password_change_updates_actor_and_revokes_sessions(
     assert row["id"] == admin_id
     assert auth.verify_password("new-password", row["password_hash"])
     assert row["session_version"] == 1
-    assert store.data["web"]["session_version"] == 1
+    # Nach der Multi-User-Migration ist nur die DB Auth-Quelle. Der Legacy-
+    # Config-Hash bleibt unverändert und kann deshalb nicht mit der DB
+    # auseinanderlaufen.
+    assert store.data["web"]["session_version"] == 0
+    assert store.data["web"]["password"] == old_hash
     assert store.saved is True
 
 

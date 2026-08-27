@@ -123,4 +123,13 @@
   }
 
   window.RezepteRuntime = Object.freeze({ createPoller, initAccessibleDialogs });
+
+  // Non-blocking und als externe Datei CSP-kompatibel registrieren.
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' })
+        .then((registration) => registration.update())
+        .catch((error) => console.warn('Service worker failed:', error));
+    });
+  }
 })();

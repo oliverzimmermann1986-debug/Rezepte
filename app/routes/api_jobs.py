@@ -30,7 +30,7 @@ _scraper_thread: Optional[threading.Thread] = None
 
 def _rotate_old_logs(log_dir: Path, days: int = 30) -> None:
     """Löscht Job-Log-Files älter als ``days`` Tage. Best-effort, ignoriert Fehler."""
-    if not log_dir.exists():
+    if days <= 0 or not log_dir.exists():
         return
     cutoff = time.time() - days * 86400
     patterns = ["scraper-*.log", "reanalyze-*.log"]
@@ -52,7 +52,13 @@ def _setup_job_logger(job_id: int, kind: str) -> tuple[Path, logging.Handler]:
     Macht zusätzlich bei jedem Aufruf eine billige Log-Rotation."""
     log_dir = Path(get_config().get("paths", "logs_dir", default="/opt/scrapper/logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
-    _rotate_old_logs(log_dir)
+    try:
+        retention_days = int(get_config().get(
+            "paths", "log_retention_days", default=30
+        ))
+    except (TypeError, ValueError):
+        retention_days = 30
+    _rotate_old_logs(log_dir, max(0, retention_days))
     log_file = log_dir / f"{kind}-{datetime.now():%Y%m%d-%H%M%S}-job{job_id}.log"
     fh = logging.FileHandler(log_file, encoding="utf-8")
     fh.setLevel(logging.INFO)
@@ -80,7 +86,6 @@ def _run_scraper_thread(job_id: int):
                 log_file, fh = _setup_job_logger(job_id, "scraper")
                 db.job_set_log_file(job_id, str(log_file))
                 logger.info(f"=== Scraper-Job {job_id} startet (Web-Trigger) ===")
-                scraper_job.reset_cancel()
                 summary = scraper_job.run_job()
                 status = "ok"
                 if summary.get("cancelled"):
@@ -115,6 +120,9 @@ def run_scraper():
     job_id = None
     try:
         job_id = get_db().job_start("scraper")
+        # Vor Thread.start zurücksetzen: ein direkt anschließendes Cancel darf
+        # nicht vom erst später anlaufenden Worker wieder gelöscht werden.
+        scraper_job.reset_cancel()
         _scraper_thread = threading.Thread(
             target=_run_scraper_thread,
             args=(job_id,),

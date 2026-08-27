@@ -122,6 +122,10 @@ class ArchiveQueue:
                 """
             )
             connection.execute(
+                "CREATE TABLE IF NOT EXISTS archive_state "
+                "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS archive_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,16 +158,17 @@ class ArchiveQueue:
                 ON CONFLICT(recipe_id) DO UPDATE SET
                     url=excluded.url,
                     status=CASE
-                        WHEN archive_jobs.url=excluded.url
-                         AND archive_jobs.status='completed' THEN 'completed'
+                        WHEN archive_jobs.url=excluded.url THEN archive_jobs.status
                         ELSE 'queued'
                     END,
                     attempts=CASE WHEN archive_jobs.url=excluded.url
                                   THEN archive_jobs.attempts ELSE 0 END,
-                    next_attempt_at=0,
+                    next_attempt_at=CASE WHEN archive_jobs.url=excluded.url
+                                         THEN archive_jobs.next_attempt_at ELSE 0 END,
                     archive_path=CASE WHEN archive_jobs.url=excluded.url
                                       THEN archive_jobs.archive_path ELSE NULL END,
-                    error=NULL,
+                    error=CASE WHEN archive_jobs.url=excluded.url
+                               THEN archive_jobs.error ELSE NULL END,
                     updated_at=excluded.updated_at
                 """,
                 (recipe_id, normalized, now, now),
@@ -174,7 +179,9 @@ class ArchiveQueue:
             )
         return self.get(recipe_id)
 
-    def sync_from_recipes_db(self, recipes_db: Path | str) -> dict[str, int]:
+    def sync_from_recipes_db(
+        self, recipes_db: Path | str, *, min_interval_seconds: int = 0,
+    ) -> dict[str, int]:
         """Übernimmt neue Plattform-Links aus der Rezept-DB in die private Queue.
 
         Die Quelldatenbank wird ausschließlich read-only geöffnet. Bereits
@@ -182,7 +189,31 @@ class ArchiveQueue:
         unverändert; dadurch erzeugt der regelmäßige Abgleich weder doppelte
         Jobs noch wiederkehrende Ereignisse.
         """
-        return self.sync_recipe_links(load_recipe_links(recipes_db))
+        now = time.time()
+        if min_interval_seconds > 0:
+            with _connect(self.path) as connection:
+                row = connection.execute(
+                    "SELECT value FROM archive_state WHERE key='last_recipe_sync'"
+                ).fetchone()
+            try:
+                last_sync = float(row["value"]) if row else 0.0
+            except (TypeError, ValueError):
+                last_sync = 0.0
+            if now - last_sync < int(min_interval_seconds):
+                return {"seen": 0, "eligible": 0, "enqueued": 0,
+                        "unchanged": 0, "ignored": 0, "skipped": 1}
+        result = self.sync_recipe_links(load_recipe_links(recipes_db))
+        self.mark_recipe_sync(now)
+        return result
+
+    def mark_recipe_sync(self, timestamp: float | None = None) -> None:
+        """Merkt einen vollständigen Quell-DB-Abgleich atomar in der Queue."""
+        with _connect(self.path) as connection:
+            connection.execute(
+                "INSERT INTO archive_state(key, value) VALUES ('last_recipe_sync', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(time.time() if timestamp is None else timestamp),),
+            )
 
     def sync_recipe_links(self, rows: list[tuple[int, str]]) -> dict[str, int]:
         """Gleicht bereits gelesene Rezept-Links idempotent mit der Queue ab."""
@@ -291,26 +322,44 @@ class ArchiveQueue:
             connection.commit()
         return dict(claimed) if claimed else None
 
-    def complete(self, recipe_id: int, archive_path: Path) -> None:
+    def complete(
+        self, recipe_id: int, archive_path: Path, *, expected_url: Optional[str] = None,
+    ) -> bool:
         with _connect(self.path) as connection:
-            connection.execute(
+            params: list[Any] = [str(archive_path), time.time(), int(recipe_id)]
+            expected_sql = ""
+            if expected_url is not None:
+                expected_sql = " AND url=? AND status='downloading'"
+                params.append(expected_url)
+            updated = connection.execute(
                 """
                 UPDATE archive_jobs SET status='completed', archive_path=?, error=NULL,
-                       next_attempt_at=0, updated_at=? WHERE recipe_id=?
-                """,
-                (str(archive_path), time.time(), int(recipe_id)),
-            )
+                       next_attempt_at=0, updated_at=? WHERE recipe_id=?""" + expected_sql,
+                params,
+            ).rowcount
+            if not updated:
+                return False
             connection.execute(
                 "INSERT INTO archive_events(recipe_id, level, message, created_at) VALUES (?, ?, ?, ?)",
                 (int(recipe_id), "info", "Archivierung abgeschlossen", time.time()),
             )
+            return True
 
-    def fail(self, recipe_id: int, error: str, *, max_attempts: int = 3) -> None:
+    def fail(
+        self, recipe_id: int, error: str, *, max_attempts: int = 3,
+        expected_url: Optional[str] = None,
+    ) -> bool:
         now = time.time()
         with _connect(self.path) as connection:
             row = connection.execute(
-                "SELECT attempts FROM archive_jobs WHERE recipe_id=?", (int(recipe_id),)
+                "SELECT attempts, url, status FROM archive_jobs WHERE recipe_id=?", (int(recipe_id),)
             ).fetchone()
+            if (
+                row is None
+                or (expected_url is not None and row["url"] != expected_url)
+                or (expected_url is not None and row["status"] != "downloading")
+            ):
+                return False
             attempts = int(row["attempts"]) if row else max_attempts
             retry = attempts < int(max_attempts)
             delay = min(3600, 60 * (2 ** max(0, attempts - 1))) if retry else 0
@@ -331,6 +380,7 @@ class ArchiveQueue:
                 "INSERT INTO archive_events(recipe_id, level, message, created_at) VALUES (?, ?, ?, ?)",
                 (int(recipe_id), "error", (error or "Unbekannter Fehler")[:2000], now),
             )
+            return True
 
     def counts(self) -> dict[str, int]:
         result = {name: 0 for name in ("queued", "downloading", "completed", "failed")}
@@ -386,12 +436,18 @@ class VideoArchiver:
         if job is None:
             return None
         recipe_id = int(job["recipe_id"])
+        expected_url = str(job["url"])
         try:
-            path = self._archive(recipe_id, str(job["url"]))
-            self.queue.complete(recipe_id, path)
+            path = self._archive(recipe_id, expected_url)
+            if not self.queue.complete(recipe_id, path, expected_url=expected_url):
+                return {"recipe_id": recipe_id, "status": "superseded", "path": str(path)}
             return {"recipe_id": recipe_id, "status": "completed", "path": str(path)}
         except Exception as exc:
-            self.queue.fail(recipe_id, str(exc), max_attempts=self.max_attempts)
+            if not self.queue.fail(
+                recipe_id, str(exc), max_attempts=self.max_attempts,
+                expected_url=expected_url,
+            ):
+                return {"recipe_id": recipe_id, "status": "superseded", "error": str(exc)}
             current = self.queue.get(recipe_id)
             return {"recipe_id": recipe_id, "status": current["status"], "error": str(exc)}
 
@@ -407,7 +463,16 @@ class VideoArchiver:
         final_video = self.archive_dir / f"{recipe_id}.mp4"
         final_metadata = self.archive_dir / f"{recipe_id}.json"
         if final_video.exists() or final_metadata.exists():
-            return self._accept_existing(recipe_id, normalized, final_video, final_metadata)
+            try:
+                return self._accept_existing(recipe_id, normalized, final_video, final_metadata)
+            except FileExistsError:
+                url_key = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+                final_video = self.archive_dir / f"{recipe_id}-{url_key}.mp4"
+                final_metadata = self.archive_dir / f"{recipe_id}-{url_key}.json"
+                if final_video.exists() or final_metadata.exists():
+                    return self._accept_existing(
+                        recipe_id, normalized, final_video, final_metadata,
+                    )
 
         # Während der MP4-Rekodierung können Quelldatei und Ziel gleichzeitig
         # existieren. Vor dem Start genug Platz für beides plus Reserve sichern.

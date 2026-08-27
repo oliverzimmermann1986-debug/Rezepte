@@ -1,0 +1,23 @@
+[Unit]
+Description=Apply validated Scrapper timer schedule
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/scrapper
+Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
+Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
+Environment="SCRAPPER_SCHEDULE_REQUEST=/opt/scrapper/data/schedule-request.json"
+ExecStart=/opt/scrapper/venv/bin/python -m app.jobs.schedule_apply
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/systemd/system/scrapper-job.timer.d /opt/scrapper/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+RestrictSUIDSGID=true

@@ -138,15 +138,19 @@ def test_worker_never_overwrites_a_conflicting_archive(
     )
     queue = ArchiveQueue(tmp_path / "queue.db")
     queue.enqueue(7, "https://www.tiktok.com/@koch/video/123")
-    monkeypatch.setattr(
-        "video_archiver.worker.subprocess.run",
-        lambda *args, **kwargs: pytest.fail("Download darf bei Konflikt nicht starten"),
-    )
+    def fake_run(command, **kwargs):
+        output = Path(command[command.index("--output") + 1])
+        output.with_suffix(".mp4").write_bytes(b"new source")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("video_archiver.worker.subprocess.run", fake_run)
 
     result = VideoArchiver(queue, archive, str(executable), max_attempts=1).process_one()
-    assert result and result["status"] == "failed"
+    assert result and result["status"] == "completed"
     assert (archive / "7.mp4").read_bytes() == b"existing"
-    assert queue.get(7)["status"] == "failed"
+    assert Path(result["path"]).name.startswith("7-")
+    assert Path(result["path"]).read_bytes() == b"new source"
+    assert queue.get(7)["status"] == "completed"
 
 
 def test_claim_marks_exhausted_stale_download_as_failed(tmp_path: Path):

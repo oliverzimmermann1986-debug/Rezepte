@@ -1,17 +1,23 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { ApiError, api, apiBaseUrl } from './api';
+import {
+  ApiError,
+  api,
+  apiCacheNamespace,
+  assertApiSessionEpochCurrent,
+  currentApiSessionEpoch,
+} from './api';
 
 const PREFIX = 'rezepte.cache.v1:';
 
 type CachedValue<T> = { storedAt: number; value: T };
 
 function storageKey(key: string) {
-  return `${PREFIX}${encodeURIComponent(apiBaseUrl())}:${key}`;
+  return `${PREFIX}${encodeURIComponent(apiCacheNamespace())}:${key}`;
 }
 
 function storageNamespace() {
-  return `${PREFIX}${encodeURIComponent(apiBaseUrl())}:`;
+  return `${PREFIX}${encodeURIComponent(apiCacheNamespace())}:`;
 }
 
 export async function putApiCache<T>(key: string, value: T) {
@@ -37,9 +43,14 @@ export async function readApiCache<T>(key: string): Promise<T | null> {
 }
 
 export async function apiCached<T>(key: string, path: string, signal?: AbortSignal): Promise<T> {
+  const requestEpoch = currentApiSessionEpoch();
+  const requestStorageKey = storageKey(key);
   try {
     const value = await api<T>(path, {}, signal);
-    await putApiCache(key, value);
+    assertApiSessionEpochCurrent(requestEpoch);
+    const cached: CachedValue<T> = { storedAt: Date.now(), value };
+    await AsyncStorage.setItem(requestStorageKey, JSON.stringify(cached)).catch(() => undefined);
+    assertApiSessionEpochCurrent(requestEpoch);
     return value;
   } catch (reason) {
     if (signal?.aborted) throw reason;
@@ -47,7 +58,8 @@ export async function apiCached<T>(key: string, path: string, signal?: AbortSign
     if (!recoverable) throw reason;
     let raw: string | null;
     try {
-      raw = await AsyncStorage.getItem(storageKey(key));
+      assertApiSessionEpochCurrent(requestEpoch);
+      raw = await AsyncStorage.getItem(requestStorageKey);
     } catch {
       throw reason;
     }

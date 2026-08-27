@@ -14,6 +14,17 @@ class _Config:
             return str(self.db_path)
         return default
 
+    def set(self, section, key, value):
+        return None
+
+    def save(self):
+        return None
+
+
+class _FailingConfig(_Config):
+    def save(self):
+        raise OSError("simulierter Config-Fehler")
+
 
 def _value(path):
     connection = sqlite3.connect(path)
@@ -71,3 +82,22 @@ def test_restore_rejects_corrupt_backup_without_touching_target(tmp_path, monkey
 
     assert cli._cmd_db_restore([str(corrupt)]) == 1
     assert _value(target) == "bleibt"
+
+
+def test_restore_rolls_database_back_when_security_config_commit_fails(tmp_path, monkeypatch):
+    target = tmp_path / "scrapper.db"
+    current = sqlite3.connect(target)
+    current.execute("CREATE TABLE marker(value TEXT)")
+    current.execute("INSERT INTO marker VALUES ('aktuell')")
+    current.commit()
+    current.close()
+    source = tmp_path / "backup.db"
+    backup = sqlite3.connect(source)
+    backup.execute("CREATE TABLE marker(value TEXT)")
+    backup.execute("INSERT INTO marker VALUES ('backup')")
+    backup.commit()
+    backup.close()
+    monkeypatch.setattr(cli, "get_config", lambda: _FailingConfig(target))
+
+    assert cli._cmd_db_restore([str(source)]) == 1
+    assert _value(target) == "aktuell"

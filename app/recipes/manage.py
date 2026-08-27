@@ -23,8 +23,9 @@ import logging
 import re
 import shutil
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from ..config_store import get_config
 from ..core.safety import (
@@ -34,9 +35,22 @@ from ..core.safety import (
     atomic_write_text,
 )
 from ..db import Database
+from ..jobs.locks import file_lock_path_or_none
 from .naming import normalize_recipe_name
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _recipe_mutation_lock(db: Database, recipe_id: int) -> Iterator[None]:
+    """Serialisiert DB/Filesystem-Mutationen auch über Prozesse hinweg."""
+    lock_path = db.path.parent / f".{db.path.name}.recipe-{int(recipe_id)}.lock"
+    with file_lock_path_or_none(lock_path, wait_seconds=5.0) as lock:
+        if lock is None:
+            raise RuntimeError(
+                f"Rezept #{recipe_id} wird gerade in einem anderen Prozess geändert"
+            )
+        yield
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -132,6 +146,15 @@ def safe_rename_recipe(
 
 
 def safe_update_recipe_metadata(
+    db: Database,
+    recipe_id: int,
+    **values: Any,
+) -> Dict[str, Any]:
+    with _recipe_mutation_lock(db, recipe_id):
+        return _safe_update_recipe_metadata_locked(db, recipe_id, **values)
+
+
+def _safe_update_recipe_metadata_locked(
     db: Database,
     recipe_id: int,
     *,
@@ -449,6 +472,22 @@ def safe_delete_recipe(
     delete_files: bool = False,
     hard: bool = False,
 ) -> Dict[str, Any]:
+    with _recipe_mutation_lock(db, recipe_id):
+        return _safe_delete_recipe_locked(
+            db,
+            recipe_id,
+            delete_files=delete_files,
+            hard=hard,
+        )
+
+
+def _safe_delete_recipe_locked(
+    db: Database,
+    recipe_id: int,
+    *,
+    delete_files: bool = False,
+    hard: bool = False,
+) -> Dict[str, Any]:
     """Löscht ein Rezept. Standardmäßig SOFT-DELETE (→ Papierkorb).
 
     - hard=False (Default): Soft-Delete — deleted_at=now, Rezept verschwindet
@@ -472,25 +511,43 @@ def safe_delete_recipe(
     recipe = db.recipe_get(recipe_id)
     if not recipe:
         raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
+    if not hard and recipe.get("deleted_at") is not None:
+        return {
+            "ok": True,
+            "deleted_id": recipe_id,
+            "name": recipe.get("name"),
+            "folder_deleted": bool(recipe.get("files_deleted")),
+            "cart_entries_updated": 0,
+            "soft": True,
+            "already_deleted": True,
+        }
     folder = recipe.get("deleted_folder_path") or recipe.get("folder_path")
     source_url = recipe.get("deleted_url") or recipe.get("url")
     name = recipe.get("name")
 
+    previous_history = (
+        db.deleted_history_latest(str(folder), reason="soft_delete")
+        if hard and recipe.get("deleted_at") is not None and folder
+        else None
+    )
+    previous_quarantine = Path(str(
+        (previous_history or {}).get("quarantine_path") or ""
+    )) if previous_history else None
+
     if hard and not delete_files and folder:
         candidate = Path(folder)
-        if candidate.exists():
+        if candidate.exists() or (previous_quarantine and previous_quarantine.exists()):
             folder_path = _assert_inside_root(candidate)
             raise RuntimeError(
                 "Hard-Delete ohne Dateilöschung abgelehnt: "
                 "der verbleibende Ordner würde beim nächsten Sync erneut indiziert"
             )
 
-    # Cart aufräumen
-    cart_updates = _purge_recipe_from_cart(db, recipe_id)
-
     # FS: nicht mehr hart löschen — in Quarantäne verschieben (Härtung gegen
     # Datenverlust). deleted_history bewahrt Herkunft für spätere Suche/Restore.
     folder_deleted = False
+    qpath: Optional[Path] = None
+    moved_folder: Optional[Path] = None
     # Auch ein normales Soft-Delete verschiebt vorhandene Dateien in die
     # wiederherstellbare Quarantäne. Würden sie im Rezeptbaum bleiben, würde
     # der nächste Indexlauf das gerade gelöschte Rezept sofort neu anlegen.
@@ -504,26 +561,61 @@ def safe_delete_recipe(
             qpath = quarantine_move(folder_path, trash_root,
                                     reason="hard_delete" if hard else "soft_delete",
                                     source={"recipe_id": recipe_id, "name": name})
+            moved_folder = folder_path
             folder_deleted = True
-            try:
-                db.deleted_history_add(
-                    {"url": source_url, "content_type": recipe.get("type"),
-                     "name": name, "target_dir": folder},
-                    quarantine_path=str(qpath or ""),
-                    reason="hard_delete" if hard else "soft_delete")
-            except Exception as e:
-                logger.warning(f"deleted_history_add fehlgeschlagen (non-fatal): {e}")
             logger.info(f"Recipe #{recipe_id}: folder → Quarantäne {qpath}")
         else:
             logger.info(f"Recipe #{recipe_id}: folder {folder_path} existierte nicht mehr")
 
+    history_entry = None
+    if qpath is not None:
+        history_entry = {
+            "url": source_url,
+            "content_type": recipe.get("type"),
+            "name": name,
+            "target_dir": folder,
+        }
+    try:
+        persisted = db.recipe_delete_with_history(
+            recipe_id,
+            hard=hard,
+            files_deleted=folder_deleted,
+            history_entry=history_entry,
+            quarantine_path=str(qpath or ""),
+            reason="hard_delete" if hard else "soft_delete",
+        )
+    except Exception:
+        if qpath and moved_folder and qpath.exists() and not moved_folder.exists():
+            try:
+                moved_folder.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(qpath), str(moved_folder))
+                (qpath.parent / "quarantine.json").unlink(missing_ok=True)
+                qpath.parent.rmdir()
+            except Exception:
+                logger.exception(
+                    "Delete-Kompensation für Rezept #%s fehlgeschlagen",
+                    recipe_id,
+                )
+        raise
+
+    cart_updates = int(persisted["cart_entries_updated"])
     if hard:
-        # Endgültig: cascade weg
-        db.recipe_delete(recipe_id)
+        # Ein bestehender Papierkorb-Payload oder der gerade erzeugte Payload
+        # hat nach dem atomaren DB-Hard-Delete keinen Restore-Zweck mehr.
+        purge_payload = qpath or (previous_quarantine if delete_files else None)
+        if purge_payload and purge_payload.exists():
+            trash_root = Path(get_config().get(
+                "safety", "trash_dir", default="/opt/scrapper/data/trash"
+            )).resolve()
+            try:
+                purge_payload.resolve(strict=True).relative_to(trash_root)
+            except (OSError, ValueError) as exc:
+                raise RuntimeError(
+                    "Quarantäne-Payload liegt außerhalb des Papierkorbs"
+                ) from exc
+            shutil.rmtree(purge_payload.parent)
         logger.info(f"Recipe #{recipe_id} '{name}' HARD-DELETE")
     else:
-        # Soft: deleted_at setzen, files_deleted-Flag wenn Folder mit weg
-        db.recipe_soft_delete(recipe_id, files_deleted=folder_deleted)
         logger.info(f"Recipe #{recipe_id} '{name}' → Papierkorb (files_deleted={folder_deleted})")
 
     return {
@@ -537,6 +629,11 @@ def safe_delete_recipe(
 
 
 def safe_restore_recipe(db: Database, recipe_id: int) -> Dict[str, Any]:
+    with _recipe_mutation_lock(db, recipe_id):
+        return _safe_restore_recipe_locked(db, recipe_id)
+
+
+def _safe_restore_recipe_locked(db: Database, recipe_id: int) -> Dict[str, Any]:
     """Stellt DB-Eintrag und gegebenenfalls Quarantäneordner gemeinsam her."""
     recipe = db.recipe_get(recipe_id)
     if not recipe:
@@ -673,8 +770,8 @@ def safe_merge_recipes(
       - Video/Thumb-Files (target-Folder bleibt; source-Folder wird gelöscht
         wenn delete_source=True)
 
-    delete_source=False ist ein „dry-run"-Modus: target kriegt die Tags +
-    Cart-Refs, source bleibt vollständig erhalten. Nützlich bei Unsicherheit.
+    delete_source=False ist ein echter Dry-Run: Es werden nur die erwarteten
+    Änderungen berechnet; DB und Dateisystem bleiben unverändert.
     """
     if source_id == target_id:
         raise ValueError("source_id und target_id sind identisch")
@@ -690,6 +787,18 @@ def safe_merge_recipes(
     source_tags = [t["name"] for t in db.recipe_tags_get(source_id)]
     target_tags = [t["name"] for t in db.recipe_tags_get(target_id)]
     union_tags = sorted(set(target_tags) | set(source_tags))
+    if not delete_source:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "source_id": source_id,
+            "target_id": target_id,
+            "source_name": source.get("name"),
+            "target_name": target.get("name"),
+            "tags_merged": len(union_tags) - len(target_tags),
+            "cart_remapped": _count_recipe_in_cart(db, source_id),
+            "source_deleted": False,
+        }
     if union_tags != sorted(target_tags):
         db.recipe_tags_set(target_id, union_tags)
 
@@ -744,4 +853,22 @@ def _remap_recipe_in_cart(db: Database, source_id: int, target_id: int) -> int:
                     (json.dumps(new_ids), row["id"]),
                 )
                 count += 1
+    return count
+
+
+def _count_recipe_in_cart(db: Database, recipe_id: int) -> int:
+    """Zählt exakte JSON-Referenzen ohne einen Dry-Run zu mutieren."""
+    count = 0
+    with db.conn() as c:
+        rows = c.execute(
+            "SELECT source_recipe_ids FROM shopping_cart "
+            "WHERE source_recipe_ids LIKE ?",
+            (f"%{recipe_id}%",),
+        ).fetchall()
+    for row in rows:
+        try:
+            if recipe_id in json.loads(row["source_recipe_ids"] or "[]"):
+                count += 1
+        except (TypeError, ValueError):
+            continue
     return count

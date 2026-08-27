@@ -39,6 +39,10 @@ if (( ${#MISSING_PACKAGES[@]} )); then
   apt-get update
   apt-get install -y --no-install-recommends "${MISSING_PACKAGES[@]}"
 fi
+if [[ "$SOURCE_DIR" != "$APP_DIR" ]] && ! command -v rsync >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y --no-install-recommends rsync
+fi
 
 mkdir -p "$BACKUP_ROOT"
 if [[ -d "$APP_DIR/app" ]]; then
@@ -49,16 +53,37 @@ if [[ -d "$APP_DIR/app" ]]; then
     --exclude='./.git' .
 fi
 
+systemctl stop scrapper-job.timer scrapper-db-backup.timer 2>/dev/null || true
+systemctl stop scrapper-job.service scrapper-db-backup.service 2>/dev/null || true
 systemctl stop scrapper-web.service 2>/dev/null || true
+
+VENV_SWAPPED=0
+BROWSERS_SWAPPED=0
 
 restore_on_error() {
   local rc=$?
   if [[ $rc -ne 0 ]]; then
     echo "Update fehlgeschlagen (Code $rc). Stelle bisherigen Code wieder her…" >&2
     if [[ -f "$BACKUP_FILE" ]]; then
-      tar -C "$APP_DIR" -xzf "$BACKUP_FILE"
+      RESTORE_DIR="$(mktemp -d /tmp/rezepte-restore.XXXXXX)"
+      tar -C "$RESTORE_DIR" -xzf "$BACKUP_FILE"
+      rsync -a --delete \
+        --exclude='/data/' --exclude='/venv/' --exclude='/logs/' \
+        --exclude='/temp/' --exclude='/files/' --exclude='/playwright-browsers/' \
+        --exclude='/.git/' \
+        "$RESTORE_DIR/" "$APP_DIR/"
+      rm -rf -- "$RESTORE_DIR"
+      if [[ "$VENV_SWAPPED" == "1" && -d "$APP_DIR/venv.previous" ]]; then
+        rm -rf -- "$APP_DIR/venv"
+        mv "$APP_DIR/venv.previous" "$APP_DIR/venv"
+      fi
+      if [[ "$BROWSERS_SWAPPED" == "1" && -d "$APP_DIR/playwright-browsers.previous" ]]; then
+        rm -rf -- "$APP_DIR/playwright-browsers"
+        mv "$APP_DIR/playwright-browsers.previous" "$APP_DIR/playwright-browsers"
+      fi
       systemctl daemon-reload || true
       systemctl restart scrapper-web.service || true
+      systemctl restart scrapper-job.timer scrapper-db-backup.timer || true
     fi
   fi
   exit "$rc"
@@ -67,10 +92,6 @@ trap restore_on_error ERR
 
 mkdir -p "$APP_DIR"
 if [[ "$SOURCE_DIR" != "$APP_DIR" ]]; then
-  if ! command -v rsync >/dev/null 2>&1; then
-    apt-get update
-    apt-get install -y --no-install-recommends rsync
-  fi
   echo "Übertrage Anwendungscode vollständig…"
   rsync -a --delete \
     --exclude='/data/' --exclude='/venv/' --exclude='/logs/' \
@@ -85,28 +106,43 @@ fi
 # diesen Modus sonst auf APP_DIR und systemd kann als APP_USER nicht hinein.
 chmod 0755 "$APP_DIR"
 
-python3 -m venv "$APP_DIR/venv" --upgrade-deps
-"$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
-PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/playwright-browsers" \
-  "$APP_DIR/venv/bin/python" -m playwright install --with-deps chromium
-chmod -R a+rX "$APP_DIR/playwright-browsers"
+rm -rf -- "$APP_DIR/venv.next" "$APP_DIR/playwright-browsers.next"
+python3 -m venv "$APP_DIR/venv.next" --upgrade-deps
+"$APP_DIR/venv.next/bin/pip" install -r "$APP_DIR/requirements.txt"
+PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/playwright-browsers.next" \
+  "$APP_DIR/venv.next/bin/python" -m playwright install --with-deps chromium
+chmod -R a+rX "$APP_DIR/playwright-browsers.next"
+rm -rf -- "$APP_DIR/venv.previous" "$APP_DIR/playwright-browsers.previous"
+mv "$APP_DIR/venv" "$APP_DIR/venv.previous"
+mv "$APP_DIR/venv.next" "$APP_DIR/venv"
+VENV_SWAPPED=1
+if [[ -d "$APP_DIR/playwright-browsers" ]]; then
+  mv "$APP_DIR/playwright-browsers" "$APP_DIR/playwright-browsers.previous"
+fi
+mv "$APP_DIR/playwright-browsers.next" "$APP_DIR/playwright-browsers"
+BROWSERS_SWAPPED=1
 
 install -m 0644 "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/scrapper-web.service
 install -m 0644 "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/scrapper-job.service
 install -m 0644 "$APP_DIR/systemd/scrapper-job.timer" /etc/systemd/system/scrapper-job.timer
 install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.service" /etc/systemd/system/scrapper-db-backup.service
 install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.timer" /etc/systemd/system/scrapper-db-backup.timer
+install -m 0644 "$APP_DIR/systemd/scrapper-schedule-apply.service" \
+  /etc/systemd/system/scrapper-schedule-apply.service
+install -d -m 0755 /etc/systemd/system/scrapper-job.timer.d
+install -d -m 0755 /etc/scrapper
+if [[ -f "$APP_DIR/data/web.env" && ! -f /etc/scrapper/web.env ]]; then
+  install -m 0600 -o root -g root "$APP_DIR/data/web.env" /etc/scrapper/web.env
+fi
 install -m 0644 "$APP_DIR/systemd/49-scrapper-systemctl.rules" \
   /etc/polkit-1/rules.d/49-scrapper-systemctl.rules
 rm -f /etc/sudoers.d/scrapper
-chgrp "$APP_USER" /etc/systemd/system/scrapper-job.timer
-chmod 0664 /etc/systemd/system/scrapper-job.timer
 
 mkdir -p "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" "$APP_DIR/files/rezepte"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" "$APP_DIR/files"
 find "$APP_DIR" -path "$APP_DIR/data" -prune -o -path "$APP_DIR/logs" -prune \
   -o -path "$APP_DIR/temp" -prune -o -path "$APP_DIR/files" -prune \
-  -o -path "$APP_DIR/venv" -prune -o -exec chown root:root {} +
+  -o -exec chown root:root {} +
 
 systemctl daemon-reload
 systemctl enable scrapper-web.service scrapper-job.timer scrapper-db-backup.timer >/dev/null
@@ -159,6 +195,7 @@ if [[ "$PDF_STATUS" == "404" || "$PDF_STATUS" == "000" ]]; then
 fi
 
 trap - ERR
+rm -rf -- "$APP_DIR/venv.previous" "$APP_DIR/playwright-browsers.previous"
 echo "Update erfolgreich. Backend und Frontend laufen gemeinsam auf Version $EXPECTED_VERSION."
 echo "Gesundheit: $(cat /tmp/rezepte-health.json)"
 echo "Einkaufslisten-KI: HTTP $OPTIMIZER_STATUS (400, 401 oder 422 sind ohne Nutzdaten korrekt)"

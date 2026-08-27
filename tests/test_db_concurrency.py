@@ -28,11 +28,46 @@ def test_overlapping_initializers_create_one_verified_migration_backup(tmp_path)
         assert backup.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert backup.execute(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
-        ).fetchone()[0] == CURRENT_SCHEMA_VERSION - 10
+            ).fetchone()[0] == CURRENT_SCHEMA_VERSION - 10
     with sqlite3.connect(path) as current:
         assert current.execute(
             "SELECT MAX(version) FROM schema_migrations"
         ).fetchone()[0] == CURRENT_SCHEMA_VERSION
+
+
+def test_job_claim_is_exclusive_and_terminal_state_cannot_be_overwritten(tmp_path):
+    database = Database(tmp_path / "jobs.db")
+    first = database.job_start("reanalyze")
+    with pytest.raises(RuntimeError, match="läuft bereits"):
+        database.job_start("reanalyze")
+    assert database.job_finish(first, "error", {"error": "abgebrochen"}) is True
+    assert database.job_finish(first, "ok", {"late": True}) is False
+    assert database.job_get(first)["status"] == "error"
+    assert database.job_start("reanalyze") > first
+
+
+def test_legacy_case_colliding_users_are_safely_disabled_on_upgrade(tmp_path):
+    path = tmp_path / "legacy-users.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, "
+            "role TEXT NOT NULL DEFAULT 'user', disabled INTEGER NOT NULL DEFAULT 0, "
+            "session_version INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, "
+            "last_login_at REAL)"
+        )
+        connection.execute(
+            "INSERT INTO users(username,password_hash,role,created_at) "
+            "VALUES ('Admin','hash-a','admin',1),('admin','hash-b','user',2)"
+        )
+
+    database = Database(path)
+    users = database.user_list()
+    active = [user for user in users if not user["disabled"]]
+    disabled = [user for user in users if user["disabled"]]
+    assert [user["username"] for user in active] == ["Admin"]
+    assert len(disabled) == 1
+    assert "~duplicate-" in disabled[0]["username"]
 
 
 def test_newer_database_schema_refuses_application_downgrade(tmp_path):
@@ -114,7 +149,7 @@ def test_upgrade_normalizes_existing_recipe_display_names(tmp_path):
         assert connection.execute(
             "SELECT name FROM schema_migrations WHERE version=?",
             (CURRENT_SCHEMA_VERSION,),
-        ).fetchone()[0] == "normalize_recipe_display_names"
+        ).fetchone()[0] == "transactional_boundaries_and_runtime_hardening"
 
 
 def test_concurrent_recipe_upserts_converge_on_one_row(tmp_path):
