@@ -4,7 +4,7 @@ Zielzustand:
 
 - frischer LXC `117` mit Hostname `rezepte-review`, ohne Bind-Mounts;
 - ausschließlich künstliche Rezepte und generierte Food-Fotos;
-- Standardbenutzer `app-review`, dessen zufälliges Passwort nur in einer
+- isolierter Administrator `app-review`, dessen zufälliges Passwort nur in einer
   root-lesbaren Datei liegt;
 - kein Mailkonto, OpenAI-Schlüssel, Social-Cookie, Webhook, externer Datenträger
   oder Einkauf-Token;

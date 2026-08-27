@@ -1,4 +1,4 @@
-# Rezepte — App-Review-Video (ca. 55 Sekunden)
+# Rezepte — App-Review-Video (ca. 65 Sekunden)
 
 Vor der Aufnahme: TestFlight-Build frisch installieren, AutoFill/Passwortmanager
 für die Aufnahme deaktivieren, Review-Zugang bereithalten und einmal prüfen,
@@ -13,7 +13,8 @@ Konten oder Zugangsdaten im Bild zeigen.
 | 24–32 s | Zutaten zur Einkaufsliste hinzufügen. Zum Tab **Einkauf** wechseln und einen Artikel abhaken. Erfolg sichtbar stehen lassen. |
 | 32–43 s | **Wochenplan** öffnen. Drei geplante Gerichte und die gemeinsame Einkaufsvorschau zeigen. |
 | 43–51 s | Zu **Rezepte** zurück, Filter öffnen und **Manuelle Pflege** wählen. Die **Sommerliche Tomaten-Galette** mit Hinweis auf fehlende Zutaten zeigen. |
-| 51–55 s | Filter schließen und auf der stabil gefüllten Rezeptübersicht enden. |
+| 51–60 s | Den Tab **Admin** öffnen und den isolierten Verwaltungsbereich kurz zeigen. Keine Lösch- oder Importaktion ausführen. |
+| 60–65 s | Zu **Rezepte** zurück. Die sichtbare Option **Abmelden** oben rechts zeigen und auf der stabil gefüllten Übersicht enden. |
 
 Akzeptanzkriterien: vollständiger erfolgreicher Ablauf, keine Fehlermeldung,
 keine Systemdialoge, keine leeren Bilder, kein Produktionskonto und ein ruhiges

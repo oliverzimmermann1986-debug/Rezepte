@@ -62,7 +62,7 @@ def test_review_demo_is_artificial_complete_and_sanitized(tmp_path: Path):
     assert db.recipe_count() == 6
     assert len(db.meal_plan_entries("2000-01-01", "2100-01-01")) == 3
     assert len(db.cart_list()) == 3
-    assert db.user_get_by_name("app-review")["role"] == "user"
+    assert db.user_get_by_name("app-review")["role"] == "admin"
     assert len(list(inputs["recipe_root"].rglob("*.png"))) == 6
     if os.name != "nt":
         assert inputs["credential_output"].stat().st_mode & 0o777 == 0o600

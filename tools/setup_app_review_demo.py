@@ -249,11 +249,11 @@ def seed_review_demo(
         db.user_update_security(
             int(existing_user["id"]),
             password_hash=password_hash,
-            role="user",
+            role="admin",
             disabled=False,
         )
     else:
-        db.user_create(REVIEW_USERNAME, password_hash, role="user")
+        db.user_create(REVIEW_USERNAME, password_hash, role="admin")
 
     created_ids: list[int] = []
     for offset, item in enumerate(RECIPES):

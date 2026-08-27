@@ -96,7 +96,7 @@ function FilterChip({ label, selected, onPress }: { label: string; selected: boo
 }
 
 export default function RecipesScreen() {
-  const { refreshSession, sessionChecking, sessionWarning } = useAuth();
+  const { refreshSession, sessionChecking, sessionWarning, signOut } = useAuth();
   const [recipes, setRecipes] = useState<RecipeListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
@@ -294,7 +294,17 @@ export default function RecipesScreen() {
           <Text style={styles.eyebrow}>DEINE KÜCHE</Text>
           <Text style={styles.title}>Rezepte</Text>
         </View>
-        <Text style={styles.count}>{total}</Text>
+        <View style={styles.headerActions}>
+          <Text accessibilityLabel={`${total} Rezepte`} style={styles.count}>{total}</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Abmelden"
+            onPress={() => void signOut()}
+            style={({ pressed }) => [styles.signOut, pressed && styles.pressed]}>
+            <SymbolView name="rectangle.portrait.and.arrow.right" size={16} tintColor={colors.danger} />
+            <Text style={styles.signOutText}>Abmelden</Text>
+          </Pressable>
+        </View>
       </View>
       {!!sessionWarning && (
         <View accessibilityRole="alert" style={styles.sessionBanner}>
@@ -600,6 +610,9 @@ const styles = StyleSheet.create({
   eyebrow: { color: colors.muted, fontSize: 11, letterSpacing: 1.5, fontWeight: '800' },
   title: { color: colors.text, fontSize: 36, letterSpacing: -1, fontWeight: '900' },
   count: { color: colors.text, fontSize: 17, fontWeight: '800', paddingBottom: 5 },
+  headerActions: { alignItems: 'flex-end', gap: 4 },
+  signOut: { minHeight: 44, paddingHorizontal: 4, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  signOutText: { color: colors.danger, fontSize: 14, fontWeight: '800' },
   sessionBanner: { marginHorizontal: space.md, marginBottom: 12, padding: 12, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, borderRadius: radii.md, backgroundColor: colors.warningSurface },
   sessionWarning: { flexGrow: 1, flexShrink: 1, minWidth: 180, color: colors.text, lineHeight: 20 },
   sessionRetry: { minHeight: 44, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },

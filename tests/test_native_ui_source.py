@@ -151,6 +151,14 @@ def test_native_admin_role_refresh_remounts_the_native_tabs():
     assert "{isAdmin && (" not in tabs
 
 
+def test_native_logout_is_available_outside_the_admin_tab():
+    recipes = (NATIVE / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+
+    assert "sessionWarning, signOut" in recipes
+    assert 'accessibilityLabel="Abmelden"' in recipes
+    assert 'onPress={() => void signOut()}' in recipes
+
+
 def test_native_release_server_policy_allows_only_production_and_review():
     auth = (NATIVE / "lib" / "auth-context.tsx").read_text(encoding="utf-8")
     config = json.loads((ROOT / "native-ios" / "app.json").read_text(encoding="utf-8"))

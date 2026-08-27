@@ -11,10 +11,11 @@ available for App Review; it is isolated from the developer's production data.
 - Password: copy the value from the protected review-credentials file
 - Cloudflare device access: leave both optional fields empty
 
-The review account is a normal user account. It can browse recipes, search and
-filter the library, open recipe details, change portions, use the guided cooking
-view, create a weekly meal plan, and maintain the shared shopping list. It has no
-access to production data or server administration.
+The review account is an administrator of this isolated review instance. It can
+browse recipes, search and filter the library, open recipe details, change
+portions, use the guided cooking view, create a weekly meal plan, maintain the
+shared shopping list, and inspect the in-app **Admin** tab. It has no access to
+production data or infrastructure administration.
 
 ## Suggested review flow
 
@@ -27,6 +28,8 @@ access to production data or server administration.
 6. In **Rezepte**, use the filter **Manuelle Pflege**. The intentionally
    incomplete demo recipe **Sommerliche Tomaten-Galette** demonstrates how the
    app flags a recipe whose ingredients still need manual completion.
+7. Open **Admin** to inspect the isolated maintenance area. Return to
+   **Rezepte**, where **Abmelden** is always available in the upper-right corner.
 
 All recipe names, text, images, meal-plan entries and shopping items on the
 review server are artificial review data. No real household data, third-party
