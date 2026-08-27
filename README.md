@@ -192,11 +192,28 @@ Für diese Topologie muss root beide Vertrauensgrenzen explizit setzen:
 sudo install -d -m 0755 /etc/scrapper
 sudo tee /etc/scrapper/web.env >/dev/null <<'EOF'
 SCRAPPER_BIND_HOST=0.0.0.0
-SCRAPPER_FORWARDED_ALLOW_IPS=192.168.1.<cloudflared-ip>
+SCRAPPER_FORWARDED_ALLOW_IPS=127.0.0.1
 EOF
 sudo chmod 0600 /etc/scrapper/web.env
 sudo systemctl restart scrapper-web
 ```
+
+Ergänze außerdem in `/opt/scrapper/data/config.yaml` den unmittelbaren
+cloudflared-Peer. Nur die Anwendung wertet dessen Forwarded-Header aus:
+
+```yaml
+web:
+  # Nur bei vorgeschaltetem Cloudflare Access aktivieren.
+  auth_disabled: true
+  trusted_proxies:
+    - 127.0.0.1/32
+    - "::1/128"
+    - 192.168.1.<cloudflared-ip>/32
+```
+
+Danach `sudo systemctl restart scrapper-web` ausführen. Uvicorn darf die
+unmittelbare Proxy-IP nicht vor dieser Prüfung durch `X-Forwarded-For`
+ersetzen; deshalb bleibt `SCRAPPER_FORWARDED_ALLOW_IPS` auf Loopback.
 
 **Wichtig**: Setze zusätzlich eine LAN-Firewall, die Port 8000 ausschließlich
 für die cloudflared-Container-IP freigibt:

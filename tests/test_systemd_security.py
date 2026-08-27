@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_web_service_never_trusts_forwarded_headers_from_every_peer():
     unit = (ROOT / "systemd" / "scrapper-web.service").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "--forwarded-allow-ips=*" not in unit
     assert "SCRAPPER_FORWARDED_ALLOW_IPS=127.0.0.1" in unit
     assert "--forwarded-allow-ips=${SCRAPPER_FORWARDED_ALLOW_IPS}" in unit
@@ -17,6 +18,12 @@ def test_web_service_never_trusts_forwarded_headers_from_every_peer():
     )
     assert "ExecStart=/opt/scrapper/venv/bin/python -m uvicorn" in unit
     assert "ExecStart=/opt/scrapper/venv/bin/uvicorn" not in unit
+    separate_proxy = readme.split(
+        "#### Variante B — cloudflared in eigenem Container", 1
+    )[1].split("#### Cloudflare Access", 1)[0]
+    assert "SCRAPPER_FORWARDED_ALLOW_IPS=127.0.0.1" in separate_proxy
+    assert "192.168.1.<cloudflared-ip>/32" in separate_proxy
+    assert "trusted_proxies:" in separate_proxy
     for script_name in ("install.sh", "update-local.sh"):
         installer = (ROOT / "proxmox" / script_name).read_text(encoding="utf-8")
         assert "install -d -m 0755 /etc/scrapper" in installer
