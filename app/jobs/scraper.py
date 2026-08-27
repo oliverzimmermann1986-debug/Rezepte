@@ -2302,7 +2302,19 @@ class ScraperJob:
         suggestion = entry.get("ai_suggestion") or {}
         if suggestion.get("attached_photo"):
             return self._reanalyze_pending_photo(url, entry, suggestion)
-        if suggestion.get("source") == "external-link":
+        # Link-only-Pending-Einträge aus älteren Releases besitzen noch keinen
+        # ``source``-Marker. Sie dürfen nicht in den Legacy-Video-Pfad fallen:
+        # dort ist absichtlich keine dauerhafte Video-Datei mehr vorhanden.
+        from ..core.email_processor import is_content_url
+
+        if suggestion.get("source") == "external-link" or is_content_url(url):
+            if suggestion.get("source") != "external-link":
+                suggestion = {
+                    **suggestion,
+                    "source": "external-link",
+                    "platform": "TikTok" if "tiktok.com" in url.lower() else "Instagram",
+                }
+                self.db.pending_update_suggestion(url, suggestion)
             refreshed = self.process_url({
                 "url": url,
                 "type": entry.get("content_type") or "recipe",

@@ -202,6 +202,7 @@ def test_pending_editor_can_reanalyze_with_ai_using_long_request_timeout():
     assert "120_000" in pending_editor
     assert "setIngredients(suggestion.ingredients.map(createIngredientRow))" in pending_editor
     assert "setSteps(suggestion.steps.map(createStepRow))" in pending_editor
+    assert "Alert.alert('KI-Prüfung fehlgeschlagen', message)" in pending_editor
     assert "timeoutMs = REQUEST_TIMEOUT_MS" in api_source
     assert "signal,\n    timeoutMs," in api_source
 
