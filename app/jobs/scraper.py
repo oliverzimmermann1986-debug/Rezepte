@@ -23,6 +23,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from ..config_store import get_config
 from ..db import get_db
@@ -351,21 +352,28 @@ class ScraperJob:
                 "status": "error",
                 "error": "ungültiger TikTok-/Instagram-Post",
             }
+        source_url = url
         result: Dict = {"url": url, "type": content_type, "status": "error"}
         # Frühere Versionen führten Download-Fehler. Im Link-only-Modell ist
         # dieser Zustand nicht mehr relevant und darf den Import nicht blockieren.
         self.db.download_failure_clear(url)
 
         existing = self.db.history_get(url)
+        source_recipe = self.db.recipe_get_by_url(url)
+        is_tiktok_short_link = urlsplit(url).hostname in {
+            "vm.tiktok.com", "vt.tiktok.com",
+        }
         if (
             existing
             and existing.get("target_dir")
             and Path(existing["target_dir"]).is_dir()
+            and not is_tiktok_short_link
         ):
             return {
                 **result,
                 "status": "already_processed",
                 "target": existing["target_dir"],
+                "recipe_id": int(source_recipe["id"]) if source_recipe else None,
             }
 
         existing_pending = self.db.pending_get(url)
@@ -373,11 +381,77 @@ class ScraperJob:
             existing_pending
             and existing_pending.get("status") == "pending"
             and not item.get("reanalyze_existing")
+            and not is_tiktok_short_link
         ):
             return {**result, "status": "pending", "name": "Unvollständiger Link-Import"}
 
+        metadata = self._fetch_external_link_metadata(url) or {}
+        canonical_url = normalize_content_url(
+            str(metadata.get("canonical_url") or "")
+        )
+        if canonical_url:
+            url = canonical_url
+            result["url"] = url
+            if url != source_url:
+                result["source_url"] = source_url
+                self.db.download_failure_clear(url)
+
+                canonical_recipe = self.db.recipe_get_by_url(url)
+                if source_recipe:
+                    from ..recipes.manage import safe_canonicalize_recipe_url
+
+                    migrated = safe_canonicalize_recipe_url(
+                        self.db,
+                        int(source_recipe["id"]),
+                        expected_url=source_url,
+                        canonical_url=url,
+                    )
+                    if migrated.get("ok"):
+                        if existing_pending:
+                            self.db.pending_resolve(source_url, status="resolved")
+                            self._remove_pending_files(existing_pending)
+                        return {
+                            **result,
+                            "status": "already_processed",
+                            "target": migrated.get("folder_path"),
+                            "recipe_id": migrated.get("recipe_id"),
+                        }
+                if canonical_recipe:
+                    if existing_pending:
+                        self.db.pending_resolve(source_url, status="resolved")
+                        self._remove_pending_files(existing_pending)
+                    return {
+                        **result,
+                        "status": "already_processed",
+                        "target": canonical_recipe.get("folder_path"),
+                        "recipe_id": int(canonical_recipe["id"]),
+                    }
+
+                canonical_history = self.db.history_get(url)
+                if (
+                    canonical_history
+                    and canonical_history.get("target_dir")
+                    and Path(canonical_history["target_dir"]).is_dir()
+                ):
+                    if existing_pending:
+                        self.db.pending_resolve(source_url, status="resolved")
+                        self._remove_pending_files(existing_pending)
+                    return {
+                        **result,
+                        "status": "already_processed",
+                        "target": canonical_history["target_dir"],
+                    }
+
+                canonical_pending = self.db.pending_get(url)
+                if canonical_pending:
+                    existing_pending = canonical_pending
+                elif existing_pending and existing_pending.get("status") == "pending":
+                    # Die vorhandene Kurzlink-Zeile liefert weiterhin Caption
+                    # und Cover; neu gespeichert wird anschließend nur noch die
+                    # kanonische URL.
+                    pass
+
         platform = "TikTok" if "tiktok.com" in url else "Instagram"
-        metadata = self._fetch_external_link_metadata(url)
         description = metadata.get("description_text")
         thumbnail_bytes = metadata.get("thumbnail_bytes")
         thumbnail_suffix = metadata.get("thumbnail_suffix")
@@ -495,6 +569,11 @@ class ScraperJob:
                 if existing_pending:
                     self.db.pending_resolve(url, status="resolved")
                     self._remove_pending_files(existing_pending)
+                if source_url != url:
+                    source_pending = self.db.pending_get(source_url)
+                    if source_pending and source_pending.get("status") == "pending":
+                        self.db.pending_resolve(source_url, status="resolved")
+                        self._remove_pending_files(source_pending)
                 result.update({
                     "status": "auto",
                     "name": analysis.name,
@@ -538,6 +617,11 @@ class ScraperJob:
             frame_path=frame_path,
             ai_suggestion=suggestion,
         )
+        if source_url != url:
+            source_pending = self.db.pending_get(source_url)
+            if source_pending and source_pending.get("status") == "pending":
+                self.db.pending_resolve(source_url, status="resolved")
+                self._remove_pending_files(source_pending)
         result.update({
             "status": "pending",
             "name": suggestion["name"],

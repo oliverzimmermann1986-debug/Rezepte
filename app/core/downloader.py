@@ -100,6 +100,10 @@ class VideoDownloader:
             "-o", str(sub / "thumb.%(ext)s"),
             "--no-playlist", "--quiet", "--no-warnings",
             "--skip-download",
+            # TikTok-Kurzlinks sind nicht stabil: mehrere vm.tiktok.com-Links
+            # können auf denselben Beitrag zeigen. Die aufgelöste Beitrags-URL
+            # dient der Import-Pipeline deshalb als kanonische Identität.
+            "--print", "CODEX_CANONICAL_URL=%(webpage_url)s",
             "--write-description",
             "--write-thumbnail",
             "--convert-thumbnails", "jpg",
@@ -124,14 +128,22 @@ class VideoDownloader:
             shutil.rmtree(sub, ignore_errors=True)
             return None
 
+        out: Dict[str, Any] = {}
+        for line in (result.stdout or "").splitlines():
+            marker = "CODEX_CANONICAL_URL="
+            if line.startswith(marker):
+                canonical_url = line[len(marker):].strip()
+                if canonical_url and canonical_url.lower() != "na":
+                    out["canonical_url"] = canonical_url
+                break
+
         # description-File suchen (yt-dlp schreibt thumb.description trotz -o)
         desc_files = list(sub.glob("*.description"))
         thumb_files = list(sub.glob("*.jpg")) + list(sub.glob("*.jpeg")) + list(sub.glob("*.webp")) + list(sub.glob("*.png"))
-        if not desc_files and not thumb_files:
+        if not desc_files and not thumb_files and not out:
             shutil.rmtree(sub, ignore_errors=True)
             return None
 
-        out: Dict[str, Any] = {}
         try:
             if desc_files:
                 txt = desc_files[0].read_text(encoding="utf-8").strip()
