@@ -3,11 +3,14 @@ from pathlib import Path
 from app.core.tiktok_caption import (
     _caption_from_player_payload,
     _fetch_tiktok_player_caption,
+    _is_allowed_tiktok_cdn_url,
     _looks_like_tiktok_challenge,
+    _metadata_from_player_payload,
     _target_article,
     _tiktok_post_id,
     caption_from_article_text,
     clean_expanded_caption,
+    fetch_tiktok_player_metadata,
     is_tiktok_url,
     parse_netscape_cookies,
 )
@@ -131,6 +134,109 @@ def test_caption_from_player_payload_keeps_complete_photo_recipe():
     assert caption.startswith("Cremiger Halloumi-Nudelsalat")
     assert "200g Joghurt" in caption
     assert "12. Alles vermengen" in caption
+
+
+def test_metadata_from_player_payload_extracts_first_photo():
+    metadata = _metadata_from_player_payload(
+        {
+            "items": [
+                {
+                    "desc": "Orzo mit Pesto und Cherrytomaten",
+                    "image_post_info": {
+                        "images": [
+                            {
+                                "display_image": {
+                                    "url_list": [
+                                        "https://p16-sign-va.tiktokcdn-eu.com/example.jpeg"
+                                    ]
+                                }
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    )
+
+    assert metadata == {
+        "description_text": "Orzo mit Pesto und Cherrytomaten",
+        "thumbnail_url": "https://p16-sign-va.tiktokcdn-eu.com/example.jpeg",
+    }
+
+
+def test_tiktok_cdn_validation_rejects_lookalikes_and_non_https():
+    assert _is_allowed_tiktok_cdn_url("https://p16.tiktokcdn-eu.com/image.jpeg")
+    assert not _is_allowed_tiktok_cdn_url("http://p16.tiktokcdn-eu.com/image.jpeg")
+    assert not _is_allowed_tiktok_cdn_url("https://tiktokcdn-eu.com.example.org/image.jpeg")
+
+
+def test_fetch_tiktok_player_metadata_resolves_short_url_and_downloads_photo(monkeypatch):
+    import requests
+
+    post_id = "7675767326981016864"
+    canonical = f"https://www.tiktok.com/@koch/photo/{post_id}"
+    image_url = "https://p16-sign-va.tiktokcdn-eu.com/cover.jpeg"
+    calls = []
+
+    class Response:
+        def __init__(self, *, url, payload=None, body=b"", headers=None):
+            self.url = url
+            self._payload = payload
+            self.content = body
+            self.headers = headers or {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+        def iter_content(self, _chunk_size):
+            yield self.content
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.startswith("https://vm.tiktok.com/"):
+            return Response(url=canonical)
+        if url.endswith("/player/api/v1/items"):
+            return Response(
+                url=url,
+                payload={
+                    "items": [
+                        {
+                            "desc": "Nudelsalat mit Halloumi",
+                            "image_post_info": {
+                                "images": [
+                                    {"display_image": {"url_list": [image_url]}}
+                                ]
+                            },
+                        }
+                    ]
+                },
+                body=b"{}",
+            )
+        assert url == image_url
+        return Response(
+            url=image_url,
+            body=b"jpeg-data",
+            headers={"content-type": "image/jpeg", "content-length": "9"},
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    metadata = fetch_tiktok_player_metadata("https://vm.tiktok.com/ZGdxVLPy2/")
+
+    assert metadata["canonical_url"] == canonical
+    assert metadata["description_text"] == "Nudelsalat mit Halloumi"
+    assert metadata["thumbnail_bytes"] == b"jpeg-data"
+    assert metadata["thumbnail_suffix"] == ".jpg"
+    assert len(calls) == 3
 
 
 def test_fetch_tiktok_player_caption_captures_items_response():
@@ -259,6 +365,11 @@ def test_first_import_prefers_expanded_caption_for_tiktok_photo(
 
     monkeypatch.setattr(
         tiktok_caption,
+        "fetch_tiktok_player_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        tiktok_caption,
         "fetch_expanded_tiktok_caption",
         lambda fetched_url, **kwargs: calls.append((fetched_url, kwargs)) or long_caption,
     )
@@ -340,6 +451,11 @@ def test_rescrape_prefers_expanded_caption_and_queues_extraction(
     )
     monkeypatch.setattr(
         tiktok_caption,
+        "fetch_tiktok_player_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        tiktok_caption,
         "fetch_expanded_tiktok_caption",
         lambda scraped_url, **kwargs: browser_calls.append((scraped_url, kwargs)) or long_caption,
     )
@@ -365,6 +481,79 @@ def test_rescrape_prefers_expanded_caption_and_queues_extraction(
     assert test_db.recipe_ingredients_get(recipe_id)[0]["name"] == "Alt"
 
 
+def test_rescrape_restores_tiktok_photo_thumbnail(
+    client, test_db, tmp_path: Path, monkeypatch
+):
+    from io import BytesIO
+
+    from PIL import Image
+
+    import app.core.downloader as downloader
+    import app.core.tiktok_caption as tiktok_caption
+    import app.routes.api_recipes as api_recipes
+
+    folder = tmp_path / "photo-recipe"
+    folder.mkdir()
+    url = "https://vm.tiktok.com/ZGdxVLPy2/"
+    recipe_id = test_db.recipe_upsert(
+        url=url,
+        name="Nudelsalat mit Halloumi",
+        type="Hauptgericht",
+        category="Vegetarisch",
+        folder_path=str(folder),
+        description="Nudelsalat mit Halloumi",
+        thumb_filename=None,
+        video_filename=None,
+        source_added_at=1.0,
+    )
+    image_buffer = BytesIO()
+    Image.new("RGB", (120, 160), (90, 140, 70)).save(image_buffer, format="JPEG")
+
+    class FakeConfig:
+        def get(self, *keys, default=None):
+            values = {
+                ("ytdlp",): {"binary": "yt-dlp", "expanded_tiktok_caption": True},
+                ("paths", "temp_dir"): str(tmp_path / "temp"),
+                ("paths", "recipe_dir"): str(tmp_path),
+            }
+            return values.get(keys, default)
+
+    monkeypatch.setattr(api_recipes, "get_config", lambda: FakeConfig())
+    monkeypatch.setattr(
+        downloader.VideoDownloader,
+        "refresh_metadata",
+        lambda self, _url: {},
+    )
+    monkeypatch.setattr(
+        tiktok_caption,
+        "fetch_tiktok_player_metadata",
+        lambda *_args, **_kwargs: {
+            "description_text": "Nudelsalat mit Halloumi",
+            "thumbnail_bytes": image_buffer.getvalue(),
+            "thumbnail_suffix": ".jpg",
+        },
+    )
+    monkeypatch.setattr(
+        tiktok_caption,
+        "fetch_expanded_tiktok_caption",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Browser-Fallback darf für vollständigen Fotopost nicht laufen")
+        ),
+    )
+
+    response = client.post(f"/api/recipes/{recipe_id}/rescrape")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["thumbnail_updated"] is True
+    assert body["description_source"] == "tiktok-player"
+    assert test_db.recipe_get(recipe_id)["thumb_filename"] == "thumb.jpg"
+    with Image.open(folder / "thumb.jpg") as restored:
+        assert restored.format == "JPEG"
+        assert restored.size == (120, 160)
+
+
 def test_rescrape_reanalyze_queues_unchanged_description(
     client, test_db, tmp_path: Path, monkeypatch
 ):
@@ -385,6 +574,7 @@ def test_rescrape_reanalyze_queues_unchanged_description(
     test_db.recipe_set_extraction_result(recipe_id, "ok", [])
 
     import app.core.downloader as downloader
+    import app.core.tiktok_caption as tiktok_caption
     import app.routes.api_recipes as api_recipes
 
     class FakeConfig:
@@ -401,6 +591,16 @@ def test_rescrape_reanalyze_queues_unchanged_description(
         downloader.VideoDownloader,
         "refresh_metadata",
         lambda self, scraped_url: {"description_text": description},
+    )
+    monkeypatch.setattr(
+        tiktok_caption,
+        "fetch_tiktok_player_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        tiktok_caption,
+        "fetch_expanded_tiktok_caption",
+        lambda _url, **_kwargs: description,
     )
     monkeypatch.setattr(api_recipes, "ensure_extraction_running", lambda: True)
 
