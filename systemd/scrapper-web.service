@@ -25,7 +25,9 @@ Environment="SCRAPPER_BIND_HOST=127.0.0.1"
 EnvironmentFile=-/etc/scrapper/web.env
 # Begrenzung pro OCR-Prozess; verhindert CPU-/RAM-Spitzen bei PDF-Bestandsläufen.
 Environment="OMP_THREAD_LIMIT=1"
-ExecStart=/opt/scrapper/venv/bin/uvicorn app.main:app --host ${SCRAPPER_BIND_HOST} --port 8000 --proxy-headers --forwarded-allow-ips=${SCRAPPER_FORWARDED_ALLOW_IPS}
+# Python wird direkt gestartet: Konsolenskripte wie `uvicorn` enthalten einen
+# absoluten Venv-Shebang und brechen sonst nach dem atomaren Slot-Rename.
+ExecStart=/opt/scrapper/venv/bin/python -m uvicorn app.main:app --host ${SCRAPPER_BIND_HOST} --port 8000 --proxy-headers --forwarded-allow-ips=${SCRAPPER_FORWARDED_ALLOW_IPS}
 Restart=on-failure
 RestartSec=5
 WatchdogSec=60

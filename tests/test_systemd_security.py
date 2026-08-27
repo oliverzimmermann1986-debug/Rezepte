@@ -15,6 +15,8 @@ def test_web_service_never_trusts_forwarded_headers_from_every_peer():
     assert unit.index('Environment="SCRAPPER_BIND_HOST=127.0.0.1"') < unit.index(
         "EnvironmentFile=-/etc/scrapper/web.env"
     )
+    assert "ExecStart=/opt/scrapper/venv/bin/python -m uvicorn" in unit
+    assert "ExecStart=/opt/scrapper/venv/bin/uvicorn" not in unit
     for script_name in ("install.sh", "update-local.sh"):
         installer = (ROOT / "proxmox" / script_name).read_text(encoding="utf-8")
         assert "install -d -m 0755 /etc/scrapper" in installer
