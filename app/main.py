@@ -343,7 +343,7 @@ async def _lifespan(app):
 
 
 # -------- FastAPI --------
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.5.4"
 APP_CAPABILITIES = [
     "admin-center",
     "ai-shopping-optimization",
