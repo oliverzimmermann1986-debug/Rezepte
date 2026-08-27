@@ -1464,6 +1464,9 @@ class ScraperJob:
         ``refresh_metadata`` nutzt yt-dlp mit ``--skip-download``. Der alte
         Description-Pfad bleibt als Fallback erhalten, damit Installationen
         mit älterem Downloader und Tests ohne Mediendownload weiterlaufen.
+        TikTok-Foto-Posts und manche Videos liefern über yt-dlp nur eine kurze
+        oder leere Description. Deshalb wird die im Browser aufgeklappte
+        Caption bereits beim Erstimport bevorzugt, nicht erst beim Re-Scrape.
         """
         metadata: Dict = {}
         refresh = getattr(self.downloader, "refresh_metadata", None)
@@ -1476,6 +1479,34 @@ class ScraperJob:
             description = self._fetch_description_via_ytdlp(url)
             if description:
                 metadata["description_text"] = description
+        cfg = getattr(self, "cfg", None)
+        if cfg is not None:
+            ytdlp_cfg = cfg.get("ytdlp", default={}) or {}
+            if ytdlp_cfg.get("expanded_tiktok_caption", True):
+                from ..core.tiktok_caption import (
+                    fetch_expanded_tiktok_caption,
+                    is_tiktok_url,
+                )
+
+                if is_tiktok_url(url):
+                    try:
+                        timeout_seconds = int(
+                            ytdlp_cfg.get("browser_timeout_seconds", 35)
+                        )
+                    except (TypeError, ValueError):
+                        timeout_seconds = 35
+                    expanded = fetch_expanded_tiktok_caption(
+                        url,
+                        fallback_text=str(metadata.get("description_text") or ""),
+                        cookies_file=getattr(self.downloader, "cookies_file", None),
+                        timeout_seconds=timeout_seconds,
+                        executable_path=str(
+                            ytdlp_cfg.get("browser_executable_path") or ""
+                        ).strip() or None,
+                    )
+                    if expanded:
+                        metadata["description_text"] = expanded
+                        metadata["description_source"] = "tiktok-browser"
         return metadata
 
     def reanalyze_history_one(self, url: str, *, dry_run: bool = False,
