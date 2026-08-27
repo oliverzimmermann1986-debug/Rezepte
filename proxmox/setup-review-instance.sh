@@ -23,7 +23,7 @@ fi
 systemctl stop scrapper-web.service
 systemctl disable --now scrapper-job.timer
 
-sudo -u "$APP_USER" "$APP_DIR/venv/bin/python" -m tools.setup_app_review_demo \
+"$APP_DIR/venv/bin/python" -m tools.setup_app_review_demo \
   --trusted-proxy-cidr "$REVERSE_PROXY_IP/32"
 
 printf 'SCRAPPER_FORWARDED_ALLOW_IPS=%s\n' "$REVERSE_PROXY_IP" > "$APP_DIR/data/web.env"
