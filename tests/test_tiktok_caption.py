@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from app.core.tiktok_caption import (
+    _caption_from_player_payload,
+    _fetch_tiktok_player_caption,
+    _looks_like_tiktok_challenge,
     _target_article,
+    _tiktok_post_id,
     caption_from_article_text,
     clean_expanded_caption,
     is_tiktok_url,
@@ -92,6 +96,106 @@ def test_tiktok_url_detection_rejects_lookalike_hosts():
     assert is_tiktok_url("https://m.tiktok.com/v/123")
     assert not is_tiktok_url("https://tiktok.com.example.org/@cook/video/123")
     assert not is_tiktok_url("https://example.org/video/123")
+
+
+def test_tiktok_post_id_supports_photo_video_and_player_urls():
+    assert _tiktok_post_id("https://www.tiktok.com/@cook/photo/7675767326981016864") == (
+        "7675767326981016864"
+    )
+    assert _tiktok_post_id("https://www.tiktok.com/@cook/video/7650432038700404000") == (
+        "7650432038700404000"
+    )
+    assert _tiktok_post_id("https://www.tiktok.com/player/v1/123456789") == "123456789"
+    assert _tiktok_post_id("https://vm.tiktok.com/ZGdx79trY/") is None
+    assert _tiktok_post_id("https://example.org/@cook/photo/123456789") is None
+
+
+def test_caption_from_player_payload_keeps_complete_photo_recipe():
+    caption = _caption_from_player_payload(
+        {
+            "status_code": 0,
+            "item_list": [
+                {
+                    "desc": (
+                        "Cremiger Halloumi-Nudelsalat 🥗\n\n"
+                        "Zubereitung:\n1. 200g Joghurt in eine Schüssel geben\n"
+                        "2. 2 EL Mayonnaise hinzufügen\n"
+                        "12. Alles vermengen und genießen 😋"
+                    ),
+                    "image_post_info": {"images": [{}, {}]},
+                }
+            ],
+        }
+    )
+
+    assert caption.startswith("Cremiger Halloumi-Nudelsalat")
+    assert "200g Joghurt" in caption
+    assert "12. Alles vermengen" in caption
+
+
+def test_fetch_tiktok_player_caption_captures_items_response():
+    post_id = "7675767326981016864"
+    events = {}
+    visited = []
+
+    class Response:
+        url = "https://www.tiktok.com/player/api/v1/items?item_ids=" + post_id
+
+        @staticmethod
+        def json():
+            return {"item_list": [{"desc": "Cremiger Halloumi-Nudelsalat mit Rezept"}]}
+
+    class Page:
+        @staticmethod
+        def on(name, callback):
+            events[name] = callback
+
+        @staticmethod
+        def goto(url, **_kwargs):
+            visited.append(url)
+            events["response"](Response())
+
+        @staticmethod
+        def wait_for_timeout(_milliseconds):
+            pass
+
+        @staticmethod
+        def remove_listener(name, callback):
+            assert events[name] is callback
+
+    caption = _fetch_tiktok_player_caption(Page(), post_id, 5_000)
+
+    assert caption == "Cremiger Halloumi-Nudelsalat mit Rezept"
+    assert visited == [
+        "https://www.tiktok.com/player/v1/7675767326981016864?description=1"
+    ]
+
+
+def test_fetch_tiktok_player_caption_fails_closed_and_removes_listener():
+    events = {}
+    removed = []
+
+    class Page:
+        @staticmethod
+        def on(name, callback):
+            events[name] = callback
+
+        @staticmethod
+        def goto(_url, **_kwargs):
+            raise RuntimeError("blocked")
+
+        @staticmethod
+        def remove_listener(name, callback):
+            removed.append((name, callback))
+
+    assert _fetch_tiktok_player_caption(Page(), "123456789", 5_000) == ""
+    assert removed == [("response", events["response"])]
+
+
+def test_tiktok_challenge_detection_covers_slider_and_ignores_recipe():
+    assert _looks_like_tiktok_challenge("Bewege den Schieberegler, um das Puzzle einzupassen")
+    assert _looks_like_tiktok_challenge("Slide to fit the puzzle")
+    assert not _looks_like_tiktok_challenge("Zutaten und Zubereitung für Nudelsalat")
 
 
 def test_target_article_matches_direct_tiktok_photo_post():

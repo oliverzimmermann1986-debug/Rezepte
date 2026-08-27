@@ -17,6 +17,12 @@ _SUMMARY_NOTICES = (
     "ceci est un résumé généré par l’ia",
     "ceci est un résumé généré par l'ia",
 )
+_CHALLENGE_MARKERS = (
+    "bewege den schieberegler",
+    "slide to fit the puzzle",
+    "drag the slider",
+    "captcha",
+)
 
 
 def is_tiktok_url(url: str) -> bool:
@@ -26,6 +32,28 @@ def is_tiktok_url(url: str) -> bool:
     except ValueError:
         return False
     return host == "tiktok.com" or host.endswith(".tiktok.com")
+
+
+def _tiktok_post_id(url: str) -> Optional[str]:
+    """Extract a numeric post ID from canonical TikTok and player URLs."""
+    if not is_tiktok_url(url):
+        return None
+    try:
+        path = urlparse(url).path
+    except ValueError:
+        return None
+    match = re.search(
+        r"/(?:@[^/]+/(?:video|photo)|player/v1)/(\d+)(?:/|$)",
+        path,
+        flags=re.IGNORECASE,
+    )
+    return match.group(1) if match else None
+
+
+def _looks_like_tiktok_challenge(text: str) -> bool:
+    """Recognize common TikTok CAPTCHA text without treating it as a caption."""
+    folded = (text or "").casefold()
+    return any(marker in folded for marker in _CHALLENGE_MARKERS)
 
 
 def clean_expanded_caption(text: str) -> str:
@@ -52,6 +80,61 @@ def clean_expanded_caption(text: str) -> str:
             continue
         cleaned.append(line.strip())
     return "\n".join(cleaned).strip()
+
+
+def _caption_from_player_payload(payload: Any) -> str:
+    """Read a caption from TikTok Embed Player's structured item response."""
+    if not isinstance(payload, dict):
+        return ""
+    items = payload.get("item_list") or payload.get("items")
+    if not isinstance(items, list):
+        return ""
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key in ("desc", "description", "title"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return clean_expanded_caption(value)
+    return ""
+
+
+def _fetch_tiktok_player_caption(page: Any, post_id: str, timeout_ms: int) -> str:
+    """Capture the public item response used by TikTok's official Embed Player."""
+    captions: List[str] = []
+
+    def handle_response(response: Any) -> None:
+        try:
+            response_url = str(response.url)
+            if "/player/api/v1/items" not in urlparse(response_url).path:
+                return
+            caption = _caption_from_player_payload(response.json())
+            if caption:
+                captions.append(caption)
+        except Exception as exc:
+            logger.debug("TikTok-Player-Antwort konnte nicht gelesen werden: %s", exc)
+
+    page.on("response", handle_response)
+    try:
+        player_url = f"https://www.tiktok.com/player/v1/{post_id}?description=1"
+        page.goto(
+            player_url,
+            wait_until="domcontentloaded",
+            timeout=min(timeout_ms, 15_000),
+        )
+        for _ in range(max(1, min(timeout_ms, 15_000) // 250)):
+            if captions:
+                break
+            page.wait_for_timeout(250)
+        return max(captions, key=len, default="")
+    except Exception as exc:
+        logger.info("TikTok Embed Player konnte nicht geladen werden: %s", exc)
+        return ""
+    finally:
+        try:
+            page.remove_listener("response", handle_response)
+        except Exception:
+            pass
 
 
 def caption_from_article_text(text: str, page_title: str) -> str:
@@ -157,10 +240,11 @@ def fetch_expanded_tiktok_caption(
     timeout_seconds: int = 35,
     executable_path: Optional[str] = None,
 ) -> Optional[str]:
-    """Open TikTok, click "mehr", and return the rendered long caption.
+    """Return TikTok's structured or fully expanded long caption.
 
-    Returns ``None`` when Playwright/Chromium is unavailable, TikTok blocks
-    the browser, or the rendered text is not better than the metadata fallback.
+    The official Embed Player is preferred because photo pages frequently show
+    a CAPTCHA to headless browsers. The rendered "mehr" interaction remains a
+    fallback. ``None`` means neither result improved the metadata fallback.
     """
     if not is_tiktok_url(url):
         return None
@@ -191,21 +275,66 @@ def fetch_expanded_tiktok_caption(
                     context.add_cookies(cookies)
                 page = context.new_page()
                 page.set_default_timeout(min(timeout_ms, 10_000))
-                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                fallback = clean_expanded_caption(fallback_text)
+                resolved_url = url
+                post_id = _tiktok_post_id(url)
+                if not post_id:
+                    try:
+                        page.goto(
+                            url,
+                            wait_until="domcontentloaded",
+                            timeout=min(timeout_ms, 15_000),
+                        )
+                        resolved_url = page.url
+                    except Exception as exc:
+                        logger.info("TikTok-Kurzlink konnte nicht aufgelöst werden: %s", exc)
+                    try:
+                        resolved_url = page.url or resolved_url
+                    except Exception:
+                        pass
+                    post_id = _tiktok_post_id(resolved_url)
+
+                if post_id:
+                    player_caption = _fetch_tiktok_player_caption(page, post_id, timeout_ms)
+                    if len(player_caption) >= max(20, len(fallback) + 1):
+                        logger.info(
+                            "TikTok-Caption über Embed Player geladen: %s Zeichen",
+                            len(player_caption),
+                        )
+                        return player_caption
+
+                page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=min(timeout_ms, 15_000),
+                )
+                resolved_url = page.url
                 # TikTok hydrates the article after domcontentloaded. Without
                 # this short wait the visible "mehr" node can exist before
                 # React has attached the expand handler.
-                page.wait_for_selector(
-                    '[data-e2e="video-desc"]',
-                    state="visible",
-                    timeout=timeout_ms,
-                )
+                try:
+                    page.wait_for_selector(
+                        '[data-media-card-description-container="true"], '
+                        '[data-e2e="video-desc"]',
+                        state="visible",
+                        timeout=min(timeout_ms, 15_000),
+                    )
+                except Exception:
+                    try:
+                        body_text = page.locator("body").inner_text(timeout=2_000)
+                    except Exception:
+                        body_text = ""
+                    if _looks_like_tiktok_challenge(body_text):
+                        logger.warning(
+                            "TikTok blockiert die normale Beitragsseite mit einem CAPTCHA"
+                        )
+                    return None
                 page.wait_for_timeout(2_000)
                 _dismiss_overlays(page)
                 page.wait_for_timeout(500)
                 page_title = page.title()
 
-                article = _target_article(page, url)
+                article = _target_article(page, resolved_url)
                 article.wait_for(state="visible", timeout=timeout_ms)
                 description = article.locator('[data-media-card-description-container="true"]')
                 if not description.count():
@@ -248,7 +377,6 @@ def fetch_expanded_tiktok_caption(
                     caption_from_article_text(best_article, page_title),
                     key=len,
                 )
-                fallback = clean_expanded_caption(fallback_text)
                 if len(caption) < max(160, len(fallback) + 80):
                     logger.info(
                         "TikTok-Caption blieb kurz: container=%s, article=%s, fallback=%s",
