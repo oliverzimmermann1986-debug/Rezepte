@@ -154,6 +154,67 @@ def safe_update_recipe_metadata(
         return _safe_update_recipe_metadata_locked(db, recipe_id, **values)
 
 
+def safe_canonicalize_recipe_url(
+    db: Database,
+    recipe_id: int,
+    *,
+    expected_url: str,
+    canonical_url: str,
+) -> Dict[str, Any]:
+    """Ersetzt einen Kurzlink konsistent in DB und ``info.json``.
+
+    Mehrere TikTok-Kurzlinks können denselben Beitrag bezeichnen. Falls die
+    Beitrags-URL bereits zu einem anderen aktiven Rezept gehört, bleibt das
+    Kurzlink-Rezept unverändert und der bestehende kanonische Treffer wird
+    zurückgegeben. Der Metadatenpfad hält DB, Sidecar und Ordner synchron und
+    rollt bei einem Schreibfehler zurück.
+    """
+    canonical_url = str(canonical_url or "").strip()
+    expected_url = str(expected_url or "").strip()
+    if not canonical_url or not expected_url:
+        raise ValueError("Quell- und Beitrags-URL dürfen nicht leer sein")
+
+    with _recipe_mutation_lock(db, recipe_id):
+        recipe = db.recipe_get(recipe_id)
+        if not recipe or recipe.get("deleted_at") is not None:
+            return {"ok": False, "error": "Rezept nicht gefunden"}
+        if recipe.get("url") == canonical_url:
+            return {
+                "ok": True,
+                "updated": False,
+                "recipe_id": recipe_id,
+                "folder_path": recipe.get("folder_path"),
+            }
+        if recipe.get("url") != expected_url:
+            return {
+                "ok": False,
+                "error": "Die Rezeptquelle wurde zwischenzeitlich geändert",
+            }
+
+        conflict = db.recipe_get_by_url(canonical_url)
+        if conflict and int(conflict["id"]) != recipe_id:
+            return {
+                "ok": True,
+                "updated": False,
+                "recipe_id": int(conflict["id"]),
+                "folder_path": conflict.get("folder_path"),
+                "conflict": True,
+            }
+
+        updated = _safe_update_recipe_metadata_locked(
+            db,
+            recipe_id,
+            name=str(recipe.get("name") or "Unbekannt"),
+            recipe_type=str(recipe.get("type") or "Sonstiges"),
+            category=str(recipe.get("category") or "Allgemein"),
+            description=str(recipe.get("description") or ""),
+            servings=recipe.get("servings"),
+            url=canonical_url,
+            target_folder_override=recipe.get("folder_path"),
+        )
+        return {**updated, "updated": True}
+
+
 def _safe_update_recipe_metadata_locked(
     db: Database,
     recipe_id: int,

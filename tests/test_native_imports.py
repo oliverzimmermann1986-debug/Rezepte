@@ -653,6 +653,95 @@ def test_social_metadata_ai_saves_complete_recipe_without_video(test_db, tmp_pat
     assert (target / "description.txt").exists()
 
 
+def test_tiktok_short_links_use_canonical_post_url_and_do_not_duplicate(test_db, tmp_path):
+    canonical_url = "https://www.tiktok.com/@koch/video/7666167423783030049"
+    original_folder = tmp_path / "recipes" / "Hauptgericht" / "Fleisch" / "Bowl"
+    original_folder.mkdir(parents=True)
+    existing_id = test_db.recipe_upsert(
+        url=canonical_url,
+        name="Kartoffel-Hackfleisch Bowl",
+        type="Hauptgericht",
+        category="Fleisch",
+        folder_path=str(original_folder),
+        description="Vollständiges Rezept",
+        thumb_filename=None,
+        video_filename=None,
+        source_added_at=1.0,
+    )
+
+    class CanonicalMetadataDownloader:
+        @staticmethod
+        def refresh_metadata(_url):
+            return {
+                "canonical_url": canonical_url + "?_r=1&_t=tracking",
+                "description_text": "Diese Analyse darf kein zweites Rezept anlegen.",
+            }
+
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.downloader = CanonicalMetadataDownloader()
+    job.recipe_dir = tmp_path / "recipes"
+    job.confidence_threshold = 0.75
+
+    result = job.process_url({
+        "url": "https://vm.tiktok.com/EinAndererKurzlink/",
+        "type": "recipe",
+    })
+
+    assert result["status"] == "already_processed"
+    assert result["recipe_id"] == existing_id
+    assert result["url"] == canonical_url
+    assert result["source_url"] == "https://vm.tiktok.com/EinAndererKurzlink/"
+    with test_db.conn() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM recipes WHERE deleted_at IS NULL"
+        ).fetchone()[0] == 1
+
+
+def test_legacy_short_link_recipe_is_migrated_to_canonical_url(test_db, tmp_path, monkeypatch):
+    import app.recipes.manage as recipe_manage
+
+    short_url = "https://vm.tiktok.com/AlterKurzlink/"
+    canonical_url = "https://www.tiktok.com/@koch/video/123456789"
+    folder = tmp_path / "recipes" / "legacy"
+    folder.mkdir(parents=True)
+    (folder / "info.json").write_text(
+        '{"url":"https://vm.tiktok.com/AlterKurzlink/","name":"Bestehendes Rezept"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(recipe_manage, "_recipe_root", lambda: (tmp_path / "recipes").resolve())
+    recipe_id = test_db.recipe_upsert(
+        url=short_url,
+        name="Bestehendes Rezept",
+        type="Hauptgericht",
+        category="Allgemein",
+        folder_path=str(folder),
+        description="Schon vorhanden",
+        thumb_filename=None,
+        video_filename=None,
+        source_added_at=1.0,
+    )
+    test_db.history_add(short_url, content_type="recipe", name="Bestehendes Rezept", target_dir=str(folder))
+
+    class CanonicalMetadataDownloader:
+        @staticmethod
+        def refresh_metadata(_url):
+            return {"canonical_url": canonical_url + "?share=tracking"}
+
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.downloader = CanonicalMetadataDownloader()
+    job.recipe_dir = tmp_path / "recipes"
+    job.confidence_threshold = 0.75
+
+    result = job.process_url({"url": short_url, "type": "recipe"})
+
+    assert result["status"] == "already_processed"
+    assert result["recipe_id"] == recipe_id
+    assert test_db.recipe_get(recipe_id)["url"] == canonical_url
+    assert __import__("json").loads((folder / "info.json").read_text(encoding="utf-8"))["url"] == canonical_url
+
+
 def test_social_video_frames_and_audio_enrich_first_import(test_db, tmp_path, monkeypatch):
     import app.jobs.scraper as scraper_module
 

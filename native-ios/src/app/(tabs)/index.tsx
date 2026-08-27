@@ -3,6 +3,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { SymbolView } from 'expo-symbols';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Modal,
   Pressable,
@@ -20,7 +21,7 @@ import { StateView } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { apiCached } from '@/lib/cache';
+import { apiCached, invalidateApiCacheByPrefix } from '@/lib/cache';
 import { RecipeListItem } from '@/lib/types';
 
 type RecipeResponse = { total: number; items: RecipeListItem[] };
@@ -96,7 +97,7 @@ function FilterChip({ label, selected, onPress }: { label: string; selected: boo
 }
 
 export default function RecipesScreen() {
-  const { refreshSession, sessionChecking, sessionWarning, signOut } = useAuth();
+  const { isAdmin, refreshSession, sessionChecking, sessionWarning, signOut } = useAuth();
   const [recipes, setRecipes] = useState<RecipeListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
@@ -115,6 +116,7 @@ export default function RecipesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const request = useRef<AbortController | null>(null);
   const countRequest = useRef<AbortController | null>(null);
   const requestGeneration = useRef(0);
@@ -287,6 +289,44 @@ export default function RecipesScreen() {
     });
   }
 
+  function confirmDeleteRecipe(recipe: RecipeListItem) {
+    Alert.alert(
+      'Rezept in den Papierkorb?',
+      `„${recipe.name}“ verschwindet aus der Rezeptliste und kann 30 Tage lang im Admin-Bereich wiederhergestellt werden.`,
+      [
+        { text: 'Abbrechen', style: 'cancel' },
+        {
+          text: 'In Papierkorb',
+          style: 'destructive',
+          onPress: () => void deleteRecipe(recipe),
+        },
+      ],
+    );
+  }
+
+  async function deleteRecipe(recipe: RecipeListItem) {
+    if (deletingId !== null) return;
+    setDeletingId(recipe.id);
+    try {
+      await api(`/api/recipes/${recipe.id}?delete_files=true`, { method: 'DELETE' });
+      await invalidateApiCacheByPrefix('recipe:', 'recipes:', 'recipe-facets', 'meal-plan', 'cart', 'admin:');
+      setRecipes(current => current.filter(item => item.id !== recipe.id));
+      setTotal(current => Math.max(0, current - 1));
+      setFacets(null);
+      Alert.alert(
+        'In Papierkorb verschoben',
+        `„${recipe.name}“ kann im Admin-Bereich 30 Tage lang wiederhergestellt werden.`,
+      );
+    } catch (reason) {
+      Alert.alert(
+        'Rezept nicht gelöscht',
+        reason instanceof Error ? reason.message : 'Bitte erneut versuchen.',
+      );
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
@@ -354,7 +394,13 @@ export default function RecipesScreen() {
         <FlatList
           data={recipes}
           keyExtractor={item => String(item.id)}
-          renderItem={({ item }) => <RecipeCard recipe={item} />}
+          renderItem={({ item }) => (
+            <RecipeCard
+              recipe={item}
+              deleting={deletingId === item.id}
+              onDelete={isAdmin ? confirmDeleteRecipe : undefined}
+            />
+          )}
           contentContainerStyle={styles.list}
           ItemSeparatorComponent={() => <View style={{ height: space.md }} />}
           refreshControl={

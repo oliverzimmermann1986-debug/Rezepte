@@ -289,6 +289,20 @@ def test_native_recipe_detail_can_move_recipe_to_trash():
     assert "router.back()" in detail
 
 
+def test_native_recipe_list_exposes_confirmed_soft_delete_on_every_card():
+    recipes = (NATIVE / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+    card = (NATIVE / "components" / "recipe-card.tsx").read_text(encoding="utf-8")
+
+    assert "Rezept in den Papierkorb?" in recipes
+    assert "30 Tage lang im Admin-Bereich wiederhergestellt" in recipes
+    assert "?delete_files=true" in recipes
+    assert "method: 'DELETE'" in recipes
+    assert "hard=true" not in recipes
+    assert "onDelete={isAdmin ? confirmDeleteRecipe : undefined}" in recipes
+    assert "in den Papierkorb verschieben" in card
+    assert 'name="trash"' in card
+
+
 def test_swift_recipe_detail_can_move_recipe_to_trash_and_refresh_the_list():
     detail = (SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift").read_text(encoding="utf-8")
     recipes = (SWIFT / "Views" / "Recipes" / "RecipesView.swift").read_text(encoding="utf-8")
