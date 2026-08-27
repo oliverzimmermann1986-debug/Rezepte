@@ -178,7 +178,7 @@ def test_testflight_group_assignment_requires_explicit_workflow_input():
 def test_testflight_uses_quota_independent_local_macos_build():
     workflow = (ROOT / ".github" / "workflows" / "ios.yml").read_text(encoding="utf-8")
 
-    assert "runs-on: macos-15" in workflow
+    assert "runs-on: macos-26" in workflow
     assert "--local" in workflow
     assert "--output ./rezepte.ipa" in workflow
     assert "PlistBuddy -c 'Print :CFBundleVersion'" in workflow

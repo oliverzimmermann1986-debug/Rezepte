@@ -85,7 +85,8 @@ jobs:
     name: Build signed IPA locally and submit to TestFlight
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_testflight }}
     needs: verify
-    runs-on: macos-15
+    # Expo SDK 55 uses Swift concurrency syntax that requires Xcode 26.
+    runs-on: macos-26
     timeout-minutes: 90
     environment: testflight
     defaults:
