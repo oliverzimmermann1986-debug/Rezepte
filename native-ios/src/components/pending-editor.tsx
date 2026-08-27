@@ -189,7 +189,9 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
       );
       await applyReanalysisResult(result, 'KI-Vorschlag aktualisiert');
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'KI-Prüfung fehlgeschlagen');
+      const message = reason instanceof Error ? reason.message : 'KI-Prüfung fehlgeschlagen';
+      setError(message);
+      Alert.alert('KI-Prüfung fehlgeschlagen', message);
     } finally {
       setAiBusy(false);
       setBusy(false);

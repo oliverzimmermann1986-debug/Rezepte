@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from . import __version__
 from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, auth_disabled, check_credentials,
                     create_session, migrate_security, migrate_users_to_db,
                     request_user, require_auth, verify_session)
@@ -343,7 +344,7 @@ async def _lifespan(app):
 
 
 # -------- FastAPI --------
-APP_VERSION = "1.5.6"
+APP_VERSION = __version__
 APP_CAPABILITIES = [
     "admin-center",
     "ai-shopping-optimization",

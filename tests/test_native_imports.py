@@ -1112,6 +1112,49 @@ def test_social_reanalysis_preserves_cover_and_is_idempotent(test_db, tmp_path):
         assert connection.execute("SELECT COUNT(*) FROM recipes WHERE url=?", (url,)).fetchone()[0] == 1
 
 
+def test_legacy_social_pending_without_source_uses_link_reanalysis(test_db):
+    url = "https://vm.tiktok.com/ZLegacyPending/"
+    test_db.pending_add(
+        url=url,
+        content_type="recipe",
+        description="ich liebe dieses Gericht #rezept",
+        ai_suggestion={
+            "name": "Unbekannt",
+            "type": "Hauptgericht",
+            "category": "Fleisch",
+            "confidence": 0.85,
+        },
+    )
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    calls = []
+
+    def process_url(item):
+        calls.append(item)
+        return {"status": "pending", "message": "Noch unvollständig"}
+
+    job.process_url = process_url
+
+    result = job.reanalyze_pending(url)
+
+    assert result == {
+        "ok": True,
+        "action": "still_pending",
+        "analysis": {
+            "name": "Unbekannt",
+            "type": "Hauptgericht",
+            "category": "Fleisch",
+            "confidence": 0.85,
+            "source": "external-link",
+            "platform": "TikTok",
+        },
+        "description": "ich liebe dieses Gericht #rezept",
+        "message": "Noch unvollständig",
+    }
+    assert calls == [{"url": url, "type": "recipe", "reanalyze_existing": True}]
+    assert test_db.pending_get(url)["ai_suggestion"]["source"] == "external-link"
+
+
 def test_cart_add_endpoint_returns_json(client):
     response = client.post("/api/cart/add", json={"name": "Kartoffel"})
 
