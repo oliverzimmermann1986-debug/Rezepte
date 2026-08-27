@@ -21,8 +21,10 @@ npx eas-cli@16.28.0 build --platform ios --profile production
 ```
 
 Beim ersten Start werden Server-Adresse, Benutzername und Passwort abgefragt.
-Die Release-App verbindet sich ausschließlich mit dem fest hinterlegten
-HTTPS-Rezeptserver. Sitzungstoken und optionale Cloudflare-Service-Zugangsdaten
+Die Release-App verbindet sich ausschließlich mit den in `app.json` unter
+`extra.allowedApiUrls` freigegebenen HTTPS-Rezeptservern. Aktuell sind das der
+Produktionsserver und der isolierte App-Review-Server; beliebige Hosts bleiben
+gesperrt. Sitzungstoken und optionale Cloudflare-Service-Zugangsdaten
 liegen im iOS-Schlüsselbund und werden beim Abmelden zusammen mit privaten
 Bildcaches entfernt; die Serversitzung wird widerrufen.
 

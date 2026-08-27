@@ -33,6 +33,22 @@ const INSTALL_MARKER = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}.rezepte-install-v1`
   : null;
 const DEFAULT_SERVER = String(Constants.expoConfig?.extra?.apiUrl || '').replace(/\/+$/, '');
+const ALLOWED_SERVER_ORIGINS = new Set(
+  [
+    DEFAULT_SERVER,
+    ...(Array.isArray(Constants.expoConfig?.extra?.allowedApiUrls)
+      ? Constants.expoConfig.extra.allowedApiUrls
+      : []),
+  ]
+    .map(value => {
+      try {
+        return new URL(String(value || '').trim()).origin;
+      } catch {
+        return '';
+      }
+    })
+    .filter(Boolean),
+);
 const KEYCHAIN_SERVICE = String(
   Constants.expoConfig?.extra?.keychainService || 'de.mausbaeren.rezepte',
 );
@@ -124,10 +140,9 @@ function normalizeServer(value: string) {
   if ((parsed.pathname && parsed.pathname !== '/') || parsed.search || parsed.hash) {
     throw new ApiError('Bitte nur die Server-Adresse ohne Pfad, Parameter oder # eingeben.', 0);
   }
-  if (!__DEV__ && DEFAULT_SERVER) {
-    const expected = new URL(DEFAULT_SERVER);
-    if (parsed.origin !== expected.origin) {
-      throw new ApiError('Diese App verbindet sich nur mit dem fest hinterlegten Rezeptserver.', 0);
+  if (!__DEV__ && ALLOWED_SERVER_ORIGINS.size) {
+    if (!ALLOWED_SERVER_ORIGINS.has(parsed.origin)) {
+      throw new ApiError('Diese App verbindet sich nur mit einem freigegebenen Rezeptserver.', 0);
     }
   }
   return parsed.origin;

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 
@@ -148,6 +149,30 @@ def test_native_admin_role_refresh_remounts_the_native_tabs():
     assert "key={isAdmin ? 'admin-tabs' : 'user-tabs'}" in tabs
     assert '<NativeTabs.Trigger name="admin" hidden={!isAdmin}>' in tabs
     assert "{isAdmin && (" not in tabs
+
+
+def test_native_release_server_policy_allows_only_production_and_review():
+    auth = (NATIVE / "lib" / "auth-context.tsx").read_text(encoding="utf-8")
+    config = json.loads((ROOT / "native-ios" / "app.json").read_text(encoding="utf-8"))
+
+    assert "ALLOWED_SERVER_ORIGINS" in auth
+    assert "allowedApiUrls" in auth
+    assert config["expo"]["extra"]["allowedApiUrls"] == [
+        "https://rezepte.mausbaeren.me",
+        "https://rezepte-review.mausbaeren.me",
+    ]
+
+
+def test_testflight_group_assignment_requires_explicit_workflow_input():
+    workflow = (ROOT / ".github" / "workflows" / "ios.yml").read_text(encoding="utf-8")
+    ensure = (ROOT / "native-ios" / "scripts" / "testflight-ensure.mjs").read_text(encoding="utf-8")
+
+    assert "assign_internal_testers:" in workflow
+    assert "default: false" in workflow
+    assert "ASC_ASSIGN_INTERNAL_GROUP" in workflow
+    assert 'booleanEnvironment("ASC_ASSIGN_INTERNAL_GROUP")' in ensure
+    assert "if (assignInternalGroup)" in ensure
+    assert "hasAccessToAllBuilds" in ensure
 
 
 def test_pending_editor_can_reanalyze_with_ai_using_long_request_timeout():

@@ -8,8 +8,13 @@ on:
         required: false
         default: false
         type: boolean
+      assign_internal_testers:
+        description: "Build zusätzlich der internen TestFlight-Gruppe zuordnen"
+        required: false
+        default: false
+        type: boolean
       verify_build_number:
-        description: "Vorhandenen TestFlight-Build prüfen und interner Gruppe zuordnen"
+        description: "Vorhandenen TestFlight-Build bei Apple prüfen"
         required: false
         default: ""
         type: string
@@ -155,7 +160,7 @@ jobs:
           ')"
           echo "number=$build_number" >> "$GITHUB_OUTPUT"
 
-      - name: Verify Apple processing and internal TestFlight access
+      - name: Verify Apple processing
         env:
           ASC_API_ISSUER_ID: "8bb7819b-3e6b-4314-a0e6-8571ed1957c0"
           ASC_API_KEY_ID: "GV6ZWDDMXJ"
@@ -163,6 +168,7 @@ jobs:
           ASC_APP_ID: "6803595058"
           ASC_BETA_GROUP_ID: ${{ vars.ASC_BETA_GROUP_ID || '5b41ef54-1e4f-4c3b-98e6-294d6db16233' }}
           ASC_BUILD_NUMBER: ${{ steps.submitted-build.outputs.number }}
+          ASC_ASSIGN_INTERNAL_GROUP: ${{ inputs.assign_internal_testers && 'true' || 'false' }}
         run: node scripts/testflight-ensure.mjs
 
       - name: Remove temporary signing files
@@ -197,7 +203,7 @@ jobs:
           echo -n "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" | base64 --decode > .eas/AuthKey_GV6ZWDDMXJ.p8
           chmod 600 .eas/AuthKey_GV6ZWDDMXJ.p8
 
-      - name: Verify Apple processing and internal TestFlight access
+      - name: Verify Apple processing
         env:
           ASC_API_ISSUER_ID: "8bb7819b-3e6b-4314-a0e6-8571ed1957c0"
           ASC_API_KEY_ID: "GV6ZWDDMXJ"
@@ -205,6 +211,7 @@ jobs:
           ASC_APP_ID: "6803595058"
           ASC_BETA_GROUP_ID: ${{ vars.ASC_BETA_GROUP_ID || '5b41ef54-1e4f-4c3b-98e6-294d6db16233' }}
           ASC_BUILD_NUMBER: ${{ inputs.verify_build_number }}
+          ASC_ASSIGN_INTERNAL_GROUP: ${{ inputs.assign_internal_testers && 'true' || 'false' }}
         run: node scripts/testflight-ensure.mjs
 
       - name: Remove temporary signing files

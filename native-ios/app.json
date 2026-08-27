@@ -59,6 +59,10 @@
     ],
     "extra": {
       "apiUrl": "https://rezepte.mausbaeren.me",
+      "allowedApiUrls": [
+        "https://rezepte.mausbaeren.me",
+        "https://rezepte-review.mausbaeren.me"
+      ],
       "appVariant": "production",
       "keychainService": "de.mausbaeren.rezepte",
       "router": {},

@@ -23,6 +23,14 @@ function positiveInteger(name, fallback) {
   return value;
 }
 
+function booleanEnvironment(name, fallback = false) {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === "true" || raw === "1") return true;
+  if (raw === "false" || raw === "0") return false;
+  throw new Error(`${name} must be true or false.`);
+}
+
 function base64url(value) {
   return Buffer.from(value).toString("base64url");
 }
@@ -62,8 +70,9 @@ async function main() {
   const keyId = required("ASC_API_KEY_ID");
   const keyPath = required("ASC_API_KEY_PATH");
   const appId = required("ASC_APP_ID");
-  const groupId = required("ASC_BETA_GROUP_ID");
   const buildNumber = required("ASC_BUILD_NUMBER");
+  const assignInternalGroup = booleanEnvironment("ASC_ASSIGN_INTERNAL_GROUP");
+  const groupId = assignInternalGroup ? required("ASC_BETA_GROUP_ID") : null;
   const timeoutSeconds = positiveInteger("ASC_PROCESSING_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS);
   const pollSeconds = positiveInteger("ASC_PROCESSING_POLL_SECONDS", DEFAULT_POLL_SECONDS);
   const privateKey = await readFile(keyPath, "utf8");
@@ -92,17 +101,6 @@ async function main() {
       throw new Error(compactApiError(payload, fallback));
     }
     return payload;
-  }
-
-  const groupPayload = await request(
-    `/v1/betaGroups/${encodeURIComponent(groupId)}?fields%5BbetaGroups%5D=name%2CisInternalGroup`,
-  );
-  const group = groupPayload?.data;
-  if (!group || group.type !== "betaGroups") {
-    throw new Error(`TestFlight group ${groupId} was not found.`);
-  }
-  if (group.attributes?.isInternalGroup !== true) {
-    throw new Error(`TestFlight group ${group.attributes?.name ?? groupId} is not an internal group.`);
   }
 
   const deadline = Date.now() + timeoutSeconds * 1000;
@@ -138,36 +136,53 @@ async function main() {
     throw new Error(`TestFlight build ${buildNumber} is already expired.`);
   }
 
-  const relationshipPath = `/v1/betaGroups/${encodeURIComponent(groupId)}/relationships/builds`;
-  const relationshipPayload = await request(`${relationshipPath}?limit=200`);
-  let assigned = relationshipPayload?.data?.some((item) => item.id === build.id) ?? false;
-  if (!assigned) {
-    await request(relationshipPath, {
-      method: "POST",
-      body: JSON.stringify({ data: [{ type: "builds", id: build.id }] }),
-    });
-    const verificationPayload = await request(`${relationshipPath}?limit=200`);
-    assigned = verificationPayload?.data?.some((item) => item.id === build.id) ?? false;
-  }
-  if (!assigned) {
-    throw new Error(`Build ${buildNumber} could not be assigned to TestFlight group ${group.attributes.name}.`);
-  }
-
-  const testersQuery = new URLSearchParams({
-    "fields[betaTesters]": "state",
-    limit: "200",
-  });
-  const testersPayload = await request(
-    `/v1/betaGroups/${encodeURIComponent(groupId)}/betaTesters?${testersQuery}`,
-  );
   const testerStates = {};
-  for (const tester of testersPayload?.data ?? []) {
-    const state = tester.attributes?.state ?? "UNKNOWN";
-    testerStates[state] = (testerStates[state] ?? 0) + 1;
-  }
-  const testerCount = testersPayload?.data?.length ?? 0;
-  if (testerCount === 0) {
-    throw new Error(`Internal TestFlight group ${group.attributes.name} has no testers.`);
+  let testerCount = null;
+  let group = null;
+  if (assignInternalGroup) {
+    const groupPayload = await request(
+      `/v1/betaGroups/${encodeURIComponent(groupId)}?fields%5BbetaGroups%5D=name%2CisInternalGroup%2ChasAccessToAllBuilds`,
+    );
+    group = groupPayload?.data;
+    if (!group || group.type !== "betaGroups") {
+      throw new Error(`TestFlight group ${groupId} was not found.`);
+    }
+    if (group.attributes?.isInternalGroup !== true) {
+      throw new Error(`TestFlight group ${group.attributes?.name ?? groupId} is not an internal group.`);
+    }
+
+    if (group.attributes?.hasAccessToAllBuilds !== true) {
+      const relationshipPath = `/v1/betaGroups/${encodeURIComponent(groupId)}/relationships/builds`;
+      const relationshipPayload = await request(`${relationshipPath}?limit=200`);
+      let assigned = relationshipPayload?.data?.some((item) => item.id === build.id) ?? false;
+      if (!assigned) {
+        await request(relationshipPath, {
+          method: "POST",
+          body: JSON.stringify({ data: [{ type: "builds", id: build.id }] }),
+        });
+        const verificationPayload = await request(`${relationshipPath}?limit=200`);
+        assigned = verificationPayload?.data?.some((item) => item.id === build.id) ?? false;
+      }
+      if (!assigned) {
+        throw new Error(`Build ${buildNumber} could not be assigned to TestFlight group ${group.attributes.name}.`);
+      }
+    }
+
+    const testersQuery = new URLSearchParams({
+      "fields[betaTesters]": "state",
+      limit: "200",
+    });
+    const testersPayload = await request(
+      `/v1/betaGroups/${encodeURIComponent(groupId)}/betaTesters?${testersQuery}`,
+    );
+    for (const tester of testersPayload?.data ?? []) {
+      const state = tester.attributes?.state ?? "UNKNOWN";
+      testerStates[state] = (testerStates[state] ?? 0) + 1;
+    }
+    testerCount = testersPayload?.data?.length ?? 0;
+    if (testerCount === 0) {
+      throw new Error(`Internal TestFlight group ${group.attributes.name} has no testers.`);
+    }
   }
 
   console.log(
@@ -178,8 +193,10 @@ async function main() {
         buildNumber: build.attributes.version,
         uploadedDate: build.attributes.uploadedDate,
         processingState: build.attributes.processingState,
+        internalGroupAssigned: assignInternalGroup,
         groupId,
-        groupName: group.attributes.name,
+        groupName: group?.attributes?.name ?? null,
+        groupHasAccessToAllBuilds: group?.attributes?.hasAccessToAllBuilds ?? null,
         testerCount,
         testerStates,
       },
