@@ -12,16 +12,17 @@ WorkingDirectory=/opt/scrapper
 Environment="PATH=/opt/scrapper/venv/bin:/usr/bin:/bin"
 Environment="SCRAPPER_CONFIG=/opt/scrapper/data/config.yaml"
 Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/scrapper/playwright-browsers"
-# Sicherer Default: nur ein lokaler Reverse-Proxy darf Uvicorns Forwarded-
-# Header auswerten. Bei einem separaten cloudflared-LXC exakt dessen IP in
-# /etc/scrapper/web.env setzen, z.B.
-# SCRAPPER_FORWARDED_ALLOW_IPS=192.168.1.31
+# Uvicorn darf den unmittelbaren TCP-Peer nicht auf die öffentliche
+# X-Forwarded-For-Adresse umschreiben. Die Anwendung validiert Forwarded-
+# Header selbst gegen web.trusted_proxies; bei einem separaten Proxy-LXC
+# wird dessen IP dort eingetragen. Dieser Wert bleibt deshalb auf Loopback.
 Environment="SCRAPPER_FORWARDED_ALLOW_IPS=127.0.0.1"
 # Sicherer Bind-Default. Ein separater Reverse-Proxy-LXC muss Bind-Adresse,
 # vertrauenswürdige Proxy-IP und eine enge Host-Firewall explizit konfigurieren.
 Environment="SCRAPPER_BIND_HOST=127.0.0.1"
-# Root-verwaltete Overrides kommen nach den Defaults und können beide Werte
-# ersetzen, ohne dass der App-Benutzer die Proxy-Vertrauensgrenze persistiert.
+# Root-verwaltete Overrides kommen nach den Defaults. Für einen separaten
+# Proxy-LXC wird hier nur SCRAPPER_BIND_HOST überschrieben; die Proxy-IP
+# gehört in data/config.yaml unter web.trusted_proxies.
 EnvironmentFile=-/etc/scrapper/web.env
 # Begrenzung pro OCR-Prozess; verhindert CPU-/RAM-Spitzen bei PDF-Bestandsläufen.
 Environment="OMP_THREAD_LIMIT=1"

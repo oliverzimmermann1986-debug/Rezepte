@@ -30,8 +30,10 @@ web:
   share_enabled: false
   share_queue_limit: 100
   secret_key: change-this-to-random-string-32chars-min
-  # Nur von diesen direkten Proxy-Adressen werden CF-Connecting-IP und
-  # X-Forwarded-For für Login-Rate-Limits ausgewertet.
+  # Nur von diesen unmittelbaren Proxy-Adressen werden CF-Connecting-IP und
+  # X-Forwarded-For ausgewertet. Bei einem separaten cloudflared-LXC dessen
+  # exakte IP als /32 ergänzen; Uvicorns FORWARDED_ALLOW_IPS bleibt Loopback,
+  # damit die Anwendung den unmittelbaren Peer noch selbst validieren kann.
   trusted_proxies:
     - 127.0.0.1/32
     - "::1/128"
