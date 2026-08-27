@@ -13,7 +13,7 @@ from ..auth import (
     request_user,
 )
 from ..db import get_db
-from ..security import client_ip, login_limiter
+from ..security import client_ip, login_limiter, request_is_from_trusted_proxy
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -50,8 +50,9 @@ class NativeLogin(BaseModel):
 def native_login(payload: NativeLogin, request: Request) -> dict:
     username = payload.username.strip()
     ip = client_ip(request)
-    limiter_key = f"{ip}|{username.casefold()}"
-    blocked_ip, remaining_ip = login_limiter.is_blocked(ip)
+    ip_key = f"ip:{ip}"
+    limiter_key = f"ip-user:{ip}|{username.casefold()}"
+    blocked_ip, remaining_ip = login_limiter.is_blocked(ip_key)
     blocked_user, remaining_user = login_limiter.is_blocked(limiter_key)
     if blocked_ip or blocked_user:
         remaining = max(remaining_ip, remaining_user)
@@ -61,7 +62,8 @@ def native_login(payload: NativeLogin, request: Request) -> dict:
             headers={"Retry-After": str(remaining + 1)},
         )
     if auth_disabled():
-        login_limiter.record_success(ip)
+        if not request_is_from_trusted_proxy(request):
+            raise HTTPException(403, "Unsichere direkte Verbindung")
         login_limiter.record_success(limiter_key)
         return {
             "token": "cloudflare-access",
@@ -70,10 +72,9 @@ def native_login(payload: NativeLogin, request: Request) -> dict:
             **_access_payload("local"),
         }
     if not check_credentials(username, payload.password):
-        login_limiter.record_fail(ip)
+        login_limiter.record_fail(ip_key)
         login_limiter.record_fail(limiter_key)
         raise HTTPException(401, "Benutzername oder Passwort falsch")
-    login_limiter.record_success(ip)
     login_limiter.record_success(limiter_key)
     return {
         "token": create_session(username),

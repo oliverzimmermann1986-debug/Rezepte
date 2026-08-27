@@ -25,7 +25,8 @@ from .routes import (api_admin, api_audit, api_auth, api_browse, api_config, api
                      api_history, api_jobs, api_master, api_metrics, api_pending, api_recipes,
                      api_meal_plan, api_schedule, api_share, api_shopping, api_stats, api_test,
                      api_users, sharing)
-from .security import SecurityHeadersMiddleware, client_ip, login_limiter
+from .security import (SameOriginMiddleware, SecurityHeadersMiddleware,
+                       UploadSizeLimitMiddleware, client_ip, login_limiter)
 
 # -------- Logging --------
 # Strukturiertes Logging: rotation via RotatingFileHandler (10MB pro Datei,
@@ -116,6 +117,11 @@ def _initialize_runtime_state():
     stale = _db.reset_stale_running()
     if stale:
         logger.warning("%s Job(s) nach Crash/Restart auf 'error' gesetzt", stale)
+    stale_maintenance = _db.reset_stale_maintenance()
+    if stale_maintenance:
+        logger.warning(
+            "%s Wartungslauf/-läufe nach Crash/Restart beendet", stale_maintenance,
+        )
     migrate_users_to_db()
 
     jobs_purged = _db.cleanup_old_jobs(days=90)
@@ -152,6 +158,22 @@ def _sd_notify(state: str) -> None:
             s.sendto(state.encode(), addr)
     except Exception as e:
         logger.warning(f"sd_notify failed: {e}")
+
+
+async def _watchdog_loop() -> None:
+    """Bedient systemds Watchdog nur solange der asyncio-Loop reaktionsfähig ist."""
+    import asyncio
+
+    try:
+        watchdog_usec = int(os.getenv("WATCHDOG_USEC", "0"))
+    except ValueError:
+        watchdog_usec = 0
+    if watchdog_usec <= 0:
+        return
+    interval = max(1.0, watchdog_usec / 2_000_000)
+    while True:
+        await asyncio.sleep(interval)
+        _sd_notify("WATCHDOG=1")
 
 
 from contextlib import asynccontextmanager
@@ -225,12 +247,12 @@ def _purge_old_trash_items(days: int = 30):
 
 @asynccontextmanager
 async def _lifespan(app):
+    import asyncio
+    from contextlib import suppress
+
     db = _initialize_runtime_state()
-    # READY=1 sobald der App-Startup durch ist (DB-Pings, Routes registriert).
-    # systemd wartet dann auf dieses Signal bevor 'systemctl start' returnt -
-    # damit ist ein 'restart' ohne 502-Lücke am Reverse-Proxy möglich.
-    _sd_notify("READY=1")
-    logger.info("App ready (sd_notify READY=1 sent)")
+    from .routes.api_admin import reset_pdf_runtime
+    reset_pdf_runtime()
     # Trash-Cleanup-Background-Thread starten: einmal pro Tag prüft er ob
     # Rezepte im Papierkorb älter als 30 Tage sind und purged sie endgültig.
     _start_trash_cleanup_thread()
@@ -240,35 +262,65 @@ async def _lifespan(app):
     # Ein potenziell langsamer HDD/NAS-Scan wird beim Start nur eingeplant,
     # niemals innerhalb eines Rezeptlisten-Requests ausgeführt.
     request_sync(reason="app-start", min_interval=300.0, db=db)
+    # READY erst nachdem die persistenten Worker gestartet wurden. So meldet
+    # systemd keinen betriebsbereiten Prozess mit bereits toter Task-Queue.
+    _sd_notify("READY=1")
+    logger.info("App ready (workers running, sd_notify READY=1 sent)")
+    watchdog_task = asyncio.create_task(_watchdog_loop(), name="systemd-watchdog")
     try:
         yield
     finally:
+        watchdog_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await watchdog_task
         _sd_notify("STOPPING=1")
         from .jobs.task_queue import stop_worker
         from .recipes.sync_manager import wait_for_sync
         from .routes.api_audit import stop_ai_sanity_thread
+        from .routes.api_admin import stop_pdf_executor
+        from .routes.api_history import stop_history_reanalysis
         from .routes.api_jobs import stop_scraper_thread
+        from .routes.api_pending import stop_pending_reanalysis
         _stop_trash_cleanup_thread(timeout=2.0)
-        stop_worker()
-        wait_for_sync(timeout=5.0)
-        if not stop_scraper_thread(timeout=15.0):
-            logger.warning("Scraper-Thread nach 15s noch aktiv")
-        if not stop_ai_sanity_thread(timeout=15.0):
-            logger.warning("Audit-KI-Thread nach 15s noch aktiv")
+        queue_stopped = stop_worker(timeout=8.0)
+        sync_stopped = not wait_for_sync(timeout=5.0).get("running", False)
+        if not sync_stopped:
+            logger.warning("Dateisystem-Sync nach 5s noch aktiv")
+        scraper_stopped = stop_scraper_thread(timeout=8.0)
+        if not scraper_stopped:
+            logger.warning("Scraper-Thread nach 8s noch aktiv")
+        audit_stopped = stop_ai_sanity_thread(timeout=8.0)
+        if not audit_stopped:
+            logger.warning("Audit-KI-Thread nach 8s noch aktiv")
+        pending_stopped = stop_pending_reanalysis(timeout=8.0)
+        if not pending_stopped:
+            logger.warning("Pending-Reanalyse nach 8s noch aktiv")
+        history_stopped = stop_history_reanalysis(timeout=8.0)
+        if not history_stopped:
+            logger.warning("History-Reanalyse nach 8s noch aktiv")
+        pdf_stopped = stop_pdf_executor(timeout=8.0)
+        if not pdf_stopped:
+            logger.warning("PDF-Worker nach 8s noch aktiv")
+        if not queue_stopped:
+            logger.warning("Background-Task-Worker nach 8s noch aktiv")
+        other_workers_stopped = all((
+            queue_stopped, scraper_stopped, audit_stopped,
+            pending_stopped, history_stopped, pdf_stopped, sync_stopped,
+        ))
         # Sauberes Shutdown: Worker-Thread stoppen damit keine FTS-Transaktion
         # mitten im Schreiben abreißt (SQLite-Korruption-Risiko bei SIGKILL).
-        # Wir warten max 15s — zusammen mit den anderen Workern bleibt der
+        # Wir warten max 10s — zusammen mit den anderen Workern bleibt der
         # gesamte Shutdown unter systemd TimeoutStopSec=90s. Bei einem noch
         # länger laufenden Einzelaufruf bleibt WAL-Mode der letzte Crash-Schutz.
         try:
             from .recipes.indexer import stop_extraction, is_extraction_running
             stop_extraction()
             import asyncio as _aio, time as _t
-            deadline = _t.time() + 15
+            deadline = _t.time() + 10
             while is_extraction_running() and _t.time() < deadline:
                 await _aio.sleep(0.5)
             if is_extraction_running():
-                logger.warning("Worker nach 15s noch aktiv — wird gekillt")
+                logger.warning("Worker nach 10s noch aktiv — wird gekillt")
             else:
                 logger.info("Worker sauber beendet")
 
@@ -276,19 +328,22 @@ async def _lifespan(app):
             # längeren Shutdowns. Plus WAL-Checkpoint(TRUNCATE) damit die
             # -wal-Datei nicht beim nächsten Start gross ist. Beide günstig
             # (~ms) und ohne Risiko bei WAL-Mode.
-            try:
-                with db.conn() as c:
-                    c.execute("PRAGMA optimize")
-                    c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                logger.info("DB: optimize + wal_checkpoint(TRUNCATE) ok")
-            except Exception as e:
-                logger.warning(f"DB-Cleanup beim Shutdown failed: {e}")
+            if other_workers_stopped and not is_extraction_running():
+                try:
+                    with db.conn() as c:
+                        c.execute("PRAGMA optimize")
+                        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    logger.info("DB: optimize + wal_checkpoint(TRUNCATE) ok")
+                except Exception as e:
+                    logger.warning(f"DB-Cleanup beim Shutdown failed: {e}")
+            else:
+                logger.warning("DB-Checkpoint wegen noch aktiver Worker übersprungen")
         except Exception as e:
             logger.warning(f"Worker-Shutdown failed: {e}")
 
 
 # -------- FastAPI --------
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 APP_CAPABILITIES = [
     "admin-center",
     "ai-shopping-optimization",
@@ -318,6 +373,8 @@ app = FastAPI(
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(SameOriginMiddleware)
+app.add_middleware(UploadSizeLimitMiddleware)
 
 # gzip-Compression für API-Responses + HTML. Spart ~70% Transfer-Bytes auf
 # JSON-Listen, ~50% auf HTML. Schwelle 500 Bytes — kleinere Responses bleiben
@@ -441,7 +498,14 @@ LOGIN_HTML = """\
 
 def _safe_next(value: str) -> str:
     """Open-Redirect-Schutz: nur lokale Pfade erlauben."""
-    if not value or not value.startswith("/") or value.startswith("//"):
+    if (
+        not value
+        or "\\" in value
+        or not value.startswith("/")
+        or value.startswith("//")
+        or urlsplit(value).scheme
+        or urlsplit(value).netloc
+    ):
         return "/"
     return value
 
@@ -518,7 +582,13 @@ def login(
     next: str = Form("/"),
 ):
     ip = client_ip(request)
-    blocked, remaining = login_limiter.is_blocked(ip)
+    normalized_username = username.strip().casefold()
+    ip_key = f"ip:{ip}"
+    actor_key = f"ip-user:{ip}:{normalized_username}"
+    ip_blocked, ip_remaining = login_limiter.is_blocked(ip_key)
+    actor_blocked, actor_remaining = login_limiter.is_blocked(actor_key)
+    blocked = ip_blocked or actor_blocked
+    remaining = max(ip_remaining, actor_remaining)
     if blocked:
         logger.warning(f"Login-Block für IP {ip}, noch {remaining}s")
         return HTMLResponse(
@@ -531,7 +601,8 @@ def login(
         )
 
     if not check_credentials(username, password):
-        login_limiter.record_fail(ip)
+        login_limiter.record_fail(ip_key)
+        login_limiter.record_fail(actor_key)
         logger.warning(f"Fehl-Login von {ip} (user={username!r})")
         return HTMLResponse(
             LOGIN_HTML.format(
@@ -541,7 +612,9 @@ def login(
             status_code=401,
         )
 
-    login_limiter.record_success(ip)
+    # Ein erfolgreicher Low-Privilege-Login darf die IP-weiten Fehlversuche
+    # gegen ein anderes (z.B. Admin-)Konto nicht zurücksetzen.
+    login_limiter.record_success(actor_key)
     try:
         token = create_session(username)
     except ValueError:
@@ -581,7 +654,7 @@ def _logout_target() -> str:
     return "/cdn-cgi/access/logout"
 
 
-@app.get("/logout")
+@app.post("/logout")
 def logout(request: Request):
     if not auth_disabled():
         username = request_user(request)
@@ -678,6 +751,30 @@ def healthz():
     except Exception as e:
         logger.error(f"healthz failed: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+
+
+@app.get("/readyz")
+def readyz():
+    """Readiness: DB und persistenter Queue-Worker müssen verfügbar sein."""
+    from .jobs.task_queue import worker_status
+
+    try:
+        with get_db().conn() as c:
+            c.execute("SELECT 1").fetchone()
+        queue = worker_status()
+        if not queue["running"]:
+            return JSONResponse(
+                {"ok": False, "db": True, "task_queue": queue},
+                status_code=503,
+            )
+        return {"ok": True, "db": True, "task_queue": queue,
+                "version": APP_VERSION}
+    except Exception as exc:
+        logger.error("readyz failed: %s", exc)
+        return JSONResponse(
+            {"ok": False, "db": False, "error": str(exc)},
+            status_code=503,
+        )
 
 
 @app.get("/api/system/info")

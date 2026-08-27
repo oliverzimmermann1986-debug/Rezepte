@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -12,6 +13,8 @@ from pydantic import BaseModel
 
 from ..auth import require_admin
 from ..config_store import get_config
+from ..core.safety import atomic_write_json
+from ..db import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -58,56 +61,23 @@ def _validate_oncalendar(value: str) -> str:
 
 
 def _read_oncalendar(timer_path: str) -> Optional[str]:
-    p = Path(timer_path)
+    base = Path(timer_path)
+    override = base.parent / f"{base.name}.d" / "override.conf"
+    p = override if override.is_file() else base
     if not p.exists():
         return None
+    selected = None
     for line in p.read_text().splitlines():
         m = re.match(r'\s*OnCalendar\s*=\s*(.*)', line)
         if m:
-            return m.group(1).strip()
-    return None
-
-
-def _write_oncalendar(timer_path: str, new_value: str) -> None:
-    p = Path(timer_path)
-    if not p.exists():
-        raise HTTPException(500, f"Timer-File {timer_path} fehlt")
-    lines = p.read_text(encoding="utf-8").splitlines()
-    out_lines = []
-    replaced = False
-    for line in lines:
-        if re.match(r'\s*OnCalendar\s*=', line):
-            out_lines.append(f"OnCalendar={new_value}")
-            replaced = True
-        else:
-            out_lines.append(line)
-    if not replaced:
-        new_lines = []
-        for line in out_lines:
-            if line.startswith("[Install]"):
-                new_lines.append(f"OnCalendar={new_value}")
-            new_lines.append(line)
-        out_lines = new_lines
-    try:
-        p.write_text("\n".join(out_lines) + "\n", encoding="utf-8", newline="\n")
-    except OSError as exc:
-        # Häufigster Fall: der Dienst läuft mit systemd-Sandboxing (ProtectSystem),
-        # das /etc read-only macht → EROFS. Klarer Hinweis statt nacktem 500.
-        raise HTTPException(
-            500,
-            f"Timer-Datei nicht schreibbar ({exc.strerror}): {timer_path}. "
-            "Dem Service scrapper-web Schreibrecht geben, z.B. drop-in mit "
-            f"ReadWritePaths={timer_path}, dann daemon-reload + restart.",
-        ) from exc
+            value = m.group(1).strip()
+            if value:
+                selected = value
+    return selected
 
 
 def _systemctl(*args) -> Dict:
-    """Ruft systemctl auf - OHNE sudo. Der Dienst läuft gehärtet mit erzwungenem
-    NoNewPrivileges (durch ProtectKernel*/SystemCallFilter), das sudo grundsätzlich
-    blockiert. Stattdessen direkt via D-Bus/polkit; das braucht kein setuid.
-    Erfordert eine polkit-Regel, die dem Service-User reload-daemon + manage-units
-    für scrapper-job.{timer,service} erlaubt
-    (siehe /etc/polkit-1/rules.d/49-scrapper-systemctl.rules)."""
+    """Ruft systemctl ohne sudo auf; polkit erlaubt nur den Schedule-Helper."""
     cmd = ["systemctl"] + list(args)
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     return {
@@ -176,75 +146,33 @@ class ScheduleUpdate(BaseModel):
 
 @router.put("")
 def update_schedule(body: ScheduleUpdate) -> Dict:
-    """Aktualisiert OnCalendar und lädt systemd-Timer neu."""
-    changes = []
-    originals: dict[str, str] = {}
-    if body.scraper:
-        clean = _validate_oncalendar(body.scraper)
-        timer_path = TIMER_FILES["scraper"]
-        try:
-            originals[timer_path] = Path(timer_path).read_text(encoding="utf-8")
-        except OSError as exc:
-            raise HTTPException(500, f"Timer-Datei nicht lesbar: {timer_path}") from exc
-        _write_oncalendar(timer_path, clean)
-        changes.append(("scraper", clean))
-
-    if not changes:
+    """Übergibt einen validierten Wunsch an den root-eigenen Schedule-Helper."""
+    if not body.scraper:
         return {"ok": True, "message": "Nichts zu ändern"}
-
-    results = []
-
-    def rollback() -> None:
-        """Stellt Timer und effektiven systemd-Zustand bestmöglich wieder her."""
-        restored_units = []
-        for timer_path, content in originals.items():
-            try:
-                Path(timer_path).write_text(content, encoding="utf-8", newline="\n")
-                restored_units.append(Path(timer_path).name)
-                results.append({"step": f"rollback {Path(timer_path).name}", "ok": True})
-            except OSError as exc:
-                logger.exception("Timer-Rollback fehlgeschlagen: %s", timer_path)
-                results.append({
-                    "step": f"rollback {Path(timer_path).name}",
-                    "ok": False,
-                    "stderr": str(exc),
-                })
-        if restored_units:
-            results.append({"step": "rollback daemon-reload", **_systemctl("daemon-reload")})
-            for unit in restored_units:
-                results.append({"step": f"rollback restart {unit}", **_systemctl("restart", unit)})
-
-    daemon = _systemctl("daemon-reload")
-    results.append({"step": "daemon-reload", **daemon})
-    if not daemon["ok"]:
-        rollback()
-        return {
-            "ok": False,
-            "error": "systemctl daemon-reload fehlgeschlagen - polkit-Regel für "
-                     "User scrapper fehlt? (reload-daemon). Details: "
-                     + (daemon.get("stderr") or "").strip()[:200],
-            "details": results,
-        }
-
-    for kind, _ in changes:
-        unit = Path(TIMER_FILES[kind]).name
-        r = _systemctl("restart", unit)
-        results.append({"step": f"restart {unit}", **r})
-        if not r["ok"]:
-            rollback()
-            return {
-                "ok": False,
-                "error": f"{unit} konnte nicht neu gestartet werden; Änderung wurde zurückgerollt. "
-                         + (r.get("stderr") or "")[:200],
-                "details": results,
-            }
-
+    clean = _validate_oncalendar(body.scraper)
+    data_dir = get_db().path.parent
+    request_path = data_dir / "schedule-request.json"
+    result_path = data_dir / "schedule-result.json"
+    result_path.unlink(missing_ok=True)
+    atomic_write_json(request_path, {"scraper": clean})
+    applied = _systemctl("start", "scrapper-schedule-apply.service")
+    if not applied["ok"]:
+        request_path.unlink(missing_ok=True)
+        raise HTTPException(
+            503,
+            "Schedule-Helper konnte nicht gestartet werden: "
+            + (applied.get("stderr") or "unbekannter Fehler")[:200],
+        )
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(503, "Schedule-Helper lieferte kein Ergebnis") from exc
+    if not result.get("ok"):
+        raise HTTPException(500, str(result.get("error") or "Schedule fehlgeschlagen"))
     cfg = get_config()
-    if body.scraper:
-        cfg.set("schedule", "scraper_interval", body.scraper)
+    cfg.set("schedule", "scraper_interval", clean)
     cfg.save()
-
-    return {"ok": True, "changes": dict(changes), "details": results}
+    return {"ok": True, "changes": {"scraper": clean}}
 
 
 @router.post("/preview")

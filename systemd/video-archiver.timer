@@ -1,5 +1,5 @@
 [Unit]
-Description=Process one private video archive request every five minutes
+Description=Process a bounded batch of private video archive requests every five minutes
 
 [Timer]
 OnBootSec=3min

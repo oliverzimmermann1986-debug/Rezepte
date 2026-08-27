@@ -4,8 +4,8 @@ Scraper-Job (TikTok/Instagram -> Rezepte/Hochzeit Ordner).
 KI-Cascade ist seit dem Ollama-Removal flat:
   OpenAI-Call -> Pending (manuell im Web-UI) wenn confidence zu niedrig
 
-Pending-Items werden im Web-UI über ein <video>-Element angezeigt -
-keine Standbild-Extraktion mehr nötig.
+Social-Media-Videos werden nur als begrenzte, temporäre Analysequelle genutzt
+und weder an die native App noch über eine öffentliche Medienroute ausgeliefert.
 
 Pre-Analyse-Schritt: nicht-deutsche Captions werden automatisch nach
 Deutsch übersetzt (siehe _maybe_translate_description). Das Original
@@ -13,6 +13,7 @@ bleibt als description_original.txt im Rezept-Ordner erhalten.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -47,6 +48,7 @@ logger = logging.getLogger(__name__)
 # Cancel-Flag (modul-global, threading-safe). Wird im Web-Trigger und beim
 # Job-Start reset, vom Cancel-Endpoint gesetzt, im run()-Loop pro URL geprüft.
 _CANCEL_EVENT = threading.Event()
+_HISTORY_CANCEL_EVENT = threading.Event()
 
 # Anzahl automatischer Wiederholungen, bevor ein fehlgeschlagener Download
 # ausschließlich über die manuelle Prüfung erneut angestoßen wird.
@@ -57,15 +59,38 @@ def cancel_job() -> dict:
     URL-Check ab. Nicht-blockierend - kein subprocess wird hier gekillt
     (yt-dlp läuft, fertige URLs werden komplett verarbeitet)."""
     _CANCEL_EVENT.set()
+    from .locks import request_cancel
+    request_cancel("scraper")
     return {"ok": True}
 
 
 def is_cancelled() -> bool:
-    return _CANCEL_EVENT.is_set()
+    from .locks import cancel_requested
+    return _CANCEL_EVENT.is_set() or cancel_requested("scraper")
 
 
 def reset_cancel() -> None:
     _CANCEL_EVENT.clear()
+    from .locks import clear_cancel
+    clear_cancel("scraper")
+
+
+def cancel_history_job() -> dict:
+    _HISTORY_CANCEL_EVENT.set()
+    from .locks import request_cancel
+    request_cancel("history-reanalyze")
+    return {"ok": True}
+
+
+def is_history_cancelled() -> bool:
+    from .locks import cancel_requested
+    return _HISTORY_CANCEL_EVENT.is_set() or cancel_requested("history-reanalyze")
+
+
+def reset_history_cancel() -> None:
+    _HISTORY_CANCEL_EVENT.clear()
+    from .locks import clear_cancel
+    clear_cancel("history-reanalyze")
 
 
 def _sanitize(name: str) -> str:
@@ -718,6 +743,7 @@ class ScraperJob:
                 "warnings": structured.warnings,
             },
         }
+        recipe_id: Optional[int] = None
         try:
             thumb_filename = None
             if thumbnail_bytes:
@@ -758,7 +784,16 @@ class ScraperJob:
             return target, recipe_id
         except Exception:
             # Der Ordner wurde ausschließlich für diesen neuen Import angelegt.
-            # Bei DB-Fehler darf kein unsichtbarer Halbimport übrig bleiben.
+            # Bei einem späteren History-Fehler müssen auch die bereits
+            # angelegte Recipe-Zeile und ihre Kinddaten kompensiert werden.
+            if recipe_id is not None:
+                try:
+                    self.db.recipe_delete(recipe_id)
+                except Exception:
+                    logger.exception(
+                        "Social-Import-Rollback für Recipe #%s fehlgeschlagen",
+                        recipe_id,
+                    )
             shutil.rmtree(target, ignore_errors=True)
             raise
 
@@ -1560,10 +1595,13 @@ class ScraperJob:
         low_conf = 0
         failed = 0
         details = []
+        cancelled = False
+        processed = 0
 
         for i, entry in enumerate(items, 1):
-            if is_cancelled():
+            if is_history_cancelled():
                 logger.info(f"Reanalyze-History abgebrochen bei {i}/{len(items)}")
+                cancelled = True
                 break
             url = entry["url"]
             try:
@@ -1588,6 +1626,7 @@ class ScraperJob:
             except Exception as e:
                 logger.exception(f"Reanalyze-History fail {url}: {e}")
                 failed += 1
+            processed += 1
 
         return {
             "total": len(items),
@@ -1596,6 +1635,8 @@ class ScraperJob:
             "unchanged": unchanged,
             "low_confidence": low_conf,
             "failed": failed,
+            "processed": processed,
+            "cancelled": cancelled,
             "dry_run": dry_run,
             "auto_move": auto_move,
             "details": details[:50],
@@ -1698,12 +1739,29 @@ class ScraperJob:
                 )
             except (ValueError, RuntimeError) as exc:
                 return {"ok": False, "error": str(exc)}
-            self.db.history_update(
-                url,
-                name=new_name,
-                target_dir=str(updated["folder_path"]),
-                content_type=content_type,
-            )
+            try:
+                self.db.history_update(
+                    url,
+                    name=new_name,
+                    target_dir=str(updated["folder_path"]),
+                    content_type=content_type,
+                )
+            except Exception as exc:
+                try:
+                    safe_update_recipe_metadata(
+                        self.db,
+                        int(indexed_recipe["id"]),
+                        name=indexed_recipe.get("name") or old_dir.name,
+                        recipe_type=indexed_recipe.get("type") or "Sonstiges",
+                        category=indexed_recipe.get("category") or "Allgemein",
+                        description=indexed_recipe.get("description") or "",
+                        servings=indexed_recipe.get("servings"),
+                        url=indexed_recipe.get("url"),
+                        target_folder_override=str(old_dir),
+                    )
+                except Exception:
+                    logger.exception("History-Move-Rollback für %s fehlgeschlagen", url)
+                return {"ok": False, "error": f"History-Update fehlgeschlagen: {exc}"}
             self._cleanup_empty_parents(old_dir)
             return {
                 "ok": True,
@@ -1745,7 +1803,16 @@ class ScraperJob:
                         except Exception as e:
                             logger.warning(f"rename {f}: {e}")
 
-        self.db.history_update(url, name=new_name, target_dir=str(new_dir))
+        try:
+            self.db.history_update(url, name=new_name, target_dir=str(new_dir))
+        except Exception as exc:
+            try:
+                if new_dir.exists() and not old_dir.exists():
+                    old_dir.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(new_dir), str(old_dir))
+            except Exception:
+                logger.exception("History-FS-Rollback für %s fehlgeschlagen", url)
+            return {"ok": False, "error": f"History-Update fehlgeschlagen: {exc}"}
         self._cleanup_empty_parents(old_dir)
         return {"ok": True, "action": "moved", "target": str(new_dir)}
 
@@ -1757,10 +1824,52 @@ class ScraperJob:
         if target_dir:
             d = Path(target_dir)
             if d.exists():
-                shutil.rmtree(d, ignore_errors=True)
+                indexed = (
+                    self.db.recipe_get_by_folder(str(d))
+                    or self.db.recipe_get_by_folder(str(d.resolve()))
+                )
+                if indexed:
+                    from ..recipes.manage import safe_delete_recipe
+                    safe_delete_recipe(
+                        self.db, int(indexed["id"]), delete_files=True, hard=True,
+                    )
+                else:
+                    roots = (self.recipe_dir.resolve(), self.wedding_dir.resolve())
+                    resolved = d.resolve(strict=True)
+                    if not any(
+                        self._is_relative_to(resolved, root) for root in roots
+                    ):
+                        return {"ok": False, "error": "Zielpfad liegt außerhalb der Datenwurzeln"}
+                    from ..core.safety import quarantine_move
+                    trash_root = Path(get_config().get(
+                        "safety", "trash_dir", default="/opt/scrapper/data/trash"
+                    ))
+                    payload = quarantine_move(
+                        resolved, trash_root, reason="history_delete",
+                        source={"url": url},
+                    )
+                    try:
+                        self.db.history_delete(url)
+                    except Exception:
+                        if payload and payload.exists() and not resolved.exists():
+                            resolved.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(payload), str(resolved))
+                        raise
+                    if payload and payload.parent.exists():
+                        shutil.rmtree(payload.parent)
+                    self._cleanup_empty_parents(d)
+                    return {"ok": True, "action": "deleted"}
                 self._cleanup_empty_parents(d)
         self.db.history_delete(url)
         return {"ok": True, "action": "deleted"}
+
+    @staticmethod
+    def _is_relative_to(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
 
     def _cleanup_empty_parents(self, removed_dir: Path) -> None:
         parent = removed_dir.parent
@@ -1951,6 +2060,30 @@ class ScraperJob:
 
         old_frame_path = str(entry.get("frame_path") or "")
         frame_path = self._stash_external_thumbnail_for_pending(data, suffix, url)
+        suggestion = {
+            **(entry.get("ai_suggestion") or {}),
+            "attached_photo": True,
+            "attached_photo_filename": filename,
+            "has_thumbnail": True,
+            "photo_scan_state": "running",
+        }
+        try:
+            self.db.pending_add(
+                url=url,
+                content_type=entry.get("content_type") or "recipe",
+                description=entry.get("description"),
+                video_path=entry.get("video_path"),
+                frame_path=frame_path,
+                ai_suggestion=suggestion,
+            )
+        except Exception:
+            # Die DB zeigt weiterhin auf das alte Bild. Das neue Staging-Objekt
+            # darf dann nicht als unreferenzierter Temp-Payload liegen bleiben.
+            with contextlib.suppress(OSError, RuntimeError, ValueError):
+                new_path = Path(frame_path)
+                new_path.resolve(strict=True).relative_to(self.temp_dir.resolve())
+                new_path.unlink(missing_ok=True)
+            raise
         if old_frame_path and old_frame_path != frame_path:
             old_path = Path(old_frame_path)
             try:
@@ -1959,22 +2092,6 @@ class ScraperJob:
                     old_path.unlink(missing_ok=True)
             except (OSError, RuntimeError, ValueError):
                 logger.warning("Altes Pending-Cover für %s wurde nicht entfernt", url)
-
-        suggestion = {
-            **(entry.get("ai_suggestion") or {}),
-            "attached_photo": True,
-            "attached_photo_filename": filename,
-            "has_thumbnail": True,
-            "photo_scan_state": "running",
-        }
-        self.db.pending_add(
-            url=url,
-            content_type=entry.get("content_type") or "recipe",
-            description=entry.get("description"),
-            video_path=entry.get("video_path"),
-            frame_path=frame_path,
-            ai_suggestion=suggestion,
-        )
         refreshed = self.db.pending_get(url) or {
             **entry,
             "frame_path": frame_path,

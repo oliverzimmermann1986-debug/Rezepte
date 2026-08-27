@@ -11,9 +11,12 @@ REZEPTE – ÜBERNAHME IN DAS RICHTIGE REPOSITORY
 
 Update im bestehenden Container:
    cd /opt/scrapper
-   git pull
-   bash proxmox/install.sh
-   systemctl restart scrapper-web
+   git pull --ff-only origin main
+   sudo bash proxmox/install.sh
+
+Das Install-Script lädt bei bestehenden Installationen einen frischen Release-
+Checkout und aktualisiert Code, venv, Browser und systemd-Units atomar mit
+Rollback. Ein zusätzlicher manueller Dienst-Restart ist nicht nötig.
 
 Browser danach einmal ohne Cache neu laden.
 Das Initialpasswort wird bei Neuinstallationen vom Installer zufällig erzeugt

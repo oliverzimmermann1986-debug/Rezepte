@@ -7,9 +7,10 @@ parallel erzeugen.
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
+import weakref
 from pathlib import Path
-from typing import Dict
 
 from PIL import Image, ImageOps
 
@@ -22,7 +23,7 @@ MAX_SOURCE_DIMENSION = 12_000
 Image.MAX_IMAGE_PIXELS = MAX_JPEG_SOURCE_PIXELS
 
 _lock_guard = threading.Lock()
-_locks: Dict[str, threading.Lock] = {}
+_locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
 
 
 def _keyed_lock(key: str) -> threading.Lock:
@@ -94,6 +95,44 @@ def ensure_thumbnail(source: Path, width: int, *, quality: int = 84) -> Path:
                 tmp.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def ensure_pdf_first_page(
+    source: Path,
+    target: Path,
+    *,
+    dpi: int = 150,
+    timeout: int = 20,
+) -> Path:
+    """Rendert eine PDF-Vorschau mit Prozess-Lock und atomarer Veröffentlichung."""
+    source, target = Path(source), Path(target)
+    if target.is_file() and target.stat().st_mtime >= source.stat().st_mtime:
+        return target
+    key = f"pdf::{source.resolve()}::{target.resolve()}"
+    with _keyed_lock(key):
+        if target.is_file() and target.stat().st_mtime >= source.stat().st_mtime:
+            return target
+        prefix = target.parent / (
+            f".{target.stem}.{os.getpid()}.{threading.get_ident()}"
+        )
+        rendered = prefix.with_suffix(".jpg")
+        try:
+            result = subprocess.run(
+                [
+                    "pdftoppm", "-jpeg", "-r", str(max(72, min(300, int(dpi)))),
+                    "-f", "1", "-l", "1", "-singlefile", str(source), str(prefix),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=max(1, int(timeout)),
+                check=False,
+            )
+            if result.returncode != 0 or not rendered.is_file():
+                raise RuntimeError((result.stderr or "pdftoppm fehlgeschlagen").strip()[:300])
+            os.replace(rendered, target)
+            return target
+        finally:
+            rendered.unlink(missing_ok=True)
 
 
 def normalize_image(source: Path, target: Path, *, max_width: int = 2400, quality: int = 88) -> Path:

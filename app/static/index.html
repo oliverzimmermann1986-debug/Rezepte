@@ -15,16 +15,6 @@
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="stylesheet" href="/static/rezepte.css?v={VERSION}">
   <script defer src="/static/alpine.min.js"></script>
-  <script>
-    // Service Worker registrieren — non-blocking
-    if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' })
-          .then(reg => { reg.update(); console.log('SW registered:', reg.scope); })
-          .catch(err => console.warn('SW failed:', err));
-      });
-    }
-  </script>
 </head>
 <body>
 
@@ -61,7 +51,7 @@
       <div class="mobile-runtime" :title="status.scraper ? 'Import läuft' : 'Bereit'">
         <span class="status-dot" :class="status.scraper ? 'busy' : 'online'"></span>
       </div>
-      <form method="get" action="/logout" class="logout-form">
+      <form method="post" action="/logout" class="logout-form">
         <button type="submit" class="mobile-logout-button" aria-label="Abmelden" title="Abmelden">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M10 5H5v14h5"/>
@@ -109,7 +99,7 @@
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
         <span x-text="'v' + (systemInfo.version || '1.4.0')"></span>
-        <form method="get" action="/logout" class="logout-form">
+        <form method="post" action="/logout" class="logout-form">
           <button type="submit" class="sidebar-logout-button">Abmelden</button>
         </form>
       </div>

@@ -8,11 +8,12 @@ import ipaddress
 import threading
 import time
 from collections import deque
-from typing import Deque, Dict, Iterable, Optional, Tuple
+from typing import Any, Awaitable, Callable, Deque, Dict, Iterable, Optional, Tuple
+from urllib.parse import urlsplit
 
-from fastapi import Request
+from fastapi import Request, status
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 
 class LoginRateLimiter:
@@ -108,6 +109,71 @@ class LoginRateLimiter:
 login_limiter = LoginRateLimiter()
 
 
+class _UploadBodyTooLarge(Exception):
+    pass
+
+
+class UploadSizeLimitMiddleware:
+    """Begrenzt Multipart-Bodies beim ASGI-Einlesen vor dem Form-Parser.
+
+    FastAPI erzeugt ``UploadFile`` erst nach dem Multipart-Parsing. Eine reine
+    Größenprüfung im Endpoint kommt deshalb zu spät und kann die Platte bereits
+    mit einer großen Spool-Datei belegt haben.
+    """
+
+    _OVERHEAD = 1024 * 1024
+
+    def __init__(self, app: Callable[..., Awaitable[Any]]):
+        self.app = app
+
+    @classmethod
+    def _limit_for(cls, path: str) -> Optional[int]:
+        if path == "/api/pending/import-file":
+            return 25 * 1024 * 1024 + cls._OVERHEAD
+        if path == "/api/pending/scan-photo" or path.endswith("/upload-thumbnail"):
+            return 10 * 1024 * 1024 + cls._OVERHEAD
+        return None
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {
+            key.lower(): value
+            for key, value in scope.get("headers", [])
+        }
+        content_type = headers.get(b"content-type", b"").lower()
+        limit = self._limit_for(str(scope.get("path") or ""))
+        if limit is None or not content_type.startswith(b"multipart/form-data"):
+            await self.app(scope, receive, send)
+            return
+        try:
+            content_length = int(headers.get(b"content-length", b"0") or b"0")
+        except ValueError:
+            content_length = 0
+        if content_length > limit:
+            response = JSONResponse({"detail": "Upload zu groß"}, status_code=413)
+            await response(scope, receive, send)
+            return
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body") or b"")
+                if received > limit:
+                    raise _UploadBodyTooLarge
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _UploadBodyTooLarge:
+            response = JSONResponse({"detail": "Upload zu groß"}, status_code=413)
+            await response(scope, receive, send)
+
+
 def _parsed_ip(value: str) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     try:
         return ipaddress.ip_address((value or "").strip())
@@ -161,6 +227,61 @@ def client_ip(request: Request) -> str:
     return str(peer) if peer else "unknown"
 
 
+def request_is_from_trusted_proxy(request: Request) -> bool:
+    """Ob der unmittelbare TCP-Peer als lokale Auth-Grenze konfiguriert ist.
+
+    Im ``auth_disabled``-Betrieb darf nicht schon die bloße Erreichbarkeit des
+    Uvicorn-Ports Administratorrechte verleihen. Standardmäßig sind daher nur
+    Loopback-Peers zugelassen; weitere Proxy-Netze müssen explizit konfiguriert
+    werden.
+    """
+    peer_text = request.client.host if request.client else ""
+    peer = _parsed_ip(peer_text)
+    return bool(peer and any(peer in network for network in _trusted_proxy_networks()))
+
+
+def _same_origin(request: Request) -> bool:
+    """Validiert Origin/Referer gegen das tatsächlich adressierte Host-Header-Ziel."""
+    source = (request.headers.get("origin") or "").strip()
+    if not source:
+        source = (request.headers.get("referer") or "").strip()
+    if not source:
+        return False
+    try:
+        parsed = urlsplit(source)
+        source_host = parsed.netloc.casefold()
+    except ValueError:
+        return False
+    request_host = (request.headers.get("host") or "").strip().casefold()
+    if not parsed.scheme or not source_host or source_host != request_host:
+        return False
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip()
+    expected_scheme = forwarded_proto if request_is_from_trusted_proxy(request) and forwarded_proto else request.url.scheme
+    return parsed.scheme.casefold() == expected_scheme.casefold()
+
+
+class SameOriginMiddleware(BaseHTTPMiddleware):
+    """Blockiert Cookie-/Form-CSRF, einschließlich Same-Site-Sibling-Angriffen.
+
+    Bearer-Requests der nativen App besitzen keine ambienten Browser-Cookies
+    und bleiben ohne Origin-Header zulässig. Der Login-POST wird immer geprüft,
+    weil er Login-CSRF sonst vor dem Setzen des Cookies erlauben würde.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+            has_cookie_auth = bool(request.cookies.get("scrapper_session"))
+            origin_required_path = request.url.path in {"/login", "/share/resolve"}
+            has_bearer = request.headers.get("authorization", "").lower().startswith("bearer ")
+            if (origin_required_path or has_cookie_auth) and not has_bearer and not _same_origin(request):
+                return JSONResponse(
+                    {"detail": "Ungültige Anfrageherkunft"},
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    headers={"Cache-Control": "no-store"},
+                )
+        return await call_next(request)
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Setzt sichere Default-Header. CSP ist mit Alpine.js kompatibel."""
 
@@ -182,10 +303,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # nutzt um x-show/x-text/x-bind/@click-Expressions auszuwerten.
             # Ohne das zerlegt es das ganze Frontend (Modals öffnen sich
             # unkontrolliert, Buttons reagieren nicht).
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-            # Google Fonts (für JetBrains Mono + Space Grotesk)
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "font-src 'self' https://fonts.gstatic.com data:; "
+            "script-src 'self' 'unsafe-eval'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "font-src 'self' data:; "
             "connect-src 'self'; "
             # PWA: Service Worker + Manifest
             "worker-src 'self'; "

@@ -30,12 +30,17 @@ def test_public_recipe_share_can_be_listed_and_revoked(client, test_db, monkeypa
 
     assert created.status_code == 200
     payload = created.json()
-    share_path = urlsplit(payload["url"]).path
-    token = share_path.rsplit("/", 1)[-1]
+    parsed = urlsplit(payload["url"])
+    assert parsed.path == "/share"
+    token = parsed.fragment
     token_data = serializer.loads(token)
     assert token_data["sid"] == payload["share_id"]
     assert "by" not in token_data
-    public_response = client.get(share_path)
+    resolved = client.post(
+        "/share/resolve", json={"token": token}, headers={"Origin": "http://testserver"},
+    )
+    assert resolved.status_code == 200
+    public_response = client.get("/share/view")
     assert public_response.status_code == 200
     assert public_response.headers["cache-control"] == "private, no-store"
 
@@ -47,7 +52,7 @@ def test_public_recipe_share_can_be_listed_and_revoked(client, test_db, monkeypa
         f"/api/recipes/{recipe['id']}/shares/{payload['share_id']}"
     )
     assert revoked.status_code == 200
-    assert client.get(share_path).status_code == 410
+    assert client.get("/share/view").status_code == 410
     assert client.get(f"/api/recipes/{recipe['id']}/shares").json()["items"][0]["active"] == 0
 
 

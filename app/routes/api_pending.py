@@ -656,6 +656,8 @@ from datetime import datetime as _datetime
 
 _logger = _logging.getLogger(__name__)
 _reanalyze_lock = _threading.Lock()
+_reanalyze_stop = _threading.Event()
+_reanalyze_thread = None
 
 
 def _reanalyze_all_thread(job_id: int):
@@ -688,7 +690,11 @@ def _reanalyze_all_thread(job_id: int):
             items = db.pending_list("pending")
             summary["total"] = len(items)
             _logger.info(f"=== Pending-Reanalyze {job_id} startet: {summary['total']} Items ===")
+            cancelled = False
             for item in items:
+                if _reanalyze_stop.is_set():
+                    cancelled = True
+                    break
                 url = item["url"]
                 summary["current"] = url
                 db.job_update_summary(job_id, summary)
@@ -710,7 +716,9 @@ def _reanalyze_all_thread(job_id: int):
                 db.job_update_summary(job_id, summary)
 
             summary["current"] = None
-            db.job_finish(job_id, "ok", summary)
+            if cancelled:
+                summary["cancelled"] = True
+            db.job_finish(job_id, "error" if cancelled else "ok", summary)
             _logger.info(f"=== Pending-Reanalyze {job_id} fertig: {summary} ===")
         except Exception as e:
             _logger.exception("Reanalyze-Job crashed")
@@ -736,10 +744,27 @@ def reanalyze_all():
     """Startet Background-Job der alle Pending-Items neu analysiert."""
     if not _reanalyze_lock.acquire(blocking=False):
         raise HTTPException(409, "Reanalyze läuft bereits")
-    job_id = get_db().job_start("reanalyze")
-    t = _threading.Thread(target=_reanalyze_all_thread, args=(job_id,), daemon=True)
-    t.start()
+    global _reanalyze_thread
+    _reanalyze_stop.clear()
+    try:
+        job_id = get_db().job_start("reanalyze")
+    except RuntimeError as exc:
+        _reanalyze_lock.release()
+        raise HTTPException(409, str(exc)) from exc
+    _reanalyze_thread = _threading.Thread(
+        target=_reanalyze_all_thread, args=(job_id,), daemon=True,
+        name="pending-reanalyze",
+    )
+    _reanalyze_thread.start()
     return {"ok": True, "job_id": job_id}
+
+
+def stop_pending_reanalysis(timeout: float = 15.0) -> bool:
+    _reanalyze_stop.set()
+    thread = _reanalyze_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=max(0.0, timeout))
+    return not (thread and thread.is_alive())
 
 
 @router.get("/reanalyze/progress", dependencies=[Depends(require_admin)])
@@ -775,15 +800,16 @@ def list_failed_downloads(limit: int = 100) -> List[Dict[str, Any]]:
 
 @router.post("/failed/retry", dependencies=[Depends(require_admin)])
 def retry_failed_body(body: FailedActionRequest) -> Dict[str, Any]:
-    get_db().download_failure_reset(body.url)
+    if not get_db().download_failure_reset(body.url):
+        raise HTTPException(404, "Fehlgeschlagener Download nicht gefunden")
     return {"ok": True, "url": body.url, "reset": True}
 
 
 @router.post("/failed/discard", dependencies=[Depends(require_admin)])
 def discard_failed_body(body: FailedActionRequest) -> Dict[str, Any]:
     db = get_db()
-    db.history_add(body.url, content_type="recipe", name="(verworfen)")
-    db.download_failure_clear(body.url)
+    if not db.download_failure_discard(body.url):
+        raise HTTPException(404, "Fehlgeschlagener Download nicht gefunden")
     return {"ok": True, "url": body.url, "discarded": True}
 
 
@@ -795,7 +821,8 @@ def retry_failed(url: str) -> Dict[str, Any]:
     download_failures auf — die Quell-Mail wird NICHT mehr benötigt
     (verarbeitete Mails werden gelöscht, wenn delete_processed aktiv ist).
     """
-    get_db().download_failure_reset(url)
+    if not get_db().download_failure_reset(url):
+        raise HTTPException(404, "Fehlgeschlagener Download nicht gefunden")
     return {"ok": True, "url": url, "reset": True}
 
 
@@ -809,8 +836,8 @@ def discard_failed(url: str) -> Dict[str, Any]:
     History-Schreiben nach MAX Versuchen wurde entfernt.
     """
     db = get_db()
-    db.history_add(url, content_type="recipe", name="(verworfen)")
-    db.download_failure_clear(url)
+    if not db.download_failure_discard(url):
+        raise HTTPException(404, "Fehlgeschlagener Download nicht gefunden")
     return {"ok": True, "url": url, "discarded": True}
 
 

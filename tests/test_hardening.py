@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -81,6 +82,61 @@ def test_background_task_active_dedupe(test_db: Database):
         dedupe_key="same",
     )
     assert second == first
+
+
+def test_share_intake_tokens_are_hashed_and_individually_revocable(test_db: Database):
+    first = "device-a." + "a" * 40
+    second = "device-b." + "b" * 40
+    test_db.share_intake_token_create(
+        "device-a", hashlib.sha256(first.encode()).hexdigest(), "Telefon", "admin",
+    )
+    test_db.share_intake_token_create(
+        "device-b", hashlib.sha256(second.encode()).hexdigest(), "Tablet", "admin",
+    )
+
+    assert test_db.share_intake_token_consume(hashlib.sha256(first.encode()).hexdigest())["id"] == "device-a"
+    listed = test_db.share_intake_tokens_list()
+    assert all("token_hash" not in item for item in listed)
+    assert test_db.share_intake_token_revoke("device-a") is True
+    assert test_db.share_intake_token_consume(hashlib.sha256(first.encode()).hexdigest()) is None
+    assert test_db.share_intake_token_consume(hashlib.sha256(second.encode()).hexdigest())["id"] == "device-b"
+
+
+def test_nutrition_endpoint_uses_owner_claim_and_publishes_atomically(
+    client, test_db: Database, tmp_path: Path, monkeypatch,
+):
+    import app.routes.api_recipes as api_recipes
+
+    rid = _recipe(test_db, tmp_path / "nutrition", name="Nährwerte")
+    test_db.recipe_set_extraction_result(
+        rid,
+        "ok",
+        [
+            {"name": "A", "canonical_name": "a"},
+            {"name": "B", "canonical_name": "b"},
+            {"name": "C", "canonical_name": "c"},
+        ],
+    )
+
+    class Analyzer:
+        @staticmethod
+        def compute_nutrition(ingredients, servings):
+            return {
+                "calories": 420,
+                "protein_g": 20,
+                "carbs_g": 40,
+                "fat_g": 12,
+                "per_ingredient": {"0": 100, "1": 140, "2": 180},
+            }
+
+    monkeypatch.setattr(api_recipes, "build_analyzer", lambda config: Analyzer())
+    response = client.post(f"/api/recipes/{rid}/nutrition")
+
+    assert response.status_code == 200
+    recipe = test_db.recipe_get(rid)
+    assert recipe["calories_per_serving"] == 420
+    assert recipe["nutrition_claim_owner"] is None
+    assert [row["calories"] for row in test_db.recipe_ingredients_get(rid)] == [100, 140, 180]
 
 
 def test_compressed_backup_is_complete_and_valid(test_db: Database, tmp_path: Path):

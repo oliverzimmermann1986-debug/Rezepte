@@ -69,20 +69,20 @@ def reanalyze_one(req: ReanalyzeOneRequest):
 # Lock damit nur ein All-Run gleichzeitig läuft
 import threading as _th
 _history_reanalyze_lock = _th.Lock()
+_history_reanalyze_thread = None
 
 
 def _reanalyze_history_all_thread(job_id: int, dry_run: bool, limit: int, auto_move: bool):
     """Background-Thread - schreibt in jobs-Tabelle damit der UI-Status-Poll
     Progress sehen kann."""
     from ..db import get_db
-    from ..jobs.scraper import get_scraper_job, reset_cancel
+    from ..jobs.scraper import get_scraper_job
     db = get_db()
-    reset_cancel()
     try:
         summary = get_scraper_job().reanalyze_history_all(
             dry_run=dry_run, limit=limit, auto_move=auto_move,
         )
-        db.job_finish(job_id, "ok", summary)
+        db.job_finish(job_id, "error" if summary.get("cancelled") else "ok", summary)
     except Exception as e:
         db.job_finish(job_id, "error", {"error": str(e)})
     finally:
@@ -107,15 +107,33 @@ def reanalyze_all(payload: dict = None):
     if not _history_reanalyze_lock.acquire(blocking=False):
         raise HTTPException(409, "History-Reanalyze läuft bereits")
 
-    job_id = get_db().job_start("reanalyze")
-    t = _th.Thread(
+    global _history_reanalyze_thread
+    try:
+        job_id = get_db().job_start("reanalyze")
+    except RuntimeError as exc:
+        _history_reanalyze_lock.release()
+        raise HTTPException(409, str(exc)) from exc
+    from ..jobs.scraper import reset_history_cancel
+    reset_history_cancel()
+    _history_reanalyze_thread = _th.Thread(
         target=_reanalyze_history_all_thread,
         args=(job_id, dry_run, limit, auto_move),
         daemon=True,
+        name="history-reanalyze",
     )
-    t.start()
+    _history_reanalyze_thread.start()
     return {"ok": True, "job_id": job_id, "dry_run": dry_run, "limit": limit,
             "auto_move": auto_move}
+
+
+def stop_history_reanalysis(timeout: float = 15.0) -> bool:
+    from ..jobs.scraper import cancel_history_job
+
+    cancel_history_job()
+    thread = _history_reanalyze_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=max(0.0, timeout))
+    return not (thread and thread.is_alive())
 
 
 @router.get("/junk")

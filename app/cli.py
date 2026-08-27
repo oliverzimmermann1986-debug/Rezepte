@@ -190,6 +190,33 @@ def _cmd_db_restore(args: list) -> int:
     cfg = get_config()
     db_path = Path(cfg.get("paths", "db_path",
                             default="/opt/scrapper/data/scrapper.db"))
+    if os.name != "nt":
+        import shutil as _service_shutil
+        import subprocess as _subprocess
+        if _service_shutil.which("systemctl"):
+            active_units = []
+            for unit in (
+                "scrapper-web.service",
+                "scrapper-job.service",
+                "scrapper-db-backup.service",
+            ):
+                active = _subprocess.run(
+                    ["systemctl", "is-active", "--quiet", unit],
+                    check=False,
+                    timeout=10,
+                )
+                if active.returncode == 0:
+                    active_units.append(unit)
+            if active_units:
+                print(
+                    "✗ Schreibende Dienste laufen noch: "
+                    + ", ".join(active_units)
+                    + ". Vor Restore stoppen.",
+                    file=sys.stderr,
+                )
+                return 1
+    target_existed = db_path.exists()
+    safety = None
     if not db_path.exists():
         # Erstaufnahme - kein Pre-Backup nötig
         print(f"ℹ Ziel-DB existiert nicht ({db_path}), wird neu angelegt")
@@ -214,6 +241,7 @@ def _cmd_db_restore(args: list) -> int:
     tmp_target = db_path.parent / f".restore-tmp-{os.getpid()}.db"
     normalized_target = db_path.parent / f".restore-normalized-{os.getpid()}.db"
 
+    target_replaced = False
     try:
         if is_gz:
             print(f"📦 Entpacke {src} → {tmp_target}")
@@ -234,13 +262,80 @@ def _cmd_db_restore(args: list) -> int:
         # Atomic move ins Ziel. Danach stale Sidecars des ALTEN DB-Stands
         # entfernen, bevor irgendein Prozess die wiederhergestellte DB öffnet.
         os.replace(normalized_target, db_path)
+        target_replaced = True
         Path(f"{db_path}-wal").unlink(missing_ok=True)
         Path(f"{db_path}-shm").unlink(missing_ok=True)
+        restored = sqlite3.connect(str(db_path), timeout=30)
+        try:
+            with restored:
+                tables = {
+                    row[0] for row in restored.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                now = time.time()
+                if "users" in tables:
+                    restored.execute(
+                        "UPDATE users SET session_version=session_version+1"
+                    )
+                if "recipe_share_links" in tables:
+                    restored.execute(
+                        "UPDATE recipe_share_links SET revoked_at=? WHERE revoked_at IS NULL",
+                        (now,),
+                    )
+                if "background_tasks" in tables:
+                    restored.execute(
+                        "UPDATE background_tasks SET status='error', ended_at=?, "
+                        "error='Durch DB-Restore verworfen' "
+                        "WHERE status IN ('queued', 'running')",
+                        (now,),
+                    )
+                if "jobs" in tables:
+                    restored.execute(
+                        "UPDATE jobs SET status='error', ended_at=? WHERE status='running'",
+                        (now,),
+                    )
+                if "maintenance_runs" in tables:
+                    restored.execute(
+                        "UPDATE maintenance_runs SET status='error', ended_at=? "
+                        "WHERE status='running'",
+                        (now,),
+                    )
+        finally:
+            restored.close()
+        # Nach erfolgreicher DB-Sicherheitsmigration auch alle signierten
+        # Browser- und Legacy-Links ungültig machen. Scheitert das Config-Commit,
+        # stellt der Exception-Pfad unten den vorherigen DB-Stand wieder her.
+        cfg.set("web", "secret_key", _secrets.token_urlsafe(48))
+        current_legacy_version = int(cfg.get(
+            "web", "session_version", default=0
+        ) or 0)
+        cfg.set("web", "session_version", current_legacy_version + 1)
+        cfg.save()
+        try:
+            os.chmod(db_path, 0o600)
+        except OSError:
+            pass
         tmp_target.unlink(missing_ok=True)
         print(f"✓ Restore abgeschlossen: {db_path}")
         print(f"  Start den Service: systemctl start scrapper-web")
         return 0
     except Exception as e:
+        if target_replaced:
+            try:
+                if target_existed and safety and safety.is_file():
+                    rollback = db_path.parent / f".restore-rollback-{os.getpid()}.db"
+                    _sh.copy2(safety, rollback)
+                    os.replace(rollback, db_path)
+                else:
+                    db_path.unlink(missing_ok=True)
+                Path(f"{db_path}-wal").unlink(missing_ok=True)
+                Path(f"{db_path}-shm").unlink(missing_ok=True)
+            except Exception as rollback_exc:
+                print(
+                    f"✗ Automatischer DB-Rollback fehlgeschlagen: {rollback_exc}",
+                    file=sys.stderr,
+                )
         try:
             tmp_target.unlink(missing_ok=True)
         except Exception:
@@ -302,7 +397,18 @@ def _cmd_log_cleanup(args: list) -> int:
             print(f"✗ ungültige Tage-Zahl: {args[0]}", file=sys.stderr)
             return 1
     else:
-        days = int(cfg.get("paths", "log_retention_days", default=30) or 30)
+        try:
+            days = int(cfg.get("paths", "log_retention_days", default=30))
+        except (TypeError, ValueError):
+            print("✗ log_retention_days ist keine ganze Zahl", file=sys.stderr)
+            return 1
+
+    if days < 0:
+        print("✗ Tage dürfen nicht negativ sein", file=sys.stderr)
+        return 1
+    if days == 0:
+        print("ℹ Log-Retention ist deaktiviert (0 Tage = nie löschen)")
+        return 0
 
     logs_dir = Path(cfg.get("paths", "logs_dir", default="/opt/scrapper/logs"))
     if not logs_dir.exists():

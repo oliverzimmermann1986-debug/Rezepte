@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from ..auth import require_auth
+from ..auth import request_user, require_auth
 from ..db import get_db
 from . import api_jobs
 
@@ -63,6 +63,12 @@ async def _stream(request: Request) -> AsyncIterator[bytes]:
         # Frühes-Stopp: Client disconnected
         if await request.is_disconnected():
             logger.debug("SSE client disconnected, closing stream")
+            return
+
+        # Router-Dependencies werden nur beim Verbindungsaufbau ausgewertet.
+        # Erneute Prüfung beendet den Stream nach Logout, Sperre oder Rotation.
+        if not await run_in_threadpool(request_user, request):
+            yield _format("auth_revoked", {"reason": "session_invalid"}).encode()
             return
 
         try:

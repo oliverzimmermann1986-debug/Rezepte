@@ -809,13 +809,32 @@ function scrapperApp() {
       return String(detail || fallback);
     },
 
+    async fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+      const controller = new AbortController();
+      const external = options.signal;
+      const forwardAbort = () => controller.abort();
+      if (external) external.addEventListener('abort', forwardAbort, { once: true });
+      const timer = setTimeout(() => controller.abort(), Math.max(1000, timeoutMs));
+      try {
+        return await fetch(url, { ...options, signal: controller.signal });
+      } catch (error) {
+        if (error?.name === 'AbortError' && !external?.aborted) {
+          throw new Error('Zeitüberschreitung bei der Serveranfrage');
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        if (external) external.removeEventListener('abort', forwardAbort);
+      }
+    },
+
     async api(method, url, body, options = {}) {
       const opts = { method, headers: {'Content-Type': 'application/json'} };
       if (body !== undefined) opts.body = JSON.stringify(body);
       if (options.signal) opts.signal = options.signal;
       let r;
       try {
-        r = await fetch(url, opts);
+        r = await this.fetchWithTimeout(url, opts, options.timeoutMs || 30000);
       } catch (error) {
         if (error?.name === 'AbortError') return null;
         throw error;
@@ -1717,11 +1736,11 @@ function scrapperApp() {
       this.testing[key] = true;
       this.testResults[key] = null;
       try {
-        const r = await fetch(endpoint, {
+        const r = await this.fetchWithTimeout(endpoint, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: body ? JSON.stringify(body) : null,
-        });
+        }, 45000);
         const data = await r.json();
         this.testResults[key] = data;
         if (data.ok) {
@@ -1940,7 +1959,9 @@ function scrapperApp() {
         const form = new FormData();
         form.append('file', file, file.name || 'rezeptfoto.jpg');
         const endpoint = '/api/pending/scan-photo?url=' + encodeURIComponent(item.url);
-        const response = await fetch(endpoint, { method: 'POST', body: form });
+        const response = await this.fetchWithTimeout(
+          endpoint, { method: 'POST', body: form }, 60000
+        );
         if (response.status === 401) {
           window.location = '/login';
           return;
@@ -3052,10 +3073,10 @@ function scrapperApp() {
     },
 
     async fetchPdf(url) {
-      const response = await fetch(url, {
+      const response = await this.fetchWithTimeout(url, {
         credentials: 'same-origin',
         cache: 'no-store',
-      });
+      }, 60000);
       if (response.status === 401) {
         window.location = '/login';
         return null;
@@ -4287,11 +4308,11 @@ function scrapperApp() {
       const fd = new FormData();
       fd.append('file', file);
       try {
-        const resp = await fetch(`/api/recipes/${recipeId}/upload-thumbnail`, {
+        const resp = await this.fetchWithTimeout(`/api/recipes/${recipeId}/upload-thumbnail`, {
           method: 'POST',
           body: fd,
           credentials: 'same-origin',
-        });
+        }, 60000);
         console.log('[uploadThumbnail] response status', resp.status);
         if (resp.status === 401) { window.location = '/login'; return; }
         if (!resp.ok) {
@@ -4701,11 +4722,11 @@ function scrapperApp() {
 
     async _auditDoRename(id, newName) {
       try {
-        const r = await fetch(`/api/recipes/${id}/rename`, {
+        const r = await this.fetchWithTimeout(`/api/recipes/${id}/rename`, {
           method: 'PUT', credentials: 'include',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ new_name: newName, rename_folder: true }),
-        });
+        }, 30000);
         const data = await r.json();
         if (r.ok && data.ok) {
           this.showToast(`✓ Umbenannt: ${data.new_name}`);
@@ -4730,9 +4751,9 @@ function scrapperApp() {
       );
       if (!ok) return;
       try {
-        const r = await fetch(`/api/recipes/${recipe.id}?delete_files=true`, {
+        const r = await this.fetchWithTimeout(`/api/recipes/${recipe.id}?delete_files=true`, {
           method: 'DELETE', credentials: 'include',
-        });
+        }, 30000);
         const data = await r.json();
         if (r.ok && data.ok) {
           this.showToast(`🗑️ Gelöscht: ${data.name}`);
@@ -4757,13 +4778,13 @@ function scrapperApp() {
       );
       if (!ok) return;
       try {
-        const r = await fetch('/api/recipes/merge', {
+        const r = await this.fetchWithTimeout('/api/recipes/merge', {
           method: 'POST', credentials: 'include',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
             source_id: sourceId, target_id: targetId, delete_source: true,
           }),
-        });
+        }, 60000);
         const data = await r.json();
         if (r.ok && data.ok) {
           this.showToast(

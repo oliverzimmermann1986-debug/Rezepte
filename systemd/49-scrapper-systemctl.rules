@@ -1,17 +1,13 @@
-// Der Webdienst darf ausschließlich seinen Import-Timer neu laden und
-// neu starten. Andere Units und andere systemd-Aktionen bleiben gesperrt.
+// Der Webdienst darf ausschließlich den root-eigenen, erneut validierenden
+// Schedule-Helper starten. daemon-reload und Timerverwaltung bleiben root-only.
 polkit.addRule(function(action, subject) {
     if (subject.user !== "scrapper") {
         return polkit.Result.NOT_HANDLED;
     }
 
-    if (action.id === "org.freedesktop.systemd1.reload-daemon") {
-        return polkit.Result.YES;
-    }
-
     if (action.id === "org.freedesktop.systemd1.manage-units" &&
-        action.lookup("unit") === "scrapper-job.timer" &&
-        ["start", "stop", "restart"].indexOf(action.lookup("verb")) >= 0) {
+        action.lookup("unit") === "scrapper-schedule-apply.service" &&
+        action.lookup("verb") === "start") {
         return polkit.Result.YES;
     }
 

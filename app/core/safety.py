@@ -247,24 +247,31 @@ def quarantine_move(path: Path, trash_root: Path, *, reason: str = "manual", sou
     dest_dir = trash_root / stamp[:10] / f"{stamp}-{uuid.uuid4().hex[:8]}-{reason}"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / safe_name
+    moved = False
     try:
+        # shutil.move behandelt Cross-Device-Moves selbst. Ein zusätzlicher
+        # Copy/Delete-Fallback würde bei einem Teilfehler das Original
+        # möglicherweise löschen, obwohl das Ziel unvollständig ist.
         shutil.move(str(path), str(dest))
+        moved = True
+        meta = {
+            "reason": reason,
+            "original_path": str(path),
+            "quarantined_at": time.time(),
+            "source": source or {},
+        }
+        atomic_write_json(dest_dir / "quarantine.json", meta)
+        fsync_dir(dest_dir)
     except Exception:
-        # Fallback falls rename über Filesystem-Grenzen nicht geht.
-        if path.is_dir():
-            shutil.copytree(path, dest, dirs_exist_ok=True)
-            shutil.rmtree(path, ignore_errors=True)
-        else:
-            shutil.copy2(path, dest)
-            path.unlink(missing_ok=True)
-    meta = {
-        "reason": reason,
-        "original_path": str(path),
-        "quarantined_at": time.time(),
-        "source": source or {},
-    }
-    atomic_write_json(dest_dir / "quarantine.json", meta)
-    fsync_dir(dest_dir)
+        # Ohne Manifest ist das Objekt nicht zuverlässig auffindbar. Deshalb
+        # den Move kompensieren, statt eine anonyme Quarantäne zurückzulassen.
+        if moved and dest.exists() and not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(dest), str(path))
+        with contextlib.suppress(OSError):
+            (dest_dir / "quarantine.json").unlink(missing_ok=True)
+            dest_dir.rmdir()
+        raise
     return dest
 
 

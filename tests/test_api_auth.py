@@ -75,6 +75,7 @@ def test_native_login_uses_cloudflare_as_only_auth_when_local_auth_is_disabled(
     import app.routes.api_auth as api_auth
 
     monkeypatch.setattr(api_auth, "auth_disabled", lambda: True)
+    monkeypatch.setattr(api_auth, "request_is_from_trusted_proxy", lambda _request: True)
     monkeypatch.setattr(api_auth, "check_credentials", lambda *_: False)
     monkeypatch.setattr(
         api_auth,

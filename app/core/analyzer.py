@@ -145,7 +145,24 @@ class OpenAIAnalyzer:
         attempts = 6
         response: Optional[requests.Response] = None
         for attempt in range(attempts):
-            response = self.request(method, path, **kwargs)
+            try:
+                response = self.request(method, path, **kwargs)
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                if attempt == attempts - 1:
+                    raise
+                delay = min(12.0, 1.5 * (2 ** attempt))
+                logger.warning(
+                    "OpenAI Transportfehler %s, Wiederholung %s/%s in %.2fs",
+                    type(exc).__name__, attempt + 1, attempts - 1, delay,
+                )
+                time.sleep(delay)
+                for value in (kwargs.get("files") or {}).values():
+                    handle = value[1] if isinstance(value, tuple) and len(value) > 1 else value
+                    try:
+                        handle.seek(0)
+                    except (AttributeError, OSError):
+                        pass
+                continue
             if response.status_code not in retryable or attempt == attempts - 1:
                 return response
             delay = self._retry_delay(response, attempt)

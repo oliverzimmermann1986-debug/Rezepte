@@ -38,14 +38,19 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
   useradd -r -m -d /home/$APP_USER -s /bin/bash $APP_USER
 fi
 
-# 4. Repository klonen
+# 4. Repository klonen. Bestehende Installationen werden aus einem frischen
+# Release-Staging heraus mit Rollback und gestoppten Diensten aktualisiert.
 if [[ ! -d "$APP_DIR" ]]; then
   echo "📥 Klone Repository..."
   git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
 else
-  echo "🔄 Repository aktualisieren..."
-  cd "$APP_DIR"
-  git pull
+  echo "🔄 Bestehende Installation atomar aktualisieren..."
+  UPDATE_STAGE="$(mktemp -d /tmp/rezepte-release.XXXXXX)"
+  trap 'rm -rf -- "$UPDATE_STAGE"' EXIT
+  git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$UPDATE_STAGE"
+  APP_DIR="$APP_DIR" APP_USER="$APP_USER" \
+    bash "$UPDATE_STAGE/proxmox/update-local.sh"
+  exit 0
 fi
 
 cd "$APP_DIR"
@@ -69,7 +74,6 @@ PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/playwright-browsers" \
 # und passe das Verzeichnis an deinen Mount an.
 mkdir -p "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" \
          "$APP_DIR/files/rezepte" "$APP_DIR/files/hochzeit"
-chown -R $APP_USER:$APP_USER "$APP_DIR"
 
 # 7. Default-Config erstellen wenn fehlt
 if [[ ! -f "$APP_DIR/data/config.yaml" ]]; then
@@ -98,20 +102,30 @@ fi
 
 # 8. systemd Services installieren
 echo "⚙️  Installiere systemd Units..."
-cp "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/
-cp "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/
-cp "$APP_DIR/systemd/scrapper-job.timer"   /etc/systemd/system/
-cp "$APP_DIR/systemd/scrapper-db-backup.service" /etc/systemd/system/
-cp "$APP_DIR/systemd/scrapper-db-backup.timer"   /etc/systemd/system/
+install -m 0644 "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/
+install -m 0644 "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/
+install -m 0644 "$APP_DIR/systemd/scrapper-job.timer" /etc/systemd/system/
+install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.service" /etc/systemd/system/
+install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.timer" /etc/systemd/system/
+install -m 0644 "$APP_DIR/systemd/scrapper-schedule-apply.service" /etc/systemd/system/
+install -d -m 0755 /etc/systemd/system/scrapper-job.timer.d
+install -d -m 0755 /etc/scrapper
+if [[ -f "$APP_DIR/data/web.env" && ! -f /etc/scrapper/web.env ]]; then
+  install -m 0600 -o root -g root "$APP_DIR/data/web.env" /etc/scrapper/web.env
+fi
 
-# Polkit erlaubt nur daemon-reload und die Verwaltung von scrapper-job.timer.
-# Die Timerdatei selbst bleibt die einzige unter /etc für den Webdienst
-# beschreibbare Datei (siehe ReadWritePaths in scrapper-web.service).
+# Polkit erlaubt dem Webdienst nur den erneut validierenden root-Helper.
 install -m 0644 "$APP_DIR/systemd/49-scrapper-systemctl.rules" \
   /etc/polkit-1/rules.d/49-scrapper-systemctl.rules
 rm -f /etc/sudoers.d/scrapper
-chgrp $APP_USER /etc/systemd/system/scrapper-job.timer
-chmod 0664 /etc/systemd/system/scrapper-job.timer
+
+# Anwendungscode, venv und Units bleiben root-eigen. Nur Laufzeitdaten sind für
+# den Dienstbenutzer schreibbar; damit kann ein App-Exploit keinen Code ersetzen.
+chown -R root:root "$APP_DIR"
+chmod 0755 "$APP_DIR"
+chmod -R a+rX "$APP_DIR/playwright-browsers"
+chown -R "$APP_USER:$APP_USER" \
+  "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" "$APP_DIR/files"
 
 systemctl daemon-reload
 
@@ -150,7 +164,7 @@ echo ""
 echo "Erste Schritte:"
 echo "  1. Reverse-Proxy oder Cloudflare-Tunnel davorstellen (uvicorn lauscht nur auf 127.0.0.1)"
 echo "  2. Web-UI öffnen, auf 'Einstellungen' gehen, Passwort ändern"
-echo "  3. E-Mail-Konten + KI-Provider (OpenAI/Ollama) eintragen"
+echo "  3. E-Mail-Konten + OpenAI API-Key eintragen"
 echo "  4. Erster Test-Lauf via Web-UI"
 echo ""
 echo "Service-Befehle:"

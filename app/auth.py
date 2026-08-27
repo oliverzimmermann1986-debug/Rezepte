@@ -29,6 +29,7 @@ DEFAULT_SECRETS = (
 ROLE_USER = "user"
 ROLE_ADMIN = "admin"
 VALID_ROLES = frozenset({ROLE_USER, ROLE_ADMIN})
+_DUMMY_PASSWORD_HASH = "$2b$12$tHqkjQG/5uUOLxPxh766ku3u8CNZ6YprzbSzD8uyU7ZB04RLAt1m2"
 
 
 # -------------------- Passwort-Hashing --------------------
@@ -64,6 +65,7 @@ def check_credentials(username: str, password: str) -> bool:
     user_row = db.user_get_by_name(username)
     if user_row:
         if user_row.get("disabled"):
+            verify_password(password, _DUMMY_PASSWORD_HASH)
             return False
         if verify_password(password, user_row["password_hash"]):
             try:
@@ -72,6 +74,11 @@ def check_credentials(username: str, password: str) -> bool:
                 pass  # Login darf nicht failen weil last_login_at-update bricht
             return True
         return False
+
+    # Auch unbekannte Namen durchlaufen genau einen bcrypt-Check. Damit ist
+    # die Existenz eines aktiven Kontos nicht über einen groben Timing-Sprung
+    # am Login-Endpunkt erkennbar.
+    verify_password(password, _DUMMY_PASSWORD_HASH)
 
     # Config-Fallback: nur greift wenn DB komplett leer ist (typisch vor
     # erster Migration). Nach migrate_users_to_db() ist immer mindestens
@@ -189,6 +196,7 @@ def create_session(username: str) -> str:
             raise ValueError("Benutzerkonto ist deaktiviert")
         payload = {
             "user": str(user["username"]),
+            "uid": int(user["id"]),
             "ver": int(user.get("session_version") or 0),
         }
     else:
@@ -232,10 +240,13 @@ def session_user(token: str) -> Optional[str]:
             if user.get("disabled"):
                 return None
             token_version = data.get("ver")
-            if token_version is None:
+            token_user_id = data.get("uid")
+            if token_version is None or token_user_id is None:
                 return None
             try:
                 if int(token_version) != int(user.get("session_version") or 0):
+                    return None
+                if int(token_user_id) != int(user["id"]):
                     return None
             except (TypeError, ValueError):
                 return None
@@ -289,7 +300,10 @@ def auth_disabled() -> bool:
 
 async def require_auth(request: Request) -> None:
     if auth_disabled():
-        return
+        from .security import request_is_from_trusted_proxy
+        if request_is_from_trusted_proxy(request):
+            return
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Unsichere direkte Verbindung")
     is_api = request.url.path.startswith("/api/")
     if not request_user(request):
         if is_api:
@@ -306,7 +320,8 @@ async def require_auth(request: Request) -> None:
 def request_user(request: Request) -> Optional[str]:
     """Liest eine Sitzung aus HttpOnly-Cookie oder Bearer-Header."""
     if auth_disabled():
-        return "local"
+        from .security import request_is_from_trusted_proxy
+        return "local" if request_is_from_trusted_proxy(request) else None
     token = request.cookies.get(SESSION_COOKIE, "")
     authorization = getattr(request, "headers", {}).get("authorization", "")
     if authorization.lower().startswith("bearer "):
@@ -323,6 +338,9 @@ async def require_admin(request: Request) -> dict:
     akzeptiert, damit ein Upgrade den Betreiber nicht aussperrt.
     """
     if auth_disabled():
+        from .security import request_is_from_trusted_proxy
+        if not request_is_from_trusted_proxy(request):
+            raise HTTPException(403, "Unsichere direkte Verbindung")
         return {
             "username": "local",
             "role": ROLE_ADMIN,

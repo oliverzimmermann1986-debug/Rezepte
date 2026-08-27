@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,6 +15,7 @@ from ..jobs.scraper import invalidate_scraper_job
 from .api_einkauf import normalize_einkauf_base_url
 
 router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_admin)])
+_CONFIG_UPDATE_LOCK = threading.RLock()
 
 
 @router.get("")
@@ -26,6 +28,12 @@ def read_config() -> Dict[str, Any]:
 @router.put("")
 def update_config(payload: Dict[str, Any], request: Request):
     """Schreibt die komplette Config neu. Maskierte Felder werden zurückgemerged."""
+    with _CONFIG_UPDATE_LOCK:
+        return _update_config_locked(payload, request)
+
+
+def _update_config_locked(payload: Dict[str, Any], request: Request):
+    """Read/merge/write als eine kritische Sektion gegen Lost Updates."""
     store = get_config()
     current = store.all()
     authenticated_username = request_user(request)
@@ -38,6 +46,7 @@ def update_config(payload: Dict[str, Any], request: Request):
 
     _assert_server_managed_einkauf_url_unchanged(payload, current)
     _assert_server_managed_service_urls_unchanged(payload, current)
+    _assert_mail_target_change_requires_password(payload, current)
 
     # Ein gespeicherter OpenAI-Key darf nicht still an eine neue Base-URL
     # gebunden werden. Sonst könnte ein Benutzer nur die URL ändern, die
@@ -80,14 +89,35 @@ def update_config(payload: Dict[str, Any], request: Request):
         _set(merged, ("web", "password"), new_password_hash)
         current_version = int(_get(current, ("web", "session_version")) or 0)
         _set(merged, ("web", "session_version"), current_version + 1)
+
+    authenticated_user = None
+    if new_password_hash and authenticated_username and authenticated_username != "local":
+        from ..db import get_db
+        authenticated_user = get_db().user_get_by_name(authenticated_username)
+        if authenticated_user:
+            # Nach der Multi-User-Migration ist ausschließlich die DB die
+            # Auth-Quelle. Den ungenutzten Legacy-Hash in config.yaml nicht
+            # parallel verändern; das vermeidet einen Cross-Store-Split.
+            _set(merged, ("web", "password"), _get(current, ("web", "password")))
+            _set(
+                merged,
+                ("web", "session_version"),
+                int(_get(current, ("web", "session_version")) or 0),
+            )
     store.replace(merged)
     store.save()
     if new_password_hash:
-        if authenticated_username and authenticated_username != "local":
+        if authenticated_user:
             from ..db import get_db
-            user = get_db().user_get_by_name(authenticated_username)
-            if user:
-                get_db().user_set_password(int(user["id"]), new_password_hash)
+            try:
+                get_db().user_set_password(int(authenticated_user["id"]), new_password_hash)
+            except Exception:
+                # Der Request darf nicht mit einer neuen Config und alten
+                # DB-Credentials enden. Andere Felder dieses PUT werden bei
+                # einem Passwortfehler deshalb ebenfalls zurückgerollt.
+                store.replace(current)
+                store.save()
+                raise
         initial_password = Path(
             _get(merged, ("paths", "data_dir")) or "/opt/scrapper/data"
         ) / ".initial-password"
@@ -126,6 +156,27 @@ SERVER_MANAGED_SERVICE_URL_PATHS = (
     ("ai", "openai", "base_url"),
     ("external_hdd", "shelly_url"),
 )
+
+
+def _assert_mail_target_change_requires_password(incoming: dict, current: dict) -> None:
+    """Verhindert Wiederverwendung eines maskierten Secrets an einem neuen IMAP-Ziel."""
+    for account in ("recipe", "wedding"):
+        current_password = _get(current, ("mail", account, "password"))
+        if not current_password:
+            continue
+        target_changed = any(
+            _get(incoming, ("mail", account, key)) is not None
+            and _get(incoming, ("mail", account, key))
+            != _get(current, ("mail", account, key))
+            for key in ("imap_host", "imap_port")
+        )
+        incoming_password = _get(incoming, ("mail", account, "password"))
+        if target_changed and (not incoming_password or incoming_password == MASKED):
+            raise HTTPException(
+                400,
+                f"Bei Änderung von mail.{account}.imap_host/imap_port muss "
+                "das Passwort neu eingegeben werden",
+            )
 
 
 def _get(d: dict, path: tuple):

@@ -60,11 +60,13 @@ def _validated_proxy_path(path: str) -> str:
     if not candidate or "\\" in candidate or "\x00" in candidate:
         raise HTTPException(400, "Ungültiger Einkauf-Pfad")
     decoded = candidate
-    for _ in range(3):
+    for _ in range(12):
         next_value = unquote(decoded)
         if next_value == decoded:
             break
         decoded = next_value
+    else:
+        raise HTTPException(400, "Einkauf-Pfad ist zu oft kodiert")
     segments = decoded.split("/")
     normalized = posixpath.normpath(decoded)
     if (

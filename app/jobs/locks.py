@@ -135,3 +135,18 @@ def is_locked(name: str) -> bool:
     """
     with file_lock_or_none(name) as fh:
         return fh is None
+
+
+def request_cancel(name: str) -> None:
+    """Prozessübergreifendes Abbruchsignal im gemeinsamen Datenverzeichnis."""
+    marker = LOCK_DIR / f"{name}.cancel"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{os.getpid()}\n", encoding="ascii")
+
+
+def clear_cancel(name: str) -> None:
+    (LOCK_DIR / f"{name}.cancel").unlink(missing_ok=True)
+
+
+def cancel_requested(name: str) -> bool:
+    return (LOCK_DIR / f"{name}.cancel").is_file()

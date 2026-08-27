@@ -29,7 +29,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel, Field
 
@@ -387,7 +387,9 @@ def create_share_link(recipe_id: int, payload: ShareRequest, request: Request):
     )
 
     # request.base_url respektiert X-Forwarded-Proto + Host bei Reverse-Proxy.
-    url = f"{base}/share/{token}"
+    # Das Secret liegt im URL-Fragment und wird dadurch nicht an
+    # Reverse-Proxy/Uvicorn übertragen oder in Access-Logs geschrieben.
+    url = f"{base}/share#{token}"
     logger.info(f"Share-Link für Rezept #{recipe_id} erstellt (gültig {payload.expires_days}d)")
     return {
         "ok": True,
@@ -416,6 +418,98 @@ def revoke_share_link(recipe_id: int, share_id: str):
 
 
 # ════ Public Share-Resolution (KEINE Auth) ════
+_PUBLIC_SHARE_COOKIE = "scrapper_public_share"
+
+
+@public_router.get("/share", response_class=HTMLResponse)
+def share_bootstrap():
+    """Liest das nicht übertragene URL-Fragment im Browser ein."""
+    return HTMLResponse(
+        """<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rezeptfreigabe</title></head><body><p id="status">Freigabe wird geprüft …</p>
+<script src="/static/share-bootstrap.js"></script></body></html>""",
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+class PublicShareResolve(BaseModel):
+    token: str = Field(min_length=20, max_length=4096)
+
+
+@public_router.post("/share/resolve")
+def resolve_share_fragment(payload: PublicShareResolve, request: Request):
+    try:
+        data = _load_share_token(payload.token)
+    except (BadSignature, SignatureExpired) as exc:
+        raise HTTPException(403, "Ungültiger oder abgelaufener Link") from exc
+    expires_at = float(data.get("exp") or (time.time() + 3600))
+    response = JSONResponse({"ok": True, "next": "/share/view"})
+    response.set_cookie(
+        _PUBLIC_SHARE_COOKIE,
+        payload.token,
+        max_age=max(1, min(30 * 86400, int(expires_at - time.time()))),
+        httponly=True,
+        secure=(request.url.scheme == "https" or
+                request.headers.get("x-forwarded-proto", "").lower() == "https"),
+        samesite="strict",
+        path="/share",
+    )
+    return response
+
+
+@public_router.get("/share/view", response_class=HTMLResponse)
+def share_recipe_from_cookie(request: Request):
+    token = request.cookies.get(_PUBLIC_SHARE_COOKIE, "")
+    try:
+        data = _load_share_token(token)
+        recipe = _load_recipe_full(int(data.get("rid") or 0))
+    except SignatureExpired:
+        response = HTMLResponse(
+            "<h1>Freigabe abgelaufen oder widerrufen</h1>",
+            status_code=410,
+            headers={"Cache-Control": "private, no-store"},
+        )
+        response.delete_cookie(_PUBLIC_SHARE_COOKIE, path="/share")
+        return response
+    except (BadSignature, HTTPException, ValueError, TypeError):
+        response = HTMLResponse(
+            "<h1>Freigabe ungültig oder abgelaufen</h1>",
+            status_code=403,
+            headers={"Cache-Control": "private, no-store"},
+        )
+        response.delete_cookie(_PUBLIC_SHARE_COOKIE, path="/share")
+        return response
+    image_url = "/share/thumb" if recipe.get("thumb_filename") else None
+    return HTMLResponse(
+        _render_print_html(recipe, image_url=image_url, is_share=True),
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@public_router.get("/share/thumb")
+def share_thumb_from_cookie(request: Request):
+    token = request.cookies.get(_PUBLIC_SHARE_COOKIE, "")
+    try:
+        data = _load_share_token(token)
+    except (BadSignature, SignatureExpired) as exc:
+        raise HTTPException(403, "Ungültiger oder abgelaufener Link") from exc
+    recipe = get_db().recipe_get(int(data.get("rid") or 0))
+    if not recipe or recipe.get("deleted_at") is not None or not recipe.get("thumb_filename"):
+        raise HTTPException(404)
+    try:
+        root = Path(get_config().get("paths", "recipe_dir", default="/mnt/rezepte"))
+        folder = resolve_directory_under(Path(recipe["folder_path"]), root)
+        image = resolve_regular_file_under(
+            folder / str(recipe["thumb_filename"]), folder, root,
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(404) from exc
+    return FileResponse(str(image), headers={"Cache-Control": "private, max-age=300"})
+
+
+# Legacy-Auflösung für bereits ausgegebene Links. Neue Links enthalten das
+# Secret ausschließlich im Fragment.
 @public_router.get("/share/{token}", response_class=HTMLResponse)
 def share_recipe(token: str):
     """Validiert Token, zeigt Print-View für den Empfänger. Bei Bad/Expired

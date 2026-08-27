@@ -180,7 +180,7 @@ def test_rescrape_reanalyze_queues_unchanged_description(
     folder.mkdir()
     description = "Zutaten: 400 g Hackfleisch und 300 g Pasta. Zubereitung: Alles kochen."
     recipe_id = test_db.recipe_upsert(
-        url="https://example.test/unchanged",
+        url="https://www.tiktok.com/@koch/video/123456789",
         name="Unverändert",
         type="Hauptgericht",
         category="Test",

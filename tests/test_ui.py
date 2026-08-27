@@ -256,7 +256,7 @@ def test_recipe_timers_survive_closing_the_detail_dialog():
 def test_logout_controls_work_without_javascript_on_desktop_and_mobile():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
-    assert html.count('method="get" action="/logout"') == 2
+    assert html.count('method="post" action="/logout"') == 2
     assert 'class="mobile-logout-button"' in html
     assert 'class="sidebar-logout-button"' in html
     assert 'href="/logout"' not in html
@@ -309,7 +309,7 @@ def test_failed_imports_can_be_discarded_from_import_center():
     assert "discardingUrl === f.url" in html
     assert "async discardFailedDownload(url)" in js
     assert "/discard" in pending_api
-    assert "download_failure_clear(url)" in pending_api
+    assert "download_failure_discard(url)" in pending_api
 
 
 def test_external_shopping_and_local_recurring_ui_are_available():
