@@ -175,6 +175,16 @@ def test_testflight_group_assignment_requires_explicit_workflow_input():
     assert "hasAccessToAllBuilds" in ensure
 
 
+def test_testflight_uses_quota_independent_local_macos_build():
+    workflow = (ROOT / ".github" / "workflows" / "ios.yml").read_text(encoding="utf-8")
+
+    assert "runs-on: macos-15" in workflow
+    assert "--local" in workflow
+    assert "--output ./rezepte.ipa" in workflow
+    assert "PlistBuddy -c 'Print :CFBundleVersion'" in workflow
+    assert "--path ./rezepte.ipa" in workflow
+
+
 def test_pending_editor_can_reanalyze_with_ai_using_long_request_timeout():
     pending_editor = (NATIVE / "components" / "pending-editor.tsx").read_text(encoding="utf-8")
     api_source = (NATIVE / "lib" / "api.ts").read_text(encoding="utf-8")

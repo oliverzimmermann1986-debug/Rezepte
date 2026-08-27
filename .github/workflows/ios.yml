@@ -82,11 +82,11 @@ jobs:
           retention-days: 7
 
   testflight:
-    name: Build and submit Expo app to TestFlight
+    name: Build signed IPA locally and submit to TestFlight
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_testflight }}
     needs: verify
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    runs-on: macos-15
+    timeout-minutes: 90
     environment: testflight
     defaults:
       run:
@@ -97,6 +97,7 @@ jobs:
       # Capability sync currently fails with ASC API-key authentication, while
       # EAS can still use the already-created remote provisioning profiles.
       EXPO_NO_CAPABILITY_SYNC: "1"
+      EAS_BUILD_NO_EXPO_GO_WARNING: "true"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -135,30 +136,36 @@ jobs:
           echo -n "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" | base64 --decode > .eas/AuthKey_GV6ZWDDMXJ.p8
           chmod 600 .eas/AuthKey_GV6ZWDDMXJ.p8
 
-      - name: Build and submit to TestFlight
-        run: npx eas-cli@22.2.0 build --platform ios --profile production --non-interactive --wait --auto-submit
+      - name: Build signed IPA on the macOS runner
+        run: >-
+          npx eas-cli@22.2.0 build
+          --platform ios
+          --profile production
+          --non-interactive
+          --local
+          --output ./rezepte.ipa
 
-      - name: Resolve submitted build number
+      - name: Resolve embedded build number
         id: submitted-build
         shell: bash
         run: |
           set -euo pipefail
-          builds="$(npx eas-cli@22.2.0 build:list --platform ios --status finished --limit 20 --json --non-interactive)"
-          build_number="$(printf '%s' "$builds" | node -e '
-            let input = "";
-            process.stdin.on("data", chunk => input += chunk);
-            process.stdin.on("end", () => {
-              const builds = JSON.parse(input);
-              const match = builds.find(build =>
-                build.gitCommitHash === process.env.GITHUB_SHA &&
-                build.buildProfile === "production" &&
-                build.appBuildVersion
-              );
-              if (!match) process.exit(1);
-              process.stdout.write(String(match.appBuildVersion));
-            });
-          ')"
+          rm -rf .ipa-inspect
+          unzip -q rezepte.ipa -d .ipa-inspect
+          app_plist="$(find .ipa-inspect/Payload -maxdepth 2 -name Info.plist -print -quit)"
+          test -n "$app_plist"
+          build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_plist")"
+          [[ "$build_number" =~ ^[1-9][0-9]*$ ]]
           echo "number=$build_number" >> "$GITHUB_OUTPUT"
+
+      - name: Submit signed IPA to App Store Connect
+        run: >-
+          npx eas-cli@22.2.0 submit
+          --platform ios
+          --profile production
+          --path ./rezepte.ipa
+          --non-interactive
+          --wait
 
       - name: Verify Apple processing
         env:
@@ -174,7 +181,7 @@ jobs:
       - name: Remove temporary signing files
         if: always()
         shell: bash
-        run: rm -f .eas/AuthKey_GV6ZWDDMXJ.p8
+        run: rm -rf .eas/AuthKey_GV6ZWDDMXJ.p8 rezepte.ipa .ipa-inspect
 
   verify-existing-testflight-build:
     name: Verify existing TestFlight build
