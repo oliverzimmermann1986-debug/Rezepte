@@ -125,6 +125,12 @@ if ! "$APP_DIR/venv/bin/yt-dlp" --version >/tmp/rezepte-ytdlp-version.txt; then
   echo "Fehler: yt-dlp ist nach dem Venv-Tausch nicht ausführbar." >&2
   false
 fi
+if ! "$APP_DIR/venv/bin/yt-dlp" --list-impersonate-targets \
+  | grep -E 'curl_cffi' \
+  | grep -vq 'unavailable'; then
+  echo "Fehler: yt-dlp hat kein verfügbares curl_cffi-Impersonation-Ziel für TikTok." >&2
+  false
+fi
 if [[ -d "$APP_DIR/playwright-browsers" ]]; then
   mv "$APP_DIR/playwright-browsers" "$APP_DIR/playwright-browsers.previous"
 fi
