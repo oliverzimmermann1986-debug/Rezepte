@@ -116,6 +116,15 @@ rm -rf -- "$APP_DIR/venv.previous" "$APP_DIR/playwright-browsers.previous"
 mv "$APP_DIR/venv" "$APP_DIR/venv.previous"
 mv "$APP_DIR/venv.next" "$APP_DIR/venv"
 VENV_SWAPPED=1
+# pip erzeugt Konsolenskripte mit einem absoluten Shebang auf den Build-Pfad
+# ``venv.next``. Nach dem atomaren Rename bliebe z. B. ``yt-dlp`` trotz
+# vorhandener Datei nicht startbar. Der Alias hält diese Entry-Points gültig;
+# beim nächsten Update wird er vor dem Neubau kontrolliert entfernt.
+ln -s "$APP_DIR/venv" "$APP_DIR/venv.next"
+if ! "$APP_DIR/venv/bin/yt-dlp" --version >/tmp/rezepte-ytdlp-version.txt; then
+  echo "Fehler: yt-dlp ist nach dem Venv-Tausch nicht ausführbar." >&2
+  false
+fi
 if [[ -d "$APP_DIR/playwright-browsers" ]]; then
   mv "$APP_DIR/playwright-browsers" "$APP_DIR/playwright-browsers.previous"
 fi
