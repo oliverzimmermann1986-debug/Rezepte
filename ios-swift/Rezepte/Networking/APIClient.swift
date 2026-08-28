@@ -330,6 +330,75 @@ actor APIClient {
         )
     }
 
+    func recurringCart() async throws -> RecurringCartResponse {
+        try await send("/api/cart/recurring")
+    }
+
+    func createRecurringCartItem(
+        name: String,
+        amount: Double?,
+        unit: String?,
+        category: String?,
+        intervalDays: Int,
+        nextDueOn: String,
+        active: Bool
+    ) async throws -> APIResult {
+        try await send(
+            "/api/cart/recurring",
+            method: "POST",
+            body: RecurringCartPayload(
+                name: name,
+                amount: amount,
+                defaultUnit: unit,
+                category: category,
+                intervalDays: intervalDays,
+                nextDueOn: nextDueOn,
+                active: active
+            )
+        )
+    }
+
+    func updateRecurringCartItem(
+        id: Int,
+        name: String,
+        amount: Double?,
+        unit: String?,
+        category: String?,
+        intervalDays: Int,
+        nextDueOn: String,
+        active: Bool
+    ) async throws -> APIResult {
+        try await send(
+            "/api/cart/recurring/\(id)",
+            method: "PATCH",
+            body: RecurringCartPayload(
+                name: name,
+                amount: amount,
+                defaultUnit: unit,
+                category: category,
+                intervalDays: intervalDays,
+                nextDueOn: nextDueOn,
+                active: active
+            )
+        )
+    }
+
+    func setRecurringCartItem(id: Int, active: Bool) async throws -> APIResult {
+        try await send(
+            "/api/cart/recurring/\(id)",
+            method: "PATCH",
+            body: RecurringActivePayload(active: active)
+        )
+    }
+
+    func deleteRecurringCartItem(id: Int) async throws -> APIResult {
+        try await send("/api/cart/recurring/\(id)", method: "DELETE")
+    }
+
+    func runRecurringCart() async throws -> RecurringRunResponse {
+        try await send("/api/cart/recurring/run", method: "POST", body: EmptyBody())
+    }
+
     func mealWeek(start: String? = nil) async throws -> MealWeek {
         let query = start.map { [URLQueryItem(name: "week_start", value: $0)] } ?? []
         return try await send("/api/meal-plan", query: query)
@@ -699,6 +768,16 @@ private struct AddCartPayload: Codable {
 }
 private struct CartUpdatePayload: Codable { let checked: Bool }
 private struct ClearCartPayload: Codable { let onlyChecked: Bool }
+private struct RecurringCartPayload: Codable {
+    let name: String
+    let amount: Double?
+    let defaultUnit: String?
+    let category: String?
+    let intervalDays: Int
+    let nextDueOn: String
+    let active: Bool
+}
+private struct RecurringActivePayload: Codable { let active: Bool }
 private struct AddMealPayload: Codable { let plannedFor: String; let recipeId: Int; let plannedServings: Int }
 private struct UpdateMealPayload: Codable { let plannedServings: Int }
 private struct WeekCartPayload: Codable { let weekStart: String }

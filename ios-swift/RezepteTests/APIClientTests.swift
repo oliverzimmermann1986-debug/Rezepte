@@ -492,6 +492,73 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(payload["unit"] as? String, "l")
     }
 
+    func testRecurringCartDecodesScheduleAndSQLiteBoolean() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: """
+        {"items":[{"id":7,"name":"Milch","amount":2,"default_unit":"l","category":"Kühlregal","icon":"🥛","interval_days":7,"next_due_on":"2026-09-01","due_in_days":4,"active":1}]}
+        """)
+
+        let response = try await client.recurringCart()
+
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/recurring")
+        XCTAssertEqual(response.items.first?.name, "Milch")
+        XCTAssertEqual(response.items.first?.defaultUnit, "l")
+        XCTAssertEqual(response.items.first?.intervalDays, 7)
+        XCTAssertEqual(response.items.first?.isActive, true)
+    }
+
+    func testCreatingRecurringCartItemSendsFullSchedule() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+
+        _ = try await client.createRecurringCartItem(
+            name: "Milch",
+            amount: 2,
+            unit: "l",
+            category: "Kühlregal",
+            intervalDays: 7,
+            nextDueOn: "2026-09-01",
+            active: true
+        )
+
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any]
+        )
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/recurring")
+        XCTAssertEqual(payload["default_unit"] as? String, "l")
+        XCTAssertEqual(payload["interval_days"] as? Int, 7)
+        XCTAssertEqual(payload["next_due_on"] as? String, "2026-09-01")
+        XCTAssertEqual(payload["active"] as? Bool, true)
+    }
+
+    func testRecurringCartCanBePausedAndMaterialized() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+
+        _ = try await client.setRecurringCartItem(id: 7, active: false)
+
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "PATCH")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/recurring/7")
+        let pausePayload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any]
+        )
+        XCTAssertEqual(pausePayload["active"] as? Bool, false)
+
+        MockURLProtocol.respond(json: #"{"ok":true,"added":[],"count":2}"#)
+        let result = try await client.runRecurringCart()
+
+        XCTAssertEqual(result.count, 2)
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/recurring/run")
+    }
+
     func testImageBackfillUsesBackupFirstEndpoint() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)

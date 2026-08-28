@@ -299,6 +299,52 @@ struct ShoppingCategoriesResponse: Codable {
     let items: [ShoppingCategory]
 }
 
+struct RecurringCartResponse: Codable {
+    let items: [RecurringCartItem]
+}
+
+struct RecurringCartItem: Codable, Identifiable, Hashable {
+    let id: Int
+    let name: String
+    let amount: Double?
+    let defaultUnit: String?
+    let category: String?
+    let icon: String?
+    let intervalDays: Int
+    let nextDueOn: String
+    let dueInDays: Int
+    @FlexibleBool var active: Bool?
+
+    var isActive: Bool { active == true }
+
+    var quantityText: String? {
+        guard let amount else { return nil }
+        let value = amount.rounded() == amount ? String(Int(amount)) : String(format: "%.2f", amount)
+        return [value, defaultUnit]
+            .compactMap { $0?.nilIfEmpty }
+            .joined(separator: " ")
+    }
+
+    var intervalText: String {
+        intervalDays == 1 ? "Jeden Tag" : "Alle \(intervalDays) Tage"
+    }
+
+    var dueText: String {
+        guard isActive else { return "Pausiert" }
+        switch dueInDays {
+        case ...(-1): "Seit \(-dueInDays) Tagen fällig"
+        case 0: "Heute fällig"
+        case 1: "Morgen fällig"
+        default: "In \(dueInDays) Tagen fällig"
+        }
+    }
+}
+
+struct RecurringRunResponse: Codable {
+    let ok: Bool
+    let count: Int
+}
+
 struct ImageBackup: Codable, Identifiable, Hashable {
     let id: Int
     let batchId: String

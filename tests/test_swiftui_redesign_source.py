@@ -65,6 +65,25 @@ def test_swiftui_cart_uses_catalog_suggestions_icons_and_categories():
     assert "category: category" in api
 
 
+def test_swiftui_cart_restores_recurring_purchase_management():
+    cart = _read(SWIFT / "Views" / "Cart" / "CartView.swift")
+    api = _read(SWIFT / "Networking" / "APIClient.swift")
+    models = _read(SWIFT / "Models" / "Models.swift")
+
+    assert 'case recurring = "Wiederkehrend"' in cart
+    assert "RecurringEditorView" in cart
+    assert 'TextField("Menge", text: $draft.amount)' in cart
+    assert 'Picker("Supermarkt-Kategorie", selection: $draft.category)' in cart
+    assert 'DatePicker(' in cart and '"Nächster Einkauf"' in cart
+    assert "runRecurringCart" in cart
+    assert "setRecurringCartItem" in cart
+    assert "deleteRecurringCartItem" in cart
+    assert '"/api/cart/recurring"' in api
+    assert '"/api/cart/recurring/run"' in api
+    assert "struct RecurringCartItem" in models
+    assert "@FlexibleBool var active" in models
+
+
 def test_swiftui_image_generation_exposes_backup_compare_restore_flow():
     history = _read(SWIFT / "Views" / "Recipes" / "RecipeImageHistoryView.swift")
     admin = _read(SWIFT / "Views" / "Admin" / "AdminView.swift")
