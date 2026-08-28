@@ -104,6 +104,10 @@ def test_swiftui_cooking_mode_persists_progress_scales_and_completes_idempotentl
     assert "updateCookingProgress" in cooking
     assert "completedSteps" in cooking
     assert "multiplier" in cooking
+    assert 'Text("Für wie viele Portionen kochst du?")' in cooking
+    assert '"Kochen starten"' in cooking
+    assert "hasStartedCooking = progress.exists" in cooking
+    assert "startCooking()" in cooking
     assert "CookingTimerView" in cooking
     assert "completionRequestID" in cooking
     assert '"Idempotency-Key": idempotencyKey' in api

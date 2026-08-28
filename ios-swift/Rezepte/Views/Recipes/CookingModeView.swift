@@ -17,6 +17,7 @@ struct CookingModeView: View {
     @State private var showIngredients = true
     @State private var showResetConfirmation = false
     @State private var showCompletion = false
+    @State private var hasStartedCooking = false
     @State private var saveState: CookingSaveState = .idle
     @State private var warningMessage: String?
     @State private var errorMessage: String?
@@ -47,8 +48,10 @@ struct CookingModeView: View {
                 ErrorState(message: "Bitte ergänze zuerst die Portionszahl im Rezept, damit Zutaten zuverlässig skaliert werden können.") {
                     dismiss()
                 }
-            } else {
+            } else if hasStartedCooking {
                 cookingContent
+            } else {
+                cookingStartContent
             }
         }
         .navigationTitle(recipe.name)
@@ -71,6 +74,107 @@ struct CookingModeView: View {
         } message: {
             Text("\(recipe.name) wurde für \(servings) Portionen als gekocht gespeichert.")
         }
+    }
+
+    private var cookingStartContent: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                Image(systemName: "fork.knife.circle.fill")
+                    .font(.system(size: 58))
+                    .foregroundStyle(theme.accent)
+                    .accessibilityHidden(true)
+
+                VStack(spacing: 8) {
+                    Text("Für wie viele Portionen kochst du?")
+                        .font(.title2.bold())
+                        .multilineTextAlignment(.center)
+                    Text("Die Zutatenmengen werden vor dem Start automatisch angepasst.")
+                        .font(.callout)
+                        .foregroundStyle(theme.muted)
+                        .multilineTextAlignment(.center)
+                }
+
+                startServingSelector
+
+                if let warningMessage {
+                    Label(warningMessage, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(theme.warning)
+                        .cardSurface()
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .foregroundStyle(theme.danger)
+                        .cardSurface()
+                        .accessibilityLabel("Fehler: \(errorMessage)")
+                }
+
+                Button {
+                    Task { await startCooking() }
+                } label: {
+                    Label(
+                        isSaving ? "Wird vorbereitet …" : "Kochen starten",
+                        systemImage: "play.fill"
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 50)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(theme.accent)
+                .foregroundStyle(theme.ink)
+                .disabled(isSaving)
+            }
+            .frame(maxWidth: 520)
+            .padding(24)
+            .frame(maxWidth: .infinity)
+        }
+        .background(theme.background)
+    }
+
+    private var startServingSelector: some View {
+        VStack(spacing: 14) {
+            Text("Originalrezept: \(originalServings) \(originalServings == 1 ? "Portion" : "Portionen")")
+                .font(.caption)
+                .foregroundStyle(theme.muted)
+
+            HStack(spacing: 18) {
+                Button {
+                    animate { servings = max(1, servings - 1) }
+                } label: {
+                    Image(systemName: "minus")
+                        .frame(width: 46, height: 46)
+                }
+                .buttonStyle(.bordered)
+                .disabled(servings <= 1 || isSaving)
+                .accessibilityLabel("Eine Portion weniger")
+
+                VStack(spacing: 2) {
+                    Text("\(servings)")
+                        .font(.largeTitle.bold().monospacedDigit())
+                    Text(servings == 1 ? "Portion" : "Portionen")
+                        .font(.caption)
+                        .foregroundStyle(theme.muted)
+                }
+                .frame(minWidth: 96)
+                .accessibilityElement(children: .combine)
+
+                Button {
+                    animate { servings = min(50, servings + 1) }
+                } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 46, height: 46)
+                }
+                .buttonStyle(.bordered)
+                .disabled(servings >= 50 || isSaving)
+                .accessibilityLabel("Eine Portion mehr")
+            }
+
+            Text(servings == originalServings ? "Originalmenge" : "Zutaten werden passend skaliert")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(servings == originalServings ? theme.muted : theme.accentPressed)
+        }
+        .frame(maxWidth: .infinity)
+        .cardSurface()
     }
 
     private var cookingContent: some View {
@@ -350,9 +454,20 @@ struct CookingModeView: View {
         do {
             let progress = try await session.api.cookingProgress(id: recipe.id)
             apply(progress)
+            hasStartedCooking = progress.exists
         } catch {
             warningMessage = "Der bisherige Fortschritt ist gerade nicht erreichbar. Du kannst neu beginnen."
         }
+    }
+
+    private func startCooking() async {
+        let didStart = await persist(
+            completed: completedSteps,
+            active: activeStep,
+            servings: servings
+        )
+        guard didStart else { return }
+        animate { hasStartedCooking = true }
     }
 
     private func toggleCurrentStep() async {
@@ -377,8 +492,9 @@ struct CookingModeView: View {
         await persist(completed: completedSteps, active: activeStep, servings: value)
     }
 
-    private func persist(completed: Set<Int>, active: Int, servings: Int) async {
-        guard !isSaving && !isFinishing else { return }
+    @discardableResult
+    private func persist(completed: Set<Int>, active: Int, servings: Int) async -> Bool {
+        guard !isSaving && !isFinishing else { return false }
         isSaving = true
         saveState = .saving
         errorMessage = nil
@@ -392,10 +508,12 @@ struct CookingModeView: View {
             )
             animate { apply(progress) }
             saveState = .saved
+            return true
         } catch {
             saveState = .error
             errorMessage = error.localizedDescription
             session.handle(error)
+            return false
         }
     }
 
@@ -411,6 +529,7 @@ struct CookingModeView: View {
                 completedSteps = []
                 activeStep = 0
                 servings = originalServings
+                hasStartedCooking = false
             }
             UserDefaults.standard.removeObject(forKey: completionStorageKey)
             saveState = .saved
