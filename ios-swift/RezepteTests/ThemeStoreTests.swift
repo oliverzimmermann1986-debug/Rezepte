@@ -12,9 +12,11 @@ final class ThemeStoreTests: XCTestCase {
         let first = ThemeStore(defaults: defaults)
         first.selection = .plum
         first.appearance = .dark
+        first.commentLanguage = .italian
 
         let restored = ThemeStore(defaults: defaults)
         XCTAssertEqual(restored.selection, .plum)
         XCTAssertEqual(restored.appearance, .dark)
+        XCTAssertEqual(restored.commentLanguage, .italian)
     }
 }

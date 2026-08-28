@@ -46,6 +46,20 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
+                Section("Sprache") {
+                    Picker("Kommentare anzeigen auf", selection: $themeStore.commentLanguage) {
+                        ForEach(CommentLanguage.allCases) { language in
+                            Text(language.title).tag(language)
+                        }
+                    }
+                    Label(
+                        "Gemeinsame Kochnotizen werden automatisch übersetzt. Der Originaltext bleibt immer erhalten.",
+                        systemImage: "character.bubble"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(theme.muted)
+                }
+
                 if session.fullAccess {
                     Section("Verwaltung") {
                         Button {

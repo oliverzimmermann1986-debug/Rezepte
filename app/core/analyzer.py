@@ -22,6 +22,22 @@ from .webhook import server_configured_request
 
 logger = logging.getLogger(__name__)
 
+TRANSLATION_LANGUAGES = {
+    "de": "Deutsch",
+    "en": "Englisch",
+    "fr": "Französisch",
+    "es": "Spanisch",
+    "it": "Italienisch",
+    "nl": "Niederländisch",
+}
+
+
+@dataclass(frozen=True)
+class TextTranslation:
+    text: str
+    translated: bool
+    source_language: Optional[str] = None
+
 
 @dataclass
 class RecipeAnalysis:
@@ -1117,6 +1133,63 @@ class OpenAIAnalyzer:
                 "tags": [],
                 "allergen_info": None,
             }
+
+    def translate_text(
+        self, text: str, target_language: str
+    ) -> Optional[TextTranslation]:
+        """Übersetzt kurzen, nutzergenerierten Text in eine erlaubte Sprache.
+
+        ``None`` bedeutet ausschließlich, dass der KI-Aufruf oder seine Antwort
+        fehlgeschlagen ist. Ein bereits passender Text kommt dagegen als
+        ``TextTranslation(translated=False)`` zurück und kann dadurch ebenfalls
+        gecacht werden.
+        """
+        clean = (text or "").strip()
+        if not clean:
+            return TextTranslation(text="", translated=False)
+        language_name = TRANSLATION_LANGUAGES.get(target_language)
+        if not language_name:
+            raise ValueError("Nicht unterstützte Zielsprache")
+        if len(clean) < 2:
+            return TextTranslation(text=clean, translated=False)
+
+        system = (
+            "Du übersetzt private Rezept-Kommentare präzise und vollständig. "
+            f"Die Zielsprache ist {language_name} ({target_language}). "
+            "Bewahre Bedeutung, Ton, Emojis, Mengen, Hashtags und @Namen. "
+            "Füge keine Erklärungen oder neuen Informationen hinzu. "
+            "Antworte AUSSCHLIESSLICH als gültiges JSON: "
+            '{"is_target_language": true, "source_language": "de"} '
+            "wenn der Text bereits in der Zielsprache ist, oder "
+            '{"is_target_language": false, "source_language": "en", '
+            '"translation": "..."}.'
+        )
+        content = self._call(system, f"Kommentar:\n\n{clean[:4000]}")
+        if not content:
+            return None
+        try:
+            data = json.loads(content)
+            source_language = str(data.get("source_language") or "").strip().lower()
+            source_language = source_language[:16] or None
+            if data.get("is_target_language") is True:
+                return TextTranslation(
+                    text=clean,
+                    translated=False,
+                    source_language=source_language,
+                )
+            translation = str(data.get("translation") or "").strip()
+            if not translation:
+                return None
+            return TextTranslation(
+                text=translation,
+                translated=True,
+                source_language=source_language,
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "OpenAI Text-Translate JSON-Parse: %s | %s", exc, content[:200]
+            )
+            return None
 
     def translate_to_german(self, text: str) -> Optional[str]:
         """Erkennt Sprache und übersetzt nach Deutsch falls nötig.

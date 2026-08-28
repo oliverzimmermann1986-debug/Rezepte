@@ -4,6 +4,7 @@ struct RecipeDetailView: View {
     let recipeID: Int
 
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.recipeTheme) private var theme
@@ -17,6 +18,12 @@ struct RecipeDetailView: View {
     @State private var showDeleteConfirmation = false
     @State private var isDeleting = false
     @State private var imageRefreshToken = UUID()
+    @State private var comments: [RecipeComment] = []
+    @State private var commentDraft = ""
+    @State private var commentsLoading = false
+    @State private var commentPosting = false
+    @State private var commentError: String?
+    @State private var commentRequestID = UUID()
 
     var body: some View {
         Group {
@@ -64,6 +71,7 @@ struct RecipeDetailView: View {
                         }
 
                         originalTextSection(recipe)
+                        commentsSection(recipe)
 
                         if !session.readOnly {
                             Button(role: .destructive) {
@@ -140,7 +148,13 @@ struct RecipeDetailView: View {
         } message: {
             Text("Das Rezept kann 30 Tage lang im Admin-Bereich wiederhergestellt werden.")
         }
-        .task { await load() }
+        .task {
+            await load()
+            await loadComments()
+        }
+        .onChange(of: themeStore.commentLanguage) { _, _ in
+            Task { await loadComments() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { notification in
             guard notification.object as? Int == recipeID else { return }
             imageRefreshToken = UUID()
@@ -317,6 +331,81 @@ struct RecipeDetailView: View {
         }
     }
 
+    private func commentsSection(_ recipe: Recipe) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Gemeinsame Kochnotizen", systemImage: "text.bubble")
+                    .font(.title2.bold())
+                Spacer()
+                if commentsLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            Text("Anzeige auf \(themeStore.commentLanguage.title). Originale bleiben zum Vergleich erhalten.")
+                .font(.caption)
+                .foregroundStyle(theme.muted)
+
+            if comments.isEmpty && !commentsLoading {
+                Text("Noch keine Kochnotiz vorhanden.")
+                    .foregroundStyle(theme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .cardSurface()
+            } else {
+                ForEach(comments) { comment in
+                    RecipeCommentCard(
+                        comment: comment,
+                        canDelete: !session.readOnly && comment.canDelete
+                    ) {
+                        Task { await deleteComment(comment) }
+                    }
+                }
+            }
+
+            if let commentError {
+                Label(commentError, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(theme.warning)
+            }
+
+            if session.readOnly {
+                Label("Im Gastzugang können Kochnotizen nur gelesen werden.", systemImage: "eye")
+                    .font(.caption)
+                    .foregroundStyle(theme.muted)
+            } else {
+                VStack(alignment: .trailing, spacing: 10) {
+                    TextField(
+                        "Kochnotiz schreiben …",
+                        text: $commentDraft,
+                        axis: .vertical
+                    )
+                    .lineLimit(2...6)
+                    .textFieldStyle(.roundedBorder)
+
+                    Button {
+                        Task { await postComment(recipeID: recipe.id) }
+                    } label: {
+                        Label(
+                            commentPosting ? "Wird gespeichert …" : "Notiz teilen",
+                            systemImage: "paperplane.fill"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(theme.accent)
+                    .foregroundStyle(theme.ink)
+                    .disabled(
+                        commentPosting
+                            || commentDraft.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty
+                    )
+                }
+                .cardSurface()
+            }
+        }
+    }
+
     private func load() async {
         isLoading = true
         errorMessage = nil
@@ -326,6 +415,69 @@ struct RecipeDetailView: View {
             showOriginalText = false
         } catch {
             errorMessage = error.localizedDescription
+            session.handle(error)
+        }
+    }
+
+    private func loadComments() async {
+        let requestedLanguage = themeStore.commentLanguage
+        let requestID = UUID()
+        commentRequestID = requestID
+        commentsLoading = true
+        commentError = nil
+        defer {
+            if commentRequestID == requestID {
+                commentsLoading = false
+            }
+        }
+        do {
+            let response = try await session.api.recipeComments(
+                id: recipeID,
+                language: requestedLanguage
+            )
+            guard commentRequestID == requestID,
+                  response.language == themeStore.commentLanguage.rawValue else {
+                return
+            }
+            comments = response.items
+        } catch {
+            if commentRequestID == requestID {
+                commentError = error.localizedDescription
+            }
+        }
+    }
+
+    private func postComment(recipeID: Int) async {
+        let body = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty, !session.readOnly, !commentPosting else { return }
+        commentPosting = true
+        commentError = nil
+        defer { commentPosting = false }
+        do {
+            _ = try await session.api.createRecipeComment(
+                id: recipeID,
+                body: body,
+                sourceLanguage: themeStore.commentLanguage
+            )
+            commentDraft = ""
+            await loadComments()
+        } catch {
+            commentError = error.localizedDescription
+            session.handle(error)
+        }
+    }
+
+    private func deleteComment(_ comment: RecipeComment) async {
+        guard !session.readOnly, comment.canDelete else { return }
+        commentError = nil
+        do {
+            _ = try await session.api.deleteRecipeComment(
+                recipeID: recipeID,
+                commentID: comment.id
+            )
+            comments.removeAll { $0.id == comment.id }
+        } catch {
+            commentError = error.localizedDescription
             session.handle(error)
         }
     }
@@ -393,6 +545,72 @@ struct RecipeDetailView: View {
 
     private func shareText(_ recipe: Recipe) -> String {
         [recipe.name, recipe.url].compactMap { $0 }.joined(separator: "\n")
+    }
+}
+
+private struct RecipeCommentCard: View {
+    let comment: RecipeComment
+    let canDelete: Bool
+    let onDelete: () -> Void
+
+    @Environment(\.recipeTheme) private var theme
+    @State private var showOriginal = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(comment.createdBy)
+                    .font(.subheadline.bold())
+                Text(timestamp)
+                    .font(.caption)
+                    .foregroundStyle(theme.muted)
+                Spacer()
+                if canDelete {
+                    Button(role: .destructive, action: onDelete) {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Eigene Kochnotiz löschen")
+                }
+            }
+
+            Text(showOriginal ? comment.originalText : comment.text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+
+            if comment.translated {
+                HStack(spacing: 8) {
+                    Label(
+                        "Automatisch übersetzt aus \(sourceLanguageTitle)",
+                        systemImage: "character.bubble"
+                    )
+                    Spacer()
+                    Button(showOriginal ? "Übersetzung" : "Original") {
+                        withAnimation(.snappy) { showOriginal.toggle() }
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(theme.muted)
+            } else if comment.translationStatus == "unavailable" {
+                Label(
+                    "Original · Übersetzung vorübergehend nicht verfügbar",
+                    systemImage: "exclamationmark.bubble"
+                )
+                .font(.caption)
+                .foregroundStyle(theme.warning)
+            }
+        }
+        .cardSurface()
+    }
+
+    private var sourceLanguageTitle: String {
+        let code = comment.detectedSourceLanguage ?? comment.sourceLanguage
+        return CommentLanguage(rawValue: code)?.title ?? code.uppercased()
+    }
+
+    private var timestamp: String {
+        Date(timeIntervalSince1970: comment.createdAt)
+            .formatted(date: .abbreviated, time: .shortened)
     }
 }
 

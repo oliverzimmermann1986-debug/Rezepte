@@ -101,6 +101,28 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum CommentLanguage: String, CaseIterable, Codable, Identifiable, Sendable {
+    case german = "de"
+    case english = "en"
+    case french = "fr"
+    case spanish = "es"
+    case italian = "it"
+    case dutch = "nl"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .german: "Deutsch"
+        case .english: "Englisch"
+        case .french: "Französisch"
+        case .spanish: "Spanisch"
+        case .italian: "Italienisch"
+        case .dutch: "Niederländisch"
+        }
+    }
+}
+
 struct RecipeTheme: Equatable {
     let accent: Color
     let accentPressed: Color
@@ -126,14 +148,22 @@ final class ThemeStore: ObservableObject {
         didSet { defaults.set(appearance.rawValue, forKey: Self.appearanceKey) }
     }
 
+    @Published var commentLanguage: CommentLanguage {
+        didSet { defaults.set(commentLanguage.rawValue, forKey: Self.commentLanguageKey) }
+    }
+
     private static let themeKey = "appearance-theme-v1"
     private static let appearanceKey = "appearance-mode-v1"
+    private static let commentLanguageKey = "comment-language-v1"
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         selection = ThemeChoice(rawValue: defaults.string(forKey: Self.themeKey) ?? "") ?? .butter
         appearance = AppearanceMode(rawValue: defaults.string(forKey: Self.appearanceKey) ?? "") ?? .system
+        commentLanguage = CommentLanguage(
+            rawValue: defaults.string(forKey: Self.commentLanguageKey) ?? ""
+        ) ?? .german
     }
 
     var theme: RecipeTheme { selection.theme }

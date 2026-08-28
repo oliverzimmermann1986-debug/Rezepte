@@ -20,7 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 240
+CURRENT_SCHEMA_VERSION = 250
 _MIGRATION_THREAD_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -428,6 +428,30 @@ CREATE INDEX IF NOT EXISTS idx_recipe_image_backups_recipe
   ON recipe_image_backups(recipe_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_recipe_image_backups_batch
   ON recipe_image_backups(batch_id, recipe_id);
+
+-- Gemeinsame Kochnotizen bleiben unverändert in ihrer Ursprungssprache
+-- gespeichert. Übersetzungen liegen getrennt daneben, damit die App jederzeit
+-- das Original zeigen und bei einem Modellwechsel neu übersetzen kann.
+CREATE TABLE IF NOT EXISTS recipe_comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  source_language TEXT NOT NULL DEFAULT 'de',
+  created_by TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_comments_recipe
+  ON recipe_comments(recipe_id, created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS recipe_comment_translations (
+  comment_id INTEGER NOT NULL REFERENCES recipe_comments(id) ON DELETE CASCADE,
+  target_language TEXT NOT NULL,
+  translated_text TEXT NOT NULL,
+  is_translated INTEGER NOT NULL DEFAULT 1,
+  detected_source_language TEXT,
+  created_at REAL NOT NULL,
+  PRIMARY KEY(comment_id, target_language)
+);
 
 -- schema_migrations: kleine, nachvollziehbare interne Migrationen ohne
 -- externes Tool. Bestehende idempotente ALTERs bleiben kompatibel.
@@ -1044,6 +1068,12 @@ class Database:
                 "VALUES (?, ?, ?)",
                 (240, "backfill_allergen_free_tags", time.time()),
             )
+
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) "
+            "VALUES (?, ?, ?)",
+            (250, "recipe_comments_with_translation_cache", time.time()),
+        )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
             defaults = {
@@ -1931,6 +1961,97 @@ class Database:
         with self.conn() as c:
             row = c.execute("SELECT * FROM recipes WHERE id=?", (recipe_id,)).fetchone()
             return dict(row) if row else None
+
+    def recipe_comment_create(
+        self,
+        recipe_id: int,
+        body: str,
+        *,
+        source_language: str,
+        created_by: str,
+    ) -> Dict[str, Any]:
+        with self.conn() as c:
+            cur = c.execute(
+                "INSERT INTO recipe_comments "
+                "(recipe_id, body, source_language, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    int(recipe_id),
+                    body,
+                    source_language,
+                    created_by,
+                    time.time(),
+                ),
+            )
+            row = c.execute(
+                "SELECT * FROM recipe_comments WHERE id=?",
+                (int(cur.lastrowid),),
+            ).fetchone()
+        if not row:
+            raise RuntimeError("Kommentar konnte nicht gespeichert werden")
+        return dict(row)
+
+    def recipe_comments_list(
+        self, recipe_id: int, *, limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM recipe_comments WHERE recipe_id=? "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (int(recipe_id), max(1, min(200, int(limit)))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def recipe_comment_translation_get(
+        self, comment_id: int, target_language: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT * FROM recipe_comment_translations "
+                "WHERE comment_id=? AND target_language=?",
+                (int(comment_id), target_language),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def recipe_comment_translation_set(
+        self,
+        comment_id: int,
+        target_language: str,
+        translated_text: str,
+        *,
+        is_translated: bool,
+        detected_source_language: Optional[str] = None,
+    ) -> None:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO recipe_comment_translations "
+                "(comment_id, target_language, translated_text, is_translated, "
+                "detected_source_language, created_at) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(comment_id, target_language) DO UPDATE SET "
+                "translated_text=excluded.translated_text, "
+                "is_translated=excluded.is_translated, "
+                "detected_source_language=excluded.detected_source_language, "
+                "created_at=excluded.created_at",
+                (
+                    int(comment_id),
+                    target_language,
+                    translated_text,
+                    1 if is_translated else 0,
+                    detected_source_language,
+                    time.time(),
+                ),
+            )
+
+    def recipe_comment_delete(
+        self, recipe_id: int, comment_id: int, *, created_by: str
+    ) -> bool:
+        with self.conn() as c:
+            cur = c.execute(
+                "DELETE FROM recipe_comments "
+                "WHERE id=? AND recipe_id=? AND created_by=? COLLATE NOCASE",
+                (int(comment_id), int(recipe_id), created_by),
+            )
+        return bool(cur.rowcount)
 
     def recipes_for_image_backfill(self) -> List[Dict[str, Any]]:
         with self.conn() as c:

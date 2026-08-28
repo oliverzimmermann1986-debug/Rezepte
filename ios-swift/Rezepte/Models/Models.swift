@@ -147,6 +147,26 @@ struct Recipe: Codable, Identifiable {
     let imageBackups: [ImageBackup]?
 }
 
+struct RecipeCommentsResponse: Codable, Sendable {
+    let items: [RecipeComment]
+    let language: String
+}
+
+struct RecipeComment: Codable, Identifiable, Hashable, Sendable {
+    let id: Int
+    let recipeId: Int
+    let originalText: String
+    let text: String
+    let sourceLanguage: String
+    let detectedSourceLanguage: String?
+    let targetLanguage: String
+    let translated: Bool
+    let translationStatus: String
+    let createdBy: String
+    let createdAt: Double
+    let canDelete: Bool
+}
+
 struct Ingredient: Codable, Identifiable, Hashable {
     let id: Int?
     var name: String
