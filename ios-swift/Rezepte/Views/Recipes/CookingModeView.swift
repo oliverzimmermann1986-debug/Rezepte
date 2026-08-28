@@ -94,7 +94,11 @@ struct CookingModeView: View {
                         .multilineTextAlignment(.center)
                 }
 
-                startServingSelector
+                ServingPicker(
+                    value: $servings,
+                    original: originalServings,
+                    disabled: isSaving
+                )
 
                 if let warningMessage {
                     Label(warningMessage, systemImage: "exclamationmark.triangle")
@@ -129,52 +133,6 @@ struct CookingModeView: View {
             .frame(maxWidth: .infinity)
         }
         .background(theme.background)
-    }
-
-    private var startServingSelector: some View {
-        VStack(spacing: 14) {
-            Text("Originalrezept: \(originalServings) \(originalServings == 1 ? "Portion" : "Portionen")")
-                .font(.caption)
-                .foregroundStyle(theme.muted)
-
-            HStack(spacing: 18) {
-                Button {
-                    animate { servings = max(1, servings - 1) }
-                } label: {
-                    Image(systemName: "minus")
-                        .frame(width: 46, height: 46)
-                }
-                .buttonStyle(.bordered)
-                .disabled(servings <= 1 || isSaving)
-                .accessibilityLabel("Eine Portion weniger")
-
-                VStack(spacing: 2) {
-                    Text("\(servings)")
-                        .font(.largeTitle.bold().monospacedDigit())
-                    Text(servings == 1 ? "Portion" : "Portionen")
-                        .font(.caption)
-                        .foregroundStyle(theme.muted)
-                }
-                .frame(minWidth: 96)
-                .accessibilityElement(children: .combine)
-
-                Button {
-                    animate { servings = min(50, servings + 1) }
-                } label: {
-                    Image(systemName: "plus")
-                        .frame(width: 46, height: 46)
-                }
-                .buttonStyle(.bordered)
-                .disabled(servings >= 50 || isSaving)
-                .accessibilityLabel("Eine Portion mehr")
-            }
-
-            Text(servings == originalServings ? "Originalmenge" : "Zutaten werden passend skaliert")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(servings == originalServings ? theme.muted : theme.accentPressed)
-        }
-        .frame(maxWidth: .infinity)
-        .cardSurface()
     }
 
     private var cookingContent: some View {

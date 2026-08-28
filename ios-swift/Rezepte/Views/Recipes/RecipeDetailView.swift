@@ -12,6 +12,9 @@ struct RecipeDetailView: View {
     @State private var errorMessage: String?
     @State private var showIngredientsEditor = false
     @State private var showStepsEditor = false
+    @State private var showShoppingServings = false
+    @State private var shoppingServings = 1
+    @State private var isAddingToCart = false
     @State private var cartConfirmation = false
     @State private var showOriginalText = false
     @State private var showDeleteConfirmation = false
@@ -106,7 +109,10 @@ struct RecipeDetailView: View {
         }
         .overlay(alignment: .bottom) {
             if cartConfirmation {
-                Label("Zur Einkaufsliste hinzugefügt", systemImage: "checkmark.circle.fill")
+                Label(
+                    "Für \(shoppingServings) \(shoppingServings == 1 ? "Portion" : "Portionen") hinzugefügt",
+                    systemImage: "checkmark.circle.fill"
+                )
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .background(.thinMaterial, in: Capsule())
@@ -126,6 +132,21 @@ struct RecipeDetailView: View {
                 StepEditorView(recipe: recipe) {
                     await load()
                 }
+            }
+        }
+        .sheet(isPresented: $showShoppingServings) {
+            if let recipe, let originalServings = recipe.servings {
+                ShoppingServingsSheet(
+                    recipeName: recipe.name,
+                    originalServings: originalServings,
+                    servings: $shoppingServings,
+                    isAdding: isAddingToCart
+                ) {
+                    Task { await addToCart(servings: shoppingServings) }
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .interactiveDismissDisabled(isAddingToCart)
             }
         }
         .confirmationDialog(
@@ -170,12 +191,14 @@ struct RecipeDetailView: View {
                     .disabled(recipe.steps.isEmpty || recipe.servings == nil)
 
                     Button {
-                        Task { await addToCart() }
+                        shoppingServings = recipe.servings ?? 1
+                        showShoppingServings = true
                     } label: {
                         Label("Einkaufen", systemImage: "cart.badge.plus")
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.bordered)
+                    .disabled(recipe.ingredients.isEmpty || recipe.servings == nil)
                 }
 
                 if recipe.steps.isEmpty || recipe.servings == nil {
@@ -183,6 +206,16 @@ struct RecipeDetailView: View {
                         recipe.steps.isEmpty
                             ? "Zum Kochen fehlen Zubereitungsschritte."
                             : "Zum Skalieren fehlt die Portionszahl.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(theme.warning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if recipe.ingredients.isEmpty {
+                    Label(
+                        "Für die Einkaufsliste fehlen Zutaten.",
                         systemImage: "info.circle"
                     )
                     .font(.caption)
@@ -330,9 +363,13 @@ struct RecipeDetailView: View {
         }
     }
 
-    private func addToCart() async {
+    private func addToCart(servings: Int) async {
+        guard !isAddingToCart else { return }
+        isAddingToCart = true
+        defer { isAddingToCart = false }
         do {
-            _ = try await session.api.addRecipeToCart(id: recipeID)
+            _ = try await session.api.addRecipeToCart(id: recipeID, servings: servings)
+            showShoppingServings = false
             withAnimation(.snappy) { cartConfirmation = true }
             try? await Task.sleep(for: .seconds(2))
             withAnimation(.snappy) { cartConfirmation = false }
@@ -393,6 +430,65 @@ struct RecipeDetailView: View {
 
     private func shareText(_ recipe: Recipe) -> String {
         [recipe.name, recipe.url].compactMap { $0 }.joined(separator: "\n")
+    }
+}
+
+private struct ShoppingServingsSheet: View {
+    let recipeName: String
+    let originalServings: Int
+    @Binding var servings: Int
+    let isAdding: Bool
+    let onAdd: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.recipeTheme) private var theme
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    VStack(spacing: 6) {
+                        Text("Für wie viele Portionen einkaufen?")
+                            .font(.title2.bold())
+                            .multilineTextAlignment(.center)
+                        Text("Die Mengen von \(recipeName) werden vor dem Hinzufügen angepasst.")
+                            .font(.callout)
+                            .foregroundStyle(theme.muted)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    ServingPicker(
+                        value: $servings,
+                        original: originalServings,
+                        disabled: isAdding
+                    )
+
+                    Button(action: onAdd) {
+                        Label(
+                            isAdding
+                                ? "Wird hinzugefügt …"
+                                : "Für \(servings) \(servings == 1 ? "Portion" : "Portionen") hinzufügen",
+                            systemImage: "cart.badge.plus"
+                        )
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(theme.accent)
+                    .foregroundStyle(theme.ink)
+                    .disabled(isAdding)
+                }
+                .padding()
+            }
+            .background(theme.background)
+            .navigationTitle("Einkauf planen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Abbrechen") { dismiss() }
+                        .disabled(isAdding)
+                }
+            }
+        }
     }
 }
 

@@ -443,6 +443,20 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.lastHeader("Idempotency-Key"), "stable-completion-id")
     }
 
+    func testAddingRecipeToCartSendsSelectedServings() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+
+        _ = try await client.addRecipeToCart(id: 42, servings: 6)
+
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/cook/42")
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        let body = try XCTUnwrap(String(data: MockURLProtocol.lastBody(), encoding: .utf8))
+        XCTAssertTrue(body.contains("\"servings\":6"))
+    }
+
     func testShoppingSuggestionsDecodeCatalogMetadata() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)

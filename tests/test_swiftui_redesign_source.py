@@ -114,6 +114,20 @@ def test_swiftui_cooking_mode_persists_progress_scales_and_completes_idempotentl
     assert '"/api/recipes/\\(id)/cooking-complete"' in api
 
 
+def test_swiftui_shopping_asks_for_servings_and_sends_exact_selection():
+    detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
+    picker = _read(SWIFT / "Views" / "Common" / "ServingPicker.swift")
+    api = _read(SWIFT / "Networking" / "APIClient.swift")
+
+    assert 'Text("Für wie viele Portionen einkaufen?")' in detail
+    assert "ShoppingServingsSheet" in detail
+    assert "shoppingServings = recipe.servings ?? 1" in detail
+    assert "addRecipeToCart(id: recipeID, servings: servings)" in detail
+    assert "struct ServingPicker" in picker
+    assert "original: originalServings" in detail
+    assert "body: CookPayload(servings: servings)" in api
+
+
 def test_swiftui_allergen_information_is_a_separate_multi_select_filter():
     filters = _read(SWIFT / "Views" / "Recipes" / "RecipeFiltersView.swift")
     models = _read(SWIFT / "Models" / "Models.swift")

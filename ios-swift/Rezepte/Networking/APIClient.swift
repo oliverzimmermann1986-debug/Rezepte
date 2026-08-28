@@ -271,11 +271,11 @@ actor APIClient {
         )
     }
 
-    func addRecipeToCart(id: Int, multiplier: Double = 1) async throws -> APIResult {
+    func addRecipeToCart(id: Int, servings: Int) async throws -> APIResult {
         try await send(
             "/api/cart/cook/\(id)",
             method: "POST",
-            body: CookPayload(multiplier: multiplier)
+            body: CookPayload(servings: servings)
         )
     }
 
@@ -690,7 +690,7 @@ private struct CookingProgressPayload: Codable {
     let servings: Int
 }
 private struct CookingCompletePayload: Codable { let servings: Int }
-private struct CookPayload: Codable { let multiplier: Double }
+private struct CookPayload: Codable { let servings: Int }
 private struct AddCartPayload: Codable {
     let name: String
     let amount: Double?
