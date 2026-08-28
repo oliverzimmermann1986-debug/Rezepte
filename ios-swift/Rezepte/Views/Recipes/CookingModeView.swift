@@ -119,7 +119,7 @@ struct CookingModeView: View {
                     Text(saveLabel)
                         .font(.caption)
                         .foregroundStyle(saveState == .error ? theme.danger : theme.muted)
-                        .accessibilityLiveRegion(.polite)
+                        .accessibilityLabel("Speicherstatus: \(saveLabel)")
                 }
                 Spacer()
                 Button("Neu starten", role: .destructive) {

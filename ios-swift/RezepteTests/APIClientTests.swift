@@ -314,7 +314,7 @@ final class APIClientTests: XCTestCase {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
         try await client.configure(server: "https://example.de", token: "token")
-        MockURLProtocol.respond(json: """{"ok":true}""")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
 
         _ = try await client.resolvePending(
             url: "https://example.de/rezept",
@@ -373,7 +373,7 @@ final class APIClientTests: XCTestCase {
         let progressBody = try XCTUnwrap(String(data: MockURLProtocol.lastBody(), encoding: .utf8))
         XCTAssertTrue(progressBody.contains("\"completed_steps\":[0,1]"))
 
-        MockURLProtocol.respond(json: """{"ok":true}""")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
         _ = try await client.completeCooking(
             id: 42,
             servings: 3,
@@ -404,7 +404,7 @@ final class APIClientTests: XCTestCase {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
         try await client.configure(server: "https://example.de", token: "token")
-        MockURLProtocol.respond(json: """{"ok":true}""")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
 
         _ = try await client.addCartItem(name: "Milch", amount: 1, unit: "l", category: "Kühlregal")
 
