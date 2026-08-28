@@ -622,9 +622,9 @@ actor APIClient {
         do {
             return try decoder.decode(Response.self, from: data)
         } catch {
-            # Kein Response-Body wird geloggt: Er könnte persönliche Rezept-
-            # oder Kontodaten enthalten. Der konkrete Pfad reicht, um einen
-            # App-/Server-Versionskonflikt gezielt zu erkennen.
+            // Kein Response-Body wird geloggt: Er könnte persönliche Rezept-
+            // oder Kontodaten enthalten. Der konkrete Pfad reicht, um einen
+            // App-/Server-Versionskonflikt gezielt zu erkennen.
             throw APIError.invalidResponse(endpoint)
         }
     }
