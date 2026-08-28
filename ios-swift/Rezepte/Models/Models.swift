@@ -331,7 +331,7 @@ struct RecurringCartItem: Codable, Identifiable, Hashable {
 
     var dueText: String {
         guard isActive else { return "Pausiert" }
-        switch dueInDays {
+        return switch dueInDays {
         case ...(-1): "Seit \(-dueInDays) Tagen fällig"
         case 0: "Heute fällig"
         case 1: "Morgen fällig"
