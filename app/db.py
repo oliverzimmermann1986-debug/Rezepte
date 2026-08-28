@@ -20,7 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 210
+CURRENT_SCHEMA_VERSION = 230
 _MIGRATION_THREAD_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -216,6 +216,24 @@ CREATE TABLE IF NOT EXISTS shopping_cart (
 CREATE INDEX IF NOT EXISTS idx_cart_canonical ON shopping_cart(canonical_name, unit);
 CREATE INDEX IF NOT EXISTS idx_cart_added     ON shopping_cart(added_at DESC);
 
+-- Lokale Produkt-Stammdaten für Autovervollständigung und eine stabile
+-- Supermarkt-Sortierung. Die Tabelle lernt aus Rezeptzutaten und manuellen
+-- Einträgen; sie enthält bewusst keine externen Nutzer- oder Händlerdaten.
+CREATE TABLE IF NOT EXISTS shopping_products (
+  canonical_name TEXT PRIMARY KEY COLLATE NOCASE,
+  display_name TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'Sonstiges',
+  icon TEXT NOT NULL DEFAULT '🛒',
+  default_unit TEXT,
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at REAL,
+  updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shopping_products_display
+  ON shopping_products(display_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_shopping_products_usage
+  ON shopping_products(usage_count DESC, last_used_at DESC);
+
 -- Wiederkehrende Einkäufe gehören zur selben lokalen Einkaufsliste. Beim
 -- Fälligwerden wird die Regel atomar in shopping_cart gemerged und auf den
 -- nächsten Termin weitergeschoben.
@@ -387,6 +405,29 @@ CREATE TABLE IF NOT EXISTS maintenance_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_maintenance_runs_created
   ON maintenance_runs(started_at DESC);
+
+-- Jede ersetzte Rezeptgrafik erhält vor der Generierung eine eigenständige,
+-- checksummierte Sicherung. backup_path ist relativ zur konfigurierten
+-- Sicherungswurzel und wird beim Zugriff erneut validiert.
+CREATE TABLE IF NOT EXISTS recipe_image_backups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id TEXT NOT NULL,
+  recipe_id INTEGER NOT NULL,
+  original_filename TEXT NOT NULL,
+  backup_path TEXT NOT NULL,
+  original_sha256 TEXT NOT NULL,
+  generated_sha256 TEXT,
+  model TEXT,
+  prompt TEXT,
+  created_at REAL NOT NULL,
+  generated_at REAL,
+  restored_at REAL,
+  UNIQUE(batch_id, recipe_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_image_backups_recipe
+  ON recipe_image_backups(recipe_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_recipe_image_backups_batch
+  ON recipe_image_backups(batch_id, recipe_id);
 
 -- schema_migrations: kleine, nachvollziehbare interne Migrationen ohne
 -- externes Tool. Bestehende idempotente ALTERs bleiben kompatibel.
@@ -593,6 +634,13 @@ class Database:
             # der Lease automatisch wieder auf pending gesetzt.
             ("extraction_claimed_at", "REAL"),
             ("extraction_claim_owner", "TEXT"),
+            # Reversible KI-Bildgenerierung. Ein Backfill sichert zunächst alle
+            # alten Bilder und ersetzt sie erst in einem zweiten Durchlauf.
+            ("image_generation_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("image_generated_at", "REAL"),
+            ("image_generation_model", "TEXT"),
+            ("image_generation_prompt", "TEXT"),
+            ("image_generation_batch_id", "TEXT"),
         ):
             if col not in cols:
                 c.execute(f"ALTER TABLE recipes ADD COLUMN {col} {sqltype}")
@@ -914,7 +962,7 @@ class Database:
         ).fetchone()
         hardening_migration = c.execute(
             "SELECT 1 FROM schema_migrations WHERE version=?",
-            (210,),
+            (CURRENT_SCHEMA_VERSION,),
         ).fetchone()
         if recipe_name_migration is None or hardening_migration is None:
             for recipe_id, stored_name in c.execute(
@@ -935,6 +983,48 @@ class Database:
         c.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
             (210, "transactional_boundaries_and_runtime_hardening", time.time()),
+        )
+
+        shopping_catalog_migration = c.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?", (220,)
+        ).fetchone()
+        if shopping_catalog_migration is None:
+            from .recipes.canonical import canonical_name as canonicalize
+            from .recipes.shopping_catalog import product_defaults
+
+            now = time.time()
+            rows = c.execute(
+                "SELECT COALESCE(NULLIF(TRIM(canonical_name), ''), TRIM(name)) AS canonical, "
+                "MAX(TRIM(name)) AS display_name, MAX(NULLIF(TRIM(unit), '')) AS default_unit, "
+                "COUNT(*) AS uses FROM recipe_ingredients "
+                "WHERE TRIM(COALESCE(name, ''))<>'' GROUP BY canonical"
+            ).fetchall()
+            for row in rows:
+                canonical = canonicalize(row[0] or row[1] or "")
+                if not canonical:
+                    continue
+                display_name = str(row[1] or canonical).strip()
+                defaults = product_defaults(display_name, canonical)
+                c.execute(
+                    "INSERT INTO shopping_products(canonical_name, display_name, category, icon, "
+                    "default_unit, usage_count, last_used_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(canonical_name) DO UPDATE SET "
+                    "usage_count=shopping_products.usage_count+excluded.usage_count, "
+                    "default_unit=COALESCE(shopping_products.default_unit, excluded.default_unit), "
+                    "updated_at=excluded.updated_at",
+                    (
+                        canonical, display_name, defaults["category"], defaults["icon"],
+                        row[2], int(row[3] or 0), None, now,
+                    ),
+                )
+            c.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                (220, "shopping_catalog_autocomplete_and_icons", now),
+            )
+
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (230, "transactional_boundaries_and_runtime_hardening", time.time()),
         )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
@@ -1824,6 +1914,125 @@ class Database:
             row = c.execute("SELECT * FROM recipes WHERE id=?", (recipe_id,)).fetchone()
             return dict(row) if row else None
 
+    def recipes_for_image_backfill(self) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM recipes WHERE deleted_at IS NULL ORDER BY id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def recipe_image_generation_status(
+        self,
+        recipe_id: int,
+        *,
+        status: str,
+        model: Optional[str] = None,
+        prompt: Optional[str] = None,
+        batch_id: Optional[str] = None,
+        generated_at: Optional[float] = None,
+        thumb_filename: Optional[str] = None,
+    ) -> None:
+        allowed = {"pending", "backed_up", "running", "ok", "error", "restored", "skipped"}
+        if status not in allowed:
+            raise ValueError(f"Ungültiger Bildstatus: {status}")
+        with self.conn() as c:
+            assignments = [
+                "image_generation_status=?",
+                "image_generation_model=COALESCE(?, image_generation_model)",
+                "image_generation_prompt=COALESCE(?, image_generation_prompt)",
+                "image_generation_batch_id=COALESCE(?, image_generation_batch_id)",
+                "image_generated_at=COALESCE(?, image_generated_at)",
+            ]
+            params: List[Any] = [status, model, prompt, batch_id, generated_at]
+            if thumb_filename is not None:
+                assignments.append("thumb_filename=?")
+                params.append(thumb_filename)
+            params.append(int(recipe_id))
+            c.execute(
+                f"UPDATE recipes SET {', '.join(assignments)} WHERE id=?",
+                params,
+            )
+
+    def recipe_image_backup_create(
+        self,
+        *,
+        batch_id: str,
+        recipe_id: int,
+        original_filename: str,
+        backup_path: str,
+        original_sha256: str,
+    ) -> int:
+        with self.conn() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO recipe_image_backups("
+                "batch_id, recipe_id, original_filename, backup_path, original_sha256, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    batch_id, int(recipe_id), original_filename, backup_path,
+                    original_sha256, time.time(),
+                ),
+            )
+            row = c.execute(
+                "SELECT id FROM recipe_image_backups WHERE batch_id=? AND recipe_id=?",
+                (batch_id, int(recipe_id)),
+            ).fetchone()
+            if not row:
+                raise RuntimeError("Bildsicherung konnte nicht registriert werden")
+            return int(row[0])
+
+    def recipe_image_backup_mark_generated(
+        self,
+        backup_id: int,
+        *,
+        generated_sha256: str,
+        model: str,
+        prompt: str,
+    ) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE recipe_image_backups SET generated_sha256=?, model=?, prompt=?, "
+                "generated_at=? WHERE id=?",
+                (generated_sha256, model, prompt, time.time(), int(backup_id)),
+            )
+
+    def recipe_image_backup_mark_restored(self, backup_id: int) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE recipe_image_backups SET restored_at=? WHERE id=?",
+                (time.time(), int(backup_id)),
+            )
+
+    def recipe_image_backup_get(self, backup_id: int) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT b.*, r.name AS recipe_name, r.folder_path, r.thumb_filename "
+                "FROM recipe_image_backups b LEFT JOIN recipes r ON r.id=b.recipe_id "
+                "WHERE b.id=?",
+                (int(backup_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def recipe_image_backup_list(
+        self, recipe_id: Optional[int] = None, limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        safe_limit = max(1, min(1000, int(limit)))
+        with self.conn() as c:
+            if recipe_id is None:
+                rows = c.execute(
+                    "SELECT b.*, r.name AS recipe_name FROM recipe_image_backups b "
+                    "LEFT JOIN recipes r ON r.id=b.recipe_id "
+                    "ORDER BY b.created_at DESC LIMIT ?",
+                    (safe_limit,),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT b.*, r.name AS recipe_name FROM recipe_image_backups b "
+                    "LEFT JOIN recipes r ON r.id=b.recipe_id WHERE b.recipe_id=? "
+                    "ORDER BY b.created_at DESC LIMIT ?",
+                    (int(recipe_id), safe_limit),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
     def recipe_get_by_url(self, url: str) -> Optional[Dict[str, Any]]:
         """Liefert das aktive Rezept einer Quell-URL für idempotente Importe."""
         with self.conn() as c:
@@ -2356,11 +2565,19 @@ class Database:
             if status == "ok" and ingredients is not None:
                 c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
                 for idx, ing in enumerate(ingredients):
+                    ingredient_name = ing.get("name") or ""
                     c.execute(
                         "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, "
                         "amount, unit, raw, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (recipe_id, ing.get("name") or "", ing.get("canonical_name"),
+                        (recipe_id, ingredient_name, ing.get("canonical_name"),
                          ing.get("amount"), ing.get("unit"), ing.get("raw"), idx),
+                    )
+                    self._shopping_product_upsert_conn(
+                        c,
+                        canonical_name=ing.get("canonical_name"),
+                        display_name=ingredient_name,
+                        default_unit=ing.get("unit"),
+                        increment_usage=False,
                     )
             c.execute(
                 "UPDATE recipes SET ingredients_status=?, ingredients_extracted_at=?, "
@@ -2414,18 +2631,26 @@ class Database:
             if replace_ingredients:
                 c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
                 for idx, ing in enumerate(ingredients):
+                    ingredient_name = ing.get("name") or ""
                     c.execute(
                         "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, "
                         "amount, unit, raw, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (
                             recipe_id,
-                            ing.get("name") or "",
+                            ingredient_name,
                             ing.get("canonical_name"),
                             ing.get("amount"),
                             ing.get("unit"),
                             ing.get("raw"),
                             idx,
                         ),
+                    )
+                    self._shopping_product_upsert_conn(
+                        c,
+                        canonical_name=ing.get("canonical_name"),
+                        display_name=ingredient_name,
+                        default_unit=ing.get("unit"),
+                        increment_usage=False,
                     )
 
             if replace_steps:
@@ -3468,14 +3693,90 @@ class Database:
             return {r[0]: int(r[1]) for r in c.execute(sql).fetchall()}
 
     # ─── Shopping Cart ────────────────────────────────────────────────────
+    @staticmethod
+    def _shopping_product_upsert_conn(
+        c,
+        *,
+        canonical_name: Optional[str],
+        display_name: str,
+        category: Optional[str] = None,
+        default_unit: Optional[str] = None,
+        increment_usage: bool = True,
+    ) -> None:
+        if not canonical_name:
+            from .recipes.canonical import canonical_name as canonicalize
+            canonical_name = canonicalize(display_name)
+        if not canonical_name:
+            return
+        from .recipes.shopping_catalog import product_defaults
+
+        defaults = product_defaults(display_name, canonical_name, category)
+        now = time.time()
+        c.execute(
+            "INSERT INTO shopping_products(canonical_name, display_name, category, icon, "
+            "default_unit, usage_count, last_used_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(canonical_name) DO UPDATE SET "
+            "display_name=excluded.display_name, category=excluded.category, icon=excluded.icon, "
+            "default_unit=COALESCE(excluded.default_unit, shopping_products.default_unit), "
+            "usage_count=shopping_products.usage_count+excluded.usage_count, "
+            "last_used_at=COALESCE(excluded.last_used_at, shopping_products.last_used_at), "
+            "updated_at=excluded.updated_at",
+            (
+                canonical_name,
+                display_name,
+                defaults["category"],
+                defaults["icon"],
+                default_unit,
+                1 if increment_usage else 0,
+                now if increment_usage else None,
+                now,
+            ),
+        )
+
+    def shopping_product_suggestions(
+        self, query: str = "", limit: int = 8
+    ) -> List[Dict[str, Any]]:
+        """Lokale Produktvorschläge, priorisiert nach Präfix und Nutzung."""
+        needle = " ".join(str(query or "").split()).casefold()
+        safe_limit = max(1, min(25, int(limit)))
+        with self.conn() as c:
+            if needle:
+                rows = c.execute(
+                    "SELECT canonical_name, display_name AS name, category, icon, default_unit, "
+                    "usage_count FROM shopping_products "
+                    "WHERE instr(lower(display_name), ?) > 0 OR instr(lower(canonical_name), ?) > 0 "
+                    "ORDER BY CASE WHEN lower(display_name)=? THEN 0 "
+                    "WHEN instr(lower(display_name), ?)=1 THEN 1 ELSE 2 END, "
+                    "usage_count DESC, display_name COLLATE NOCASE LIMIT ?",
+                    (needle, needle, needle, needle, safe_limit),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT canonical_name, display_name AS name, category, icon, default_unit, "
+                    "usage_count FROM shopping_products "
+                    "ORDER BY usage_count DESC, last_used_at DESC, display_name COLLATE NOCASE LIMIT ?",
+                    (safe_limit,),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
     def cart_list(self) -> List[Dict[str, Any]]:
         with self.conn() as c:
             rows = c.execute(
-                "SELECT * FROM shopping_cart ORDER BY checked ASC, "
+                "SELECT sc.*, COALESCE(sc.category, sp.category, 'Sonstiges') AS resolved_category, "
+                "CASE WHEN sc.category IS NULL OR sc.category=sp.category "
+                "THEN sp.icon ELSE NULL END AS icon FROM shopping_cart sc "
+                "LEFT JOIN shopping_products sp ON sp.canonical_name=sc.canonical_name "
+                "ORDER BY sc.checked ASC, "
                 "CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END, "
-                "sort_order ASC, added_at DESC"
+                "sort_order ASC, sc.added_at DESC"
             ).fetchall()
-            return [dict(r) for r in rows]
+            result = []
+            for row in rows:
+                item = dict(row)
+                item["category"] = item.pop("resolved_category")
+                result.append(item)
+            return result
 
     def cart_find_mergeable(self, canonical_name: str, unit: Optional[str]) -> Optional[Dict[str, Any]]:
         """Sucht einen Cart-Eintrag mit gleichem canonical+unit (case unit==None matched unit==None)."""
@@ -3500,10 +3801,13 @@ class Database:
         amount: Optional[float],
         unit: Optional[str],
         source_recipe_id: Optional[int],
+        category: Optional[str] = None,
     ) -> int:
         """Insert oder Merge basierend auf canonical_name+unit.
         Die eigentliche Einheiten-Konvertierung passiert vor diesem Call in
         cart_logic.add_to_cart() — hier wird nur summiert wenn unit gleich ist."""
+        from .recipes.shopping_catalog import product_defaults
+        resolved_category = product_defaults(name, canonical_name, category)["category"]
         with self.conn() as c:
             # Lesen und Schreiben müssen in derselben Write-Transaction liegen.
             # Sonst können zwei schnelle Adds beide "nicht vorhanden" sehen und
@@ -3528,15 +3832,25 @@ class Database:
                 if source_recipe_id and source_recipe_id not in src_ids:
                     src_ids.append(source_recipe_id)
                 c.execute(
-                    "UPDATE shopping_cart SET amount=?, source_recipe_ids=? WHERE id=?",
-                    (new_amount, json.dumps(src_ids), existing["id"]),
+                    "UPDATE shopping_cart SET amount=?, source_recipe_ids=?, "
+                    "category=COALESCE(category, ?) WHERE id=?",
+                    (new_amount, json.dumps(src_ids), resolved_category, existing["id"]),
+                )
+                self._shopping_product_upsert_conn(
+                    c, canonical_name=canonical_name, display_name=name,
+                    category=resolved_category or existing.get("category"), default_unit=unit,
                 )
                 return int(existing["id"])
             src_json = json.dumps([source_recipe_id] if source_recipe_id else [])
             cur = c.execute(
                 "INSERT INTO shopping_cart (name, canonical_name, amount, unit, "
-                "checked, added_at, source_recipe_ids) VALUES (?, ?, ?, ?, 0, ?, ?)",
-                (name, canonical_name, amount, unit, time.time(), src_json),
+                "checked, added_at, source_recipe_ids, category) "
+                "VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
+                (name, canonical_name, amount, unit, time.time(), src_json, resolved_category),
+            )
+            self._shopping_product_upsert_conn(
+                c, canonical_name=canonical_name, display_name=name,
+                category=resolved_category, default_unit=unit,
             )
             return int(cur.lastrowid)
 
@@ -3560,11 +3874,16 @@ class Database:
         today = date.today()
         with self.conn() as c:
             rows = c.execute(
-                "SELECT * FROM shopping_recurring ORDER BY active DESC, next_due_on, name COLLATE NOCASE"
+                "SELECT sr.*, COALESCE(sr.category, sp.category, 'Sonstiges') AS resolved_category, "
+                "CASE WHEN sr.category IS NULL OR sr.category=sp.category "
+                "THEN sp.icon ELSE NULL END AS icon FROM shopping_recurring sr "
+                "LEFT JOIN shopping_products sp ON sp.canonical_name=sr.canonical_name "
+                "ORDER BY sr.active DESC, sr.next_due_on, sr.name COLLATE NOCASE"
             ).fetchall()
         result: List[Dict[str, Any]] = []
         for row in rows:
             item = dict(row)
+            item["category"] = item.pop("resolved_category")
             try:
                 item["due_in_days"] = (date.fromisoformat(item["next_due_on"]) - today).days
             except (TypeError, ValueError):
@@ -3594,14 +3913,21 @@ class Database:
     ) -> int:
         now = time.time()
         with self.conn() as c:
+            from .recipes.shopping_catalog import product_defaults
+            resolved_category = product_defaults(name, canonical_name, category)["category"]
             cur = c.execute(
                 "INSERT INTO shopping_recurring "
                 "(name, canonical_name, amount, unit, category, interval_days, next_due_on, "
                 "active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    name, canonical_name, amount, unit, category, int(interval_days),
+                    name, canonical_name, amount, unit, resolved_category, int(interval_days),
                     next_due_on, 1 if active else 0, now, now,
                 ),
+            )
+            self._shopping_product_upsert_conn(
+                c, canonical_name=canonical_name, display_name=name,
+                category=resolved_category, default_unit=unit,
+                increment_usage=False,
             )
             return int(cur.lastrowid)
 
@@ -3745,9 +4071,16 @@ class Database:
         now = time.time()
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
-            current = [dict(row) for row in c.execute(
-                "SELECT * FROM shopping_cart ORDER BY id"
-            ).fetchall()]
+            current = []
+            for row in c.execute(
+                "SELECT sc.*, COALESCE(sc.category, sp.category, 'Sonstiges') "
+                "AS resolved_category FROM shopping_cart sc "
+                "LEFT JOIN shopping_products sp ON sp.canonical_name=sc.canonical_name "
+                "ORDER BY sc.id"
+            ).fetchall():
+                item = dict(row)
+                item["category"] = item.pop("resolved_category")
+                current.append(item)
             if cart_fingerprint(current) != expected_fingerprint:
                 return None
             c.execute("DELETE FROM shopping_cart")

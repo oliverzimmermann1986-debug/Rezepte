@@ -136,4 +136,12 @@ def _dispatch(kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if kind == "share_ingest":
         from ..routes.api_share import run_share_ingest_task
         return run_share_ingest_task(payload)
+    if kind == "recipe_image_generate":
+        from ..recipes.image_generation import generate_recipe_image
+        return generate_recipe_image(
+            int(payload["recipe_id"]), batch_id=payload.get("batch_id")
+        )
+    if kind == "recipe_image_backfill":
+        from ..recipes.image_generation import run_image_backfill
+        return run_image_backfill(payload)
     raise ValueError(f"Unbekannter Background-Task: {kind}")

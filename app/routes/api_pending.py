@@ -245,26 +245,27 @@ def _assert_upload_capacity(payload_size: int) -> None:
 
 @router.post("/import-url")
 def import_url(body: ImportUrlBody) -> Dict[str, Any]:
-    """Nimmt einen Social-Post sofort an und analysiert ihn im Hintergrund.
+    """Nimmt eine Rezept-Webquelle sofort an und analysiert sie im Hintergrund.
 
     Der Platzhalter ist direkt in der manuellen Prüfung sichtbar. Caption- und
     KI-Auswertung laufen persistent in der Background-Queue, damit die iOS-App
     nicht während ``yt-dlp``/OpenAI in einen Request-Timeout läuft. Medien
     werden weiterhin nicht heruntergeladen.
     """
-    from ..core.email_processor import normalize_content_url
+    from ..core.recipe_web import normalize_recipe_url, recipe_source_platform
 
     raw_url = (body.url or "").strip()
     if not raw_url:
         raise HTTPException(400, "URL fehlt")
     if body.type not in ("recipe", "wedding"):
         raise HTTPException(400, "type muss 'recipe' oder 'wedding' sein")
-    url = normalize_content_url(raw_url)
+    url = normalize_recipe_url(raw_url)
     if not url:
         raise HTTPException(
             400,
-            "Das ist kein gültiger einzelner TikTok-/Instagram-Post. "
-            "Bitte den Link zu einem konkreten Post einfügen.",
+            "Das ist keine gültige öffentliche HTTPS-Rezeptquelle. Bitte einen "
+            "einzelnen TikTok-/Instagram-Post, ein YouTube-Video, einen "
+            "Pinterest-Pin oder eine konkrete Rezeptseite einfügen.",
         )
 
     db = get_db()
@@ -272,7 +273,7 @@ def import_url(body: ImportUrlBody) -> Dict[str, Any]:
         return {"ok": True, "status": "duplicate", "url": url,
                 "message": "URL wurde bereits importiert"}
 
-    platform = "TikTok" if "tiktok.com" in url else "Instagram"
+    platform = recipe_source_platform(url)
     db.pending_add(
         url=url,
         content_type=body.type,
@@ -304,7 +305,7 @@ def import_url(body: ImportUrlBody) -> Dict[str, Any]:
         "accepted": True,
         "url": url,
         "task_id": task_id,
-        "message": "Link übernommen. Caption und Rezeptdaten werden jetzt per KI ausgewertet.",
+        "message": "Link übernommen. Seiteninhalt und Rezeptdaten werden jetzt ausgewertet.",
     }
 
 

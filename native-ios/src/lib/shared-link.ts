@@ -1,19 +1,17 @@
 import type { ShareIntent } from 'expo-share-intent';
 
-const SUPPORTED_HOSTS = new Set([
-  'instagram.com',
-  'www.instagram.com',
-  'm.tiktok.com',
-  'tiktok.com',
-  'vm.tiktok.com',
-  'vt.tiktok.com',
-  'www.tiktok.com',
-]);
-
 const URL_CANDIDATE = /https:\/\/[^\s<>"']+/giu;
 
 function withoutTrailingPunctuation(value: string) {
   return value.replace(/[),.;!?\]}]+$/u, '');
+}
+
+function isObviouslyPrivateHost(hostname: string) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/gu, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+  if (/^(127\.|10\.|192\.168\.|169\.254\.)/u.test(host)) return true;
+  const match = host.match(/^172\.(\d+)\./u);
+  return !!match && Number(match[1]) >= 16 && Number(match[1]) <= 31;
 }
 
 export function socialLinkFromSharedContent(
@@ -33,13 +31,13 @@ export function socialLinkFromSharedContent(
         parsed.protocol === 'https:'
         && !parsed.username
         && !parsed.password
-        && SUPPORTED_HOSTS.has(parsed.hostname.toLowerCase())
+        && !isObviouslyPrivateHost(parsed.hostname)
       ) {
         parsed.hash = '';
         return parsed.toString();
       }
     } catch {
-      // TikTok teilt oft einen Begleittext; nicht passende Teile werden ignoriert.
+      // Geteilte Apps liefern oft Begleittext; nicht passende Teile werden ignoriert.
     }
   }
   return null;

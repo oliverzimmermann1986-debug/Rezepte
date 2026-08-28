@@ -30,6 +30,7 @@ function scrapperApp() {
       maintenanceRuns: [],
       maintenanceBusy: '',
       maintenanceResult: null,
+      imageBackfill: null,
       accessDenied: false,
     },
 
@@ -130,7 +131,8 @@ function scrapperApp() {
     },
     cart: {
       items: [],
-      add: { name: '', amount: null, unit: '' },
+      add: { name: '', amount: null, unit: '', category: '' },
+      suggestions: [],
       external: false,
       connectionError: '',
       list: [],
@@ -253,6 +255,8 @@ function scrapperApp() {
       sharing: false,                // Loading-state für 🔗 Share-Button
       verifying: false,              // Loading für 'manuell geprüft'-Toggle
       rescraping: false,             // Loading für Re-Scrape im Modal
+      imageGenerating: false,
+      imageRestoring: null,
       activeId: null,
       requestEpoch: 0,
       controller: null,
@@ -687,6 +691,66 @@ function scrapperApp() {
         await this.loadAdminOverview();
       } catch (_) { this.showToast('Wartung fehlgeschlagen', 'err'); }
       finally { this.admin.maintenanceBusy = ''; }
+    },
+
+    async startRecipeImageBackfill() {
+      if (!confirm(
+        'Für alle Rezepte neue Bilder generieren?\n\n' +
+        'Vor der ersten Generierung werden ausnahmslos alle vorhandenen Bilder ' +
+        'checksummiert gesichert. Der Lauf nutzt die kostenpflichtige OpenAI Image API.'
+      )) return;
+      this.admin.maintenanceBusy = 'recipe_images';
+      try {
+        const result = await this.api('POST', '/api/recipes/images/backfill', {});
+        this.admin.imageBackfill = { status: 'running', result };
+        this.showToast('Bildsicherung und anschließende Generierung gestartet');
+        this.pollRecipeImageBackfill(result.run_id);
+      } catch (_) {
+        this.showToast('Bildlauf konnte nicht gestartet werden', 'err');
+        this.admin.maintenanceBusy = '';
+      }
+    },
+
+    async pollRecipeImageBackfill(runId) {
+      try {
+        const run = await this.api('GET', `/api/recipes/images/backfill/${runId}`, undefined, { silent: true });
+        this.admin.imageBackfill = run;
+        if (run.status === 'running') {
+          window.setTimeout(() => this.pollRecipeImageBackfill(runId), 3000);
+          return;
+        }
+        this.admin.maintenanceBusy = '';
+        this.showToast(run.status === 'ok' ? 'Rezeptbilder fertig' : 'Bildlauf mit Fehlern beendet', run.status === 'ok' ? 'ok' : 'err');
+        await this.loadMaintenanceRuns();
+      } catch (_) {
+        this.admin.maintenanceBusy = '';
+      }
+    },
+
+    async generateRecipeImage() {
+      const recipe = this.recipeDetail.data;
+      if (!recipe || this.recipeDetail.imageGenerating) return;
+      this.recipeDetail.imageGenerating = true;
+      try {
+        await this.api('POST', `/api/recipes/${recipe.id}/generate-image`, {});
+        recipe.image_generation_status = 'pending';
+        this.showToast('Bildgenerierung gestartet; das bisherige Bild wird vorher gesichert');
+      } finally {
+        this.recipeDetail.imageGenerating = false;
+      }
+    },
+
+    async restoreRecipeImageBackup(item) {
+      if (!item?.id || !confirm('Dieses gesicherte Bild wieder als aktives Rezeptbild setzen?')) return;
+      this.recipeDetail.imageRestoring = item.id;
+      try {
+        await this.api('POST', `/api/recipes/image-backups/${item.id}/restore`, {});
+        this.showToast('Altes Rezeptbild wiederhergestellt');
+        await this.openRecipe(this.recipeDetail.data.id);
+        await this.loadRecipes();
+      } finally {
+        this.recipeDetail.imageRestoring = null;
+      }
     },
 
     async loadMaintenanceRuns() {
@@ -3548,11 +3612,64 @@ function scrapperApp() {
         name,
         amount: this.cart.add.amount,
         unit: this.cart.add.unit || null,
+        category: this.cart.add.category || null,
       });
       if (r && r.ok) {
-        this.cart.add = { name: '', amount: null, unit: '' };
+        this.cart.add = { name: '', amount: null, unit: '', category: '' };
+        this.cart.suggestions = [];
         this.loadCart();
       }
+    },
+
+    async loadCartSuggestions() {
+      if (this.cart.external) return;
+      const query = (this.cart.add.name || '').trim();
+      if (!query) { this.cart.suggestions = []; return; }
+      try {
+        const result = await this.api(
+          'GET', `/api/cart/suggestions?q=${encodeURIComponent(query)}&limit=8`,
+          undefined, { silent: true }
+        );
+        this.cart.suggestions = result?.items || [];
+      } catch (_) {
+        this.cart.suggestions = [];
+      }
+    },
+
+    chooseCartSuggestion(item) {
+      this.cart.add.name = item.name || '';
+      this.cart.add.unit = item.default_unit || '';
+      this.cart.add.category = item.category || '';
+      this.cart.suggestions = [];
+    },
+
+    shoppingCategoryIcon(category) {
+      return ({
+        'Obst & Gemüse': '🍎', 'Bäckerei': '🥖', 'Fleisch & Fisch': '🥩',
+        'Kühlregal': '🥛', 'Vorrat & Konserven': '🥫', 'Getränke': '🥤',
+        'Tiefkühl': '❄️', 'Drogerie & Haushalt': '🧴', 'Sonstiges': '🛒',
+      })[category || 'Sonstiges'] || '🛒';
+    },
+
+    localCartGroups() {
+      const order = [
+        'Obst & Gemüse', 'Bäckerei', 'Fleisch & Fisch', 'Kühlregal',
+        'Vorrat & Konserven', 'Getränke', 'Tiefkühl',
+        'Drogerie & Haushalt', 'Sonstiges',
+      ];
+      const groups = new Map();
+      for (const item of this.cart.items || []) {
+        const category = item.category || 'Sonstiges';
+        if (!groups.has(category)) groups.set(category, []);
+        groups.get(category).push(item);
+      }
+      return [...groups.entries()]
+        .map(([category, items]) => ({ category, items }))
+        .sort((a, b) => {
+          const ai = order.indexOf(a.category), bi = order.indexOf(b.category);
+          return (ai < 0 ? order.length : ai) - (bi < 0 ? order.length : bi)
+            || a.category.localeCompare(b.category, 'de');
+        });
     },
 
     async toggleCartItem(id, checked) {

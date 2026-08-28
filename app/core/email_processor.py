@@ -15,7 +15,7 @@ import time
 from contextlib import contextmanager
 from email.header import decode_header
 from typing import Iterable, List, Dict, Optional
-from urllib.parse import urlsplit, urlunsplit
+from .recipe_web import normalize_recipe_url
 
 logger = logging.getLogger(__name__)
 
@@ -25,48 +25,9 @@ URL_PATTERN = re.compile(
 )
 
 
-_TIKTOK_HOSTS = {
-    "tiktok.com", "www.tiktok.com", "m.tiktok.com",
-    "vm.tiktok.com", "vt.tiktok.com",
-}
-_INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com"}
-
-
 def normalize_content_url(url: str) -> Optional[str]:
-    """Validiert und normalisiert einen einzelnen TikTok-/Instagram-Post.
-
-    Profil-Links wie ``tiktok.com/@chefkoch`` oder ``instagram.com/handle`` lassen
-    wir nicht als Rezeptquelle zu. Exakte Host-Prüfung verhindert Verwechslungen
-    wie ``instagram.com.evil.example`` oder eingebettete Zugangsdaten. Tracking-
-    Parameter und Fragmente werden nicht gespeichert.
-    """
-    try:
-        parsed = urlsplit((url or "").strip())
-        if parsed.scheme.lower() != "https" or not parsed.hostname:
-            return None
-        if parsed.username or parsed.password:
-            return None
-        if parsed.port not in (None, 443):
-            return None
-    except ValueError:
-        return None
-
-    host = parsed.hostname.lower().rstrip(".")
-    path = parsed.path or "/"
-    path_lower = path.lower()
-    if host in {"vm.tiktok.com", "vt.tiktok.com"}:
-        if path == "/":
-            return None
-    elif host in _TIKTOK_HOSTS:
-        if "/video/" not in path_lower and "/photo/" not in path_lower:
-            return None
-    elif host in _INSTAGRAM_HOSTS:
-        if not any(marker in path_lower for marker in ("/reel/", "/p/", "/tv/")):
-            return None
-    else:
-        return None
-
-    return urlunsplit(("https", host, path, "", ""))
+    """Kompatibilitätsname für einzelne Social-Posts und Rezept-Webseiten."""
+    return normalize_recipe_url(url)
 
 
 def is_content_url(url: str) -> bool:

@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
@@ -399,6 +400,131 @@ def known_ingredients():
     return {"ingredients": get_db().ingredients_known()}
 
 
+def _public_image_backup(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value for key, value in item.items()
+        if key not in {"backup_path", "folder_path"}
+    } | {"file_url": f"/api/recipes/image-backups/{int(item['id'])}/file"}
+
+
+@router.post(
+    "/images/backfill", status_code=202, dependencies=[Depends(require_admin)]
+)
+def start_image_backfill(request: Request):
+    """Sichert alle alten Bilder und startet erst danach die Generierung."""
+    from ..jobs.task_queue import enqueue
+    from ..recipes.image_generation import ensure_image_generation_configured
+
+    try:
+        ensure_image_generation_configured()
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    db = get_db()
+    batch_id = uuid.uuid4().hex
+    run_id = db.maintenance_start("recipe_image_backfill", _actor(request))
+    try:
+        task_id = enqueue(
+            "recipe_image_backfill",
+            {"run_id": run_id, "batch_id": batch_id},
+            max_active=1,
+        )
+    except Exception as exc:
+        db.maintenance_finish(
+            run_id, ok=False, result={"error": f"Task konnte nicht gestartet werden: {exc}"}
+        )
+        raise HTTPException(409, str(exc)) from exc
+    return {"ok": True, "task_id": task_id, "run_id": run_id, "batch_id": batch_id}
+
+
+@router.get(
+    "/images/backfill/{run_id}", dependencies=[Depends(require_admin)]
+)
+def image_backfill_status(run_id: int):
+    run = get_db().maintenance_get(run_id)
+    if not run or run.get("kind") != "recipe_image_backfill":
+        raise HTTPException(404, "Bildlauf nicht gefunden")
+    return run
+
+
+@router.get("/images/backups", dependencies=[Depends(require_admin)])
+def list_image_backups(
+    recipe_id: Optional[int] = Query(None, ge=1),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    items = get_db().recipe_image_backup_list(recipe_id, limit)
+    return {"items": [_public_image_backup(item) for item in items]}
+
+
+@router.get(
+    "/image-backups/{backup_id}/file", dependencies=[Depends(require_admin)]
+)
+def get_image_backup_file(backup_id: int):
+    from ..recipes.image_generation import image_backup_root
+
+    backup = get_db().recipe_image_backup_get(backup_id)
+    if not backup:
+        raise HTTPException(404, "Bildsicherung nicht gefunden")
+    root = image_backup_root()
+    try:
+        source = resolve_regular_file_under(root / str(backup["backup_path"]), root)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(404, "Bildsicherungsdatei fehlt") from exc
+    return FileResponse(
+        source,
+        headers={"Cache-Control": "private, no-store", "Content-Disposition": "inline"},
+    )
+
+
+@router.post(
+    "/image-backups/{backup_id}/restore", dependencies=[Depends(require_admin)]
+)
+def restore_image_backup(backup_id: int):
+    from ..recipes.image_generation import restore_recipe_image_backup
+
+    try:
+        return restore_recipe_image_backup(backup_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post(
+    "/{recipe_id}/generate-image",
+    status_code=202,
+    dependencies=[Depends(require_admin)],
+)
+def queue_recipe_image(recipe_id: int):
+    from ..jobs.task_queue import enqueue
+    from ..recipes.image_generation import ensure_image_generation_configured
+
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    try:
+        settings = ensure_image_generation_configured()
+        batch_id = uuid.uuid4().hex
+        task_id = enqueue(
+            "recipe_image_generate",
+            {"recipe_id": recipe_id, "batch_id": batch_id},
+            dedupe_key=str(recipe_id),
+        )
+        task = db.background_task_get(task_id) or {}
+        existing_payload = task.get("payload") or {}
+        batch_id = str(existing_payload.get("batch_id") or batch_id)
+        if task.get("status") != "running":
+            db.recipe_image_generation_status(
+                recipe_id,
+                status="pending",
+                model=settings["model"],
+                batch_id=batch_id,
+            )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"ok": True, "task_id": task_id, "recipe_id": recipe_id, "batch_id": batch_id}
+
+
 @router.get("/{recipe_id}")
 def get_recipe(recipe_id: int):
     db = get_db()
@@ -418,6 +544,10 @@ def get_recipe(recipe_id: int):
     r["tags"] = db.recipe_tags_get(recipe_id)
     r["cook_summary"] = db.recipe_cook_summary(recipe_id)
     r["cook_history"] = db.recipe_cook_history(recipe_id, limit=10)
+    r["image_backups"] = [
+        _public_image_backup(item)
+        for item in db.recipe_image_backup_list(recipe_id, limit=20)
+    ]
     # PDF-Rezepte (Mail-Import): Original-PDF melden, damit das Frontend
     # einen "PDF öffnen"-Button zeigen kann (Bild allein reicht nicht).
     try:

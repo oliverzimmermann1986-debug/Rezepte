@@ -172,11 +172,11 @@
         </div>
       </div>
 
-      <!-- Manueller Direkt-Import einer einzelnen Video-URL -->
+      <!-- Manueller Direkt-Import einer einzelnen Rezeptquelle -->
       <div class="config-section" style="margin-bottom: 14px;">
         <div class="body" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
           <input x-model="manualImportUrl" @keydown.enter="importUrl()"
-                 placeholder="TikTok-/Instagram-Video-URL direkt importieren…"
+                 placeholder="Webseite, Pinterest, YouTube, TikTok oder Instagram…"
                  style="flex: 1; min-width: 240px;">
           <button class="btn btn-primary" @click="importUrl()" :disabled="manualImporting || !manualImportUrl">
             <span x-show="!manualImporting">⬇ Importieren</span>
@@ -1257,6 +1257,12 @@
         <button class="maintenance-action" @click="runMaintenance('cleanup_temp')" :disabled="admin.maintenanceBusy"><strong>Temp bereinigen</strong><span>Alte Arbeitsdateien über 7 Tage</span></button>
         <button class="maintenance-action" @click="runMaintenance('rebuild_fts')" :disabled="admin.maintenanceBusy"><strong>Suchindex reparieren</strong><span>FTS5 vollständig neu aufbauen</span></button>
         <button class="maintenance-action" @click="runMaintenance('vacuum')" :disabled="admin.maintenanceBusy"><strong>Datenbank komprimieren</strong><span>Freien SQLite-Speicher zurückholen</span></button>
+        <button class="maintenance-action" @click="startRecipeImageBackfill()" :disabled="admin.maintenanceBusy"><strong>Rezeptbilder generieren</strong><span>Erst Altbestand sichern, dann alle Bilder neu erzeugen</span></button>
+      </div>
+      <div class="card" x-show="admin.imageBackfill">
+        <h3>Rezeptbild-Lauf</h3>
+        <p class="muted" x-text="admin.imageBackfill?.result?.phase === 'backup' ? 'Vorhandene Bilder werden vollständig gesichert …' : admin.imageBackfill?.result?.phase === 'generate' ? 'Neue Bilder werden generiert …' : 'Status: ' + (admin.imageBackfill?.status || 'gestartet')"></p>
+        <pre class="admin-json" x-text="JSON.stringify(admin.imageBackfill?.result || admin.imageBackfill, null, 2)"></pre>
       </div>
       <div class="card" x-show="admin.maintenanceResult">
         <h3>Letztes Ergebnis</h3>
@@ -1949,7 +1955,7 @@
           <div class="cart-loading" x-show="cart.loading">Einkaufsliste wird geladen …</div>
           <template x-for="group in cart.list" :key="group.category">
             <div class="cart-group">
-              <h2 x-text="group.category || 'Sonstiges'"></h2>
+              <h2><span aria-hidden="true" x-text="shoppingCategoryIcon(group.category)"></span> <span x-text="group.category || 'Sonstiges'"></span></h2>
               <div class="cart-list">
                 <template x-for="item in group.items" :key="item.id">
                   <div class="cart-item" :class="item.checked && 'checked'">
@@ -1957,6 +1963,7 @@
                            :aria-label="item.name + (item.checked ? ' als offen markieren' : ' erledigen')"
                            @change="toggleCartItem(item.id, $event.target.checked)" />
                     <div class="cart-item-name">
+                      <span class="cart-product-icon" aria-hidden="true" x-text="item.icon || shoppingCategoryIcon(group.category)"></span>
                       <span x-text="item.name"></span>
                     </div>
                     <div class="cart-item-amount">
@@ -1987,7 +1994,10 @@
           </div>
 
           <div class="cart-add">
-            <input type="text" x-model="cart.add.name" placeholder="Zutat" />
+            <input type="text" x-model="cart.add.name" placeholder="Zutat"
+                   autocomplete="off"
+                   @input="cart.add.category=''; loadCartSuggestions()"
+                   @focus="loadCartSuggestions()" />
             <input type="number" step="any" x-model.number="cart.add.amount"
                    placeholder="Menge" aria-label="Menge" />
             <select x-model="cart.add.unit" aria-label="Einheit">
@@ -2017,9 +2027,22 @@
             <button class="btn btn-primary" @click="addToCart()">＋ Hinzufügen</button>
           </div>
 
-          <div class="cart-list" x-show="cart.items.length > 0">
-            <template x-for="item in cart.items" :key="item.id">
-              <div class="cart-swipe-row">
+          <div class="cart-suggestions" x-show="cart.suggestions.length" @click.outside="cart.suggestions=[]">
+            <template x-for="suggestion in cart.suggestions" :key="suggestion.canonical_name">
+              <button type="button" @click="chooseCartSuggestion(suggestion)">
+                <span class="cart-product-icon" aria-hidden="true" x-text="suggestion.icon || shoppingCategoryIcon(suggestion.category)"></span>
+                <span><strong x-text="suggestion.name"></strong><small x-text="suggestion.category"></small></span>
+              </button>
+            </template>
+          </div>
+
+          <div x-show="cart.items.length > 0">
+            <template x-for="group in localCartGroups()" :key="group.category">
+              <div class="cart-group">
+                <h2><span aria-hidden="true" x-text="shoppingCategoryIcon(group.category)"></span> <span x-text="group.category"></span></h2>
+                <div class="cart-list">
+                <template x-for="item in group.items" :key="item.id">
+                <div class="cart-swipe-row">
                 <div class="cart-swipe-actions cart-swipe-left">
                   <span>✓ erledigt</span>
                 </div>
@@ -2033,6 +2056,7 @@
                   <input type="checkbox" :checked="item.checked"
                          @change="toggleCartItem(item.id, $event.target.checked)" />
                   <div class="cart-item-name">
+                    <span class="cart-product-icon" aria-hidden="true" x-text="item.icon || shoppingCategoryIcon(item.category)"></span>
                     <span x-text="item.name"></span>
                   </div>
                   <div class="cart-item-amount">
@@ -2046,6 +2070,9 @@
                   </div>
                   <button class="btn-icon" @click="deleteCartItem(item.id)"
                           title="Entfernen">✕</button>
+                </div>
+              </div>
+                </template>
                 </div>
               </div>
             </template>
@@ -3276,7 +3303,7 @@
           </div>
           <a x-show="recipeDetail.data?.url"
              :href="safeExternalUrl(recipeDetail.data?.url)"
-             target="_blank" rel="noopener noreferrer">TikTok-Quelle öffnen ↗</a>
+             target="_blank" rel="noopener noreferrer">Rezeptquelle öffnen ↗</a>
         </div>
         <div class="recipe-detail-grid" :class="recipeDetail.tab !== 'info' && 'single-col'">
           <div class="recipe-detail-video" x-show="recipeDetail.tab === 'info'">
@@ -3287,6 +3314,27 @@
                  @error="$el.style.display='none'" />
             <div x-show="!recipeDetail.data?.thumb_filename"
                  class="muted">Kein Rezeptbild vorhanden.</div>
+            <div x-show="session.is_admin" class="recipe-image-actions">
+              <button type="button" class="btn btn-primary btn-sm"
+                      @click="generateRecipeImage()" :disabled="recipeDetail.imageGenerating">
+                <span x-show="!recipeDetail.imageGenerating">✦ Bild generieren</span>
+                <span x-show="recipeDetail.imageGenerating">… wird gestartet</span>
+              </button>
+              <span class="muted" x-show="recipeDetail.data?.image_generation_status"
+                    x-text="'Status: ' + recipeDetail.data?.image_generation_status"></span>
+            </div>
+            <div class="recipe-image-backups" x-show="session.is_admin && recipeDetail.data?.image_backups?.length">
+              <strong>Gesicherte frühere Bilder</strong>
+              <template x-for="backup in recipeDetail.data?.image_backups || []" :key="backup.id">
+                <div>
+                  <a class="btn btn-secondary btn-sm" :href="backup.file_url" target="_blank" rel="noopener">Altbild ansehen</a>
+                  <button type="button" class="btn btn-secondary btn-sm"
+                          @click="restoreRecipeImageBackup(backup)"
+                          :disabled="recipeDetail.imageRestoring === backup.id">↶ Wiederherstellen</button>
+                  <span class="muted" x-text="formatTs(backup.created_at)"></span>
+                </div>
+              </template>
+            </div>
             <div class="recipe-detail-meta muted" style="margin-top: 8px; font-size: 12px; min-width: 0; overflow: hidden;">
               <a x-show="recipeDetail.data?.pdf_filename"
                  :href="recipeDetail.data ? '/api/recipes/'+recipeDetail.data.id+'/pdf' : '#'"

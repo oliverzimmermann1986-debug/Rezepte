@@ -1,4 +1,4 @@
-"""TikTok-/Instagram-Share-Intake.
+"""Share-Intake für Rezept-Webseiten, Pinterest, YouTube und Social Posts.
 
 Ein iOS-Kurzbefehl (Share-Sheet aus TikTok) POSTet eine URL hierher; sie läuft
 dann durch die normale Link-Pipeline. Caption und Rezeptdaten werden ohne
@@ -111,7 +111,8 @@ def _normalized_share_url(value: str) -> str:
     if not normalized:
         raise HTTPException(
             400,
-            "Share-Import unterstützt nur einzelne TikTok- und Instagram-Posts",
+            "Share-Import erwartet eine Rezept-Webseite, einen Pinterest-Pin, "
+            "ein YouTube-Video oder einen einzelnen TikTok-/Instagram-Post",
         )
     return normalized
 

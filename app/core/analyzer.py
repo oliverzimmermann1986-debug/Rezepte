@@ -7,6 +7,8 @@ italienische Captions direkt in deutsche Daten umsetzen.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import re
@@ -183,6 +185,52 @@ class OpenAIAnalyzer:
                     pass
         assert response is not None
         return response
+
+    def generate_recipe_image(
+        self,
+        prompt: str,
+        *,
+        model: str = "gpt-image-2",
+        size: str = "1536x1024",
+        quality: str = "medium",
+        output_format: str = "jpeg",
+    ) -> bytes:
+        """Erzeugt ein einzelnes Rezeptbild über die OpenAI Image API."""
+        clean_prompt = " ".join(str(prompt or "").split())
+        if not clean_prompt:
+            raise ValueError("Bild-Prompt fehlt")
+        if size not in {"1024x1024", "1536x1024", "1024x1536", "auto"}:
+            raise ValueError("Ungültige Bildgröße")
+        if quality not in {"low", "medium", "high", "auto"}:
+            raise ValueError("Ungültige Bildqualität")
+        if output_format not in {"jpeg", "png", "webp"}:
+            raise ValueError("Ungültiges Bildformat")
+        response = self._request_with_retry(
+            "POST",
+            "/images/generations",
+            json={
+                "model": (model or "gpt-image-2").strip(),
+                "prompt": clean_prompt[:32000],
+                "n": 1,
+                "size": size,
+                "quality": quality,
+                "output_format": output_format,
+            },
+            timeout=max(180, int(self.timeout)),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        encoded = data[0].get("b64_json") if isinstance(data, list) and data else None
+        if not isinstance(encoded, str) or not encoded:
+            raise RuntimeError("OpenAI Image API lieferte keine Bilddaten")
+        try:
+            image = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError("OpenAI Image API lieferte ungültige Bilddaten") from exc
+        if not image or len(image) > 25 * 1024 * 1024:
+            raise RuntimeError("Generiertes Bild ist leer oder größer als 25 MB")
+        return image
 
     def _call(self, system: str, user: str) -> Optional[str]:
         # max_tokens=6000: bei gpt-4o-mini gibt's 16k Output-Limit, 6k ist

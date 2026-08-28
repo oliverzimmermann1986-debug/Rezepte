@@ -20,6 +20,7 @@ import re
 import shutil
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -238,6 +239,29 @@ class ScraperJob:
             "wedding_categories",
             default=["Deko", "Foto", "Basteln", "Einladung", "Standesamt", "Sonstiges"],
         )
+
+    def _queue_recipe_image(self, recipe_id: Optional[int]) -> None:
+        """Plant für neue Rezepte genau eine persistente Bildgenerierung ein."""
+        cfg = getattr(self, "cfg", None)
+        if cfg is None:
+            return
+        settings = cfg.get("ai", "image_generation", default={}) or {}
+        if (
+            not recipe_id
+            or not bool(settings.get("enabled", True))
+            or not bool(getattr(self, "analyzer_enabled", False))
+        ):
+            return
+        try:
+            self.db.background_task_enqueue(
+                "recipe_image_generate",
+                {"recipe_id": int(recipe_id), "batch_id": uuid.uuid4().hex},
+                dedupe_key=str(int(recipe_id)),
+            )
+        except Exception:
+            # Der Rezeptimport selbst bleibt erfolgreich; der fehlende Bildtask
+            # ist über image_generation_status sichtbar und kann erneut gestartet werden.
+            logger.exception("Bildgenerierung für Rezept #%s konnte nicht eingereiht werden", recipe_id)
 
     # ---------------- Analyse (OpenAI-only) ----------------
     def _analyze_recipe(self, description: Optional[str]) -> RecipeAnalysis:
@@ -874,6 +898,7 @@ class ScraperJob:
                 name=analysis.name,
                 target_dir=str(target),
             )
+            self._queue_recipe_image(recipe_id)
             return target, recipe_id
         except Exception:
             # Der Ordner wurde ausschließlich für diesen neuen Import angelegt.
@@ -1095,6 +1120,7 @@ class ScraperJob:
             )
             if not applied.get("ok"):
                 logger.warning("PDF-Rezeptdaten konnten nicht gespeichert werden: %s", applied)
+            self._queue_recipe_image(recipe_id)
             return recipe_id
         except Exception as exc:
             logger.exception("PDF-Rezept konnte nicht direkt indiziert werden: %s", exc)
@@ -1631,7 +1657,7 @@ class ScraperJob:
             description = self._fetch_description_via_ytdlp(url)
             if description:
                 metadata["description_text"] = description
-        if not metadata.get("description_text"):
+        if platform in {"Pinterest", "Webseite"} and not metadata.get("description_text"):
             try:
                 web_metadata = extract_recipe_web_metadata(url)
                 metadata = {**web_metadata, **metadata}
@@ -2610,6 +2636,7 @@ class ScraperJob:
                 )
                 self._apply_pending_manual_data(recipe_id, decision)
                 self.db.history_add(url, content_type="recipe", name=name, target_dir=str(target))
+                self._queue_recipe_image(recipe_id)
             else:
                 target = self.wedding_dir / _sanitize(category or "Sonstiges") / _sanitize(name)
                 if target.exists():
@@ -2686,6 +2713,7 @@ class ScraperJob:
                     )
                 self._apply_pending_manual_data(recipe_id, decision)
                 self.db.history_add(url, content_type="recipe", name=name, target_dir=str(target))
+                self._queue_recipe_image(recipe_id)
             else:
                 target = self.wedding_dir / _sanitize(category or "Sonstiges") / _sanitize(name)
                 if target.exists():
@@ -2724,6 +2752,7 @@ class ScraperJob:
             if recipe_id is not None:
                 self._apply_pending_manual_data(recipe_id, decision)
             self.db.history_add(url, content_type="recipe", name=r.name, target_dir=str(target))
+            self._queue_recipe_image(recipe_id)
         else:
             w = WeddingAnalysis(
                 name=decision.get("name", "Unbekannt"),

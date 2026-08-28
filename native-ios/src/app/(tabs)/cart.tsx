@@ -1,5 +1,5 @@
 import { useFocusEffect } from '@react-navigation/native';
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -26,7 +26,7 @@ import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
 import { apiCached, invalidateApiCache } from '@/lib/cache';
 import { isValidDateInput, localDateInput } from '@/lib/date-input';
-import { CartItem, RecurringCartItem } from '@/lib/types';
+import { CartItem, RecurringCartItem, ShoppingSuggestion } from '@/lib/types';
 import { normalizeUnit } from '@/lib/units';
 
 type RecurringForm = {
@@ -61,6 +61,11 @@ const SHOPPING_CATEGORIES = [
 const CATEGORY_ORDER = new Map<string, number>(
   SHOPPING_CATEGORIES.map((category, index) => [category, index]),
 );
+const CATEGORY_ICONS: Record<string, string> = {
+  'Obst & Gemüse': '🍎', Bäckerei: '🥖', 'Fleisch & Fisch': '🥩',
+  Kühlregal: '🥛', 'Vorrat & Konserven': '🥫', Getränke: '🥤',
+  Tiefkühl: '❄️', 'Drogerie & Haushalt': '🧴', Sonstiges: '🛒',
+};
 
 const amountFormatter = new Intl.NumberFormat('de-DE', {
   maximumFractionDigits: 2,
@@ -83,6 +88,8 @@ export default function CartScreen() {
   const [items, setItems] = useState<CartItem[]>([]);
   const [recurring, setRecurring] = useState<RecurringCartItem[]>([]);
   const [name, setName] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('');
+  const [suggestions, setSuggestions] = useState<ShoppingSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -91,6 +98,7 @@ export default function CartScreen() {
   const [running, setRunning] = useState(false);
   const [showAiOptimizer, setShowAiOptimizer] = useState(false);
   const mutating = useRef(new Set<number>());
+  const suppressSuggestions = useRef(false);
 
   const loadCart = useCallback(async (refresh = false) => {
     if (refresh) setRefreshing(true); else setLoading(true);
@@ -125,6 +133,33 @@ export default function CartScreen() {
     else void loadRecurring();
   }, [loadCart, loadRecurring, tab]));
 
+  useEffect(() => {
+    if (tab !== 'list') return;
+    if (suppressSuggestions.current) {
+      suppressSuggestions.current = false;
+      return;
+    }
+    const query = name.trim();
+    if (!query) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void api<{ items: ShoppingSuggestion[] }>(
+        `/api/cart/suggestions?q=${encodeURIComponent(query)}&limit=8`,
+      ).then(result => {
+        if (!cancelled) setSuggestions(result.items || []);
+      }).catch(() => {
+        if (!cancelled) setSuggestions([]);
+      });
+    }, 180);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [name, tab]);
+
   function selectTab(next: 'list' | 'recurring') {
     setTab(next);
     setError('');
@@ -134,13 +169,25 @@ export default function CartScreen() {
     const next = name.trim();
     if (!next) return;
     try {
-      await api('/api/cart/add', { method: 'POST', body: JSON.stringify({ name: next }) });
+      await api('/api/cart/add', {
+        method: 'POST',
+        body: JSON.stringify({ name: next, category: selectedCategory || null }),
+      });
       await invalidateApiCache('cart');
       setName('');
+      setSelectedCategory('');
+      setSuggestions([]);
       await loadCart();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Artikel konnte nicht hinzugefügt werden');
     }
+  }
+
+  function chooseSuggestion(item: ShoppingSuggestion) {
+    suppressSuggestions.current = true;
+    setName(item.name);
+    setSelectedCategory(item.category);
+    setSuggestions([]);
   }
 
   async function toggle(item: CartItem) {
@@ -348,7 +395,10 @@ export default function CartScreen() {
               placeholder="Artikel hinzufügen"
               placeholderTextColor={colors.muted}
               value={name}
-              onChangeText={setName}
+              onChangeText={value => {
+                setName(value);
+                setSelectedCategory('');
+              }}
               onSubmitEditing={addItem}
               returnKeyType="done"
               style={[styles.input, styles.addRowInput]}
@@ -362,6 +412,24 @@ export default function CartScreen() {
               <Text style={styles.addText}>+</Text>
             </Pressable>
           </View>
+          {!!suggestions.length && (
+            <View style={styles.suggestions} accessibilityLabel="Produktvorschläge">
+              {suggestions.map(item => (
+                <Pressable
+                  key={item.canonical_name}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${item.name}, ${item.category}`}
+                  onPress={() => chooseSuggestion(item)}
+                  style={({ pressed }) => [styles.suggestion, pressed && styles.pressed]}>
+                  <Text accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.productIcon}>{item.icon || categoryIcon(item.category)}</Text>
+                  <View style={styles.suggestionText}>
+                    <Text style={styles.suggestionName}>{item.name}</Text>
+                    <Text style={styles.suggestionCategory}>{item.category}</Text>
+                  </View>
+                </Pressable>
+              ))}
+            </View>
+          )}
           {!!items.length && (
             <Pressable
               accessibilityRole="button"
@@ -385,7 +453,7 @@ export default function CartScreen() {
               stickySectionHeadersEnabled={false}
               renderSectionHeader={({ section }) => (
                 <View style={styles.sectionHeader} accessibilityRole="header">
-                  <Text style={styles.sectionTitle}>{section.title}</Text>
+                  <Text style={styles.sectionTitle}><Text accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{categoryIcon(section.title)} </Text>{section.title}</Text>
                   <Text style={styles.sectionCount}>
                     {section.openCount > 0 ? `${section.openCount} offen` : 'erledigt'}
                   </Text>
@@ -403,7 +471,7 @@ export default function CartScreen() {
                       <Text style={styles.checkText}>{item.checked ? '✓' : ''}</Text>
                     </View>
                     <View style={styles.itemText}>
-                      <Text numberOfLines={2} style={[styles.name, item.checked && styles.nameDone]}>{item.name}</Text>
+                      <Text numberOfLines={2} style={[styles.name, item.checked && styles.nameDone]}><Text accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{item.icon || categoryIcon(item.category)} </Text>{item.name}</Text>
                     </View>
                     <View style={[styles.amountBadge, !formatCartAmount(item) && styles.amountBadgeEmpty]}>
                       <Text style={[styles.amountValue, item.checked && styles.amountDone]}>
@@ -442,7 +510,7 @@ export default function CartScreen() {
               renderItem={({ item }) => (
                 <View style={[styles.recurringItem, item.active && item.due_in_days <= 0 && styles.recurringDue]}>
                   <Pressable style={styles.recurringText} onPress={() => editRecurring(item)}>
-                    <Text style={styles.name}>{item.name}</Text>
+                    <Text style={styles.name}><Text accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{item.icon || categoryIcon(item.category)} </Text>{item.name}</Text>
                     <Text style={styles.recurringMeta}>alle {item.interval_days} {item.interval_days === 1 ? 'Tag' : 'Tage'}{item.amount == null ? '' : ` · ${item.amount} ${item.default_unit || ''}`}</Text>
                     <Text style={[styles.dueText, !item.active && styles.inactiveText]}>{dueLabel(item)}</Text>
                   </Pressable>
@@ -525,6 +593,10 @@ function categoryRank(category: string) {
   return CATEGORY_ORDER.get(category) ?? SHOPPING_CATEGORIES.length - 1;
 }
 
+function categoryIcon(category?: string | null) {
+  return CATEGORY_ICONS[category?.trim() || 'Sonstiges'] || '🛒';
+}
+
 function cartItemAccessibilityLabel(item: CartItem) {
   const category = item.category?.trim() || 'Sonstiges';
   const amount = formatCartAmount(item) || 'ohne Mengenangabe';
@@ -547,6 +619,12 @@ const styles = StyleSheet.create({
   addRowInput: { flex: 1 },
   addButton: { width: 50, height: 50, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.butter },
   addText: { color: colors.text, fontSize: 28, fontWeight: '700' },
+  suggestions: { marginHorizontal: space.md, marginTop: -7, marginBottom: 12, padding: 5, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.white },
+  suggestion: { minHeight: 52, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: radii.sm },
+  productIcon: { width: 28, fontSize: 21, textAlign: 'center' },
+  suggestionText: { flex: 1, gap: 2 },
+  suggestionName: { color: colors.text, fontSize: 16, fontWeight: '800' },
+  suggestionCategory: { color: colors.muted, fontSize: 12 },
   aiButton: { minHeight: 48, marginHorizontal: space.md, marginBottom: space.sm, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: colors.butterPressed, borderRadius: radii.md, backgroundColor: colors.warningSurface },
   aiButtonLabel: { color: colors.text, fontWeight: '900' },
   aiButtonArrow: { color: colors.text, fontSize: 25, lineHeight: 28 },
