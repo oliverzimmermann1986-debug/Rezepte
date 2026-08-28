@@ -27,7 +27,8 @@ systemctl disable --now scrapper-job.timer
   --trusted-proxy-cidr "$REVERSE_PROXY_IP/32"
 
 install -d -m 0755 /etc/scrapper
-printf 'SCRAPPER_FORWARDED_ALLOW_IPS=%s\n' "$REVERSE_PROXY_IP" > /etc/scrapper/web.env
+printf 'SCRAPPER_BIND_HOST=0.0.0.0\nSCRAPPER_FORWARDED_ALLOW_IPS=%s\n' \
+  "$REVERSE_PROXY_IP" > /etc/scrapper/web.env
 chown root:root /etc/scrapper/web.env
 chmod 0600 /etc/scrapper/web.env
 
