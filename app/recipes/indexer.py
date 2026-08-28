@@ -522,11 +522,7 @@ def _extract_for_recipe(
         with db.conn() as c:
             tag_rows = c.execute("SELECT name FROM tags").fetchall()
             existing_tags = [r[0] for r in tag_rows]
-            can_rows = c.execute(
-                "SELECT DISTINCT canonical_name FROM recipe_ingredients "
-                "WHERE canonical_name IS NOT NULL AND canonical_name != ''"
-            ).fetchall()
-            existing_canonical = [r[0] for r in can_rows]
+            existing_canonical = db.ingredient_name_hints()
     except Exception as e:
         logger.warning(f"Rezept #{rid}: existing-Stammdaten-Lookup failed: {e}")
         existing_tags, existing_canonical = [], []

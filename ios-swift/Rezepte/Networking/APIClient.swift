@@ -7,7 +7,7 @@ enum APIError: LocalizedError {
     case cloudflareAccessRequired
     case unauthenticated
     case server(Int, String)
-    case invalidResponse
+    case invalidResponse(String)
 
     var errorDescription: String? {
         switch self {
@@ -23,8 +23,8 @@ enum APIError: LocalizedError {
             return "Die Sitzung ist abgelaufen. Bitte erneut anmelden."
         case let .server(_, message):
             return message
-        case .invalidResponse:
-            return "Der Server hat eine unerwartete Antwort gesendet."
+        case let .invalidResponse(endpoint):
+            return "Die Serverantwort für \(endpoint) passt nicht zur App. Bitte App und Server auf denselben Stand aktualisieren."
         }
     }
 }
@@ -606,10 +606,11 @@ actor APIClient {
 
     private func execute<Response: Decodable>(_ request: URLRequest) async throws -> Response {
         let (data, response) = try await session.data(for: request)
+        let endpoint = request.url?.path.nilIfEmpty ?? "diese Anfrage"
         guard let http = response as? HTTPURLResponse else {
-            throw APIError.invalidResponse
+            throw APIError.invalidResponse(endpoint)
         }
-        if Self.isCloudflareAccessResponse(http) {
+        if Self.isCloudflareAccessResponse(http, body: data) {
             throw APIError.cloudflareAccessRequired
         }
         if http.statusCode == 401 { throw APIError.unauthenticated }
@@ -621,11 +622,17 @@ actor APIClient {
         do {
             return try decoder.decode(Response.self, from: data)
         } catch {
-            throw APIError.invalidResponse
+            # Kein Response-Body wird geloggt: Er könnte persönliche Rezept-
+            # oder Kontodaten enthalten. Der konkrete Pfad reicht, um einen
+            # App-/Server-Versionskonflikt gezielt zu erkennen.
+            throw APIError.invalidResponse(endpoint)
         }
     }
 
-    private static func isCloudflareAccessResponse(_ response: HTTPURLResponse) -> Bool {
+    private static func isCloudflareAccessResponse(
+        _ response: HTTPURLResponse,
+        body: Data
+    ) -> Bool {
         let responseHost = response.url?.host?.lowercased() ?? ""
         if responseHost == "cloudflareaccess.com"
             || responseHost.hasSuffix(".cloudflareaccess.com") {
@@ -638,7 +645,18 @@ actor APIClient {
         let location = response.value(forHTTPHeaderField: "Location")?.lowercased() ?? ""
         if location.contains("cloudflareaccess.com/cdn-cgi/access/login") { return true }
 
-        return response.value(forHTTPHeaderField: "cf-mitigated")?.lowercased() == "challenge"
+        if response.value(forHTTPHeaderField: "cf-mitigated")?.lowercased() == "challenge" {
+            return true
+        }
+
+        // Manche Proxies folgen dem Access-Redirect, behalten im finalen
+        // URLResponse aber die ursprüngliche Host-Adresse. Dann verrät nur
+        // die HTML-Seite, dass statt JSON die Cloudflare-Anmeldung kam.
+        let contentType = response.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+        guard contentType.contains("text/html") else { return false }
+        let snippet = String(decoding: body.prefix(16_384), as: UTF8.self).lowercased()
+        return snippet.contains("cloudflare access")
+            || snippet.contains("/cdn-cgi/access/login")
     }
 }
 

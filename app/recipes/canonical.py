@@ -113,8 +113,15 @@ _SYNONYMS = {
     "joghurt": "joghurt",
     "jogurt": "joghurt",
     "frischkäse": "frischkäse",
+    "creme fraiche": "creme fraiche",
+    "creme fresh": "creme fraiche",
+    "crème fraîche": "creme fraiche",
+    "créme fraîche": "creme fraiche",
     "feta": "feta",
+    "feta-käse": "feta",
+    "fetakäse": "feta",
     "mozzarella": "mozzarella",
+    "mini-mozzarella": "mozzarella",
     "parmesan": "parmesan",
     "käse": "käse",
     # Fleisch
@@ -131,11 +138,15 @@ _SYNONYMS = {
     "bacon": "speck",
     "schinken": "schinken",
     # Kohlenhydrate
+    "nudel": "nudeln",
     "nudeln": "nudeln",
     "pasta": "nudeln",
     "spaghetti": "nudeln",
     "penne": "nudeln",
     "reis": "reis",
+    "basmati reis": "basmatireis",
+    "basmati-reis": "basmatireis",
+    "basmatireis": "basmatireis",
     "brot": "brot",
     "mehl": "mehl",
     # Gewürze + Basics
@@ -150,9 +161,18 @@ _SYNONYMS = {
     "balsamico": "essig",
     "honig": "honig",
     "senf": "senf",
+    "mayo": "mayonnaise",
+    "mayonnaise": "mayonnaise",
     "ketchup": "ketchup",
+    "soja sauce": "sojasauce",
+    "sojasauce": "sojasauce",
+    "sojasoße": "sojasauce",
     "tomatenmark": "tomatenmark",
     "passierte tomaten": "passierte tomaten",
+    "passierte tomate": "passierte tomaten",
+    "nori blatt": "nori-blatt",
+    "nori-blatt": "nori-blatt",
+    "orzo-pasta": "orzo",
     # Kräuter
     "basilikum": "basilikum",
     "petersilie": "petersilie",
@@ -161,6 +181,9 @@ _SYNONYMS = {
     "rosmarin": "rosmarin",
     "oregano": "oregano",
     "dill": "dill",
+    "frühlingszwiebel": "frühlingszwiebel",
+    "lauchzwiebel": "frühlingszwiebel",
+    "lauchzwiebeln": "frühlingszwiebel",
     # Sonstiges
     "wasser": "wasser",
     "brühe": "brühe",
@@ -217,7 +240,9 @@ def canonical_name(name: Optional[str]) -> Optional[str]:
     Bei leerer Eingabe oder reinen Sonderzeichen → None."""
     if not name:
         return None
-    text = re.sub(r"[^\w\säöüÄÖÜß\-]", " ", str(name)).strip()
+    text = " ".join(
+        re.sub(r"[^\w\säöüÄÖÜß\-]", " ", str(name)).split()
+    )
     if not text:
         return None
     text = _strip_adjectives(text).lower()

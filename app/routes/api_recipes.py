@@ -989,16 +989,20 @@ def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Requ
     _version_before(recipe_id, request, "Zutaten manuell geändert")
     prepared = []
     for ing in payload.ingredients:
-        if not ing.name.strip():
+        clean_name = " ".join(ing.name.split())
+        if not clean_name:
             continue
         prepared.append({
-            "name": ing.name.strip(),
-            "canonical_name": _canonical(ing.name),
+            "name": clean_name,
+            "canonical_name": _canonical(clean_name),
             "amount": ing.amount,
             "unit": normalize_unit(ing.unit),
             "raw": ing.raw,
         })
     _replace_ingredients_and_reset_verification(db, recipe_id, prepared)
+    # Manuell gepflegte Zutaten gehören genauso in die große lokale
+    # Einkaufsvorschlagsliste wie KI-extrahierte Zutaten.
+    db.shopping_catalog_rebuild()
 
     # Diät-Tags recompute: nimm existierende auto-Tags die NICHT in DIET_TAGS
     # sind (das sind die KI-Stil-Tags wie 'pasta', 'schnell') und merge sie
@@ -1700,11 +1704,7 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
         with db.conn() as c:
             tag_rows = c.execute("SELECT name FROM tags").fetchall()
             existing_tags = [r[0] for r in tag_rows]
-            can_rows = c.execute(
-                "SELECT DISTINCT canonical_name FROM recipe_ingredients "
-                "WHERE canonical_name IS NOT NULL AND canonical_name != ''"
-            ).fetchall()
-            existing_canonical = [r[0] for r in can_rows]
+            existing_canonical = db.ingredient_name_hints()
     except Exception:
         existing_tags, existing_canonical = [], []
 

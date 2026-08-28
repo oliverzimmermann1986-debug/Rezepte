@@ -168,6 +168,43 @@ final class APIClientTests: XCTestCase {
         }
     }
 
+    func testCloudflareHTMLOnOriginalHostGetsSpecificError() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: nil)
+        MockURLProtocol.respond(
+            body: "<html><title>Cloudflare Access</title><a href='/cdn-cgi/access/login'>Login</a></html>",
+            headers: ["Content-Type": "text/html; charset=utf-8"]
+        )
+
+        do {
+            _ = try await client.login(username: "oliver", password: "password") as LoginResponse
+            XCTFail("Cloudflare-HTML darf nicht als API-Antwort gelten")
+        } catch let error as APIError {
+            guard case .cloudflareAccessRequired = error else {
+                return XCTFail("Erwartet cloudflareAccessRequired, war \(error)")
+            }
+        }
+    }
+
+    func testIncompatibleResponseNamesAffectedEndpoint() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(body: #"{"unexpected":true}"#)
+
+        do {
+            _ = try await client.cart()
+            XCTFail("Inkompatible Antwort muss abgelehnt werden")
+        } catch let error as APIError {
+            guard case let .invalidResponse(endpoint) = error else {
+                return XCTFail("Erwartet invalidResponse, war \(error)")
+            }
+            XCTAssertEqual(endpoint, "/api/cart")
+            XCTAssertTrue(error.localizedDescription.contains("denselben Stand"))
+        }
+    }
+
     func testRecipesFiltersManualCareOnServerAndPagesByOffset() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
@@ -409,9 +446,14 @@ final class APIClientTests: XCTestCase {
         _ = try await client.addCartItem(name: "Milch", amount: 1, unit: "l", category: "Kühlregal")
 
         let body = try XCTUnwrap(String(data: MockURLProtocol.lastBody(), encoding: .utf8))
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any]
+        )
         XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/add")
         XCTAssertTrue(body.contains("\"category\":\"Kühlregal\""))
+        XCTAssertEqual(payload["amount"] as? Double, 1)
+        XCTAssertEqual(payload["unit"] as? String, "l")
     }
 
     func testImageBackfillUsesBackupFirstEndpoint() async throws {

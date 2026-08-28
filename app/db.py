@@ -12,6 +12,7 @@ import os
 import sqlite3
 import threading
 import time
+from collections import Counter
 from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
@@ -20,7 +21,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 240
+CURRENT_SCHEMA_VERSION = 260
 _MIGRATION_THREAD_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -226,6 +227,7 @@ CREATE TABLE IF NOT EXISTS shopping_products (
   icon TEXT NOT NULL DEFAULT '🛒',
   default_unit TEXT,
   usage_count INTEGER NOT NULL DEFAULT 0,
+  recipe_count INTEGER NOT NULL DEFAULT 0,
   last_used_at REAL,
   updated_at REAL NOT NULL
 );
@@ -493,6 +495,161 @@ def _build_fts_query(q: str) -> Optional[str]:
     return ' AND '.join(f'"{t}"*' for t in tokens)
 
 
+def _rebuild_shopping_catalog_from_recipes(c) -> Dict[str, int]:
+    """Baut den Produktstamm aus allen Zutaten aktiver Rezepte neu auf.
+
+    Historische Einkaufsnutzung bleibt erhalten; rezeptbasierte Häufigkeit
+    wird separat und reproduzierbar berechnet, damit ein erneuter Lauf keine
+    Zähler aufbläht. Je Produkt gewinnt der häufigste Anzeigename und die
+    häufigste sinnvolle Einheit.
+    """
+    from .recipes.canonical import canonical_name as canonicalize
+    from .recipes.shopping_catalog import (
+        category_icon,
+        infer_shopping_category,
+        is_shopping_catalog_candidate,
+    )
+    from .recipes.units import normalize_unit
+
+    allowed_units = {
+        "mg", "g", "kg", "ml", "cl", "dl", "l", "TL", "EL", "Stück",
+        "Zehe", "Bund", "Scheibe", "Blatt", "Prise", "Tasse", "Dose", "Pck",
+        "Flasche", "Tüte", "Glas", "Becher", "Handvoll", "Stiel", "Stange",
+        "Kopf", "Schale",
+    }
+    rows = c.execute(
+        "SELECT ri.name, ri.canonical_name, ri.unit, ri.recipe_id "
+        "FROM recipe_ingredients ri JOIN recipes r ON r.id=ri.recipe_id "
+        "WHERE r.deleted_at IS NULL AND TRIM(COALESCE(ri.name, ''))<>''"
+    ).fetchall()
+    catalog: Dict[str, Dict[str, Any]] = {}
+    for name, stored_canonical, unit, recipe_id in rows:
+        display_name = " ".join(str(name or "").split())
+        canonical = canonicalize(stored_canonical or display_name)
+        if not canonical or not is_shopping_catalog_candidate(display_name, canonical):
+            continue
+        item = catalog.setdefault(
+            canonical,
+            {"names": Counter(), "units": Counter(), "recipe_ids": set()},
+        )
+        item["names"][display_name] += 1
+        normalized_unit = normalize_unit(unit)
+        if normalized_unit in allowed_units:
+            item["units"][normalized_unit] += 1
+        item["recipe_ids"].add(int(recipe_id))
+
+    # Vor Schema 250 steckte die Rezept-Häufigkeit im usage_count. Nur echte
+    # Einkaufshistorie hat last_used_at und wird deshalb beibehalten.
+    c.execute(
+        "UPDATE shopping_products SET recipe_count=0, "
+        "usage_count=CASE WHEN last_used_at IS NULL THEN 0 ELSE usage_count END"
+    )
+    now = time.time()
+    unassigned = 0
+    for canonical, item in catalog.items():
+        display_name = min(
+            item["names"],
+            key=lambda value: (-item["names"][value], len(value), value.casefold()),
+        )
+        default_unit = None
+        if item["units"]:
+            default_unit = min(
+                item["units"],
+                key=lambda value: (-item["units"][value], value.casefold()),
+            )
+        category = infer_shopping_category(display_name, canonical)
+        if category == "Sonstiges":
+            unassigned += 1
+        icon = category_icon(category)
+        c.execute(
+            "INSERT INTO shopping_products(canonical_name, display_name, category, icon, "
+            "default_unit, usage_count, recipe_count, last_used_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?, NULL, ?) "
+            "ON CONFLICT(canonical_name) DO UPDATE SET "
+            "display_name=excluded.display_name, category=excluded.category, icon=excluded.icon, "
+            "default_unit=excluded.default_unit, "
+            "recipe_count=excluded.recipe_count, updated_at=excluded.updated_at",
+            (
+                canonical,
+                display_name,
+                category,
+                icon,
+                default_unit,
+                len(item["recipe_ids"]),
+                now,
+            ),
+        )
+
+    removed = c.execute(
+        "DELETE FROM shopping_products WHERE recipe_count=0 AND last_used_at IS NULL "
+        "AND canonical_name NOT IN ("
+        "SELECT canonical_name FROM shopping_cart WHERE canonical_name IS NOT NULL "
+        "UNION SELECT canonical_name FROM shopping_recurring WHERE canonical_name IS NOT NULL"
+        ")"
+    ).rowcount
+    return {
+        "ingredient_rows": len(rows),
+        "products": len(catalog),
+        "unassigned": unassigned,
+        "removed_stale": int(removed),
+    }
+
+
+def _clean_recipe_ingredients(c) -> Dict[str, int]:
+    """Bereinigt den bestehenden Zutatenstamm ohne Rezeptdetails zu verlieren.
+
+    Anzeigenamen werden nur typografisch geglättet. Die kanonischen Namen
+    werden dagegen vollständig aus dem Anzeigenamen neu berechnet, damit neue
+    Alias-Regeln auch für den Altbestand gelten. Unbekannte Einheiten bleiben
+    erhalten; nur nachweislich falsch einsortierte Beschreibungswörter werden
+    entfernt.
+    """
+    from .recipes.canonical import canonical_name as canonicalize
+    from .recipes.units import normalize_unit
+
+    invalid_units = {
+        "groß", "große", "großer", "großes",
+        "hand", "hände", "kcal",
+        "klein", "kleine", "kleiner", "kleines",
+        "mittel", "mittlere", "nach geschmack",
+    }
+    rows = c.execute(
+        "SELECT id, name, canonical_name, unit FROM recipe_ingredients"
+    ).fetchall()
+    names_changed = 0
+    canonicals_changed = 0
+    units_changed = 0
+    for ingredient_id, stored_name, stored_canonical, stored_unit in rows:
+        display_name = " ".join(str(stored_name or "").split())
+        canonical = canonicalize(display_name)
+        unit = normalize_unit(stored_unit)
+        if unit and unit.casefold() in invalid_units:
+            unit = None
+
+        if display_name != stored_name:
+            names_changed += 1
+        if canonical != stored_canonical:
+            canonicals_changed += 1
+        if unit != stored_unit:
+            units_changed += 1
+        if (
+            display_name != stored_name
+            or canonical != stored_canonical
+            or unit != stored_unit
+        ):
+            c.execute(
+                "UPDATE recipe_ingredients SET name=?, canonical_name=?, unit=? WHERE id=?",
+                (display_name, canonical, unit, ingredient_id),
+            )
+
+    return {
+        "ingredient_rows": len(rows),
+        "names_changed": names_changed,
+        "canonicals_changed": canonicals_changed,
+        "units_changed": units_changed,
+    }
+
+
 class Database:
     def __init__(self, path: Path = DB_PATH):
         self.path = path
@@ -590,6 +747,15 @@ class Database:
         """Idempotente ALTER-Statements für Schema-Erweiterungen die nach der
         initialen DDL kamen. SQLite hat kein IF NOT EXISTS für ADD COLUMN,
         also via PRAGMA table_info() prüfen ob die Spalte fehlt."""
+        shopping_product_cols = {
+            r[1] for r in c.execute("PRAGMA table_info(shopping_products)").fetchall()
+        }
+        if "recipe_count" not in shopping_product_cols:
+            c.execute(
+                "ALTER TABLE shopping_products ADD COLUMN "
+                "recipe_count INTEGER NOT NULL DEFAULT 0"
+            )
+
         cols = {r[1] for r in c.execute("PRAGMA table_info(recipes)").fetchall()}
         if "servings" not in cols:
             # Anzahl Portionen, für die das Rezept ausgelegt ist (aus Caption
@@ -1043,6 +1209,97 @@ class Database:
                 "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) "
                 "VALUES (?, ?, ?)",
                 (240, "backfill_allergen_free_tags", time.time()),
+            )
+
+        shopping_category_repair = c.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?", (250,)
+        ).fetchone()
+        if shopping_category_repair is None:
+            from .recipes.shopping_catalog import (
+                category_icon,
+                repaired_shopping_category,
+            )
+
+            now = time.time()
+            catalog_summary = _rebuild_shopping_catalog_from_recipes(c)
+            repaired_products = 0
+            repaired_cart_items = 0
+            repaired_recurring_items = 0
+            product_rows = c.execute(
+                "SELECT canonical_name, display_name, category FROM shopping_products"
+            ).fetchall()
+            for canonical, display_name, current_category in product_rows:
+                repaired = repaired_shopping_category(
+                    display_name, canonical, current_category
+                )
+                icon = category_icon(repaired)
+                cur = c.execute(
+                    "UPDATE shopping_products SET category=?, icon=?, updated_at=? "
+                    "WHERE canonical_name=? AND (category<>? OR icon<>?)",
+                    (repaired, icon, now, canonical, repaired, icon),
+                )
+                repaired_products += int(cur.rowcount)
+
+            for table, counter_name in (
+                ("shopping_cart", "cart"),
+                ("shopping_recurring", "recurring"),
+            ):
+                rows = c.execute(
+                    f"SELECT id, name, canonical_name, category FROM {table}"
+                ).fetchall()
+                for item_id, name, canonical, current_category in rows:
+                    repaired = repaired_shopping_category(
+                        name, canonical, current_category
+                    )
+                    if repaired == (current_category or "Sonstiges"):
+                        continue
+                    cur = c.execute(
+                        f"UPDATE {table} SET category=? WHERE id=?",
+                        (repaired, item_id),
+                    )
+                    if counter_name == "cart":
+                        repaired_cart_items += int(cur.rowcount)
+                    else:
+                        repaired_recurring_items += int(cur.rowcount)
+
+            logger.info(
+                "Einkaufskatalog aus Rezepten: %s Produkte aus %s Zutaten, %s noch sonstig, "
+                "%s Altzeilen entfernt; Kategorien repariert: %s Produkte, "
+                "%s Listeneinträge, %s Wiederholungen",
+                catalog_summary["products"],
+                catalog_summary["ingredient_rows"],
+                catalog_summary["unassigned"],
+                catalog_summary["removed_stale"],
+                repaired_products,
+                repaired_cart_items,
+                repaired_recurring_items,
+            )
+            c.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) "
+                "VALUES (?, ?, ?)",
+                (250, "repair_shopping_categories_and_matching", now),
+            )
+
+        ingredient_cleanup_migration = c.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?", (260,)
+        ).fetchone()
+        if ingredient_cleanup_migration is None:
+            now = time.time()
+            cleanup_summary = _clean_recipe_ingredients(c)
+            catalog_summary = _rebuild_shopping_catalog_from_recipes(c)
+            logger.info(
+                "Zutatenbereinigung: %s Zeilen geprüft, %s Namen, %s Canonicals "
+                "und %s Einheiten korrigiert; Katalog: %s Produkte",
+                cleanup_summary["ingredient_rows"],
+                cleanup_summary["names_changed"],
+                cleanup_summary["canonicals_changed"],
+                cleanup_summary["units_changed"],
+                catalog_summary["products"],
+            )
+            c.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) "
+                "VALUES (?, ?, ?)",
+                (260, "clean_recipe_ingredients_and_rebuild_catalog", now),
             )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
@@ -3212,6 +3469,27 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def ingredient_name_hints(self, limit: int = 500) -> List[str]:
+        """Bevorzugte vorhandene Anzeigenamen für die KI-Extraktion.
+
+        Die Reihenfolge folgt der Rezept-Häufigkeit. Anders als der bewusst
+        gröbere Einkaufskatalog bleiben hier fachlich wichtige Varianten wie
+        Cherrytomate, Tomatenmark oder Hähnchenbrust einzeln sichtbar.
+        """
+        safe_limit = max(1, min(int(limit or 500), 1000))
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT MIN(TRIM(ri.name)) AS display_name, "
+                "COUNT(DISTINCT ri.recipe_id) AS uses "
+                "FROM recipe_ingredients ri JOIN recipes r ON r.id=ri.recipe_id "
+                "WHERE r.deleted_at IS NULL AND TRIM(COALESCE(ri.name, ''))<>'' "
+                "GROUP BY LOWER(TRIM(ri.name)) "
+                "ORDER BY uses DESC, LENGTH(display_name), "
+                "display_name COLLATE NOCASE LIMIT ?",
+                (safe_limit,),
+            ).fetchall()
+            return [str(row[0]) for row in rows if row[0]]
+
     # ─── Tags ─────────────────────────────────────────────────────────────
     def tag_get_or_create(self, name: str) -> int:
         name = (name or "").strip()
@@ -3711,6 +3989,12 @@ class Database:
             return {r[0]: int(r[1]) for r in c.execute(sql).fetchall()}
 
     # ─── Shopping Cart ────────────────────────────────────────────────────
+    def shopping_catalog_rebuild(self) -> Dict[str, int]:
+        """Synchronisiert Vorschläge und Bereiche mit allen aktiven Rezepten."""
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            return _rebuild_shopping_catalog_from_recipes(c)
+
     @staticmethod
     def _shopping_product_upsert_conn(
         c,
@@ -3755,28 +4039,73 @@ class Database:
     def shopping_product_suggestions(
         self, query: str = "", limit: int = 8
     ) -> List[Dict[str, Any]]:
-        """Lokale Produktvorschläge, priorisiert nach Präfix und Nutzung."""
+        """Lokale Produktvorschläge, priorisiert nach Wortanfang und Nutzung.
+
+        Sehr kurze Teilstrings wie ``ei`` dürfen nicht mitten in ``Reis`` oder
+        ``Hackfleisch`` matchen. Ab drei Zeichen bleibt eine tolerante
+        Teilstringsuche als letzte Stufe erhalten.
+        """
         needle = " ".join(str(query or "").split()).casefold()
         safe_limit = max(1, min(25, int(limit)))
         with self.conn() as c:
             if needle:
                 rows = c.execute(
                     "SELECT canonical_name, display_name AS name, category, icon, default_unit, "
-                    "usage_count FROM shopping_products "
-                    "WHERE instr(lower(display_name), ?) > 0 OR instr(lower(canonical_name), ?) > 0 "
-                    "ORDER BY CASE WHEN lower(display_name)=? THEN 0 "
-                    "WHEN instr(lower(display_name), ?)=1 THEN 1 ELSE 2 END, "
-                    "usage_count DESC, display_name COLLATE NOCASE LIMIT ?",
-                    (needle, needle, needle, needle, safe_limit),
+                    "usage_count, recipe_count FROM shopping_products"
                 ).fetchall()
             else:
                 rows = c.execute(
                     "SELECT canonical_name, display_name AS name, category, icon, default_unit, "
-                    "usage_count FROM shopping_products "
-                    "ORDER BY usage_count DESC, last_used_at DESC, display_name COLLATE NOCASE LIMIT ?",
+                    "usage_count, recipe_count FROM shopping_products "
+                    "ORDER BY recipe_count DESC, usage_count DESC, last_used_at DESC, "
+                    "display_name COLLATE NOCASE LIMIT ?",
                     (safe_limit,),
                 ).fetchall()
-        return [dict(row) for row in rows]
+        candidates = [dict(row) for row in rows]
+        if not needle:
+            for item in candidates:
+                item.pop("recipe_count", None)
+            return candidates
+
+        import re
+
+        def suggestion_rank(item: Dict[str, Any]) -> Optional[tuple]:
+            display = " ".join(str(item.get("name") or "").split()).casefold()
+            canonical = " ".join(
+                str(item.get("canonical_name") or "").split()
+            ).casefold()
+            values = (display, canonical)
+            if needle in values:
+                match_rank = 0
+            elif any(value.startswith(needle) for value in values):
+                match_rank = 1
+            elif any(
+                token.startswith(needle)
+                for value in values
+                for token in re.findall(r"\w+", value, flags=re.UNICODE)
+            ):
+                match_rank = 2
+            elif len(needle) >= 3 and any(needle in value for value in values):
+                match_rank = 3
+            else:
+                return None
+            return (
+                match_rank,
+                -int(item.get("recipe_count") or 0),
+                -int(item.get("usage_count") or 0),
+                display,
+            )
+
+        ranked = [
+            (rank, item)
+            for item in candidates
+            if (rank := suggestion_rank(item)) is not None
+        ]
+        ranked.sort(key=lambda entry: entry[0])
+        result = [item for _, item in ranked[:safe_limit]]
+        for item in result:
+            item.pop("recipe_count", None)
+        return result
 
     def cart_list(self) -> List[Dict[str, Any]]:
         with self.conn() as c:

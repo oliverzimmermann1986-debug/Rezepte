@@ -117,7 +117,7 @@ def test_schema_migration_backfills_existing_recipes_and_creates_backup(tmp_path
     recipe_id = int(recipe["id"])
     _insert_ingredients(db, recipe_id, SAFE_INGREDIENTS)
     with db.conn() as connection:
-        connection.execute("DELETE FROM schema_migrations WHERE version=240")
+        connection.execute("DELETE FROM schema_migrations WHERE version>=240")
 
     migrated = Database(db_path)
 
@@ -128,7 +128,7 @@ def test_schema_migration_backfills_existing_recipes_and_creates_backup(tmp_path
             "SELECT name FROM schema_migrations WHERE version=240"
         ).fetchone()
     assert migration["name"] == "backfill_allergen_free_tags"
-    assert list((tmp_path / "backups").glob("pre-migration-v230-to-v240-*.db"))
+    assert list((tmp_path / "backups").glob("pre-migration-v230-to-v260-*.db"))
 
 
 def test_new_recipe_prompt_requests_conservative_allergen_info() -> None:

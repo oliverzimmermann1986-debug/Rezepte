@@ -7,9 +7,16 @@ struct CartView: View {
     @State private var suggestions: [ShoppingSuggestion] = []
     @State private var categories: [ShoppingCategory] = []
     @State private var newItem = ""
+    @State private var newAmount = ""
+    @State private var newUnit = ""
     @State private var selectedCategory = ""
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var addErrorMessage: String?
+
+    private static let commonUnits = [
+        "Stück", "g", "kg", "ml", "l", "TL", "EL", "Packung", "Dose", "Glas", "Bund", "Becher"
+    ]
 
     private var openItems: [CartItem] { items.filter { !$0.checked } }
     private var doneItems: [CartItem] { items.filter(\.checked) }
@@ -119,6 +126,32 @@ struct CartView: View {
                 .accessibilityLabel("Artikel hinzufügen")
             }
 
+            HStack(spacing: 10) {
+                TextField("Menge", text: $newAmount)
+                    .keyboardType(.decimalPad)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 130)
+                    .accessibilityLabel("Menge")
+
+                Menu {
+                    Button("Ohne Einheit") { newUnit = "" }
+                    ForEach(Self.commonUnits, id: \.self) { unit in
+                        Button(unit) { newUnit = unit }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(newUnit.nilIfEmpty ?? "Einheit")
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .background(theme.accentSoft, in: RoundedRectangle(cornerRadius: 9))
+                }
+                .accessibilityLabel("Mengeneinheit wählen")
+            }
+
             if !selectedCategory.isEmpty {
                 Label(selectedCategory, systemImage: "building.2.crop.circle")
                     .font(.caption)
@@ -130,7 +163,7 @@ struct CartView: View {
                     HStack(spacing: 8) {
                         ForEach(suggestions) { suggestion in
                             Button {
-                                Task { await add(suggestion) }
+                                select(suggestion)
                             } label: {
                                 HStack(spacing: 6) {
                                     Text(suggestion.icon ?? "🛒")
@@ -142,10 +175,16 @@ struct CartView: View {
                                 .background(theme.accentSoft, in: Capsule())
                             }
                             .buttonStyle(.plain)
-                            .accessibilityHint("Direkt zur Einkaufsliste hinzufügen")
+                            .accessibilityHint("Übernimmt Artikel, Einheit und Kategorie in das Formular")
                         }
                     }
                 }
+            }
+
+            if let addErrorMessage {
+                Label(addErrorMessage, systemImage: "exclamationmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
         } header: {
             Text("Schnell hinzufügen")
@@ -194,33 +233,65 @@ struct CartView: View {
 
     private func loadSuggestions() async {
         let query = newItem.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard query.count >= 2 else {
+        guard query.isEmpty || query.count >= 2 else {
             suggestions = []
             return
         }
-        try? await Task.sleep(for: .milliseconds(180))
+        if !query.isEmpty {
+            try? await Task.sleep(for: .milliseconds(180))
+        }
         guard !Task.isCancelled else { return }
         do {
-            suggestions = try await session.api.shoppingSuggestions(query: query).items
+            suggestions = try await session.api.shoppingSuggestions(
+                query: query,
+                limit: query.isEmpty ? 12 : 8
+            ).items
         } catch {
             suggestions = []
         }
     }
 
-    private func add(_ suggestion: ShoppingSuggestion? = nil) async {
-        let name = suggestion?.name ?? newItem.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func select(_ suggestion: ShoppingSuggestion) {
+        newItem = suggestion.name
+        newUnit = suggestion.defaultUnit ?? ""
+        selectedCategory = suggestion.category ?? ""
+        addErrorMessage = nil
+        suggestions = []
+    }
+
+    private func add() async {
+        let name = newItem.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        let category = suggestion?.category ?? selectedCategory.nilIfEmpty
+        let amountText = newAmount
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+        let amount: Double?
+        if amountText.isEmpty {
+            amount = nil
+        } else if let parsed = Double(amountText), parsed.isFinite, parsed > 0 {
+            amount = parsed
+        } else {
+            addErrorMessage = "Bitte eine gültige Menge größer als 0 eingeben."
+            return
+        }
+        let unit = amount == nil ? nil : newUnit.nilIfEmpty
+        let category = selectedCategory.nilIfEmpty
         do {
             _ = try await session.api.addCartItem(
                 name: name,
+                amount: amount,
+                unit: unit,
                 category: category
             )
             newItem = ""
+            newAmount = ""
+            newUnit = ""
             selectedCategory = ""
+            addErrorMessage = nil
             suggestions = []
             await load()
         } catch {
+            addErrorMessage = error.localizedDescription
             session.handle(error)
         }
     }

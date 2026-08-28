@@ -53,8 +53,13 @@ def test_swiftui_cart_uses_catalog_suggestions_icons_and_categories():
     api = _read(SWIFT / "Networking" / "APIClient.swift")
 
     assert "shoppingSuggestions" in cart
+    assert "query.isEmpty ? 12 : 8" in cart
     assert "categoryIcon" in cart
     assert "openCategoryNames" in cart
+    assert 'TextField("Menge", text: $newAmount)' in cart
+    assert 'Text(newUnit.nilIfEmpty ?? "Einheit")' in cart
+    assert "amount: amount" in cart
+    assert "unit: unit" in cart
     assert '"/api/cart/suggestions"' in api
     assert '"/api/cart/categories"' in api
     assert "category: category" in api

@@ -311,11 +311,7 @@ def existing_hints(db) -> tuple[List[str], List[str]]:
     try:
         with db.conn() as conn:
             tags = [row[0] for row in conn.execute("SELECT name FROM tags").fetchall()]
-            canon = [row[0] for row in conn.execute(
-                "SELECT DISTINCT canonical_name FROM recipe_ingredients "
-                "WHERE canonical_name IS NOT NULL AND canonical_name != ''"
-            ).fetchall()]
-        return tags, canon
+        return tags, db.ingredient_name_hints()
     except Exception as exc:
         logger.warning("Stammdaten-Hints konnten nicht geladen werden: %s", exc)
         return [], []

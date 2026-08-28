@@ -52,9 +52,16 @@ _ALIASES: Dict[str, str] = {
     "tasse": "Tasse", "tassen": "Tasse",
     "dose": "Dose", "dosen": "Dose",
     "pck": "Pck", "pck.": "Pck", "packung": "Pck", "packungen": "Pck",
+    "päckchen": "Pck", "paeckchen": "Pck",
     "flasche": "Flasche", "flaschen": "Flasche",
     "tüte": "Tüte", "tueten": "Tüte", "tüten": "Tüte",
     "gläser": "Glas", "glas": "Glas",
+    "becher": "Becher",
+    "handvoll": "Handvoll",
+    "stiel": "Stiel", "stiele": "Stiel",
+    "stange": "Stange", "stangen": "Stange",
+    "kopf": "Kopf", "köpfe": "Kopf", "koepfe": "Kopf",
+    "schale": "Schale", "schalen": "Schale",
 }
 
 # ── Klassen + Konvertierungs-Faktoren ─────────────────────────────────────
