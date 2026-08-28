@@ -60,6 +60,29 @@ final class ModelTests: XCTestCase {
         XCTAssertNil(TagFacet(id: 6, name: "zuckerfrei", n: 3).allergenInfo)
     }
 
+    func testRecipeDetailDecodesLegacySQLiteBoolean() throws {
+        let json = """
+        {
+          "id": 232,
+          "name": "Burrata",
+          "is_favorite": false,
+          "rating": 0,
+          "ingredients": [],
+          "steps": [],
+          "needs_manual_care": true,
+          "manual_care_reasons": [],
+          "user_verified": 1
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let recipe = try decoder.decode(Recipe.self, from: Data(json.utf8))
+
+        XCTAssertEqual(recipe.id, 232)
+        XCTAssertEqual(recipe.userVerified, true)
+    }
+
     func testPendingImportDecodesEditableSuggestion() throws {
         let json = """
         {

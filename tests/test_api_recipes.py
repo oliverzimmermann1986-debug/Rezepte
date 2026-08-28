@@ -331,6 +331,7 @@ def test_get_detail(client, test_db):
     body = r.json()
     assert body["name"] == "Detail-Test"
     assert body["folder_path"] == "/tmp/d"
+    assert body["user_verified"] is False
 
 
 def test_get_detail_404(client, test_db):

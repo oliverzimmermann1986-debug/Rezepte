@@ -87,7 +87,14 @@ struct RecipesView: View {
                 }
             }
             .sheet(isPresented: $showFilters) {
-                RecipeFiltersView(filters: filters, facets: facets) { updated in
+                RecipeFiltersView(
+                    filters: filters,
+                    facets: facets,
+                    initialMatchCount: total,
+                    loadMatchCount: { candidate in
+                        try await session.api.recipeCount(search: search, filters: candidate)
+                    }
+                ) { updated in
                     filters = updated
                     showFilters = false
                     Task {

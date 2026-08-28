@@ -18,6 +18,53 @@ struct RecipeListResponse: Codable {
     let items: [RecipeSummary]
 }
 
+struct RecipeCountResponse: Codable {
+    let total: Int
+}
+
+@propertyWrapper
+struct FlexibleBool: Codable, Hashable {
+    var wrappedValue: Bool?
+
+    init(wrappedValue: Bool?) {
+        self.wrappedValue = wrappedValue
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            wrappedValue = nil
+        } else if let value = try? container.decode(Bool.self) {
+            wrappedValue = value
+        } else if let value = try? container.decode(Int.self), value == 0 || value == 1 {
+            wrappedValue = value == 1
+        } else {
+            throw DecodingError.typeMismatch(
+                Bool.self,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Erwartet Bool oder SQLite-Bool 0/1"
+                )
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        if let wrappedValue {
+            try container.encode(wrappedValue)
+        } else {
+            try container.encodeNil()
+        }
+    }
+}
+
+extension KeyedDecodingContainer {
+    func decode(_ type: FlexibleBool.Type, forKey key: Key) throws -> FlexibleBool {
+        try decodeIfPresent(type, forKey: key) ?? FlexibleBool(wrappedValue: nil)
+    }
+}
+
 struct RecipeFilters: Equatable, Sendable {
     var type = ""
     var category = ""
@@ -111,7 +158,7 @@ struct RecipeSummary: Codable, Identifiable, Hashable {
     let needsManualCare: Bool
     let description: String?
     let sourceAddedAt: Double?
-    let userVerified: Bool?
+    @FlexibleBool var userVerified: Bool?
     let verifiedAt: Double?
     let verifiedBy: String?
     let ingredientsStatus: String?
@@ -133,7 +180,7 @@ struct Recipe: Codable, Identifiable {
     let needsManualCare: Bool
     let manualCareReasons: [String]
     let sourceAddedAt: Double?
-    let userVerified: Bool?
+    @FlexibleBool var userVerified: Bool?
     let verifiedAt: Double?
     let verifiedBy: String?
     let ingredientsStatus: String?

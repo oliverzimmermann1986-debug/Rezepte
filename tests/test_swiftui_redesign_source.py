@@ -115,7 +115,7 @@ def test_swiftui_allergen_information_is_a_separate_multi_select_filter():
     models = _read(SWIFT / "Models" / "Models.swift")
     api = _read(SWIFT / "Networking" / "APIClient.swift")
 
-    assert 'Label("Allergiker-Infos", systemImage: "checkmark.shield")' in filters
+    assert 'title: "Allergiker-Infos"' in filters
     assert "allergenBinding" in filters
     assert "draft.allergenTagIDs" in filters
     assert "alle ausgewählten Frei-von-Tags" in filters
@@ -124,6 +124,21 @@ def test_swiftui_allergen_information_is_a_separate_multi_select_filter():
         assert value in models
     assert "var allergenTagIDs: Set<Int>" in models
     assert "filters.tagIDs.union(filters.allergenTagIDs)" in api
+
+
+def test_swiftui_recipe_filter_has_live_count_and_direct_ingredient_choices():
+    filters = _read(SWIFT / "Views" / "Recipes" / "RecipeFiltersView.swift")
+    recipes = _read(SWIFT / "Views" / "Recipes" / "RecipesView.swift")
+    api = _read(SWIFT / "Networking" / "APIClient.swift")
+
+    assert "loadMatchCount" in filters
+    assert ".task(id: draft)" in filters
+    assert "applyButtonTitle" in filters
+    assert "checkmark.square.fill" in filters
+    assert '"Mit"' in filters and '"Ohne"' in filters
+    assert ".cardSurface()" in filters
+    assert "initialMatchCount: total" in recipes
+    assert '"/api/recipes/count"' in api
 
 
 def test_swiftui_guest_login_is_read_only_across_navigation_and_recipe_actions():

@@ -190,6 +190,17 @@ actor APIClient {
         )
     }
 
+    func recipeCount(
+        search: String = "",
+        filters: RecipeFilters = RecipeFilters()
+    ) async throws -> Int {
+        let response: RecipeCountResponse = try await send(
+            "/api/recipes/count",
+            query: recipeFilterQuery(search: search, filters: filters)
+        )
+        return response.total
+    }
+
     func recipe(id: Int) async throws -> Recipe {
         try await send("/api/recipes/\(id)")
     }

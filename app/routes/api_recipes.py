@@ -542,6 +542,11 @@ def get_recipe(recipe_id: int):
     r["ingredients"] = db.recipe_ingredients_get(recipe_id)
     r["steps"] = db.recipe_steps_get(recipe_id)
     r["is_favorite"] = bool(r.get("is_favorite"))
+    # SQLite speichert Booleans als 0/1. Listenantworten normalisieren
+    # ``user_verified`` bereits; der Detail-Endpunkt muss denselben JSON-Typ
+    # liefern, damit native Codable-Clients nicht an einzelnen Rezepten
+    # scheitern.
+    r["user_verified"] = bool(r.get("user_verified"))
     r["needs_manual_care"] = not r["ingredients"] or not r["steps"]
     r["manual_care_reasons"] = [
         label for missing, label in (

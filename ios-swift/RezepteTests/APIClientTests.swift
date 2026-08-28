@@ -263,6 +263,28 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.lastQueryValues("tag_id"), ["2", "8", "13", "21"])
     }
 
+    func testRecipeCountUsesLiveFilterEndpoint() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: #"{"total":17}"#)
+
+        var filters = RecipeFilters()
+        filters.includedIngredients = ["knoblauch"]
+        filters.excludedIngredients = ["zwiebel"]
+        filters.manualOnly = true
+
+        let total = try await client.recipeCount(search: "pasta", filters: filters)
+        let query = MockURLProtocol.lastQueryItems()
+
+        XCTAssertEqual(total, 17)
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/count")
+        XCTAssertEqual(query["search"], "pasta")
+        XCTAssertEqual(query["ingredient"], "knoblauch")
+        XCTAssertEqual(query["exclude_ingredient"], "zwiebel")
+        XCTAssertEqual(query["needs_manual_care"], "true")
+    }
+
     func testRecipeFacetsDecodeServerResponse() throws {
         let json = """
         {
