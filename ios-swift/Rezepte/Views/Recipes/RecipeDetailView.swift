@@ -6,6 +6,7 @@ struct RecipeDetailView: View {
     @EnvironmentObject private var session: SessionStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @Environment(\.recipeTheme) private var theme
     @State private var recipe: Recipe?
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -15,6 +16,7 @@ struct RecipeDetailView: View {
     @State private var showOriginalText = false
     @State private var showDeleteConfirmation = false
     @State private var isDeleting = false
+    @State private var imageRefreshToken = UUID()
 
     var body: some View {
         Group {
@@ -28,12 +30,13 @@ struct RecipeDetailView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         AuthenticatedImage(recipeID: recipe.id, height: 270)
+                            .id(imageRefreshToken)
                             .clipShape(RoundedRectangle(cornerRadius: 24))
 
                         VStack(alignment: .leading, spacing: 8) {
                             Text(recipe.name)
                                 .font(.largeTitle.bold())
-                                .foregroundStyle(AppTheme.cocoa)
+                                .foregroundStyle(theme.ink)
                         }
 
                         if recipe.needsManualCare {
@@ -41,6 +44,7 @@ struct RecipeDetailView: View {
                         }
 
                         actionBar(recipe)
+                        recipePassportSection(recipe)
 
                         ingredientSection(recipe)
                         stepsSection(recipe)
@@ -52,7 +56,7 @@ struct RecipeDetailView: View {
                                 Button {
                                     openURL(sourceURL)
                                 } label: {
-                                    Label("TikTok-/Original-Link öffnen", systemImage: "arrow.up.right.square")
+                                    Label("Originalquelle öffnen", systemImage: "arrow.up.right.square")
                                         .frame(maxWidth: .infinity, minHeight: 44)
                                 }
                                 .buttonStyle(.bordered)
@@ -61,22 +65,24 @@ struct RecipeDetailView: View {
 
                         originalTextSection(recipe)
 
-                        Button(role: .destructive) {
-                            showDeleteConfirmation = true
-                        } label: {
-                            Label(
-                                isDeleting ? "Rezept wird gelöscht …" : "Rezept löschen",
-                                systemImage: "trash"
-                            )
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                        if !session.readOnly {
+                            Button(role: .destructive) {
+                                showDeleteConfirmation = true
+                            } label: {
+                                Label(
+                                    isDeleting ? "Rezept wird gelöscht …" : "Rezept löschen",
+                                    systemImage: "trash"
+                                )
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.red)
+                            .disabled(isDeleting)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
-                        .disabled(isDeleting)
                     }
                     .padding()
                 }
-                .background(AppTheme.cream)
+                .background(theme.background)
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -86,13 +92,15 @@ struct RecipeDetailView: View {
                     ShareLink(item: shareText(recipe)) {
                         Image(systemName: "square.and.arrow.up")
                     }
-                    Button {
-                        Task { await toggleFavorite() }
-                    } label: {
-                        Image(systemName: recipe.isFavorite ? "heart.fill" : "heart")
-                            .foregroundStyle(recipe.isFavorite ? Color.red : Color.primary)
+                    if !session.readOnly {
+                        Button {
+                            Task { await toggleFavorite() }
+                        } label: {
+                            Image(systemName: recipe.isFavorite ? "heart.fill" : "heart")
+                                .foregroundStyle(recipe.isFavorite ? Color.red : Color.primary)
+                        }
+                        .accessibilityLabel(recipe.isFavorite ? "Aus Favoriten entfernen" : "Als Favorit speichern")
                     }
-                    .accessibilityLabel(recipe.isFavorite ? "Aus Favoriten entfernen" : "Als Favorit speichern")
                 }
             }
         }
@@ -133,29 +141,54 @@ struct RecipeDetailView: View {
             Text("Das Rezept kann 30 Tage lang im Admin-Bereich wiederhergestellt werden.")
         }
         .task { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { notification in
+            guard notification.object as? Int == recipeID else { return }
+            imageRefreshToken = UUID()
+            Task { await load() }
+        }
     }
 
     private func actionBar(_ recipe: Recipe) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                Task { await addToCart() }
-            } label: {
-                Label("Einkaufen", systemImage: "cart.badge.plus")
-                    .frame(maxWidth: .infinity, minHeight: 44)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(AppTheme.butter)
-            .foregroundStyle(AppTheme.cocoa)
+        VStack(spacing: 12) {
+            if session.readOnly {
+                Label("Gastzugang · Rezept nur ansehen", systemImage: "eye")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .cardSurface()
+            } else {
+                HStack(spacing: 12) {
+                    NavigationLink {
+                        CookingModeView(recipe: recipe)
+                    } label: {
+                        Label("Kochen", systemImage: "fork.knife")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(theme.accent)
+                    .foregroundStyle(theme.ink)
+                    .disabled(recipe.steps.isEmpty || recipe.servings == nil)
 
-            if let sourceURL = safeExternalURL(recipe.url) {
-                Button {
-                    openURL(sourceURL)
-                } label: {
-                    Image(systemName: "link")
-                        .frame(width: 44, height: 44)
+                    Button {
+                        Task { await addToCart() }
+                    } label: {
+                        Label("Einkaufen", systemImage: "cart.badge.plus")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Original-Link öffnen")
+
+                if recipe.steps.isEmpty || recipe.servings == nil {
+                    Label(
+                        recipe.steps.isEmpty
+                            ? "Zum Kochen fehlen Zubereitungsschritte."
+                            : "Zum Skalieren fehlt die Portionszahl.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(theme.warning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
     }
@@ -166,11 +199,13 @@ struct RecipeDetailView: View {
                 Text("Zutaten")
                     .font(.title2.bold())
                 Spacer()
-                Button("Bearbeiten") { showIngredientsEditor = true }
+                if !session.readOnly {
+                    Button("Bearbeiten") { showIngredientsEditor = true }
+                }
             }
             if recipe.ingredients.isEmpty {
                 Text("Keine Zutaten vorhanden. Bitte manuell ergänzen.")
-                    .foregroundStyle(AppTheme.warning)
+                    .foregroundStyle(theme.warning)
                     .cardSurface()
             } else {
                 VStack(spacing: 0) {
@@ -178,7 +213,7 @@ struct RecipeDetailView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 12) {
                             Image(systemName: "circle.fill")
                                 .font(.system(size: 6))
-                                .foregroundStyle(AppTheme.butter)
+                                .foregroundStyle(theme.accent)
                             Text(ingredient.displayText)
                             Spacer(minLength: 0)
                         }
@@ -191,17 +226,55 @@ struct RecipeDetailView: View {
         }
     }
 
+    private func recipePassportSection(_ recipe: Recipe) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Rezeptpass")
+                    .font(.title2.bold())
+                Spacer()
+                Label(
+                    recipe.userVerified == true ? "Geprüft" : "Zu prüfen",
+                    systemImage: recipe.userVerified == true ? "checkmark.seal.fill" : "questionmark.diamond"
+                )
+                .font(.caption.bold())
+                .foregroundStyle(recipe.userVerified == true ? theme.success : theme.warning)
+            }
+
+            if let url = safeExternalURL(recipe.url) {
+                LabeledContent("Quelle", value: sourceName(url))
+            } else {
+                LabeledContent("Quelle", value: "Datei oder eigener Eintrag")
+            }
+
+            if let status = recipe.imageGenerationStatus?.nilIfEmpty {
+                LabeledContent("Bildstatus", value: imageStatusLabel(status))
+            }
+
+            if session.fullAccess {
+                Divider()
+                NavigationLink {
+                    RecipeImageHistoryView(recipeID: recipe.id, recipeName: recipe.name)
+                } label: {
+                    Label("Originale vergleichen & Bild verwalten", systemImage: "photo.on.rectangle.angled")
+                }
+            }
+        }
+        .cardSurface()
+    }
+
     private func stepsSection(_ recipe: Recipe) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Zubereitung")
                     .font(.title2.bold())
                 Spacer()
-                Button("Bearbeiten") { showStepsEditor = true }
+                if !session.readOnly {
+                    Button("Bearbeiten") { showStepsEditor = true }
+                }
             }
             if recipe.steps.isEmpty {
                 Text("Keine Schritte vorhanden. Der Quelllink bleibt zur manuellen Pflege erhalten.")
-                    .foregroundStyle(AppTheme.warning)
+                    .foregroundStyle(theme.warning)
                     .cardSurface()
             } else {
                 ForEach(Array(recipe.steps.enumerated()), id: \.offset) { index, step in
@@ -213,7 +286,8 @@ struct RecipeDetailView: View {
 
     @ViewBuilder
     private func originalTextSection(_ recipe: Recipe) -> some View {
-        if let description = recipe.description?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let description = (recipe.descriptionOriginal ?? recipe.description)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
            !description.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Button {
@@ -297,6 +371,26 @@ struct RecipeDetailView: View {
         return url
     }
 
+    private func sourceName(_ url: URL) -> String {
+        let host = (url.host ?? "Webseite").lowercased()
+        if host.contains("pinterest") || host == "pin.it" { return "Pinterest" }
+        if host.contains("youtube") || host == "youtu.be" { return "YouTube" }
+        if host.contains("tiktok") { return "TikTok" }
+        if host.contains("instagram") { return "Instagram" }
+        return host.replacingOccurrences(of: "www.", with: "")
+    }
+
+    private func imageStatusLabel(_ status: String) -> String {
+        switch status {
+        case "ok": "Generiert"
+        case "pending", "running": "Wird generiert"
+        case "backed_up": "Original gesichert"
+        case "restored": "Original wiederhergestellt"
+        case "error": "Generierung fehlgeschlagen"
+        default: status
+        }
+    }
+
     private func shareText(_ recipe: Recipe) -> String {
         [recipe.name, recipe.url].compactMap { $0 }.joined(separator: "\n")
     }
@@ -305,6 +399,7 @@ struct RecipeDetailView: View {
 private struct StepCard: View {
     let number: Int
     let step: RecipeStep
+    @Environment(\.recipeTheme) private var theme
     @State private var remaining: Int?
     @State private var timerTask: Task<Void, Never>?
 
@@ -314,8 +409,8 @@ private struct StepCard: View {
                 Text("\(number)")
                     .font(.headline)
                     .frame(width: 32, height: 32)
-                    .background(AppTheme.butter, in: Circle())
-                    .foregroundStyle(AppTheme.cocoa)
+                    .background(theme.accent, in: Circle())
+                    .foregroundStyle(theme.ink)
                 Text(step.instruction)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }

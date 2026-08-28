@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MealPlanView: View {
     @EnvironmentObject private var session: SessionStore
+    @Environment(\.recipeTheme) private var theme
     @State private var week: MealWeek?
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -33,8 +34,8 @@ struct MealPlanView: View {
                     .refreshable { await load(start: week.weekStart) }
                 }
             }
-            .background(AppTheme.cream)
-            .navigationTitle("Wochenplan")
+            .background(theme.background)
+            .navigationTitle("Heute")
             .sheet(item: $selectedDay) { day in
                 RecipePickerView(day: day) {
                     await load(start: week?.weekStart)
@@ -103,7 +104,7 @@ struct MealPlanView: View {
                         .font(.headline)
                     Text("\(day.dayNumber).")
                         .font(.caption)
-                        .foregroundStyle(day.isToday ? AppTheme.warning : .secondary)
+                        .foregroundStyle(day.isToday ? theme.warning : .secondary)
                 }
                 Spacer()
                 Button {

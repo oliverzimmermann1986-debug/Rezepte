@@ -750,6 +750,7 @@ class ScraperJob:
                 for tag in content.get("tags") or []
                 if str(tag).strip()
             })[:60],
+            allergen_info=content.get("allergen_info"),
             method="video-ai",
         )
 

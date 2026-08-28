@@ -2,14 +2,20 @@
 
 ## Native iPhone-App
 
-Die native TypeScript-/Expo-App liegt in [`native-ios/`](native-ios/README.md).
-Sie lädt keine Plattformvideos, öffnet Quelllinks ausschließlich extern und
-kennzeichnet Rezepte ohne Zutaten oder Zubereitungsschritte zur manuellen
-Pflege. `ios-swift/` ist nur noch Altbestand und kein Releasepfad.
+Der neue iPhone-Hauptpfad liegt in [`ios-swift/`](ios-swift/README.md) und ist
+eine eigenständige SwiftUI-App. Ihre Quellenküche übernimmt Rezeptlinks aus
+Webseiten, Pinterest, YouTube, TikTok und Instagram sowie Fotos und PDFs. Die
+bisherige Expo-App bleibt unter [`native-ios/`](native-ios/README.md) als
+Vergleichs- und Rückfallstand erhalten, ist aber nicht mehr der automatisch
+geprüfte Hauptpfad.
+
+Die SwiftUI-App enthält außerdem die vollständige manuelle Importprüfung mit
+KI-Neuanalyse sowie einen servergespeicherten Kochmodus mit Portionsskalierung,
+Schritt-Timern und idempotentem Eintrag in die Kochhistorie.
 
 Proxmox-LXC-Container für den Scraper-Job:
 
-**Rezeptbibliothek mit TikTok/Instagram-Linkimport** — übernimmt Links aus zwei
+**Rezeptbibliothek mit offenem Quellenimport** — übernimmt Links aus zwei
 separaten E-Mail-Postfächern (Rezepte + Hochzeit). Plattformmedien werden nicht
 heruntergeladen. Unvollständige Eingänge bleiben mit ihrem Original-Link zur
 manuellen Bearbeitung erhalten.
@@ -19,13 +25,13 @@ Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Sta
 
 ## Oberfläche
 
-- Rezeptsuche ist die Startseite
-- festes Butter-Yellow-Design ohne alte Theme-Umschaltung
-- Favoriten und Einkaufsliste direkt in der Hauptnavigation
-- Mobile-First mit vollständig freigehaltener Bottom-Navigation und iPhone-Safe-Area
+- Quellen-Eingang ist die Startseite; das Archiv bleibt einen Tab entfernt
+- Butter, Salbei, Tomate und Pflaume sind gerätebezogen umschaltbar
+- Einkaufsliste mit lokalem Produktkatalog, Autovervollständigung, Icons und Supermarktbereichen
+- native iPhone-Navigation mit Dynamic Type, Dark Mode und iOS-Safe-Areas
 - erweiterte Filter als Side-Sheet am Desktop und Bottom-Sheet auf Smartphones
 - keine externen Schriftarten oder Design-CDNs
-- zentraler Admin-Reiter für Import, Qualität, Versionen, PDF/Scan, Suche und Wartung
+- Administration in den Einstellungen für Konten mit Vollzugriff
 - automatische PDF-/Scan-Aufbereitung mit Ausrichtung, OCR, Randbeschnitt und Seiteneditor
 
 

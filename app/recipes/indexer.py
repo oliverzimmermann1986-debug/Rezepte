@@ -605,7 +605,10 @@ def _extract_for_recipe(
     # (auto=0) bleiben dabei unangetastet.
     from .auto_tags import compute_diet_tags
     ki_tags = content.get("tags") or []
-    diet_tags = compute_diet_tags([p["canonical_name"] for p in prepared])
+    diet_tags = compute_diet_tags(
+        [p["canonical_name"] for p in prepared],
+        allergen_info=content.get("allergen_info"),
+    )
     previous_auto_tags = [t["name"] for t in current_tags if t.get("auto")]
     all_auto_tags = sorted(set(previous_auto_tags) | set(ki_tags) | set(diet_tags))
     final_status = "ok" if prepared and steps else "error"

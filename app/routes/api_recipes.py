@@ -489,6 +489,14 @@ def restore_image_backup(backup_id: int):
         raise HTTPException(409, str(exc)) from exc
 
 
+@router.post("/allergens/backfill", dependencies=[Depends(require_admin)])
+def backfill_allergen_info():
+    """Berechnet die sicheren Allergiker-Auto-Tags des Altbestands neu."""
+    from ..recipes.auto_tags import backfill_diet_auto_tags
+
+    return backfill_diet_auto_tags(get_db())
+
+
 @router.post(
     "/{recipe_id}/generate-image",
     status_code=202,
@@ -1743,7 +1751,10 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
     # Auto-Tags (KI + Regel-Pass)
     from ..recipes.auto_tags import compute_diet_tags
     ki_tags = content.get("tags") or []
-    diet_tags = compute_diet_tags([p.get("canonical_name") or "" for p in prepared])
+    diet_tags = compute_diet_tags(
+        [p.get("canonical_name") or "" for p in prepared],
+        allergen_info=content.get("allergen_info"),
+    )
     previous_auto_tags = [t["name"] for t in current_tags if t.get("auto")]
     all_auto_tags = sorted(set(previous_auto_tags) | set(ki_tags) | set(diet_tags))
     final_status = "ok" if prepared and steps else "error"

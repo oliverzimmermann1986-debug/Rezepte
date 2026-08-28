@@ -3,6 +3,7 @@ import SwiftUI
 
 struct RecipesView: View {
     @EnvironmentObject private var session: SessionStore
+    @Environment(\.recipeTheme) private var theme
     @State private var recipes: [RecipeSummary] = []
     @State private var total = 0
     @State private var search = ""
@@ -30,7 +31,9 @@ struct RecipesView: View {
                         title: filters.activeCount > 0 ? "Keine Treffer" : "Keine Rezepte",
                         message: filters.activeCount > 0
                             ? "Passe die aktiven Filter an."
-                            : "Passe die Suche an oder importiere ein Rezept."
+                            : session.readOnly
+                                ? "Für den Gastzugang sind derzeit keine Rezepte verfügbar."
+                                : "Passe die Suche an oder importiere ein Rezept."
                     )
                 } else {
                     List {
@@ -59,8 +62,8 @@ struct RecipesView: View {
                     .refreshable { await load() }
                 }
             }
-            .background(AppTheme.cream)
-            .navigationTitle("Rezepte")
+            .background(theme.background)
+            .navigationTitle("Archiv")
             .navigationDestination(for: Int.self) { id in
                 RecipeDetailView(recipeID: id)
             }
@@ -165,6 +168,7 @@ struct RecipesView: View {
 
 private struct RecipeRow: View {
     let recipe: RecipeSummary
+    @Environment(\.recipeTheme) private var theme
 
     var body: some View {
         HStack(spacing: 14) {
@@ -184,6 +188,12 @@ private struct RecipeRow: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if let source = sourceLabel(recipe.url) {
+                    Label(source, systemImage: "link")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(theme.muted)
+                }
+
                 HStack(spacing: 10) {
                     Label("\(recipe.ingredientsCount)", systemImage: "carrot")
                     Label("\(recipe.stepsCount)", systemImage: "list.number")
@@ -199,11 +209,22 @@ private struct RecipeRow: View {
                 if recipe.needsManualCare {
                     Label("Manuell pflegen", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption.bold())
-                        .foregroundStyle(AppTheme.warning)
+                        .foregroundStyle(theme.warning)
                 }
             }
         }
         .padding(.vertical, 7)
         .contentShape(Rectangle())
+    }
+
+    private func sourceLabel(_ rawURL: String?) -> String? {
+        guard let rawURL, let url = URL(string: rawURL), let host = url.host?.lowercased() else {
+            return nil
+        }
+        if host.contains("pinterest") || host == "pin.it" { return "Pinterest" }
+        if host.contains("youtube") || host == "youtu.be" { return "YouTube" }
+        if host.contains("tiktok") { return "TikTok" }
+        if host.contains("instagram") { return "Instagram" }
+        return host.replacingOccurrences(of: "www.", with: "")
     }
 }

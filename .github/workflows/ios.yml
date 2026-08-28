@@ -1,4 +1,4 @@
-name: TypeScript iPhone App
+name: Legacy Expo iPhone App
 
 on:
   workflow_dispatch:
@@ -18,15 +18,6 @@ on:
         required: false
         default: ""
         type: string
-  push:
-    paths:
-      - "native-ios/**"
-      - ".github/workflows/ios.yml"
-  pull_request:
-    paths:
-      - "native-ios/**"
-      - ".github/workflows/ios.yml"
-
 concurrency:
   group: native-ios-${{ github.ref }}
   cancel-in-progress: true

@@ -4,11 +4,13 @@ struct LoginResponse: Codable {
     let token: String
     let username: String
     let expiresIn: Int
+    let readOnly: Bool?
 }
 
 struct SessionResponse: Codable {
     let username: String
     let fullAccess: Bool?
+    let readOnly: Bool?
 }
 
 struct RecipeListResponse: Codable {
@@ -20,6 +22,7 @@ struct RecipeFilters: Equatable, Sendable {
     var type = ""
     var category = ""
     var tagIDs: Set<Int> = []
+    var allergenTagIDs: Set<Int> = []
     var includedIngredients: Set<String> = []
     var excludedIngredients: Set<String> = []
     var favoriteOnly = false
@@ -29,7 +32,7 @@ struct RecipeFilters: Equatable, Sendable {
     var activeCount: Int {
         (type.isEmpty ? 0 : 1)
             + (category.isEmpty ? 0 : 1)
-            + tagIDs.count
+            + tagIDs.union(allergenTagIDs).count
             + includedIngredients.count
             + excludedIngredients.count
             + (favoriteOnly ? 1 : 0)
@@ -51,6 +54,39 @@ struct TagFacet: Codable, Identifiable, Hashable, Sendable {
     let id: Int
     let name: String
     let n: Int
+
+    var allergenInfo: AllergenInfo? {
+        AllergenInfo(rawValue: name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+}
+
+enum AllergenInfo: String, CaseIterable, Sendable {
+    case glutenFree = "glutenfrei"
+    case lactoseFree = "laktosefrei"
+    case eggFree = "eifrei"
+    case nutFree = "nussfrei"
+
+    var title: String {
+        switch self {
+        case .glutenFree: "Glutenfrei"
+        case .lactoseFree: "Laktosefrei"
+        case .eggFree: "Eifrei"
+        case .nutFree: "Nussfrei"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .glutenFree: "leaf"
+        case .lactoseFree: "drop"
+        case .eggFree: "circle"
+        case .nutFree: "shield"
+        }
+    }
+
+    var sortIndex: Int {
+        Self.allCases.firstIndex(of: self) ?? 0
+    }
 }
 
 struct IngredientFacet: Codable, Identifiable, Hashable, Sendable {
@@ -74,6 +110,12 @@ struct RecipeSummary: Codable, Identifiable, Hashable {
     let stepsCount: Int
     let needsManualCare: Bool
     let description: String?
+    let sourceAddedAt: Double?
+    let userVerified: Bool?
+    let verifiedAt: Double?
+    let verifiedBy: String?
+    let ingredientsStatus: String?
+    let imageGenerationStatus: String?
 }
 
 struct Recipe: Codable, Identifiable {
@@ -90,6 +132,19 @@ struct Recipe: Codable, Identifiable {
     var steps: [RecipeStep]
     let needsManualCare: Bool
     let manualCareReasons: [String]
+    let sourceAddedAt: Double?
+    let userVerified: Bool?
+    let verifiedAt: Double?
+    let verifiedBy: String?
+    let ingredientsStatus: String?
+    let descriptionOriginal: String?
+    let pdfFilename: String?
+    let imageGenerationStatus: String?
+    let imageGenerationModel: String?
+    let imageGenerationPrompt: String?
+    let imageGenerationBatchId: String?
+    let imageGeneratedAt: Double?
+    let imageBackups: [ImageBackup]?
 }
 
 struct Ingredient: Codable, Identifiable, Hashable {
@@ -131,6 +186,22 @@ struct RecipeStep: Codable, Identifiable, Hashable {
     }
 }
 
+struct CookingProgress: Codable, Equatable {
+    let recipeId: Int
+    let username: String
+    let completedSteps: [Int]
+    let activeStep: Int
+    let servings: Int?
+    let startedAt: Double?
+    let updatedAt: Double?
+    let exists: Bool
+    let stepCount: Int
+}
+
+struct CookingCompletionResult: Codable {
+    let ok: Bool
+}
+
 struct CartResponse: Codable {
     let items: [CartItem]
 }
@@ -141,6 +212,8 @@ struct CartItem: Codable, Identifiable, Hashable {
     var amount: Double?
     let unit: String?
     var checked: Bool
+    let category: String?
+    let icon: String?
 
     var displayText: String {
         let quantity = amount.map {
@@ -151,6 +224,97 @@ struct CartItem: Codable, Identifiable, Hashable {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
     }
+}
+
+struct ShoppingSuggestion: Codable, Identifiable, Hashable {
+    let canonicalName: String
+    let name: String
+    let category: String?
+    let icon: String?
+    let defaultUnit: String?
+    let usageCount: Int?
+
+    var id: String { canonicalName }
+}
+
+struct ShoppingSuggestionsResponse: Codable {
+    let items: [ShoppingSuggestion]
+}
+
+struct ShoppingCategory: Codable, Identifiable, Hashable {
+    let name: String
+    let icon: String
+
+    var id: String { name }
+}
+
+struct ShoppingCategoriesResponse: Codable {
+    let items: [ShoppingCategory]
+}
+
+struct ImageBackup: Codable, Identifiable, Hashable {
+    let id: Int
+    let batchId: String
+    let recipeId: Int
+    let recipeName: String?
+    let originalFilename: String
+    let originalSha256: String
+    let generatedSha256: String?
+    let model: String?
+    let prompt: String?
+    let createdAt: Double
+    let generatedAt: Double?
+    let restoredAt: Double?
+    let fileUrl: String?
+}
+
+struct ImageBackupResponse: Codable {
+    let items: [ImageBackup]
+}
+
+struct ImageGenerationStart: Codable {
+    let ok: Bool
+    let taskId: Int
+    let recipeId: Int
+    let batchId: String
+}
+
+struct ImageBackfillStart: Codable {
+    let ok: Bool
+    let taskId: Int
+    let runId: Int
+    let batchId: String
+}
+
+struct ImageBackfillRun: Codable {
+    let id: Int
+    let kind: String
+    let startedAt: Double
+    let endedAt: Double?
+    let status: String
+    let startedBy: String?
+    let result: ImageBackfillResult
+}
+
+struct ImageBackfillResult: Codable {
+    let ok: Bool?
+    let phase: String?
+    let batchId: String?
+    let total: Int?
+    let processed: Int?
+    let backedUp: Int?
+    let generated: Int?
+    let errorCount: Int?
+    let errors: [ImageBackfillError]?
+    let error: String?
+}
+
+struct ImageBackfillError: Codable, Identifiable {
+    let recipeId: Int
+    let name: String?
+    let error: String
+
+    var id: Int { recipeId }
 }
 
 struct MealWeek: Codable {
@@ -238,6 +402,32 @@ struct PendingSuggestion: Codable, Hashable {
     let confidence: Double?
     let filename: String?
     let source: String?
+    let platform: String?
+    let hasThumbnail: Bool?
+    let servings: Int?
+    let ingredients: [PendingIngredient]?
+    let steps: [PendingStep]?
+}
+
+struct PendingIngredient: Codable, Hashable {
+    let name: String
+    let amount: Double?
+    let unit: String?
+    let raw: String?
+}
+
+struct PendingStep: Codable, Hashable {
+    let instruction: String
+    let timerSeconds: Int?
+}
+
+struct PendingAnalysisResult: Codable {
+    let ok: Bool
+    let action: String?
+    let error: String?
+    let message: String?
+    let description: String?
+    let analysis: PendingSuggestion?
 }
 
 struct FailedDownload: Codable, Identifiable {

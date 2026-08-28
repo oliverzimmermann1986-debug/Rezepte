@@ -11,6 +11,8 @@ final class SessionStore: ObservableObject {
 
     @Published private(set) var state: State = .checking
     @Published private(set) var username = ""
+    @Published private(set) var fullAccess = false
+    @Published private(set) var readOnly = false
     @Published var alertMessage: String?
 
     let api = APIClient()
@@ -49,9 +51,8 @@ final class SessionStore: ObservableObject {
                 cloudflareCredentials: cloudflareCredentials
             )
             let session = try await api.sessionInfo()
-            username = session.username
-            state = .signedIn
-            await drainSharedImports()
+            apply(session)
+            if !readOnly { await drainSharedImports() }
         } catch {
             signOut()
         }
@@ -74,23 +75,51 @@ final class SessionStore: ObservableObject {
             cloudflareCredentials: cloudflareCredentials
         )
         let response = try await api.login(username: username, password: password)
-        try KeychainStore.save(response.token, account: tokenAccount)
-        try saveCloudflareCredentials(cloudflareCredentials)
-        defaults.set(server.trimmingCharacters(in: .whitespacesAndNewlines), forKey: serverKey)
-        try await api.configure(
+        try await activate(
             server: server,
             token: response.token,
             cloudflareCredentials: cloudflareCredentials
         )
-        self.username = response.username
-        state = .signedIn
-        await drainSharedImports()
+    }
+
+    func signInAsGuest(
+        server: String,
+        cloudflareClientID: String,
+        cloudflareClientSecret: String
+    ) async throws {
+        let cloudflareCredentials = try CloudflareAccessCredentials(
+            clientID: cloudflareClientID,
+            clientSecret: cloudflareClientSecret
+        )
+        try await api.configure(
+            server: server,
+            token: nil,
+            cloudflareCredentials: cloudflareCredentials
+        )
+        let response = try await api.guestLogin()
+        try await activate(
+            server: server,
+            token: response.token,
+            cloudflareCredentials: cloudflareCredentials
+        )
     }
 
     func signOut() {
         KeychainStore.delete(account: tokenAccount)
         username = ""
+        fullAccess = false
+        readOnly = false
         state = .signedOut
+    }
+
+    func refreshAccess() async {
+        guard case .signedIn = state else { return }
+        do {
+            let session = try await api.sessionInfo()
+            apply(session)
+        } catch {
+            handle(error)
+        }
     }
 
     private func saveCloudflareCredentials(_ credentials: CloudflareAccessCredentials?) throws {
@@ -103,6 +132,34 @@ final class SessionStore: ObservableObject {
         try KeychainStore.save(credentials.clientSecret, account: cloudflareClientSecretAccount)
     }
 
+    private func activate(
+        server: String,
+        token: String,
+        cloudflareCredentials: CloudflareAccessCredentials?
+    ) async throws {
+        try await api.configure(
+            server: server,
+            token: token,
+            cloudflareCredentials: cloudflareCredentials
+        )
+        let activeSession = try await api.sessionInfo()
+        try KeychainStore.save(token, account: tokenAccount)
+        try saveCloudflareCredentials(cloudflareCredentials)
+        defaults.set(
+            server.trimmingCharacters(in: .whitespacesAndNewlines),
+            forKey: serverKey
+        )
+        apply(activeSession)
+        if !readOnly { await drainSharedImports() }
+    }
+
+    private func apply(_ session: SessionResponse) {
+        username = session.username
+        fullAccess = session.fullAccess ?? false
+        readOnly = session.readOnly ?? false
+        state = .signedIn
+    }
+
     func handle(_ error: Error) {
         if let apiError = error as? APIError,
            case .unauthenticated = apiError {
@@ -112,7 +169,7 @@ final class SessionStore: ObservableObject {
     }
 
     func drainSharedImports() async {
-        guard case .signedIn = state else { return }
+        guard case .signedIn = state, !readOnly else { return }
         let queued = SharedImportQueue.all()
         guard !queued.isEmpty else { return }
         var imported = 0
@@ -128,7 +185,7 @@ final class SessionStore: ObservableObject {
         }
         if imported > 0 {
             alertMessage = imported == 1
-                ? "Der geteilte TikTok-/Instagram-Link wurde importiert."
+                ? "Der geteilte Rezeptlink wurde importiert."
                 : "\(imported) geteilte Links wurden importiert."
         }
     }

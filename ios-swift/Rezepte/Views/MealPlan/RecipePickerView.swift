@@ -6,6 +6,7 @@ struct RecipePickerView: View {
 
     @EnvironmentObject private var session: SessionStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.recipeTheme) private var theme
     @State private var recipes: [RecipeSummary] = []
     @State private var search = ""
     @State private var servings = 2
@@ -28,7 +29,7 @@ struct RecipePickerView: View {
                                     if recipe.needsManualCare {
                                         Label("Unvollständig", systemImage: "exclamationmark.triangle.fill")
                                             .font(.caption)
-                                            .foregroundStyle(AppTheme.warning)
+                                            .foregroundStyle(theme.warning)
                                     }
                                 }
                                 Spacer()
@@ -88,4 +89,3 @@ struct RecipePickerView: View {
         }
     }
 }
-

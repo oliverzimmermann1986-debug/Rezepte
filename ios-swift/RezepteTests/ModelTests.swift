@@ -2,6 +2,19 @@ import XCTest
 @testable import Rezepte
 
 final class ModelTests: XCTestCase {
+    func testSessionDecodesGuestReadOnlyAccess() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let session = try decoder.decode(
+            SessionResponse.self,
+            from: Data(#"{"username":"Gast","full_access":false,"read_only":true}"#.utf8)
+        )
+
+        XCTAssertEqual(session.username, "Gast")
+        XCTAssertEqual(session.fullAccess, false)
+        XCTAssertEqual(session.readOnly, true)
+    }
+
     func testIngredientDisplayTextOmitsMissingValues() {
         let ingredient = Ingredient(
             id: nil,
@@ -28,13 +41,23 @@ final class ModelTests: XCTestCase {
         var filters = RecipeFilters()
         filters.type = "Hauptgericht"
         filters.tagIDs = [1, 2]
+        filters.allergenTagIDs = [7, 8]
         filters.includedIngredients = ["tomate"]
         filters.excludedIngredients = ["zwiebel"]
         filters.favoriteOnly = true
         filters.minRating = 3
         filters.manualOnly = true
 
-        XCTAssertEqual(filters.activeCount, 8)
+        XCTAssertEqual(filters.activeCount, 10)
+    }
+
+    func testAllergenInfoRecognizesOnlySupportedFreeFromTags() {
+        XCTAssertEqual(TagFacet(id: 1, name: "Glutenfrei", n: 12).allergenInfo, .glutenFree)
+        XCTAssertEqual(TagFacet(id: 2, name: " laktosefrei ", n: 8).allergenInfo, .lactoseFree)
+        XCTAssertEqual(TagFacet(id: 3, name: "eifrei", n: 5).allergenInfo, .eggFree)
+        XCTAssertEqual(TagFacet(id: 4, name: "nussfrei", n: 7).allergenInfo, .nutFree)
+        XCTAssertNil(TagFacet(id: 5, name: "vegan", n: 10).allergenInfo)
+        XCTAssertNil(TagFacet(id: 6, name: "zuckerfrei", n: 3).allergenInfo)
     }
 
     func testPendingImportDecodesEditableSuggestion() throws {

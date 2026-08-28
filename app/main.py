@@ -350,6 +350,7 @@ APP_CAPABILITIES = [
     "ai-shopping-optimization",
     "shopping-categories",
     "native-admin-roles",
+    "guest-read-only",
     "pdf-processing",
     "pdf-background-jobs",
     "pdf-preflight",

@@ -28,7 +28,10 @@ DEFAULT_SECRETS = (
 )
 ROLE_USER = "user"
 ROLE_ADMIN = "admin"
+ROLE_GUEST = "guest"
+GUEST_USERNAME = "Gast"
 VALID_ROLES = frozenset({ROLE_USER, ROLE_ADMIN})
+SAFE_SESSION_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _DUMMY_PASSWORD_HASH = "$2b$12$tHqkjQG/5uUOLxPxh766ku3u8CNZ6YprzbSzD8uyU7ZB04RLAt1m2"
 
 
@@ -216,6 +219,36 @@ def create_session(username: str) -> str:
     return _serializer().dumps(payload)
 
 
+def create_guest_session() -> str:
+    """Erstellt eine zustandslose, strikt schreibgeschützte Gastsitzung.
+
+    Gäste sind absichtlich keine DB-Benutzer. Das signierte ``guest``-Merkmal
+    trennt sie eindeutig vom Legacy-Config-Fallback und kann daher niemals
+    Administratorrechte erben.
+    """
+    return _serializer().dumps({"user": GUEST_USERNAME, "guest": True})
+
+
+def _session_payload(token: str) -> Optional[dict]:
+    if not token:
+        return None
+    try:
+        data = _serializer().loads(token, max_age=SESSION_MAX_AGE)
+        return data if isinstance(data, dict) else None
+    except (BadSignature, SignatureExpired, TypeError, ValueError):
+        return None
+
+
+def session_is_guest(token: str) -> bool:
+    """Prüft das signierte Gastmerkmal ohne einen DB-Benutzer anzulegen."""
+    data = _session_payload(token)
+    return bool(
+        data
+        and data.get("guest") is True
+        and hmac.compare_digest(str(data.get("user") or ""), GUEST_USERNAME)
+    )
+
+
 def session_user(token: str) -> Optional[str]:
     """Returnt username aus gültiger Session, sonst None.
     Eine Schicht über verify_session() — der Caller braucht oft den User-Namen,
@@ -225,15 +258,18 @@ def session_user(token: str) -> Optional[str]:
     jedem Request aus der DB gelesen, damit Sperre, Löschung und Passwortwechsel
     bestehende Cookies unmittelbar invalidieren.
     """
-    if not token:
+    data = _session_payload(token)
+    if data is None:
         return None
     try:
-        data = _serializer().loads(token, max_age=SESSION_MAX_AGE)
         u = data.get("user")
         if not u:
             return None
 
         username = str(u)
+        if data.get("guest") is True:
+            return GUEST_USERNAME if session_is_guest(token) else None
+
         from .db import get_db
         user = get_db().user_get_by_name(username)
         if user:
@@ -272,7 +308,7 @@ def session_user(token: str) -> Optional[str]:
             if version_ok and hmac.compare_digest(username, cfg_user)
             else None
         )
-    except (BadSignature, SignatureExpired, TypeError, ValueError):
+    except (TypeError, ValueError):
         return None
     except Exception:
         # Auth-Prüfungen fail-closed. Details nur serverseitig loggen.
@@ -299,6 +335,11 @@ def auth_disabled() -> bool:
 
 
 async def require_auth(request: Request) -> None:
+    if request_is_guest(request) and request.method.upper() not in SAFE_SESSION_METHODS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Der Gastzugang ist schreibgeschützt.",
+        )
     if auth_disabled():
         from .security import request_is_from_trusted_proxy
         if request_is_from_trusted_proxy(request):
@@ -319,14 +360,25 @@ async def require_auth(request: Request) -> None:
 
 def request_user(request: Request) -> Optional[str]:
     """Liest eine Sitzung aus HttpOnly-Cookie oder Bearer-Header."""
+    token = _request_token(request)
+    if session_is_guest(token):
+        return GUEST_USERNAME
     if auth_disabled():
         from .security import request_is_from_trusted_proxy
         return "local" if request_is_from_trusted_proxy(request) else None
+    return session_user(token)
+
+
+def _request_token(request: Request) -> str:
     token = request.cookies.get(SESSION_COOKIE, "")
     authorization = getattr(request, "headers", {}).get("authorization", "")
     if authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
-    return session_user(token)
+    return token
+
+
+def request_is_guest(request: Request) -> bool:
+    return session_is_guest(_request_token(request))
 
 
 async def require_admin(request: Request) -> dict:
@@ -337,6 +389,9 @@ async def require_admin(request: Request) -> dict:
     Datenbank migrierte Config-Sitzung wird ebenfalls als Legacy-Admin
     akzeptiert, damit ein Upgrade den Betreiber nicht aussperrt.
     """
+    if request_is_guest(request):
+        raise HTTPException(403, "Der Gastzugang ist schreibgeschützt.")
+
     if auth_disabled():
         from .security import request_is_from_trusted_proxy
         if not request_is_from_trusted_proxy(request):

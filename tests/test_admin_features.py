@@ -448,6 +448,7 @@ def test_current_session_exposes_persisted_user_role(client, test_db: Database, 
         "role": "user",
         "is_admin": False,
         "full_access": False,
+        "read_only": False,
     }
 
 
@@ -464,6 +465,7 @@ def test_current_session_treats_auth_disabled_as_local_admin(client, monkeypatch
         "role": "admin",
         "is_admin": True,
         "full_access": True,
+        "read_only": False,
     }
 
 

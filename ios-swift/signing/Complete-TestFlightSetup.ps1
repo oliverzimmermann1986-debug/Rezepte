@@ -9,6 +9,9 @@ param(
     [string]$ProvisioningProfilePath,
 
     [Parameter(Mandatory = $true)]
+    [string]$ShareProvisioningProfilePath,
+
+    [Parameter(Mandatory = $true)]
     [string]$AppStoreConnectKeyPath,
 
     [Parameter(Mandatory = $true)]
@@ -35,6 +38,7 @@ function Resolve-RequiredFile([string]$Path, [string]$Label) {
 $certificate = Resolve-RequiredFile $CertificatePath "Apple-Zertifikat"
 $privateKey = Resolve-RequiredFile $PrivateKeyPath "Privater Schlüssel"
 $profile = Resolve-RequiredFile $ProvisioningProfilePath "Provisioning Profile"
+$shareProfile = Resolve-RequiredFile $ShareProvisioningProfilePath "Share-Extension Provisioning Profile"
 $ascKey = Resolve-RequiredFile $AppStoreConnectKeyPath "App-Store-Connect-Schlüssel"
 
 $opensslCandidates = @(
@@ -67,6 +71,7 @@ try {
 
     $p12Base64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($p12Path))
     $profileBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($profile))
+    $shareProfileBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($shareProfile))
     $ascKeyBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($ascKey))
 
     function Set-GitHubSecret([string]$Name, [string]$Value) {
@@ -78,6 +83,7 @@ try {
     Set-GitHubSecret "IOS_P12_PASSWORD" $p12Password
     Set-GitHubSecret "IOS_KEYCHAIN_PASSWORD" $keychainPassword
     Set-GitHubSecret "IOS_APPSTORE_PROFILE_BASE64" $profileBase64
+    Set-GitHubSecret "IOS_SHARE_PROFILE_BASE64" $shareProfileBase64
     Set-GitHubSecret "ASC_PRIVATE_KEY_BASE64" $ascKeyBase64
     Set-GitHubSecret "ASC_KEY_ID" $AppStoreConnectKeyId
     Set-GitHubSecret "ASC_ISSUER_ID" $AppStoreConnectIssuerId

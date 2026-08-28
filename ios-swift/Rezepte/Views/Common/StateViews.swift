@@ -2,11 +2,12 @@ import SwiftUI
 
 struct ManualCareBanner: View {
     let reasons: [String]
+    @Environment(\.recipeTheme) private var theme
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(AppTheme.warning)
+                .foregroundStyle(theme.warning)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Manuell pflegen")
                     .font(.headline)
@@ -48,4 +49,3 @@ struct ErrorState: View {
         }
     }
 }
-

@@ -20,7 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 230
+CURRENT_SCHEMA_VERSION = 240
 _MIGRATION_THREAD_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -962,7 +962,7 @@ class Database:
         ).fetchone()
         hardening_migration = c.execute(
             "SELECT 1 FROM schema_migrations WHERE version=?",
-            (CURRENT_SCHEMA_VERSION,),
+            (230,),
         ).fetchone()
         if recipe_name_migration is None or hardening_migration is None:
             for recipe_id, stored_name in c.execute(
@@ -1026,6 +1026,24 @@ class Database:
             "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
             (230, "transactional_boundaries_and_runtime_hardening", time.time()),
         )
+
+        allergen_backfill_migration = c.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?", (240,)
+        ).fetchone()
+        if allergen_backfill_migration is None:
+            from .recipes.auto_tags import backfill_diet_auto_tags_connection
+
+            summary = backfill_diet_auto_tags_connection(c)
+            logger.info(
+                "Allergiker-Backfill: %s Rezepte geprüft, %s geändert",
+                summary["recipes_checked"],
+                summary["recipes_changed"],
+            )
+            c.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) "
+                "VALUES (?, ?, ?)",
+                (240, "backfill_allergen_free_tags", time.time()),
+            )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
             defaults = {

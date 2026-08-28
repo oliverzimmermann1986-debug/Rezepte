@@ -23,8 +23,11 @@ Mindestens ein kleines und ein großes aktuelles iPhone testen:
 - Zutaten und Schritte ergänzen, speichern und neu laden
 - Favorit, Teilen und **Zur Einkaufsliste**
 - Einkauf abhaken, hinzufügen und löschen
+- Autovervollständigung, Artikel-Icons und Sortierung nach Supermarktbereichen
 - Wochen wechseln, Gericht einplanen, Portionen ändern und Wocheneinkauf erstellen
-- Linkimport und manuelle Eingänge in **Verwalten**
+- Website-, Pinterest- und YouTube-Linkimport sowie manuelle Eingänge in **Eingang**
+- Vier Farbwelten und System-/Hell-/Dunkelmodus in **Einstellungen**
+- Bildverlauf: Original ansehen, Bild generieren, vergleichen und wiederherstellen
 - Dynamic Type, Dark Mode und VoiceOver
 - Flugmodus, langsames Netz und Serverfehler
 
@@ -38,9 +41,11 @@ Mindestens ein kleines und ein großes aktuelles iPhone testen:
 
 ## 4. TestFlight
 
-- Ohne Mac auf GitHub **Actions > Native iOS > Run workflow** öffnen.
-- **Signierten Build zu TestFlight hochladen** aktivieren und starten.
-- Den verarbeiteten Build in App Store Connect zunächst intern verteilen.
+- Ohne Mac auf GitHub **Actions > SwiftUI iPhone App > Run workflow** öffnen.
+- Erst einen Lauf ohne Upload vollständig grün abschließen.
+- Danach **Geprüften SwiftUI-Build zu TestFlight hochladen** aktivieren und starten.
+- Der Workflow lädt nur hoch; eine Testergruppe muss anschließend bewusst in
+  App Store Connect zugeordnet werden.
 - Mindestens einen vollständigen Testlauf auf einem zweiten iPhone durchführen.
 - Abstürze, Feedback und App-Hang-Berichte in App Store Connect prüfen.
 
@@ -48,6 +53,8 @@ Mindestens ein kleines und ein großes aktuelles iPhone testen:
 
 - Datenschutz- und Support-URL in App Store Connect eintragen.
 - App-Icon, Screenshots, Beschreibung und Altersfreigabe prüfen.
+- Die Hinweise aus `APP_REVIEW_NOTES.md` in App Store Connect an den echten
+  Review-Ablauf und das Review-Konto anpassen.
 - Dem Review-Team ein funktionsfähiges Testkonto und klare Anmeldehinweise geben.
 - Bestätigen, dass Rechte und Nutzungsbedingungen der verlinkten Drittanbieter
   eingehalten werden.

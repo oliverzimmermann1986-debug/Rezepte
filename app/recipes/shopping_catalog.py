@@ -67,7 +67,8 @@ def infer_shopping_category(name: str, canonical_name: Optional[str] = None) -> 
     for category, terms in _CATEGORY_TERMS.items():
         if any(
             re.search(
-                rf"(?<!\w){re.escape(term.casefold())}{'(?!\\w)' if len(term) <= 2 else '\\w*'}",
+                rf"(?<!\w){re.escape(term.casefold())}"
+                + (r"(?!\w)" if len(term) <= 2 else r"\w*"),
                 haystack,
             )
             for term in terms

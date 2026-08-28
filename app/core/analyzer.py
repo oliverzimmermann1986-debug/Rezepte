@@ -899,7 +899,8 @@ class OpenAIAnalyzer:
                                 existing_tags: Optional[List[str]] = None,
                                 existing_canonical: Optional[List[str]] = None) -> dict:
         """Kombinierter Call: extrahiert Zutaten + Zubereitungs-Schritte +
-        Portionen-Anzahl + stilistische Tags in EINEM API-Roundtrip.
+        Portionen-Anzahl + stilistische Tags + Allergiker-Einschätzung in
+        EINEM API-Roundtrip.
 
         Optional kann der Caller die DB-Stammdaten mitgeben:
           existing_tags: bestehende Tag-Namen — KI soll diese bevorzugen
@@ -911,9 +912,10 @@ class OpenAIAnalyzer:
 
         Spart gegenüber separaten Calls ~40% Tokens und ~50% Latenz.
 
-        Diät/Allergie-Tags (vegan, vegetarisch, laktosefrei, glutenfrei)
-        kommen NICHT von der KI — die werden deterministisch aus den
-        canonical_names in app.recipes.auto_tags berechnet (sicherer).
+        Die KI liefert für vier Allergengruppen nur eine strukturierte
+        Vorprüfung. Positive Frei-von-Tags werden anschließend weiterhin
+        deterministisch aus den canonical_names berechnet und benötigen bei
+        neuen Analysen zusätzlich das eindeutige KI-Urteil ``frei``.
         """
         # Hint-Sections nur dann anhängen wenn der Caller Werte mitgibt.
         # Cap auf 80 Items damit der Prompt nicht aufbläht — bei mehr
@@ -945,7 +947,8 @@ class OpenAIAnalyzer:
             "Du analysierst deutschsprachige Rezept-Texte aus verschiedenen Quellen "
             "(TikTok-/Instagram-Captions, Koch-Blogs, PDF-Exports von Rezept-Websites, "
             "Markdown-Notizen, Bullet-Listen) und extrahierst Zutaten, Zubereitungs-"
-            "Schritte, Portionen-Anzahl und stilistische Tags. "
+            "Schritte, Portionen-Anzahl, stilistische Tags und eine vorsichtige "
+            "Allergiker-Einschätzung. "
             "Antworte AUSSCHLIESSLICH mit gültigem JSON nach diesem Schema:\n"
             '{"ingredients":[\n'
             '  {"name":"Tomaten","amount":2,"unit":"Stück","raw":"2 große Tomaten"},\n'
@@ -956,7 +959,13 @@ class OpenAIAnalyzer:
             '  {"instruction":"Spaghetti 8 Minuten kochen.","timer_seconds":480}\n'
             "],\n"
             '"servings":4,\n'
-            '"tags":["italienisch","pasta","schnell","one-pot"]\n'
+            '"tags":["italienisch","pasta","schnell","one-pot"],\n'
+            '"allergen_info":{\n'
+            '  "gluten":"enthält",\n'
+            '  "lactose":"frei",\n'
+            '  "egg":"unklar",\n'
+            '  "nuts":"frei"\n'
+            '}\n'
             "}\n\n"
             "═══ KERNREGEL ═══\n"
             "Mengen-Angaben sind das stärkste Signal für Rezept-Inhalt. WENN der Text "
@@ -998,9 +1007,22 @@ class OpenAIAnalyzer:
             "gesund, sommerlich, winterlich, party, fingerfood, grillen, ofen, kalt\n"
             "  KEINE Diät-Tags wie 'vegan' oder 'laktosefrei' — die berechnen wir selbst aus "
             "den Zutaten, weil das sicherer ist.\n\n"
+            "REGELN ALLERGIKER-INFO:\n"
+            "- Für gluten, lactose, egg und nuts ist exakt einer dieser Werte erlaubt: "
+            "frei, enthält, unklar.\n"
+            "- enthält: Eine direkte, zusammengesetzte oder typische Quelle ist in den "
+            "Zutaten erkennbar (z.B. Sojasauce bei Gluten, Molke bei Laktose, "
+            "Mayonnaise bei Ei, Pesto oder Nougat bei Nüssen).\n"
+            "- frei: NUR wenn die Zutatenliste ausreichend vollständig ist und weder "
+            "eine direkte noch eine versteckte oder mehrdeutige Quelle erkennbar ist.\n"
+            "- unklar: Bei unvollständiger Zutatenliste, unbekannten Fertigprodukten, "
+            "Mischungen, Brühen, Saucen, möglicher Kreuzkontamination oder jeder anderen "
+            "Unsicherheit. Niemals raten; bei Zweifel immer unklar.\n"
+            "- Die Angabe ist eine Vorprüfung und keine medizinische Garantie.\n\n"
             "NUR bei wirklich rezept-freiem Text (Begrüßung, reine Werbung, nur Hashtags, "
             "nur Meta-Daten ohne Zutaten): "
-            '{"ingredients":[],"steps":[],"servings":null,"tags":[]}. '
+            '{"ingredients":[],"steps":[],"servings":null,"tags":[],"allergen_info":'
+            '{"gluten":"unklar","lactose":"unklar","egg":"unklar","nuts":"unklar"}}. '
             "Bei vorhandenen Zutaten-Mengen NIEMALS leer zurückgeben."
             + hint
         )
@@ -1075,15 +1097,26 @@ class OpenAIAnalyzer:
                     tags_out.append(norm)
                     if len(tags_out) >= 8:
                         break
+            # Allergiker-Info — unvollständige/ungültige KI-Antworten werden
+            # niemals positiv ausgelegt, sondern pro Feld zu "unklar".
+            from ..recipes.auto_tags import normalize_allergen_info
+            allergen_info = normalize_allergen_info(data.get("allergen_info"))
             return {
                 "ingredients": ings_out,
                 "steps": steps_out,
                 "servings": servings,
                 "tags": tags_out,
+                "allergen_info": allergen_info,
             }
         except Exception as e:
             logger.warning(f"OpenAI Recipe-Content JSON-Parse: {e} | {content[:200]}")
-            return {"ingredients": [], "steps": [], "servings": None, "tags": []}
+            return {
+                "ingredients": [],
+                "steps": [],
+                "servings": None,
+                "tags": [],
+                "allergen_info": None,
+            }
 
     def translate_to_german(self, text: str) -> Optional[str]:
         """Erkennt Sprache und übersetzt nach Deutsch falls nötig.

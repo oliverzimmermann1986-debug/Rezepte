@@ -113,6 +113,23 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(MockURLProtocol.lastHeader("Authorization"))
     }
 
+    func testGuestLoginUsesUnauthenticatedReadOnlyEndpoint() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: nil)
+        MockURLProtocol.respond(json: """
+        {"token":"guest-token","username":"Gast","expires_in":1209600,"read_only":true}
+        """)
+
+        let response = try await client.guestLogin()
+
+        XCTAssertEqual(response.username, "Gast")
+        XCTAssertEqual(response.readOnly, true)
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/auth/guest")
+        XCTAssertNil(MockURLProtocol.lastHeader("Authorization"))
+    }
+
     func testCloudflareAndBearerHeadersAreSentTogether() async throws {
         let client = APIClient()
         let cloudflare = try XCTUnwrap(
@@ -189,6 +206,7 @@ final class APIClientTests: XCTestCase {
         filters.type = "Hauptgericht"
         filters.category = "Pasta"
         filters.tagIDs = [8, 2]
+        filters.allergenTagIDs = [13, 21]
         filters.includedIngredients = ["knoblauch"]
         filters.excludedIngredients = ["zwiebel"]
         filters.favoriteOnly = true
@@ -205,6 +223,7 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(query["favorite_only"], "true")
         XCTAssertEqual(query["min_rating"], "4")
         XCTAssertEqual(query["needs_manual_care"], "true")
+        XCTAssertEqual(MockURLProtocol.lastQueryValues("tag_id"), ["2", "8", "13", "21"])
     }
 
     func testRecipeFacetsDecodeServerResponse() throws {
@@ -261,6 +280,164 @@ final class APIClientTests: XCTestCase {
         XCTAssertTrue(body.contains("filename=\"rezept.jpg\""))
         XCTAssertTrue(body.contains("jpeg-data"))
     }
+
+    func testPendingSuggestionDecodesEditableRecipeContent() throws {
+        let json = """
+        {
+          "url": "https://example.de/rezept",
+          "description": "Originaltext",
+          "ai_suggestion": {
+            "name": "Kartoffelsuppe",
+            "type": "Hauptgericht",
+            "category": "Suppe",
+            "confidence": 0.91,
+            "servings": 4,
+            "platform": "web",
+            "has_thumbnail": true,
+            "ingredients": [{"name":"Kartoffeln","amount":500,"unit":"g","raw":"500 g Kartoffeln"}],
+            "steps": [{"instruction":"20 Minuten kochen","timer_seconds":1200}]
+          }
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let item = try decoder.decode(PendingItem.self, from: Data(json.utf8))
+
+        XCTAssertEqual(item.aiSuggestion?.servings, 4)
+        XCTAssertEqual(item.aiSuggestion?.ingredients?.first?.name, "Kartoffeln")
+        XCTAssertEqual(item.aiSuggestion?.steps?.first?.timerSeconds, 1200)
+        XCTAssertEqual(item.aiSuggestion?.hasThumbnail, true)
+    }
+
+    func testResolvePendingSendsCompleteReviewedRecipe() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: """{"ok":true}""")
+
+        _ = try await client.resolvePending(
+            url: "https://example.de/rezept",
+            action: "save",
+            name: "Kartoffelsuppe",
+            type: "Hauptgericht",
+            category: "Suppe",
+            description: "Cremig",
+            ingredients: [PendingIngredient(name: "Kartoffeln", amount: 500, unit: "g", raw: nil)],
+            steps: [PendingStep(instruction: "Kochen", timerSeconds: 1200)],
+            servings: 4,
+            verified: true
+        )
+
+        let data = MockURLProtocol.lastBody()
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/pending")
+        XCTAssertEqual(body["servings"] as? Int, 4)
+        XCTAssertEqual(body["verified"] as? Bool, true)
+        XCTAssertEqual((body["ingredients"] as? [[String: Any]])?.first?["name"] as? String, "Kartoffeln")
+        XCTAssertEqual((body["steps"] as? [[String: Any]])?.first?["timer_seconds"] as? Int, 1200)
+    }
+
+    func testPendingReanalysisUsesDedicatedEndpoint() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: """
+        {"ok":true,"action":"still_pending","analysis":{"name":"Neu erkannt"}}
+        """)
+
+        let result = try await client.reanalyzePending(url: "https://example.de/rezept")
+
+        XCTAssertEqual(result.analysis?.name, "Neu erkannt")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/pending/reanalyze")
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+    }
+
+    func testCookingProgressAndCompletionUseNativeContracts() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: """
+        {"recipe_id":42,"username":"oliver","completed_steps":[0,1],"active_step":2,"servings":3,"started_at":1,"updated_at":2,"exists":true,"step_count":4}
+        """)
+
+        let progress = try await client.updateCookingProgress(
+            id: 42,
+            completedSteps: [0, 1],
+            activeStep: 2,
+            servings: 3
+        )
+
+        XCTAssertEqual(progress.completedSteps, [0, 1])
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/cooking-progress")
+        let progressBody = try XCTUnwrap(String(data: MockURLProtocol.lastBody(), encoding: .utf8))
+        XCTAssertTrue(progressBody.contains("\"completed_steps\":[0,1]"))
+
+        MockURLProtocol.respond(json: """{"ok":true}""")
+        _ = try await client.completeCooking(
+            id: 42,
+            servings: 3,
+            idempotencyKey: "stable-completion-id"
+        )
+
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/cooking-complete")
+        XCTAssertEqual(MockURLProtocol.lastHeader("Idempotency-Key"), "stable-completion-id")
+    }
+
+    func testShoppingSuggestionsDecodeCatalogMetadata() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: """
+        {"items":[{"canonical_name":"milch","name":"Milch","category":"Kühlregal","icon":"🥛","default_unit":"l","usage_count":4}]}
+        """)
+
+        let response = try await client.shoppingSuggestions(query: "mil")
+
+        XCTAssertEqual(response.items.first?.name, "Milch")
+        XCTAssertEqual(response.items.first?.icon, "🥛")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/suggestions")
+        XCTAssertEqual(MockURLProtocol.lastQueryItems()["q"], "mil")
+    }
+
+    func testManualCartItemSendsSupermarketCategory() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: """{"ok":true}""")
+
+        _ = try await client.addCartItem(name: "Milch", amount: 1, unit: "l", category: "Kühlregal")
+
+        let body = try XCTUnwrap(String(data: MockURLProtocol.lastBody(), encoding: .utf8))
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/add")
+        XCTAssertTrue(body.contains("\"category\":\"Kühlregal\""))
+    }
+
+    func testImageBackfillUsesBackupFirstEndpoint() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: """
+        {"ok":true,"task_id":14,"run_id":8,"batch_id":"safe-batch"}
+        """)
+
+        let result = try await client.startImageBackfill()
+
+        XCTAssertEqual(result.runId, 8)
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/images/backfill")
+    }
+
+    func testImageBackupRequestCarriesAuthentication() async throws {
+        let client = APIClient()
+        try await client.configure(server: "https://example.de", token: "api-token")
+
+        let request = try await client.imageBackupRequest(backupID: 19)
+
+        XCTAssertEqual(request.url?.path, "/api/recipes/image-backups/19/file")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer api-token")
+    }
 }
 
 /// Fängt Requests des injizierten URLSession ab, damit der Query-Aufbau
@@ -305,6 +482,16 @@ final class MockURLProtocol: URLProtocol {
         return (components.queryItems ?? []).reduce(into: [:]) { result, item in
             result[item.name] = item.value
         }
+    }
+
+    static func lastQueryValues(_ name: String) -> [String] {
+        guard let url = lastRequestURL,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return []
+        }
+        return (components.queryItems ?? [])
+            .filter { $0.name == name }
+            .compactMap(\.value)
     }
 
     static func lastHeader(_ name: String) -> String? {

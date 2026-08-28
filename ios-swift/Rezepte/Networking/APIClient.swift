@@ -123,6 +123,15 @@ actor APIClient {
         return request
     }
 
+    func imageBackupRequest(backupID: Int) throws -> URLRequest {
+        var request = URLRequest(url: try endpoint(
+            "/api/recipes/image-backups/\(backupID)/file"
+        ))
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        authorize(&request, includeBearer: true)
+        return request
+    }
+
     func privacyURL() throws -> URL {
         try endpoint("/privacy")
     }
@@ -132,6 +141,15 @@ actor APIClient {
             "/api/auth/login",
             method: "POST",
             body: ["username": username, "password": password],
+            authenticated: false
+        )
+    }
+
+    func guestLogin() async throws -> LoginResponse {
+        try await send(
+            "/api/auth/guest",
+            method: "POST",
+            body: EmptyBody(),
             authenticated: false
         )
     }
@@ -204,6 +222,44 @@ actor APIClient {
         )
     }
 
+    func cookingProgress(id: Int) async throws -> CookingProgress {
+        try await send("/api/recipes/\(id)/cooking-progress")
+    }
+
+    func updateCookingProgress(
+        id: Int,
+        completedSteps: [Int],
+        activeStep: Int,
+        servings: Int
+    ) async throws -> CookingProgress {
+        try await send(
+            "/api/recipes/\(id)/cooking-progress",
+            method: "PUT",
+            body: CookingProgressPayload(
+                completedSteps: completedSteps,
+                activeStep: activeStep,
+                servings: servings
+            )
+        )
+    }
+
+    func clearCookingProgress(id: Int) async throws -> APIResult {
+        try await send("/api/recipes/\(id)/cooking-progress", method: "DELETE")
+    }
+
+    func completeCooking(
+        id: Int,
+        servings: Int,
+        idempotencyKey: String
+    ) async throws -> CookingCompletionResult {
+        try await send(
+            "/api/recipes/\(id)/cooking-complete",
+            method: "POST",
+            body: CookingCompletePayload(servings: servings),
+            headers: ["Idempotency-Key": idempotencyKey]
+        )
+    }
+
     func addRecipeToCart(id: Int, multiplier: Double = 1) async throws -> APIResult {
         try await send(
             "/api/cart/cook/\(id)",
@@ -216,12 +272,31 @@ actor APIClient {
         try await send("/api/cart")
     }
 
-    func addCartItem(name: String, amount: Double? = nil, unit: String? = nil) async throws -> APIResult {
+    func addCartItem(
+        name: String,
+        amount: Double? = nil,
+        unit: String? = nil,
+        category: String? = nil
+    ) async throws -> APIResult {
         try await send(
             "/api/cart/add",
             method: "POST",
-            body: AddCartPayload(name: name, amount: amount, unit: unit)
+            body: AddCartPayload(name: name, amount: amount, unit: unit, category: category)
         )
+    }
+
+    func shoppingSuggestions(query: String, limit: Int = 8) async throws -> ShoppingSuggestionsResponse {
+        try await send(
+            "/api/cart/suggestions",
+            query: [
+                URLQueryItem(name: "q", value: query),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ]
+        )
+    }
+
+    func shoppingCategories() async throws -> ShoppingCategoriesResponse {
+        try await send("/api/cart/categories")
     }
 
     func setCartItem(id: Int, checked: Bool) async throws -> APIResult {
@@ -321,7 +396,7 @@ actor APIClient {
         data: Data,
         filename: String,
         mimeType: String
-    ) async throws -> APIResult {
+    ) async throws -> PendingAnalysisResult {
         let boundary = "RezepteBoundary-\(UUID().uuidString)"
         let safeFilename = filename
             .replacingOccurrences(of: "\"", with: "_")
@@ -352,14 +427,37 @@ actor APIClient {
         action: String,
         name: String? = nil,
         type: String? = nil,
-        category: String? = nil
+        category: String? = nil,
+        description: String? = nil,
+        ingredients: [PendingIngredient]? = nil,
+        steps: [PendingStep]? = nil,
+        servings: Int? = nil,
+        verified: Bool = false
     ) async throws -> APIResult {
         try await send(
             "/api/pending",
             method: "POST",
             body: ResolvePendingPayload(
-                url: url, action: action, name: name, type: type, category: category
+                url: url,
+                action: action,
+                name: name,
+                type: type,
+                category: category,
+                description: description,
+                ingredients: ingredients,
+                steps: steps,
+                servings: servings,
+                verified: verified
             )
+        )
+    }
+
+    func reanalyzePending(url: String) async throws -> PendingAnalysisResult {
+        try await send(
+            "/api/pending/reanalyze",
+            method: "POST",
+            body: PendingURLPayload(url: url),
+            timeout: 120
         )
     }
 
@@ -383,6 +481,41 @@ actor APIClient {
         try await send("/api/jobs/scraper/run", method: "POST", body: EmptyBody())
     }
 
+    func generateRecipeImage(id: Int) async throws -> ImageGenerationStart {
+        try await send(
+            "/api/recipes/\(id)/generate-image",
+            method: "POST",
+            body: EmptyBody()
+        )
+    }
+
+    func imageBackups(recipeID: Int) async throws -> ImageBackupResponse {
+        try await send(
+            "/api/recipes/images/backups",
+            query: [URLQueryItem(name: "recipe_id", value: String(recipeID))]
+        )
+    }
+
+    func restoreImageBackup(id: Int) async throws -> APIResult {
+        try await send(
+            "/api/recipes/image-backups/\(id)/restore",
+            method: "POST",
+            body: EmptyBody()
+        )
+    }
+
+    func startImageBackfill() async throws -> ImageBackfillStart {
+        try await send(
+            "/api/recipes/images/backfill",
+            method: "POST",
+            body: EmptyBody()
+        )
+    }
+
+    func imageBackfillStatus(runID: Int) async throws -> ImageBackfillRun {
+        try await send("/api/recipes/images/backfill/\(runID)")
+    }
+
     private func send<Response: Decodable>(
         _ path: String,
         method: String = "GET",
@@ -401,14 +534,19 @@ actor APIClient {
         _ path: String,
         method: String,
         body: Body,
-        authenticated: Bool = true
+        authenticated: Bool = true,
+        timeout: TimeInterval = 60,
+        headers: [String: String] = [:]
     ) async throws -> Response {
         var request = URLRequest(url: try endpoint(path))
         request.httpMethod = method
-        request.timeoutInterval = 60
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
         authorize(&request, includeBearer: authenticated)
         return try await execute(request)
     }
@@ -454,7 +592,7 @@ actor APIClient {
         if filters.manualOnly || forceManualOnly {
             query.append(URLQueryItem(name: "needs_manual_care", value: "true"))
         }
-        for id in filters.tagIDs.sorted() {
+        for id in filters.tagIDs.union(filters.allergenTagIDs).sorted() {
             query.append(URLQueryItem(name: "tag_id", value: String(id)))
         }
         for ingredient in filters.includedIngredients.sorted() {
@@ -517,8 +655,19 @@ struct StepDraft: Codable, Hashable {
     let timerSeconds: Int?
 }
 private struct StepsPayload: Codable { let steps: [StepDraft] }
+private struct CookingProgressPayload: Codable {
+    let completedSteps: [Int]
+    let activeStep: Int
+    let servings: Int
+}
+private struct CookingCompletePayload: Codable { let servings: Int }
 private struct CookPayload: Codable { let multiplier: Double }
-private struct AddCartPayload: Codable { let name: String; let amount: Double?; let unit: String? }
+private struct AddCartPayload: Codable {
+    let name: String
+    let amount: Double?
+    let unit: String?
+    let category: String?
+}
 private struct CartUpdatePayload: Codable { let checked: Bool }
 private struct ClearCartPayload: Codable { let onlyChecked: Bool }
 private struct AddMealPayload: Codable { let plannedFor: String; let recipeId: Int; let plannedServings: Int }
@@ -531,7 +680,13 @@ private struct ResolvePendingPayload: Codable {
     let name: String?
     let type: String?
     let category: String?
+    let description: String?
+    let ingredients: [PendingIngredient]?
+    let steps: [PendingStep]?
+    let servings: Int?
+    let verified: Bool
 }
+private struct PendingURLPayload: Codable { let url: String }
 private struct FailedDownloadPayload: Codable { let url: String }
 
 private extension Data {

@@ -201,6 +201,31 @@ def test_list_filter_by_type(client, test_db):
     assert body["items"][0]["name"] == "Suppe"
 
 
+def test_list_combines_multiple_allergen_free_tags_with_and(client, test_db):
+    both = _create_recipe(test_db, name="Beides frei", folder_path="/tmp/allergen-both")
+    gluten = _create_recipe(test_db, name="Nur glutenfrei", folder_path="/tmp/allergen-gluten")
+    nuts = _create_recipe(test_db, name="Nur nussfrei", folder_path="/tmp/allergen-nuts")
+    test_db.recipe_tags_set(both["id"], ["glutenfrei", "nussfrei"])
+    test_db.recipe_tags_set(gluten["id"], ["glutenfrei"])
+    test_db.recipe_tags_set(nuts["id"], ["nussfrei"])
+    tag_ids = {
+        tag["name"]: int(tag["id"])
+        for tag in test_db.recipe_tags_get(both["id"])
+    }
+
+    response = client.get(
+        "/api/recipes",
+        params=[
+            ("tag_id", tag_ids["glutenfrei"]),
+            ("tag_id", tag_ids["nussfrei"]),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert [item["name"] for item in response.json()["items"]] == ["Beides frei"]
+
+
 def test_list_can_include_and_exclude_ingredients(client, test_db):
     recipes = {
         "Knoblauch und Zwiebel": ["knoblauch", "zwiebel"],

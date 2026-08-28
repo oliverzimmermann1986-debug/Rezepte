@@ -48,9 +48,32 @@ struct RecipeFiltersView: View {
                     }
                 }
 
-                if !facets.tags.isEmpty {
-                    Section("Tags") {
-                        ForEach(facets.tags) { tag in
+                if !allergenTags.isEmpty {
+                    Section {
+                        ForEach(allergenTags) { tag in
+                            Toggle(isOn: allergenBinding(tag.id)) {
+                                HStack(spacing: 10) {
+                                    Label(
+                                        tag.allergenInfo?.title ?? tag.name,
+                                        systemImage: tag.allergenInfo?.systemImage ?? "checkmark.shield"
+                                    )
+                                    Spacer()
+                                    Text("\(tag.n)")
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    } header: {
+                        Label("Allergiker-Infos", systemImage: "checkmark.shield")
+                    } footer: {
+                        Text("Mehrere Angaben können gleichzeitig gewählt werden. Es erscheinen nur Rezepte, die alle ausgewählten Frei-von-Tags tragen. Die Angaben basieren auf den erkannten Zutaten und ersetzen keine medizinische Prüfung.")
+                    }
+                }
+
+                if !generalTags.isEmpty {
+                    Section("Tags & Ernährung") {
+                        ForEach(generalTags) { tag in
                             Toggle(
                                 "\(tag.name) (\(tag.n))",
                                 isOn: tagBinding(tag.id)
@@ -112,12 +135,40 @@ struct RecipeFiltersView: View {
         }
     }
 
+    private var allergenTags: [TagFacet] {
+        facets.tags
+            .filter { $0.allergenInfo != nil }
+            .sorted {
+                ($0.allergenInfo?.sortIndex ?? .max) < ($1.allergenInfo?.sortIndex ?? .max)
+            }
+    }
+
+    private var generalTags: [TagFacet] {
+        facets.tags.filter { $0.allergenInfo == nil }
+    }
+
     private func tagBinding(_ id: Int) -> Binding<Bool> {
         Binding(
             get: { draft.tagIDs.contains(id) },
             set: { selected in
-                if selected { draft.tagIDs.insert(id) }
+                if selected {
+                    draft.allergenTagIDs.remove(id)
+                    draft.tagIDs.insert(id)
+                }
                 else { draft.tagIDs.remove(id) }
+            }
+        )
+    }
+
+    private func allergenBinding(_ id: Int) -> Binding<Bool> {
+        Binding(
+            get: { draft.allergenTagIDs.contains(id) },
+            set: { selected in
+                if selected {
+                    draft.tagIDs.remove(id)
+                    draft.allergenTagIDs.insert(id)
+                }
+                else { draft.allergenTagIDs.remove(id) }
             }
         )
     }
