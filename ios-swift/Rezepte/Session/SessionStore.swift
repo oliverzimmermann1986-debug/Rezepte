@@ -13,6 +13,9 @@ final class SessionStore: ObservableObject {
     @Published private(set) var username = ""
     @Published private(set) var fullAccess = false
     @Published private(set) var readOnly = false
+    @Published private(set) var serverVersion = ""
+    @Published private(set) var serverCapabilities: Set<String> = []
+    @Published private(set) var compatibilityWarning: String?
     @Published var alertMessage: String?
 
     let api = APIClient()
@@ -52,6 +55,7 @@ final class SessionStore: ObservableObject {
             )
             let session = try await api.sessionInfo()
             apply(session)
+            await refreshSystemInfo()
             if !readOnly { await drainSharedImports() }
         } catch {
             signOut()
@@ -109,6 +113,9 @@ final class SessionStore: ObservableObject {
         username = ""
         fullAccess = false
         readOnly = false
+        serverVersion = ""
+        serverCapabilities = []
+        compatibilityWarning = nil
         state = .signedOut
     }
 
@@ -150,6 +157,7 @@ final class SessionStore: ObservableObject {
             forKey: serverKey
         )
         apply(activeSession)
+        await refreshSystemInfo()
         if !readOnly { await drainSharedImports() }
     }
 
@@ -158,6 +166,31 @@ final class SessionStore: ObservableObject {
         fullAccess = session.fullAccess ?? false
         readOnly = session.readOnly ?? false
         state = .signedIn
+    }
+
+    func supports(_ capability: String) -> Bool {
+        serverCapabilities.contains(capability)
+    }
+
+    private func refreshSystemInfo() async {
+        do {
+            let info = try await api.systemInfo()
+            serverVersion = info.version
+            serverCapabilities = Set(info.capabilities)
+            let required = Set([
+                "shopping-categories",
+                "recurring-shopping",
+                "weekly-meal-plan"
+            ])
+            let missing = required.subtracting(serverCapabilities).sorted()
+            compatibilityWarning = missing.isEmpty
+                ? nil
+                : "Der Server ist älter als diese App. Es fehlen: \(missing.joined(separator: ", "))."
+        } catch {
+            serverVersion = "unbekannt"
+            serverCapabilities = []
+            compatibilityWarning = "Serverversion konnte nicht geprüft werden. App und Server bitte gemeinsam aktualisieren."
+        }
     }
 
     func handle(_ error: Error) {

@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Environment(\.recipeTheme) private var theme
     @Environment(\.openURL) private var openURL
     @State private var showAdministration = false
+    @AppStorage("content-language-v1") private var contentLanguage = ContentLanguage.de.rawValue
 
     var body: some View {
         NavigationStack {
@@ -44,6 +45,30 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                }
+
+                Section("Inhaltssprache") {
+                    Picker("Rezepte und Quelltexte", selection: $contentLanguage) {
+                        ForEach(ContentLanguage.allCases) { language in
+                            Text(language.title).tag(language.rawValue)
+                        }
+                    }
+                    Text("Importierte Beschreibungen und mitgesendete Kommentartexte werden beim Anzeigen automatisch in diese Sprache übersetzt. Der Originaltext bleibt erhalten.")
+                        .font(.caption)
+                        .foregroundStyle(theme.muted)
+                }
+
+                if let warning = session.compatibilityWarning {
+                    Section("Serverabgleich") {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(theme.warning)
+                    }
+                } else if !session.serverVersion.isEmpty {
+                    Section("Serverabgleich") {
+                        LabeledContent("Serverversion", value: session.serverVersion)
+                        Label("App und Server sind funktionskompatibel", systemImage: "checkmark.seal.fill")
+                            .foregroundStyle(theme.success)
+                    }
                 }
 
                 if session.fullAccess {

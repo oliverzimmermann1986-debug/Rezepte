@@ -1,5 +1,21 @@
 import Foundation
 
+enum ContentLanguage: String, CaseIterable, Identifiable {
+    case de, en, fr, it, es, nl
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .de: "Deutsch"
+        case .en: "English"
+        case .fr: "Français"
+        case .it: "Italiano"
+        case .es: "Español"
+        case .nl: "Nederlands"
+        }
+    }
+}
+
 struct LoginResponse: Codable {
     let token: String
     let username: String
@@ -11,6 +27,12 @@ struct SessionResponse: Codable {
     let username: String
     let fullAccess: Bool?
     let readOnly: Bool?
+}
+
+struct SystemInfo: Codable {
+    let name: String
+    let version: String
+    let capabilities: [String]
 }
 
 struct RecipeListResponse: Codable {
@@ -192,6 +214,34 @@ struct Recipe: Codable, Identifiable {
     let imageGenerationBatchId: String?
     let imageGeneratedAt: Double?
     let imageBackups: [ImageBackup]?
+    let tags: [RecipeTag]?
+    let cookSummary: CookSummary?
+    let cookHistory: [CookHistoryEntry]?
+    let caloriesPerServing: Double?
+    let proteinG: Double?
+    let carbsG: Double?
+    let fatG: Double?
+}
+
+struct RecipeTag: Codable, Identifiable, Hashable {
+    let id: Int
+    let name: String
+    @FlexibleBool var auto: Bool?
+}
+
+struct CookSummary: Codable, Hashable {
+    let count: Int
+    let lastCookedAt: Double?
+    let lastCookedBy: String?
+    let lastServings: Int?
+}
+
+struct CookHistoryEntry: Codable, Identifiable, Hashable {
+    let id: Int
+    let recipeId: Int
+    let cookedBy: String?
+    let servings: Int?
+    let cookedAt: Double
 }
 
 struct Ingredient: Codable, Identifiable, Hashable {
@@ -297,6 +347,53 @@ struct ShoppingCategory: Codable, Identifiable, Hashable {
 
 struct ShoppingCategoriesResponse: Codable {
     let items: [ShoppingCategory]
+}
+
+struct ShoppingOptimizePreview: Codable {
+    let previewId: String
+    let items: [ShoppingOptimizeItem]
+    let summary: ShoppingOptimizeSummary
+    let categories: [String]
+    let expiresInSeconds: Int
+}
+
+struct ShoppingOptimizeItem: Codable, Identifiable, Hashable {
+    let name: String
+    let amount: Double?
+    let unit: String?
+    let category: String?
+    let icon: String?
+    let change: String?
+
+    var id: String { "\(name)-\(amount ?? -1)-\(unit ?? "")-\(category ?? "")" }
+}
+
+struct ShoppingOptimizeSummary: Codable {
+    let originalCount: Int?
+    let optimizedCount: Int?
+    let mergedCount: Int?
+    let changedCount: Int?
+}
+
+struct ShoppingOptimizeApplyResponse: Codable {
+    let ok: Bool
+    let count: Int
+    let items: [CartItem]
+}
+
+struct ShoppingPushResponse: Codable {
+    let ok: Bool
+    let pushed: Int?
+    let failed: [ShoppingPushFailure]?
+    let consolidated: Bool?
+    let error: String?
+}
+
+struct ShoppingPushFailure: Codable, Identifiable {
+    let id: Int
+    let rawText: String?
+    let status: Int?
+    let error: String?
 }
 
 struct RecurringCartResponse: Codable {
@@ -470,6 +567,88 @@ struct AdminCounts: Codable {
     let openFindings: Int
     let versions: Int
     let trash: Int
+}
+
+struct TrashResponse: Codable { let total: Int; let items: [TrashRecipe] }
+
+struct TrashRecipe: Codable, Identifiable {
+    let id: Int
+    let name: String
+    let type: String?
+    let category: String?
+    let deletedAt: Double?
+    let daysInTrash: Double?
+    let daysUntilPurge: Double?
+}
+
+struct RecipeVersionsResponse: Codable { let items: [RecipeVersion] }
+
+struct RecipeVersion: Codable, Identifiable {
+    let id: Int
+    let recipeId: Int
+    let recipeName: String?
+    let createdAt: Double
+    let createdBy: String?
+    let reason: String?
+    let source: String?
+}
+
+struct AuditFindingsResponse: Codable {
+    let items: [AuditFinding]
+    let totalOpen: Int
+    let eligibleRecipes: Int
+    let status: AuditJobStatus
+}
+
+struct AuditFinding: Codable, Identifiable {
+    let id: Int
+    let recipeId: Int
+    let recipeName: String
+    let findingType: String
+    let currentValue: String?
+    let suggestedValue: String?
+    let reason: String?
+    let createdAt: Double
+}
+
+struct AuditJobStatus: Codable {
+    let running: Bool
+    let total: Int
+    let processed: Int
+    let findings: Int
+    let error: String?
+}
+
+struct ShareLinkResponse: Codable {
+    let ok: Bool
+    let url: String
+    let expiresDays: Int
+    let expiresAt: Double
+    let shareId: String
+    let recipeId: Int
+}
+
+struct ShareLinksResponse: Codable { let items: [RecipeShareLink] }
+
+struct RecipeShareLink: Codable, Identifiable {
+    let id: String
+    let recipeId: Int
+    let createdAt: Double
+    let expiresAt: Double
+    let createdBy: String?
+    let revokedAt: Double?
+    @FlexibleBool var active: Bool?
+}
+
+struct DuplicateRecipeResponse: Codable {
+    let ok: Bool
+    let recipeId: Int?
+    let id: Int?
+}
+
+struct RecipeTranslationResponse: Codable {
+    let translation: String
+    let targetLanguage: String
 }
 
 struct PendingItem: Codable, Identifiable {

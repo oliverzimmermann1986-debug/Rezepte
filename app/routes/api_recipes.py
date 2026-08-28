@@ -612,6 +612,34 @@ class TagsUpdate(BaseModel):
     tags: List[str] = Field(default_factory=list, max_length=30)
 
 
+class TranslationRequest(BaseModel):
+    target_language: str = Field(pattern="^(de|en|fr|it|es|nl)$")
+    text: Optional[str] = Field(default=None, max_length=8_000)
+
+
+@router.post("/{recipe_id}/translate")
+def translate_recipe_text(recipe_id: int, payload: TranslationRequest) -> Dict[str, Any]:
+    """Übersetzt Beschreibung oder einen mitgesendeten Kommentar für die App.
+
+    Der kanonische Rezepttext bleibt unverändert; die Übersetzung ist eine
+    reine Anzeigeantwort und erzeugt deshalb auch keine Rezeptversion.
+    """
+    recipe = get_db().recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    source = (payload.text if payload.text is not None else recipe.get("description") or "").strip()
+    if not source:
+        return {"translation": "", "target_language": payload.target_language}
+    try:
+        analyzer = build_analyzer(get_config().get("ai", default={}) or {})
+        translated = analyzer.translate_text(source, payload.target_language)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not translated:
+        raise HTTPException(502, "KI konnte den Text nicht übersetzen")
+    return {"translation": translated, "target_language": payload.target_language}
+
+
 def _normalized_user_tags(tags: List[str]) -> List[str]:
     normalized: List[str] = []
     seen = set()

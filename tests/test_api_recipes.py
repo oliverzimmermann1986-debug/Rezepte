@@ -162,6 +162,50 @@ def test_empty_ingredients_cannot_be_marked_verified(client, test_db):
     assert test_db.recipe_get(recipe["id"])["user_verified"] == 0
 
 
+def test_recipe_text_translation_uses_selected_language_without_overwriting_source(
+    client, test_db, monkeypatch
+):
+    import app.routes.api_recipes as api_recipes
+
+    recipe = _create_recipe(
+        test_db,
+        name="Pasta",
+        folder_path="/tmp/translate",
+        description="Ein deutscher Rezepttext, der unverändert gespeichert bleiben muss.",
+    )
+
+    class FakeAnalyzer:
+        def translate_text(self, text, target_language):
+            assert text == "Kommentar mit 200 g Mehl"
+            assert target_language == "en"
+            return "Comment with 200 g flour"
+
+    monkeypatch.setattr(api_recipes, "build_analyzer", lambda _config: FakeAnalyzer())
+
+    response = client.post(
+        f"/api/recipes/{recipe['id']}/translate",
+        json={"target_language": "en", "text": "Kommentar mit 200 g Mehl"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "translation": "Comment with 200 g flour",
+        "target_language": "en",
+    }
+    assert test_db.recipe_get(recipe["id"])["description"].startswith("Ein deutscher")
+
+
+def test_recipe_text_translation_rejects_unknown_language(client, test_db):
+    recipe = _create_recipe(test_db, name="Pasta", folder_path="/tmp/translate-invalid")
+
+    response = client.post(
+        f"/api/recipes/{recipe['id']}/translate",
+        json={"target_language": "xx", "text": "Kommentar"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_step_timer_requires_whole_seconds(client, test_db):
     recipe = _create_recipe(test_db, name="Timer", folder_path="/tmp/timer")
 

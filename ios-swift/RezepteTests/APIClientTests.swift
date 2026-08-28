@@ -583,6 +583,49 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(request.url?.path, "/api/recipes/image-backups/19/file")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer api-token")
     }
+
+    func testSystemInfoDecodesCapabilitiesWithoutBearerToken() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "api-token")
+        MockURLProtocol.respond(json: """
+        {"name":"Rezepte","version":"1.6.0","capabilities":["recurring-shopping","weekly-meal-plan"]}
+        """)
+
+        let info = try await client.systemInfo()
+
+        XCTAssertEqual(info.version, "1.6.0")
+        XCTAssertTrue(info.capabilities.contains("recurring-shopping"))
+        XCTAssertNil(MockURLProtocol.lastHeader("Authorization"))
+    }
+
+    func testRecipeRatingKeepsQueryWhenPostingJsonBody() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "api-token")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+
+        _ = try await client.setRecipeRating(id: 42, value: 5)
+
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/rating")
+        XCTAssertEqual(MockURLProtocol.lastQueryItems()["value"], "5")
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+    }
+
+    func testShoppingOptimizationPreviewDecodesServerContract() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "api-token")
+        MockURLProtocol.respond(json: """
+        {"preview_id":"abcdefghijklmnopqrstuvwxyz","items":[{"name":"Burrata","amount":1,"unit":"Stück","category":"Kühlregal"}],"summary":{"original_count":2,"optimized_count":1,"merged_count":1,"renamed_count":0,"categorized_count":1},"categories":["Kühlregal"],"expires_in_seconds":900}
+        """)
+
+        let preview = try await client.shoppingOptimizationPreview()
+
+        XCTAssertEqual(preview.items.first?.category, "Kühlregal")
+        XCTAssertEqual(preview.summary.mergedCount, 1)
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/optimize/preview")
+    }
 }
 
 /// Fängt Requests des injizierten URLSession ab, damit der Query-Aufbau

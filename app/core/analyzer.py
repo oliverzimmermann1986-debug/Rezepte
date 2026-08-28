@@ -1174,6 +1174,39 @@ class OpenAIAnalyzer:
             logger.warning(f"OpenAI Translate JSON-Parse: {e} | {content[:200]}")
             return None
 
+    def translate_text(self, text: str, target_language: str) -> Optional[str]:
+        """Übersetzt sichtbaren Rezepttext in eine explizit gewählte Sprache.
+
+        Anders als ``translate_to_german`` liefert diese Methode auch dann den
+        Originaltext zurück, wenn er bereits in der Zielsprache vorliegt. So
+        kann ein Client die Antwort ohne zusätzliche Spracherkennung anzeigen.
+        """
+        clean = (text or "").strip()
+        if len(clean) < 2:
+            return clean or None
+        languages = {
+            "de": "Deutsch", "en": "Englisch", "fr": "Französisch",
+            "it": "Italienisch", "es": "Spanisch", "nl": "Niederländisch",
+        }
+        target = languages.get((target_language or "").strip().lower())
+        if not target:
+            raise ValueError("Nicht unterstützte Zielsprache")
+        system = (
+            f"Übersetze den folgenden Rezept- oder Kommentartext nach {target}. "
+            "Wenn er bereits in dieser Sprache ist, gib ihn unverändert zurück. "
+            "Erhalte Mengen, Einheiten, Emojis, Hashtags, Zeilenumbrüche und @Namen. "
+            "Antworte ausschließlich als JSON: {\"translation\": \"...\"}."
+        )
+        content = self._call(system, f"Text:\n\n{clean[:8000]}")
+        if not content:
+            return None
+        try:
+            translation = str(json.loads(content).get("translation") or "").strip()
+            return translation or None
+        except Exception as exc:
+            logger.warning("OpenAI Translate-Text JSON-Parse: %s | %s", exc, content[:200])
+            return None
+
 
 def build_analyzer(ai_cfg: dict):
     """Factory die einen OpenAI-Analyzer baut.

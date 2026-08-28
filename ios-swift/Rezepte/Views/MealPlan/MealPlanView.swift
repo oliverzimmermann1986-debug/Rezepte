@@ -8,6 +8,7 @@ struct MealPlanView: View {
     @State private var errorMessage: String?
     @State private var selectedDay: MealDay?
     @State private var cartConfirmation = false
+    @State private var showPDF = false
 
     var body: some View {
         NavigationStack {
@@ -36,6 +37,14 @@ struct MealPlanView: View {
             }
             .background(theme.background)
             .navigationTitle("Heute")
+            .toolbar {
+                if let week, session.supports("weekly-meal-plan-pdf") {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showPDF = true } label: { Image(systemName: "doc.richtext") }
+                            .accessibilityLabel("Wochenplan als PDF")
+                    }
+                }
+            }
             .sheet(item: $selectedDay) { day in
                 RecipePickerView(day: day) {
                     await load(start: week?.weekStart)
@@ -52,6 +61,13 @@ struct MealPlanView: View {
                 }
             }
             .task { await load() }
+            .sheet(isPresented: $showPDF) {
+                if let week {
+                    PDFPreviewSheet(title: "Wochenplan") {
+                        try await session.api.mealPlanPDF(start: week.weekStart)
+                    }
+                }
+            }
         }
     }
 

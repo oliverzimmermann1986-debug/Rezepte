@@ -84,6 +84,42 @@ def test_swiftui_cart_restores_recurring_purchase_management():
     assert "@FlexibleBool var active" in models
 
 
+def test_swiftui_exposes_backend_library_and_shopping_tools():
+    api = _read(SWIFT / "Networking" / "APIClient.swift")
+    admin = _read(SWIFT / "Views" / "Admin" / "AdminLibraryToolsView.swift")
+    shopping = _read(SWIFT / "Views" / "Cart" / "ShoppingToolsView.swift")
+    detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
+
+    for endpoint in (
+        "/api/system/info",
+        "/api/recipes/trash/list",
+        "/api/admin/versions",
+        "/api/audit/ai-sanity/findings",
+        "/api/cart/optimize/preview",
+        "/api/cart/export.txt",
+        "/api/meal-plan/pdf",
+    ):
+        assert endpoint in api
+    assert "Wiederherstellen" in admin and "KI-Prüfung" in admin
+    assert "Vorschau übernehmen" in shopping and "Einkaufsliste teilen" in shopping
+    assert "RecipeMetadataEditorView" in detail
+    assert "RecipeShareLinksView" in detail
+    assert "computeRecipeNutrition" in detail
+
+
+def test_swiftui_checks_capabilities_and_persists_content_language():
+    session = _read(SWIFT / "Session" / "SessionStore.swift")
+    settings = _read(SWIFT / "Views" / "Settings" / "SettingsView.swift")
+    detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
+
+    assert "refreshSystemInfo" in session
+    assert "serverCapabilities" in session
+    assert "compatibilityWarning" in session
+    assert 'content-language-v1' in settings
+    assert 'Section("Inhaltssprache")' in settings
+    assert "translateRecipeText" in detail
+
+
 def test_swiftui_image_generation_exposes_backup_compare_restore_flow():
     history = _read(SWIFT / "Views" / "Recipes" / "RecipeImageHistoryView.swift")
     admin = _read(SWIFT / "Views" / "Admin" / "AdminView.swift")

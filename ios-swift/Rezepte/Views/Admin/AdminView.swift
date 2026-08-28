@@ -49,6 +49,19 @@ struct AdminView: View {
                     }
                 }
 
+                Section("Bibliothek") {
+                    NavigationLink {
+                        AdminLibraryToolsView().environmentObject(session)
+                    } label: {
+                        Label("Papierkorb, Versionen & KI-Prüfung", systemImage: "archivebox")
+                    }
+                    if let overview {
+                        Text("\(overview.counts.trash) im Papierkorb · \(overview.counts.versions) Versionen · \(overview.counts.openFindings) offene Hinweise")
+                            .font(.caption)
+                            .foregroundStyle(theme.muted)
+                    }
+                }
+
                 Section("Rezeptbilder") {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Sicherungsbarriere", systemImage: "externaldrive.badge.checkmark")

@@ -20,6 +20,14 @@ struct RecipeDetailView: View {
     @State private var showDeleteConfirmation = false
     @State private var isDeleting = false
     @State private var imageRefreshToken = UUID()
+    @State private var showMetadataEditor = false
+    @State private var showShareLinks = false
+    @State private var showPDF = false
+    @State private var showDuplicatePrompt = false
+    @State private var duplicateName = ""
+    @State private var isManaging = false
+    @State private var translatedDescription: String?
+    @AppStorage("content-language-v1") private var contentLanguage = ContentLanguage.de.rawValue
 
     var body: some View {
         Group {
@@ -48,6 +56,8 @@ struct RecipeDetailView: View {
 
                         actionBar(recipe)
                         recipePassportSection(recipe)
+
+                        ratingAndNutritionSection(recipe)
 
                         ingredientSection(recipe)
                         stepsSection(recipe)
@@ -92,8 +102,14 @@ struct RecipeDetailView: View {
         .toolbar {
             if let recipe {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    ShareLink(item: shareText(recipe)) {
-                        Image(systemName: "square.and.arrow.up")
+                    if session.readOnly {
+                        ShareLink(item: [recipe.name, recipe.url].compactMap { $0 }.joined(separator: "\n")) {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                    } else {
+                        Button { showShareLinks = true } label: {
+                            Image(systemName: "square.and.arrow.up")
+                        }
                     }
                     if !session.readOnly {
                         Button {
@@ -103,6 +119,31 @@ struct RecipeDetailView: View {
                                 .foregroundStyle(recipe.isFavorite ? Color.red : Color.primary)
                         }
                         .accessibilityLabel(recipe.isFavorite ? "Aus Favoriten entfernen" : "Als Favorit speichern")
+                        Menu {
+                            Button("Rezeptdaten bearbeiten", systemImage: "pencil") {
+                                showMetadataEditor = true
+                            }
+                            Button("Als Variante duplizieren", systemImage: "plus.square.on.square") {
+                                duplicateName = "\(recipe.name) – Variante"
+                                showDuplicatePrompt = true
+                            }
+                            Button(
+                                recipe.userVerified == true ? "Prüfung zurücknehmen" : "Zutaten als geprüft markieren",
+                                systemImage: recipe.userVerified == true ? "checkmark.seal" : "checkmark.seal.fill"
+                            ) {
+                                Task { await setVerified(recipe.userVerified != true) }
+                            }
+                            Button("Nährwerte neu berechnen", systemImage: "bolt.heart") {
+                                Task { await computeNutrition() }
+                            }
+                            if recipe.pdfFilename != nil {
+                                Button("Original-PDF öffnen", systemImage: "doc.richtext") {
+                                    showPDF = true
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
                     }
                 }
             }
@@ -134,6 +175,25 @@ struct RecipeDetailView: View {
                 }
             }
         }
+        .sheet(isPresented: $showMetadataEditor) {
+            if let recipe {
+                RecipeMetadataEditorView(recipe: recipe) { await load() }
+                    .environmentObject(session)
+            }
+        }
+        .sheet(isPresented: $showShareLinks) {
+            if let recipe {
+                RecipeShareLinksView(recipeID: recipe.id, recipeName: recipe.name)
+                    .environmentObject(session)
+            }
+        }
+        .sheet(isPresented: $showPDF) {
+            if let recipe {
+                PDFPreviewSheet(title: recipe.name) {
+                    try await session.api.recipePDF(id: recipe.id)
+                }
+            }
+        }
         .sheet(isPresented: $showShoppingServings) {
             if let recipe, let originalServings = recipe.servings {
                 ShoppingServingsSheet(
@@ -160,6 +220,13 @@ struct RecipeDetailView: View {
             Button("Abbrechen", role: .cancel) {}
         } message: {
             Text("Das Rezept kann 30 Tage lang im Admin-Bereich wiederhergestellt werden.")
+        }
+        .alert("Variante erstellen", isPresented: $showDuplicatePrompt) {
+            TextField("Name der Variante", text: $duplicateName)
+            Button("Erstellen") { Task { await duplicateRecipe() } }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Zutaten, Schritte, Tags und Nährwerte werden kopiert; Favorit, Bewertung und Prüfstatus bleiben unabhängig.")
         }
         .task { await load() }
         .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { notification in
@@ -283,6 +350,20 @@ struct RecipeDetailView: View {
                 LabeledContent("Bildstatus", value: imageStatusLabel(status))
             }
 
+            if let tags = recipe.tags, !tags.isEmpty {
+                LabeledContent("Tags", value: tags.map(\.name).joined(separator: ", "))
+            }
+
+            if let summary = recipe.cookSummary, summary.count > 0 {
+                LabeledContent("Gekocht", value: "\(summary.count)×")
+                if let timestamp = summary.lastCookedAt {
+                    LabeledContent(
+                        "Zuletzt",
+                        value: Date(timeIntervalSince1970: timestamp).formatted(date: .abbreviated, time: .shortened)
+                    )
+                }
+            }
+
             if session.fullAccess {
                 Divider()
                 NavigationLink {
@@ -293,6 +374,49 @@ struct RecipeDetailView: View {
             }
         }
         .cardSurface()
+    }
+
+    private func ratingAndNutritionSection(_ recipe: Recipe) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Bewertung & Nährwerte").font(.title2.bold())
+                Spacer()
+                if isManaging { ProgressView() }
+            }
+            HStack(spacing: 8) {
+                ForEach(1...5, id: \.self) { value in
+                    Button {
+                        Task { await setRating(value) }
+                    } label: {
+                        Image(systemName: value <= (recipe.rating ?? 0) ? "star.fill" : "star")
+                            .foregroundStyle(theme.accent)
+                    }
+                    .disabled(session.readOnly || isManaging)
+                    .accessibilityLabel("\(value) Sterne")
+                }
+            }
+            if let calories = recipe.caloriesPerServing {
+                LabeledContent("Pro Portion", value: "\(Int(calories.rounded())) kcal")
+                HStack {
+                    nutrient("Eiweiß", recipe.proteinG)
+                    nutrient("Kohlenhydrate", recipe.carbsG)
+                    nutrient("Fett", recipe.fatG)
+                }
+            } else {
+                Text("Noch keine Nährwertschätzung vorhanden.")
+                    .font(.caption).foregroundStyle(theme.muted)
+            }
+        }
+        .cardSurface()
+    }
+
+    private func nutrient(_ label: String, _ value: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption).foregroundStyle(theme.muted)
+            Text(value.map { String(format: "%.1f g", $0) } ?? "–")
+                .font(.subheadline.bold())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func stepsSection(_ recipe: Recipe) -> some View {
@@ -319,7 +443,7 @@ struct RecipeDetailView: View {
 
     @ViewBuilder
     private func originalTextSection(_ recipe: Recipe) -> some View {
-        if let description = (recipe.descriptionOriginal ?? recipe.description)?
+        if let description = (translatedDescription ?? recipe.descriptionOriginal ?? recipe.description)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !description.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
@@ -328,7 +452,7 @@ struct RecipeDetailView: View {
                 } label: {
                     HStack {
                         Label(
-                            showOriginalText ? "Originaltext ausblenden" : "Originaltext anzeigen",
+                            showOriginalText ? "Quelltext ausblenden" : "Quelltext anzeigen",
                             systemImage: "text.quote"
                         )
                         Spacer()
@@ -356,6 +480,21 @@ struct RecipeDetailView: View {
         defer { isLoading = false }
         do {
             recipe = try await session.api.recipe(id: recipeID)
+            translatedDescription = nil
+            if contentLanguage != ContentLanguage.de.rawValue,
+               let source = recipe?.descriptionOriginal ?? recipe?.description,
+               !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                do {
+                    translatedDescription = try await session.api.translateRecipeText(
+                        id: recipeID,
+                        language: contentLanguage,
+                        text: source
+                    ).translation
+                } catch {
+                    // Das Rezept bleibt auch ohne optionale KI-Übersetzung lesbar.
+                    translatedDescription = nil
+                }
+            }
             showOriginalText = false
         } catch {
             errorMessage = error.localizedDescription
@@ -385,6 +524,38 @@ struct RecipeDetailView: View {
         } catch {
             session.handle(error)
         }
+    }
+
+    private func setRating(_ value: Int) async {
+        isManaging = true
+        defer { isManaging = false }
+        do { _ = try await session.api.setRecipeRating(id: recipeID, value: value); await load() }
+        catch { session.handle(error) }
+    }
+
+    private func setVerified(_ verified: Bool) async {
+        isManaging = true
+        defer { isManaging = false }
+        do { _ = try await session.api.setRecipeVerified(id: recipeID, verified: verified); await load() }
+        catch { session.handle(error) }
+    }
+
+    private func computeNutrition() async {
+        isManaging = true
+        defer { isManaging = false }
+        do { _ = try await session.api.computeRecipeNutrition(id: recipeID); await load() }
+        catch { session.handle(error) }
+    }
+
+    private func duplicateRecipe() async {
+        let name = duplicateName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        isManaging = true
+        defer { isManaging = false }
+        do {
+            _ = try await session.api.duplicateRecipe(id: recipeID, newName: name)
+            NotificationCenter.default.post(name: .recipesChanged, object: nil)
+        } catch { session.handle(error) }
     }
 
     private func deleteRecipe() async {
@@ -428,9 +599,6 @@ struct RecipeDetailView: View {
         }
     }
 
-    private func shareText(_ recipe: Recipe) -> String {
-        [recipe.name, recipe.url].compactMap { $0 }.joined(separator: "\n")
-    }
 }
 
 private struct ShoppingServingsSheet: View {

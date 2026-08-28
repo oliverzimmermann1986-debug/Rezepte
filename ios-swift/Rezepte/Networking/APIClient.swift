@@ -158,6 +158,10 @@ actor APIClient {
         try await send("/api/auth/session")
     }
 
+    func systemInfo() async throws -> SystemInfo {
+        try await send("/api/system/info", authenticated: false)
+    }
+
     /// Rezepte seitenweise. `manualOnly` filtert serverseitig
     /// (`needs_manual_care`), damit `total` die echte Trefferzahl bleibt und
     /// nicht nur die der geladenen Seite.
@@ -203,6 +207,85 @@ actor APIClient {
 
     func recipe(id: Int) async throws -> Recipe {
         try await send("/api/recipes/\(id)")
+    }
+
+    func updateRecipeMetadata(
+        id: Int,
+        name: String,
+        type: String,
+        category: String,
+        description: String,
+        servings: Int?,
+        url: String?
+    ) async throws -> APIResult {
+        try await send(
+            "/api/recipes/\(id)/metadata",
+            method: "PUT",
+            body: RecipeMetadataPayload(
+                name: name,
+                type: type,
+                category: category,
+                description: description,
+                servings: servings,
+                url: url
+            )
+        )
+    }
+
+    func updateRecipeTags(id: Int, tags: [String]) async throws -> APIResult {
+        try await send(
+            "/api/recipes/\(id)/tags",
+            method: "PUT",
+            body: RecipeTagsPayload(tags: tags)
+        )
+    }
+
+    func setRecipeRating(id: Int, value: Int) async throws -> APIResult {
+        try await send(
+            "/api/recipes/\(id)/rating",
+            method: "POST",
+            query: [URLQueryItem(name: "value", value: String(value))],
+            body: EmptyBody()
+        )
+    }
+
+    func setRecipeVerified(id: Int, verified: Bool) async throws -> APIResult {
+        try await send(
+            "/api/recipes/\(id)/verify",
+            method: "POST",
+            query: [URLQueryItem(name: "verified", value: String(verified))],
+            body: EmptyBody()
+        )
+    }
+
+    func duplicateRecipe(id: Int, newName: String) async throws -> DuplicateRecipeResponse {
+        try await send(
+            "/api/recipes/\(id)/duplicate",
+            method: "POST",
+            body: DuplicateRecipePayload(newName: newName)
+        )
+    }
+
+    func computeRecipeNutrition(id: Int) async throws -> APIResult {
+        try await send(
+            "/api/recipes/\(id)/nutrition",
+            method: "POST",
+            body: EmptyBody(),
+            timeout: 120
+        )
+    }
+
+    func translateRecipeText(id: Int, language: String, text: String? = nil) async throws -> RecipeTranslationResponse {
+        try await send(
+            "/api/recipes/\(id)/translate",
+            method: "POST",
+            body: TranslationPayload(targetLanguage: language, text: text),
+            timeout: 120
+        )
+    }
+
+    func recipePDF(id: Int) async throws -> Data {
+        try await download("/api/recipes/\(id)/pdf", accept: "application/pdf")
     }
 
     func deleteRecipe(id: Int) async throws -> APIResult {
@@ -308,6 +391,40 @@ actor APIClient {
 
     func shoppingCategories() async throws -> ShoppingCategoriesResponse {
         try await send("/api/cart/categories")
+    }
+
+    func shoppingOptimizationPreview() async throws -> ShoppingOptimizePreview {
+        try await send(
+            "/api/cart/optimize/preview",
+            method: "POST",
+            body: EmptyBody(),
+            timeout: 120
+        )
+    }
+
+    func applyShoppingOptimization(previewID: String) async throws -> ShoppingOptimizeApplyResponse {
+        try await send(
+            "/api/cart/optimize/apply",
+            method: "POST",
+            body: OptimizeApplyPayload(previewId: previewID)
+        )
+    }
+
+    func shoppingExportText() async throws -> String {
+        let data = try await download("/api/cart/export.txt", accept: "text/plain")
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw APIError.invalidResponse("/api/cart/export.txt")
+        }
+        return value
+    }
+
+    func pushShoppingToEinkauf() async throws -> ShoppingPushResponse {
+        try await send(
+            "/api/cart/push-to-einkauf",
+            method: "POST",
+            body: ShoppingPushPayload(consolidate: true, onlyUnchecked: true, clearAfter: false),
+            timeout: 120
+        )
     }
 
     func setCartItem(id: Int, checked: Bool) async throws -> APIResult {
@@ -432,8 +549,90 @@ actor APIClient {
         )
     }
 
+    func mealPlanPDF(start: String) async throws -> Data {
+        try await download(
+            "/api/meal-plan/pdf",
+            query: [URLQueryItem(name: "week_start", value: start)],
+            accept: "application/pdf"
+        )
+    }
+
     func adminOverview() async throws -> AdminOverview {
         try await send("/api/admin/overview")
+    }
+
+    func trash() async throws -> TrashResponse {
+        try await send("/api/recipes/trash/list")
+    }
+
+    func restoreTrashRecipe(id: Int) async throws -> APIResult {
+        try await send("/api/recipes/\(id)/restore", method: "POST", body: EmptyBody())
+    }
+
+    func purgeTrashRecipe(id: Int) async throws -> APIResult {
+        try await send(
+            "/api/recipes/\(id)",
+            method: "DELETE",
+            query: [
+                URLQueryItem(name: "delete_files", value: "true"),
+                URLQueryItem(name: "hard", value: "true")
+            ],
+            body: EmptyBody()
+        )
+    }
+
+    func emptyTrash() async throws -> APIResult {
+        try await send(
+            "/api/recipes/trash/empty",
+            method: "DELETE",
+            query: [URLQueryItem(name: "delete_files", value: "true")],
+            body: EmptyBody()
+        )
+    }
+
+    func recipeVersions(recipeID: Int? = nil) async throws -> RecipeVersionsResponse {
+        let query = recipeID.map { [URLQueryItem(name: "recipe_id", value: String($0))] } ?? []
+        return try await send("/api/admin/versions", query: query)
+    }
+
+    func restoreRecipeVersion(id: Int) async throws -> APIResult {
+        try await send("/api/admin/versions/\(id)/restore", method: "POST", body: EmptyBody())
+    }
+
+    func auditFindings() async throws -> AuditFindingsResponse {
+        try await send("/api/audit/ai-sanity/findings")
+    }
+
+    func startAudit() async throws -> APIResult {
+        try await send("/api/audit/ai-sanity", method: "POST", body: EmptyBody())
+    }
+
+    func applyAuditFinding(id: Int) async throws -> APIResult {
+        try await send("/api/audit/finding/\(id)/apply", method: "POST", body: EmptyBody())
+    }
+
+    func resolveAuditFinding(id: Int) async throws -> APIResult {
+        try await send("/api/audit/finding/\(id)/resolve", method: "POST", body: EmptyBody())
+    }
+
+    func createRecipeShare(id: Int, expiresDays: Int) async throws -> ShareLinkResponse {
+        try await send(
+            "/api/recipes/\(id)/share",
+            method: "POST",
+            body: SharePayload(expiresDays: expiresDays)
+        )
+    }
+
+    func recipeShares(id: Int) async throws -> ShareLinksResponse {
+        try await send("/api/recipes/\(id)/shares")
+    }
+
+    func revokeRecipeShare(recipeID: Int, shareID: String) async throws -> APIResult {
+        try await send(
+            "/api/recipes/\(recipeID)/shares/\(shareID)",
+            method: "DELETE",
+            body: EmptyBody()
+        )
     }
 
     func pending() async throws -> [PendingItem] {
@@ -613,12 +812,13 @@ actor APIClient {
     private func send<Body: Encodable, Response: Decodable>(
         _ path: String,
         method: String,
+        query: [URLQueryItem] = [],
         body: Body,
         authenticated: Bool = true,
         timeout: TimeInterval = 60,
         headers: [String: String] = [:]
     ) async throws -> Response {
-        var request = URLRequest(url: try endpoint(path))
+        var request = URLRequest(url: try endpoint(path, query: query))
         request.httpMethod = method
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -629,6 +829,32 @@ actor APIClient {
         }
         authorize(&request, includeBearer: authenticated)
         return try await execute(request)
+    }
+
+    private func download(
+        _ path: String,
+        query: [URLQueryItem] = [],
+        accept: String
+    ) async throws -> Data {
+        var request = URLRequest(url: try endpoint(path, query: query))
+        request.httpMethod = "GET"
+        request.timeoutInterval = 60
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        authorize(&request, includeBearer: true)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(path)
+        }
+        if Self.isCloudflareAccessResponse(http, body: data) {
+            throw APIError.cloudflareAccessRequired
+        }
+        if http.statusCode == 401 { throw APIError.unauthenticated }
+        guard (200..<300).contains(http.statusCode) else {
+            let detail = (try? decoder.decode(ErrorResponse.self, from: data).detail)
+                ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+            throw APIError.server(http.statusCode, detail)
+        }
+        return data
     }
 
     private func authorize(_ request: inout URLRequest, includeBearer: Bool) {
@@ -742,6 +968,24 @@ actor APIClient {
 
 private struct ErrorResponse: Codable { let detail: String }
 private struct EmptyBody: Codable {}
+private struct RecipeMetadataPayload: Codable {
+    let name: String
+    let type: String
+    let category: String
+    let description: String
+    let servings: Int?
+    let url: String?
+}
+private struct RecipeTagsPayload: Codable { let tags: [String] }
+private struct DuplicateRecipePayload: Codable { let newName: String }
+private struct OptimizeApplyPayload: Codable { let previewId: String }
+private struct ShoppingPushPayload: Codable {
+    let consolidate: Bool
+    let onlyUnchecked: Bool
+    let clearAfter: Bool
+}
+private struct SharePayload: Codable { let expiresDays: Int }
+private struct TranslationPayload: Codable { let targetLanguage: String; let text: String? }
 struct IngredientDraft: Codable, Hashable {
     let name: String
     let amount: Double?

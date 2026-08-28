@@ -28,6 +28,7 @@ struct CartView: View {
     @State private var addErrorMessage: String?
     @State private var recurringEditor: RecurringDraft?
     @State private var recurringToDelete: RecurringCartItem?
+    @State private var showShoppingTools = false
 
     fileprivate static let commonUnits = [
         "Stück", "g", "kg", "ml", "l", "TL", "EL", "Packung", "Dose", "Glas", "Bund", "Becher"
@@ -64,6 +65,11 @@ struct CartView: View {
                 if mode == .current, !items.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
+                            if session.supports("ai-shopping-optimization") {
+                                Button("KI sortieren & exportieren", systemImage: "sparkles") {
+                                    showShoppingTools = true
+                                }
+                            }
                             Button("Erledigte löschen", systemImage: "checkmark.circle") {
                                 Task { await clear(onlyChecked: true) }
                             }
@@ -93,6 +99,10 @@ struct CartView: View {
                 ) { updatedDraft in
                     try await saveRecurring(updatedDraft)
                 }
+            }
+            .sheet(isPresented: $showShoppingTools) {
+                ShoppingToolsView { await load() }
+                    .environmentObject(session)
             }
             .confirmationDialog(
                 "Wiederholung löschen?",
