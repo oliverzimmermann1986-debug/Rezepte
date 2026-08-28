@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from app.core.analyzer import OpenAIAnalyzer
-from app.db import CURRENT_SCHEMA_VERSION, Database
+from app.db import Database
 from app.recipes.auto_tags import (
     backfill_diet_auto_tags,
     compute_diet_tags,
@@ -117,7 +117,7 @@ def test_schema_migration_backfills_existing_recipes_and_creates_backup(tmp_path
     recipe_id = int(recipe["id"])
     _insert_ingredients(db, recipe_id, SAFE_INGREDIENTS)
     with db.conn() as connection:
-        connection.execute("DELETE FROM schema_migrations WHERE version>=240")
+        connection.execute("DELETE FROM schema_migrations WHERE version=240")
 
     migrated = Database(db_path)
 
@@ -128,9 +128,7 @@ def test_schema_migration_backfills_existing_recipes_and_creates_backup(tmp_path
             "SELECT name FROM schema_migrations WHERE version=240"
         ).fetchone()
     assert migration["name"] == "backfill_allergen_free_tags"
-    assert list((tmp_path / "backups").glob(
-        f"pre-migration-v230-to-v{CURRENT_SCHEMA_VERSION}-*.db"
-    ))
+    assert list((tmp_path / "backups").glob("pre-migration-v230-to-v240-*.db"))
 
 
 def test_new_recipe_prompt_requests_conservative_allergen_info() -> None:

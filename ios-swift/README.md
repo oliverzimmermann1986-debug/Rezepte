@@ -10,12 +10,6 @@ Das Design ist kein Expo-Template: Navigation, Theme-Persistenz, Dark Mode,
 Share Extension und Oberflächen sind native SwiftUI-Komponenten. Die vier
 Farbwelten lassen sich unter **Einstellungen** pro Gerät ändern.
 
-Gemeinsame Kochnotizen werden pro Rezept mit Autor und Zeitpunkt gespeichert.
-Unter **Einstellungen > Sprache** lässt sich ihre Anzeigesprache pro Gerät
-wählen. Übersetzungen werden serverseitig gecacht; bei Fehlern zeigt die App
-weiterhin das unveränderte Original, das auch bei übersetzten Notizen direkt
-zum Vergleich geöffnet werden kann.
-
 Über **Als Gast ansehen** ist kein separates Konto nötig. Der Gast erhält eine
 signierte, rein lesende Sitzung und sieht nur Archiv und Einstellungen. Import,
 Bearbeitung, Favoriten, Einkauf, Wochenplanung und Administration sind sowohl

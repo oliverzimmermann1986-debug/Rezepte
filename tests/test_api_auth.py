@@ -168,10 +168,9 @@ def test_native_session_reports_guest_as_read_only(client, monkeypatch):
     }
 
 
-def test_guest_can_read_recipes_but_cannot_write(client, test_db, monkeypatch):
+def test_guest_can_read_recipes_but_cannot_write(client, monkeypatch):
     from app import auth
     from app.main import app
-    from tests.conftest import _create_recipe
 
     class Config:
         def get(self, *keys, default=None):
@@ -182,9 +181,6 @@ def test_guest_can_read_recipes_but_cannot_write(client, test_db, monkeypatch):
             return values.get(keys, default)
 
     monkeypatch.setattr(auth, "get_config", lambda: Config())
-    recipe = _create_recipe(
-        test_db, name="Gastkommentar", folder_path="/tmp/guest-comment"
-    )
     guest_token = auth.create_guest_session()
     assert auth.session_user(guest_token) == "Gast"
     assert auth.session_is_guest(guest_token) is True
@@ -204,15 +200,6 @@ def test_guest_can_read_recipes_but_cannot_write(client, test_db, monkeypatch):
             "/api/admin/overview",
             headers={"Authorization": f"Bearer {guest_token}"},
         )
-        comment_read = client.get(
-            f"/api/recipes/{recipe['id']}/comments",
-            headers={"Authorization": f"Bearer {guest_token}"},
-        )
-        comment_write = client.post(
-            f"/api/recipes/{recipe['id']}/comments",
-            headers={"Authorization": f"Bearer {guest_token}"},
-            json={"body": "Darf nicht gespeichert werden", "source_language": "de"},
-        )
     finally:
         app.dependency_overrides[auth.require_auth] = lambda: None
         app.dependency_overrides[auth.require_admin] = lambda: {
@@ -226,9 +213,6 @@ def test_guest_can_read_recipes_but_cannot_write(client, test_db, monkeypatch):
     assert write_response.json()["detail"] == "Der Gastzugang ist schreibgeschützt."
     assert admin_response.status_code == 403
     assert admin_response.json()["detail"] == "Der Gastzugang ist schreibgeschützt."
-    assert comment_read.status_code == 200
-    assert comment_write.status_code == 403
-    assert comment_write.json()["detail"] == "Der Gastzugang ist schreibgeschützt."
 
 
 def test_native_logout_revokes_server_sessions(client, monkeypatch):

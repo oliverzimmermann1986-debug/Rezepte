@@ -15,8 +15,6 @@ Template-App. Der zentrale Ablauf lautet:
 5. Rezeptbilder generieren, nachdem vorhandene Bilder checksummiert gesichert
    wurden; Original und Neufassung können verglichen und wiederhergestellt
    werden.
-6. Gemeinsame Kochnotizen pro Rezept in der gewählten Sprache lesen; die
-   automatische Übersetzung ist gecacht und das Original jederzeit sichtbar.
 
 ## Technische Eigenständigkeit
 
@@ -39,9 +37,7 @@ Template-App. Der zentrale Ablauf lautet:
 > shopping list uses an account-local ingredient catalog with supermarket
 > categories and icons. Administrators can generate recipe images only after
 > existing images are checksum-backed up, compare both versions and restore an
-> original. Household members can leave shared cooking notes that are cached in
-> the selected language while the original wording remains available. Reviewers
-> may also choose "Als Gast ansehen" for a read-only archive
+> original. Reviewers may also choose "Als Gast ansehen" for a read-only archive
 > tour without creating an account. No purchased app template, WebView or
 > third-party UI kit is used.
 

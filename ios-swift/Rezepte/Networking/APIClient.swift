@@ -194,33 +194,6 @@ actor APIClient {
         try await send("/api/recipes/\(id)")
     }
 
-    func recipeComments(id: Int, language: CommentLanguage) async throws -> RecipeCommentsResponse {
-        try await send(
-            "/api/recipes/\(id)/comments",
-            query: [URLQueryItem(name: "language", value: language.rawValue)]
-        )
-    }
-
-    func createRecipeComment(
-        id: Int, body: String, sourceLanguage: CommentLanguage
-    ) async throws -> APIResult {
-        try await send(
-            "/api/recipes/\(id)/comments",
-            method: "POST",
-            body: RecipeCommentPayload(
-                body: body,
-                sourceLanguage: sourceLanguage.rawValue
-            )
-        )
-    }
-
-    func deleteRecipeComment(recipeID: Int, commentID: Int) async throws -> APIResult {
-        try await send(
-            "/api/recipes/\(recipeID)/comments/\(commentID)",
-            method: "DELETE"
-        )
-    }
-
     func deleteRecipe(id: Int) async throws -> APIResult {
         try await send(
             "/api/recipes/\(id)",
@@ -671,10 +644,6 @@ actor APIClient {
 
 private struct ErrorResponse: Codable { let detail: String }
 private struct EmptyBody: Codable {}
-private struct RecipeCommentPayload: Codable {
-    let body: String
-    let sourceLanguage: String
-}
 struct IngredientDraft: Codable, Hashable {
     let name: String
     let amount: Double?

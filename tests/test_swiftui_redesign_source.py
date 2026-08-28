@@ -139,23 +139,3 @@ def test_swiftui_guest_login_is_read_only_across_navigation_and_recipe_actions()
     assert detail.count("if !session.readOnly") >= 4
     assert 'Section("Gastzugang")' in settings
     assert 'value: session.readOnly ? "Nur lesen" : "Bearbeiten"' in settings
-
-
-def test_swiftui_recipe_comments_follow_selected_language_and_keep_original():
-    detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
-    settings = _read(SWIFT / "Views" / "Settings" / "SettingsView.swift")
-    theme = _read(SWIFT / "Design" / "Theme.swift")
-    api = _read(SWIFT / "Networking" / "APIClient.swift")
-    models = _read(SWIFT / "Models" / "Models.swift")
-
-    assert "enum CommentLanguage" in theme
-    assert 'commentLanguageKey = "comment-language-v1"' in theme
-    assert "Kommentare anzeigen auf" in settings
-    assert "themeStore.commentLanguage" in settings
-    assert "Gemeinsame Kochnotizen" in detail
-    assert "Automatisch übersetzt aus" in detail
-    assert "comment.originalText" in detail
-    assert "if session.readOnly" in detail
-    assert '"/api/recipes/\\(id)/comments"' in api
-    assert 'URLQueryItem(name: "language", value: language.rawValue)' in api
-    assert "struct RecipeComment" in models

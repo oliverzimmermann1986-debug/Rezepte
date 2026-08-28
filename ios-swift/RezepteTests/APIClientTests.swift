@@ -438,41 +438,6 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(request.url?.path, "/api/recipes/image-backups/19/file")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer api-token")
     }
-
-    func testRecipeCommentsUseSelectedLanguageAndPreserveOriginal() async throws {
-        let session = MockURLProtocol.makeSession()
-        let client = APIClient(session: session)
-        try await client.configure(server: "https://example.de", token: "api-token")
-        MockURLProtocol.respond(json: """
-        {
-          "language":"en",
-          "items":[{
-            "id":7,"recipe_id":42,
-            "original_text":"Mehr Knoblauch.",
-            "text":"Use more garlic.",
-            "source_language":"de","detected_source_language":"de",
-            "target_language":"en","translated":true,
-            "translation_status":"translated","created_by":"Anna",
-            "created_at":12,"can_delete":true
-          }]
-        }
-        """)
-
-        let response = try await client.recipeComments(id: 42, language: .english)
-
-        XCTAssertEqual(response.items.first?.text, "Use more garlic.")
-        XCTAssertEqual(response.items.first?.originalText, "Mehr Knoblauch.")
-        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/comments")
-        XCTAssertEqual(MockURLProtocol.lastQueryItems()["language"], "en")
-
-        MockURLProtocol.respond(json: #"{"ok":true}"#)
-        _ = try await client.createRecipeComment(
-            id: 42, body: "Sehr gut", sourceLanguage: .german
-        )
-        let body = try XCTUnwrap(String(data: MockURLProtocol.lastBody(), encoding: .utf8))
-        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
-        XCTAssertTrue(body.contains("\"source_language\":\"de\""))
-    }
 }
 
 /// Fängt Requests des injizierten URLSession ab, damit der Query-Aufbau
