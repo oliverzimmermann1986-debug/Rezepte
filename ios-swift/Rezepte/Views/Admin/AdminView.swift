@@ -62,6 +62,23 @@ struct AdminView: View {
                     }
                 }
 
+                Section("System") {
+                    if session.supports("native-admin-config-v1") {
+                        NavigationLink {
+                            AdminSettingsView().environmentObject(session)
+                        } label: {
+                            Label("Admin-Einstellungen", systemImage: "gearshape.2")
+                        }
+                        Text("KI, Postfächer, PDF, Automatisierung, Einkauf-Anbindung, Backups und Logs sicher verwalten.")
+                            .font(.caption)
+                            .foregroundStyle(theme.muted)
+                    } else {
+                        Label("Admin-Einstellungen benötigen einen neueren Server.", systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(theme.warning)
+                    }
+                }
+
                 Section("Rezeptbilder") {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Sicherungsbarriere", systemImage: "externaldrive.badge.checkmark")

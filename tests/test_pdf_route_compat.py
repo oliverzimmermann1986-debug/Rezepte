@@ -24,6 +24,7 @@ def test_health_and_system_info_report_build_version(client):
     assert "ai-shopping-optimization" in health.json()["capabilities"]
     assert "shopping-categories" in health.json()["capabilities"]
     assert "native-admin-roles" in health.json()["capabilities"]
+    assert "native-admin-config-v1" in health.json()["capabilities"]
     assert "pdf-preflight" in health.json()["capabilities"]
     assert "recurring-shopping" in health.json()["capabilities"]
     assert "weekly-meal-plan" in health.json()["capabilities"]

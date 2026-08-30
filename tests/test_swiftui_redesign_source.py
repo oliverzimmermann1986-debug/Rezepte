@@ -107,6 +107,54 @@ def test_swiftui_exposes_backend_library_and_shopping_tools():
     assert "computeRecipeNutrition" in detail
 
 
+def test_swiftui_recipe_passport_exposes_stable_identity_and_original_source():
+    detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
+
+    assert 'LabeledContent("Rezept-ID")' in detail
+    assert 'Text("#\\(recipe.id)")' in detail
+    assert 'Text("Originalquelle")' in detail
+    assert "sourceURL.absoluteString" in detail
+    assert "UIPasteboard.general.string" in detail
+    assert "ShareLink(item: sourceURL)" in detail
+    assert "Originalquelle ergänzen" in detail
+    assert "sourceAddedAt" in detail
+
+
+def test_swiftui_admin_settings_use_safe_partial_config_contract():
+    api = _read(SWIFT / "Networking" / "APIClient.swift")
+    models = _read(SWIFT / "Models" / "AdminConfigModels.swift")
+    settings = _read(SWIFT / "Views" / "Admin" / "AdminSettingsView.swift")
+    admin = _read(SWIFT / "Views" / "Admin" / "AdminView.swift")
+    main = _read(ROOT / "app" / "main.py")
+
+    for endpoint in (
+        "/api/config",
+        "/api/config/reload",
+        "/api/test/openai",
+        "/api/test/mail",
+        "/api/schedule/preview",
+        "/api/config/logs/stats",
+        "/api/config/logs/cleanup",
+        "/api/config/backups/list",
+        "/api/config/backups/run-now",
+    ):
+        assert endpoint in api
+    assert "NativeAdminConfigPatch" in models
+    patch_models = models.split("struct NativeAdminConfigPatch", 1)[1]
+    assert "let baseUrl" not in patch_models
+    assert "let apiUrl" not in patch_models
+    assert "let paths" not in patch_models
+    assert "Leere Geheimnisfelder behalten den gespeicherten Wert" in settings
+    assert "Ziel-URLs und Serverpfade sind ausschließlich auf dem Server änderbar" in settings
+    assert "Ungespeicherte Änderungen" in settings
+    assert "Datenbank jetzt sichern" in settings
+    assert "Alte Logs bereinigen" in settings
+    assert "Gemäß Aufbewahrungsfrist löschen" in settings
+    assert "changedSections" in settings
+    assert 'session.supports("native-admin-config-v1")' in admin
+    assert '"native-admin-config-v1"' in main
+
+
 def test_swiftui_checks_capabilities_and_persists_content_language():
     session = _read(SWIFT / "Session" / "SessionStore.swift")
     settings = _read(SWIFT / "Views" / "Settings" / "SettingsView.swift")

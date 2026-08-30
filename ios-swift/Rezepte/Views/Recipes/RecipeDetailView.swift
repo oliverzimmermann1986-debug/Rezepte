@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct RecipeDetailView: View {
     let recipeID: Int
@@ -27,6 +28,7 @@ struct RecipeDetailView: View {
     @State private var duplicateName = ""
     @State private var isManaging = false
     @State private var translatedDescription: String?
+    @State private var sourceCopied = false
     @AppStorage("content-language-v1") private var contentLanguage = ContentLanguage.de.rawValue
 
     var body: some View {
@@ -62,19 +64,7 @@ struct RecipeDetailView: View {
                         ingredientSection(recipe)
                         stepsSection(recipe)
 
-                        if let sourceURL = safeExternalURL(recipe.url) {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Quelle")
-                                    .font(.title2.bold())
-                                Button {
-                                    openURL(sourceURL)
-                                } label: {
-                                    Label("Originalquelle öffnen", systemImage: "arrow.up.right.square")
-                                        .frame(maxWidth: .infinity, minHeight: 44)
-                                }
-                                .buttonStyle(.bordered)
-                            }
-                        }
+                        sourceSection(recipe)
 
                         originalTextSection(recipe)
 
@@ -340,10 +330,26 @@ struct RecipeDetailView: View {
                 .foregroundStyle(recipe.userVerified == true ? theme.success : theme.warning)
             }
 
+            LabeledContent("Rezept-ID") {
+                Text("#\(recipe.id)")
+                    .font(.body.monospacedDigit())
+                    .textSelection(.enabled)
+            }
+
             if let url = safeExternalURL(recipe.url) {
                 LabeledContent("Quelle", value: sourceName(url))
             } else {
                 LabeledContent("Quelle", value: "Datei oder eigener Eintrag")
+            }
+
+            if let sourceAddedAt = recipe.sourceAddedAt {
+                LabeledContent(
+                    "Importiert",
+                    value: Date(timeIntervalSince1970: sourceAddedAt).formatted(
+                        date: .abbreviated,
+                        time: .shortened
+                    )
+                )
             }
 
             if let status = recipe.imageGenerationStatus?.nilIfEmpty {
@@ -374,6 +380,64 @@ struct RecipeDetailView: View {
             }
         }
         .cardSurface()
+    }
+
+    @ViewBuilder
+    private func sourceSection(_ recipe: Recipe) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Originalquelle")
+                .font(.title2.bold())
+
+            if let sourceURL = safeExternalURL(recipe.url) {
+                Text(sourceURL.absoluteString)
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(theme.muted)
+                    .textSelection(.enabled)
+                    .lineLimit(4)
+
+                HStack(spacing: 10) {
+                    Button {
+                        openURL(sourceURL)
+                    } label: {
+                        Label("Öffnen", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        UIPasteboard.general.string = sourceURL.absoluteString
+                        sourceCopied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            sourceCopied = false
+                        }
+                    } label: {
+                        Label(
+                            sourceCopied ? "Kopiert" : "Kopieren",
+                            systemImage: sourceCopied ? "checkmark" : "doc.on.doc"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+
+                    ShareLink(item: sourceURL) {
+                        Label("Teilen", systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .labelStyle(.iconOnly)
+            } else {
+                Label("Für dieses Rezept ist keine gültige Original-URL gespeichert.", systemImage: "link.badge.plus")
+                    .font(.footnote)
+                    .foregroundStyle(theme.warning)
+
+                if !session.readOnly {
+                    Button("Originalquelle ergänzen") {
+                        showMetadataEditor = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .cardSurface()
+        .accessibilityElement(children: .contain)
     }
 
     private func ratingAndNutritionSection(_ recipe: Recipe) -> some View {

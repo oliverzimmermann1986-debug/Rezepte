@@ -561,6 +561,87 @@ actor APIClient {
         try await send("/api/admin/overview")
     }
 
+    func adminConfiguration() async throws -> NativeAdminConfig {
+        try await send("/api/config")
+    }
+
+    func updateAdminConfiguration(_ patch: NativeAdminConfigPatch) async throws -> APIResult {
+        try await send(
+            "/api/config",
+            method: "PUT",
+            body: patch
+        )
+    }
+
+    func reloadAdminConfiguration() async throws -> APIResult {
+        try await send("/api/config/reload", method: "POST", body: EmptyBody())
+    }
+
+    func adminSchedule() async throws -> NativeAdminScheduleStatus {
+        try await send("/api/schedule")
+    }
+
+    func previewAdminSchedule(_ value: String) async throws -> NativeAdminSchedulePreview {
+        try await send(
+            "/api/schedule/preview",
+            method: "POST",
+            body: SchedulePayload(scraper: value)
+        )
+    }
+
+    func updateAdminSchedule(_ value: String) async throws -> APIResult {
+        try await send(
+            "/api/schedule",
+            method: "PUT",
+            body: SchedulePayload(scraper: value),
+            timeout: 120
+        )
+    }
+
+    func testOpenAIConfiguration(apiKey: String?, model: String?) async throws -> NativeAdminTestResult {
+        try await send(
+            "/api/test/openai",
+            method: "POST",
+            body: OpenAITestPayload(apiKey: apiKey, model: model)
+        )
+    }
+
+    func testMailConfiguration(account: String) async throws -> NativeAdminTestResult {
+        try await send(
+            "/api/test/mail",
+            method: "POST",
+            body: MailTestPayload(account: account),
+            timeout: 120
+        )
+    }
+
+    func adminLogStats() async throws -> NativeAdminLogStats {
+        try await send("/api/config/logs/stats")
+    }
+
+    func cleanupAdminLogs(days: Int? = nil) async throws -> NativeAdminOperationResult {
+        try await send(
+            "/api/config/logs/cleanup",
+            method: "POST",
+            query: days.map { [URLQueryItem(name: "days", value: String($0))] } ?? [],
+            body: EmptyBody(),
+            timeout: 120
+        )
+    }
+
+    func adminBackups() async throws -> NativeAdminBackupList {
+        try await send("/api/config/backups/list")
+    }
+
+    func runAdminBackup() async throws -> NativeAdminOperationResult {
+        try await send(
+            "/api/config/backups/run-now",
+            method: "POST",
+            body: EmptyBody(),
+            timeout: 300
+        )
+    }
+
     func trash() async throws -> TrashResponse {
         try await send("/api/recipes/trash/list")
     }
@@ -986,6 +1067,9 @@ private struct ShoppingPushPayload: Codable {
 }
 private struct SharePayload: Codable { let expiresDays: Int }
 private struct TranslationPayload: Codable { let targetLanguage: String; let text: String? }
+private struct OpenAITestPayload: Codable { let apiKey: String?; let model: String? }
+private struct MailTestPayload: Codable { let account: String }
+private struct SchedulePayload: Codable { let scraper: String }
 struct IngredientDraft: Codable, Hashable {
     let name: String
     let amount: Double?
