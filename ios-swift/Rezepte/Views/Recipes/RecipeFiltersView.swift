@@ -2,84 +2,54 @@ import SwiftUI
 
 struct RecipeFiltersView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.recipeTheme) private var theme
 
     let facets: RecipeFacets
+    let loadMatchCount: (RecipeFilters) async throws -> Int
     let onApply: (RecipeFilters) -> Void
 
     @State private var draft: RecipeFilters
     @State private var ingredientSearch = ""
+    @State private var matchCount: Int?
+    @State private var isRefreshingCount = false
+    @State private var countFailed = false
 
     init(
         filters: RecipeFilters,
         facets: RecipeFacets,
+        initialMatchCount: Int,
+        loadMatchCount: @escaping (RecipeFilters) async throws -> Int,
         onApply: @escaping (RecipeFilters) -> Void
     ) {
         self.facets = facets
+        self.loadMatchCount = loadMatchCount
         self.onApply = onApply
         _draft = State(initialValue: filters)
+        _matchCount = State(initialValue: initialMatchCount)
     }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Schnellfilter") {
-                    Toggle("Nur Favoriten", isOn: $draft.favoriteOnly)
-                    Toggle("Manuell zu pflegen", isOn: $draft.manualOnly)
-                    Picker("Mindestbewertung", selection: $draft.minRating) {
-                        Text("Alle").tag(0)
-                        ForEach(1...5, id: \.self) { rating in
-                            Text(String(repeating: "★", count: rating)).tag(rating)
-                        }
-                    }
-                }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 28) {
+                    quickFilters
+                    classificationFilters
 
-                Section("Einordnung") {
-                    Picker("Typ", selection: $draft.type) {
-                        Text("Alle Typen").tag("")
-                        ForEach(facets.types, id: \.self) { value in
-                            Text(value).tag(value)
-                        }
+                    if !allergenTags.isEmpty {
+                        allergenFilters
                     }
-                    Picker("Kategorie", selection: $draft.category) {
-                        Text("Alle Kategorien").tag("")
-                        ForEach(facets.categories, id: \.self) { value in
-                            Text(value).tag(value)
-                        }
-                    }
-                }
 
-                if !facets.tags.isEmpty {
-                    Section("Tags") {
-                        ForEach(facets.tags) { tag in
-                            Toggle(
-                                "\(tag.name) (\(tag.n))",
-                                isOn: tagBinding(tag.id)
-                            )
-                        }
+                    if !generalTags.isEmpty {
+                        tagFilters
                     }
-                }
 
-                Section {
-                    TextField("Zutat suchen", text: $ingredientSearch)
-                        .textInputAutocapitalization(.never)
-
-                    ForEach(filteredIngredients) { ingredient in
-                        Picker(
-                            "\(ingredient.displayName) (\(ingredient.n))",
-                            selection: ingredientBinding(ingredient.canonicalName)
-                        ) {
-                            Text("Egal").tag(IngredientChoice.any)
-                            Text("Mit").tag(IngredientChoice.include)
-                            Text("Ohne").tag(IngredientChoice.exclude)
-                        }
-                        .pickerStyle(.menu)
-                    }
-                } header: {
-                    Text("Zutaten")
-                } footer: {
-                    Text("„Mit“ verlangt die Zutat, „Ohne“ schließt sie aus.")
+                    ingredientFilters
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .padding(.bottom, 24)
             }
+            .background(theme.background)
             .navigationTitle(
                 draft.activeCount == 0
                     ? "Rezepte filtern"
@@ -90,25 +60,320 @@ struct RecipeFiltersView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Abbrechen") { dismiss() }
                 }
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .confirmationAction) {
                     if draft.activeCount > 0 {
-                        Button("Zurücksetzen") { draft = RecipeFilters() }
+                        Button("Zurücksetzen") {
+                            draft = RecipeFilters()
+                            ingredientSearch = ""
+                        }
                     }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Anwenden") { onApply(draft) }
-                        .fontWeight(.semibold)
-                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                applyBar
+            }
+            .task(id: draft) {
+                await refreshMatchCount()
             }
         }
     }
 
+    private var quickFilters: some View {
+        flatSection(
+            title: "Schnellfilter",
+            systemImage: "bolt.fill"
+        ) {
+            Toggle("Nur Favoriten", isOn: $draft.favoriteOnly)
+            Divider()
+            Toggle("Manuell zu pflegen", isOn: $draft.manualOnly)
+            Divider()
+            HStack {
+                Text("Mindestbewertung")
+                Spacer()
+                Picker("Mindestbewertung", selection: $draft.minRating) {
+                    Text("Alle").tag(0)
+                    ForEach(1...5, id: \.self) { rating in
+                        Text(String(repeating: "★", count: rating)).tag(rating)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
+        }
+    }
+
+    private var classificationFilters: some View {
+        flatSection(
+            title: "Einordnung",
+            systemImage: "square.grid.2x2"
+        ) {
+            HStack {
+                Text("Typ")
+                Spacer()
+                Picker("Typ", selection: $draft.type) {
+                    Text("Alle Typen").tag("")
+                    ForEach(facets.types, id: \.self) { value in
+                        Text(value).tag(value)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
+            Divider()
+            HStack {
+                Text("Kategorie")
+                Spacer()
+                Picker("Kategorie", selection: $draft.category) {
+                    Text("Alle Kategorien").tag("")
+                    ForEach(facets.categories, id: \.self) { value in
+                        Text(value).tag(value)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
+        }
+    }
+
+    private var allergenFilters: some View {
+        flatSection(
+            title: "Allergiker-Infos",
+            systemImage: "checkmark.shield",
+            footer: "Mehrere Angaben können gleichzeitig gewählt werden. Es erscheinen nur Rezepte, die alle ausgewählten Frei-von-Tags tragen. Die Angaben basieren auf den erkannten Zutaten und ersetzen keine medizinische Prüfung."
+        ) {
+            ForEach(Array(allergenTags.enumerated()), id: \.element.id) { index, tag in
+                Toggle(isOn: allergenBinding(tag.id)) {
+                    HStack(spacing: 10) {
+                        Label(
+                            tag.allergenInfo?.title ?? tag.name,
+                            systemImage: tag.allergenInfo?.systemImage ?? "checkmark.shield"
+                        )
+                        Spacer()
+                        facetCount(tag.n)
+                    }
+                }
+                if index < allergenTags.count - 1 { Divider() }
+            }
+        }
+    }
+
+    private var tagFilters: some View {
+        flatSection(
+            title: "Tags & Ernährung",
+            systemImage: "tag"
+        ) {
+            ForEach(Array(generalTags.enumerated()), id: \.element.id) { index, tag in
+                Toggle(isOn: tagBinding(tag.id)) {
+                    HStack {
+                        Text(tag.name)
+                        Spacer()
+                        facetCount(tag.n)
+                    }
+                }
+                if index < generalTags.count - 1 { Divider() }
+            }
+        }
+    }
+
+    private var ingredientFilters: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Zutaten", systemImage: "carrot")
+                    .font(.headline)
+                Spacer()
+                if selectedIngredientCount > 0 {
+                    Text("\(selectedIngredientCount) gewählt")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(theme.muted)
+                }
+            }
+
+            Text("Wähle direkt, was enthalten sein muss oder ausgeschlossen werden soll.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(theme.muted)
+                TextField("Zutat suchen", text: $ingredientSearch)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                if !ingredientSearch.isEmpty {
+                    Button {
+                        ingredientSearch = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(theme.muted)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Zutatensuche leeren")
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(theme.background, in: RoundedRectangle(cornerRadius: 12))
+
+            if filteredIngredients.isEmpty {
+                Text("Keine passende Zutat gefunden.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 12)
+            } else {
+                ForEach(Array(filteredIngredients.enumerated()), id: \.element.id) { index, ingredient in
+                    ingredientRow(ingredient)
+                    if index < filteredIngredients.count - 1 { Divider() }
+                }
+            }
+        }
+        .cardSurface()
+    }
+
+    private var applyBar: some View {
+        VStack(spacing: 7) {
+            Button {
+                onApply(draft)
+            } label: {
+                HStack(spacing: 10) {
+                    if isRefreshingCount {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(applyButtonTitle)
+                        .fontWeight(.semibold)
+                        .monospacedDigit()
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(theme.accent)
+
+            if countFailed {
+                Text("Trefferzahl konnte nicht aktualisiert werden.")
+                    .font(.caption)
+                    .foregroundStyle(theme.warning)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
+    }
+
+    private func flatSection<Content: View>(
+        title: String,
+        systemImage: String,
+        footer: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: systemImage)
+                .font(.headline)
+            VStack(spacing: 10) {
+                content()
+            }
+            .tint(theme.accent)
+            if let footer {
+                Text(footer)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func ingredientRow(_ ingredient: IngredientFacet) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(ingredient.displayName)
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                facetCount(ingredient.n)
+            }
+            HStack(spacing: 22) {
+                ingredientChoiceButton(
+                    "Mit",
+                    ingredient: ingredient.canonicalName,
+                    choice: .include
+                )
+                ingredientChoiceButton(
+                    "Ohne",
+                    ingredient: ingredient.canonicalName,
+                    choice: .exclude
+                )
+                Spacer()
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func ingredientChoiceButton(
+        _ title: String,
+        ingredient: String,
+        choice: IngredientChoice
+    ) -> some View {
+        let selected = currentChoice(for: ingredient) == choice
+        return Button {
+            ingredientBinding(ingredient).wrappedValue = selected ? .any : choice
+        } label: {
+            Label(title, systemImage: selected ? "checkmark.square.fill" : "square")
+                .font(.subheadline.weight(selected ? .semibold : .regular))
+                .foregroundStyle(selected ? theme.ink : theme.muted)
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(selected ? "Ausgewählt" : "Nicht ausgewählt")
+    }
+
+    private func facetCount(_ value: Int) -> some View {
+        Text("\(value)")
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+    }
+
+    private var applyButtonTitle: String {
+        guard let matchCount else { return "Rezepte anzeigen" }
+        return matchCount == 1 ? "1 Rezept anzeigen" : "\(matchCount) Rezepte anzeigen"
+    }
+
+    private var selectedIngredientCount: Int {
+        draft.includedIngredients.count + draft.excludedIngredients.count
+    }
+
     private var filteredIngredients: [IngredientFacet] {
         let query = ingredientSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return facets.ingredients }
-        return facets.ingredients.filter {
+        return query.isEmpty ? facets.ingredients : facets.ingredients.filter {
             $0.displayName.localizedCaseInsensitiveContains(query)
                 || $0.canonicalName.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var allergenTags: [TagFacet] {
+        facets.tags
+            .filter { $0.allergenInfo != nil }
+            .sorted {
+                ($0.allergenInfo?.sortIndex ?? .max) < ($1.allergenInfo?.sortIndex ?? .max)
+            }
+    }
+
+    private var generalTags: [TagFacet] {
+        facets.tags.filter { $0.allergenInfo == nil }
+    }
+
+    private func refreshMatchCount() async {
+        isRefreshingCount = true
+        countFailed = false
+        do {
+            try await Task.sleep(for: .milliseconds(180))
+            try Task.checkCancellation()
+            let updatedCount = try await loadMatchCount(draft)
+            try Task.checkCancellation()
+            matchCount = updatedCount
+            isRefreshingCount = false
+        } catch is CancellationError {
+            // Eine neuere Auswahl startet sofort die nächste Zählung.
+        } catch {
+            isRefreshingCount = false
+            countFailed = true
         }
     }
 
@@ -116,19 +381,39 @@ struct RecipeFiltersView: View {
         Binding(
             get: { draft.tagIDs.contains(id) },
             set: { selected in
-                if selected { draft.tagIDs.insert(id) }
-                else { draft.tagIDs.remove(id) }
+                if selected {
+                    draft.allergenTagIDs.remove(id)
+                    draft.tagIDs.insert(id)
+                } else {
+                    draft.tagIDs.remove(id)
+                }
             }
         )
     }
 
+    private func allergenBinding(_ id: Int) -> Binding<Bool> {
+        Binding(
+            get: { draft.allergenTagIDs.contains(id) },
+            set: { selected in
+                if selected {
+                    draft.tagIDs.remove(id)
+                    draft.allergenTagIDs.insert(id)
+                } else {
+                    draft.allergenTagIDs.remove(id)
+                }
+            }
+        )
+    }
+
+    private func currentChoice(for name: String) -> IngredientChoice {
+        if draft.includedIngredients.contains(name) { return .include }
+        if draft.excludedIngredients.contains(name) { return .exclude }
+        return .any
+    }
+
     private func ingredientBinding(_ name: String) -> Binding<IngredientChoice> {
         Binding(
-            get: {
-                if draft.includedIngredients.contains(name) { return .include }
-                if draft.excludedIngredients.contains(name) { return .exclude }
-                return .any
-            },
+            get: { currentChoice(for: name) },
             set: { choice in
                 draft.includedIngredients.remove(name)
                 draft.excludedIngredients.remove(name)

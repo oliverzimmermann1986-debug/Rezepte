@@ -131,7 +131,7 @@ def test_extraction_prompt_preserves_fresh_variety_but_merges_for_shopping():
     analyzer._call = fake_call
     analyzer.analyze_recipe_content(
         "250 g Cherrytomaten",
-        existing_canonical=["tomate"],
+        existing_canonical=["Tomaten", "Basmati-Reis", "Crème fraîche"],
     )
 
     prompt = captured["system"]
@@ -139,3 +139,7 @@ def test_extraction_prompt_preserves_fresh_variety_but_merges_for_shopping():
     assert "Cocktailtomate" in prompt
     assert "gemeinsam als 'tomate' normalisiert" in prompt
     assert "Tomatenmark" in prompt
+    assert "BESTEHENDE ZUTATEN in der DB — ZUERST WIEDERVERWENDEN" in prompt
+    assert "MUSS name exakt die bestehende Schreibweise" in prompt
+    assert "Basmati-Reis" in prompt
+    assert "Crème fraîche" in prompt

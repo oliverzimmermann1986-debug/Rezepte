@@ -2,11 +2,14 @@ import SwiftUI
 
 struct MealPlanView: View {
     @EnvironmentObject private var session: SessionStore
+    @Environment(\.recipeTheme) private var theme
     @State private var week: MealWeek?
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var selectedDay: MealDay?
+    @State private var conductorDay: MealDay?
     @State private var cartConfirmation = false
+    @State private var showPDF = false
 
     var body: some View {
         NavigationStack {
@@ -33,12 +36,24 @@ struct MealPlanView: View {
                     .refreshable { await load(start: week.weekStart) }
                 }
             }
-            .background(AppTheme.cream)
-            .navigationTitle("Wochenplan")
+            .background(theme.background)
+            .navigationTitle("Heute")
+            .toolbar {
+                if let week, session.supports("weekly-meal-plan-pdf") {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showPDF = true } label: { Image(systemName: "doc.richtext") }
+                            .accessibilityLabel("Wochenplan als PDF")
+                    }
+                }
+            }
             .sheet(item: $selectedDay) { day in
                 RecipePickerView(day: day) {
                     await load(start: week?.weekStart)
                 }
+            }
+            .sheet(item: $conductorDay) { day in
+                MealConductorView(day: day)
+                    .environmentObject(session)
             }
             .overlay(alignment: .bottom) {
                 if cartConfirmation {
@@ -51,6 +66,13 @@ struct MealPlanView: View {
                 }
             }
             .task { await load() }
+            .sheet(isPresented: $showPDF) {
+                if let week {
+                    PDFPreviewSheet(title: "Wochenplan") {
+                        try await session.api.mealPlanPDF(start: week.weekStart)
+                    }
+                }
+            }
         }
     }
 
@@ -103,15 +125,25 @@ struct MealPlanView: View {
                         .font(.headline)
                     Text("\(day.dayNumber).")
                         .font(.caption)
-                        .foregroundStyle(day.isToday ? AppTheme.warning : .secondary)
+                        .foregroundStyle(day.isToday ? theme.warning : .secondary)
                 }
                 Spacer()
-                Button {
-                    selectedDay = day
-                } label: {
-                    Label("Rezept", systemImage: "plus")
+                HStack(spacing: 8) {
+                    if !day.items.isEmpty, session.supports("meal-conductor-v1") {
+                        Button {
+                            conductorDay = day
+                        } label: {
+                            Label("Dirigieren", systemImage: "wand.and.stars")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Button {
+                        selectedDay = day
+                    } label: {
+                        Label("Rezept", systemImage: "plus")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
             }
 
             if day.items.isEmpty {

@@ -12,6 +12,7 @@ import os
 import sqlite3
 import threading
 import time
+from collections import Counter
 from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
@@ -20,7 +21,35 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 210
+CURRENT_SCHEMA_VERSION = 260
+RECIPE_VARIANT_PENDING_STATUS = "variant_pending"
+
+
+def _invalidate_recipe_nutrition(connection: Any, recipe_id: int) -> None:
+    """Invalidate values and the publishing lease in the caller's transaction."""
+    connection.execute(
+        "UPDATE recipes SET calories_per_serving=NULL, protein_g=NULL, "
+        "carbs_g=NULL, fat_g=NULL, nutrition_computed_at=NULL, "
+        "nutrition_claimed_at=NULL, nutrition_claim_owner=NULL WHERE id=?",
+        (int(recipe_id),),
+    )
+    connection.execute(
+        "UPDATE recipe_ingredients SET calories=NULL WHERE recipe_id=?",
+        (int(recipe_id),),
+    )
+
+
+def _exclude_pending_variants(
+    where_sql: str, params: List[Any]
+) -> tuple[str, List[Any]]:
+    """Keep crash-recoverable variants out of ordinary recipe queries."""
+    predicate = "COALESCE(r.ingredients_status, '')<>?"
+    where_sql = (
+        f"{where_sql} AND {predicate}"
+        if where_sql
+        else f" WHERE {predicate}"
+    )
+    return where_sql, [*params, RECIPE_VARIANT_PENDING_STATUS]
 _MIGRATION_THREAD_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -128,6 +157,30 @@ CREATE INDEX IF NOT EXISTS idx_recipes_extract  ON recipes(ingredients_status, i
 -- idx_recipes_deleted wird in _migrate erstellt NACHDEM die deleted_at-Spalte
 -- via ALTER COLUMN hinzugefügt ist (DDL läuft auf bestehender DB sonst vor Migration).
 
+-- Unveränderliche Beobachtungen der öffentlichen Originalquelle. Die
+-- Baseline ist nur ein Vergleichsanker; Quellprüfungen überschreiben niemals
+-- Rezepttext, Zutaten oder Schritte.
+CREATE TABLE IF NOT EXISTS recipe_source_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  source_url TEXT NOT NULL,
+  observed_url TEXT,
+  content_sha256 TEXT,
+  content_text TEXT,
+  page_title TEXT,
+  description_source TEXT,
+  checked_at REAL NOT NULL,
+  state TEXT NOT NULL,                      -- baseline | current | changed | unavailable
+  error TEXT,
+  is_baseline INTEGER NOT NULL DEFAULT 0,
+  accepted_at REAL,
+  accepted_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_source_snapshots_recipe
+  ON recipe_source_snapshots(recipe_id, checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_recipe_source_snapshots_baseline
+  ON recipe_source_snapshots(recipe_id, source_url, is_baseline);
+
 -- Widerrufbare, kurzlebige öffentliche Rezeptfreigaben. Der eigentliche
 -- signierte Token wird nicht gespeichert; die zufällige Share-ID im Token
 -- reicht zum Sperren und Auditieren.
@@ -215,6 +268,25 @@ CREATE TABLE IF NOT EXISTS shopping_cart (
 );
 CREATE INDEX IF NOT EXISTS idx_cart_canonical ON shopping_cart(canonical_name, unit);
 CREATE INDEX IF NOT EXISTS idx_cart_added     ON shopping_cart(added_at DESC);
+
+-- Lokale Produkt-Stammdaten für Autovervollständigung und eine stabile
+-- Supermarkt-Sortierung. Die Tabelle lernt aus Rezeptzutaten und manuellen
+-- Einträgen; sie enthält bewusst keine externen Nutzer- oder Händlerdaten.
+CREATE TABLE IF NOT EXISTS shopping_products (
+  canonical_name TEXT PRIMARY KEY COLLATE NOCASE,
+  display_name TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'Sonstiges',
+  icon TEXT NOT NULL DEFAULT '🛒',
+  default_unit TEXT,
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  recipe_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at REAL,
+  updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shopping_products_display
+  ON shopping_products(display_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_shopping_products_usage
+  ON shopping_products(usage_count DESC, last_used_at DESC);
 
 -- Wiederkehrende Einkäufe gehören zur selben lokalen Einkaufsliste. Beim
 -- Fälligwerden wird die Regel atomar in shopping_cart gemerged und auf den
@@ -388,6 +460,29 @@ CREATE TABLE IF NOT EXISTS maintenance_runs (
 CREATE INDEX IF NOT EXISTS idx_maintenance_runs_created
   ON maintenance_runs(started_at DESC);
 
+-- Jede ersetzte Rezeptgrafik erhält vor der Generierung eine eigenständige,
+-- checksummierte Sicherung. backup_path ist relativ zur konfigurierten
+-- Sicherungswurzel und wird beim Zugriff erneut validiert.
+CREATE TABLE IF NOT EXISTS recipe_image_backups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id TEXT NOT NULL,
+  recipe_id INTEGER NOT NULL,
+  original_filename TEXT NOT NULL,
+  backup_path TEXT NOT NULL,
+  original_sha256 TEXT NOT NULL,
+  generated_sha256 TEXT,
+  model TEXT,
+  prompt TEXT,
+  created_at REAL NOT NULL,
+  generated_at REAL,
+  restored_at REAL,
+  UNIQUE(batch_id, recipe_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_image_backups_recipe
+  ON recipe_image_backups(recipe_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_recipe_image_backups_batch
+  ON recipe_image_backups(batch_id, recipe_id);
+
 -- schema_migrations: kleine, nachvollziehbare interne Migrationen ohne
 -- externes Tool. Bestehende idempotente ALTERs bleiben kompatibel.
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -450,6 +545,164 @@ def _build_fts_query(q: str) -> Optional[str]:
     # Maximal 8 Tokens (Performance + AND wird sonst sehr restriktiv)
     tokens = tokens[:8]
     return ' AND '.join(f'"{t}"*' for t in tokens)
+
+
+def _rebuild_shopping_catalog_from_recipes(c) -> Dict[str, int]:
+    """Baut den Produktstamm aus allen Zutaten aktiver Rezepte neu auf.
+
+    Historische Einkaufsnutzung bleibt erhalten; rezeptbasierte Häufigkeit
+    wird separat und reproduzierbar berechnet, damit ein erneuter Lauf keine
+    Zähler aufbläht. Je Produkt gewinnt der häufigste Anzeigename und die
+    häufigste sinnvolle Einheit.
+    """
+    from .recipes.canonical import canonical_name as canonicalize
+    from .recipes.shopping_catalog import (
+        category_icon,
+        infer_shopping_category,
+        is_shopping_catalog_candidate,
+    )
+    from .recipes.units import normalize_unit
+
+    allowed_units = {
+        "mg", "g", "kg", "ml", "cl", "dl", "l", "TL", "EL", "Stück",
+        "Zehe", "Bund", "Scheibe", "Blatt", "Prise", "Tasse", "Dose", "Pck",
+        "Flasche", "Tüte", "Glas", "Becher", "Handvoll", "Stiel", "Stange",
+        "Kopf", "Schale",
+    }
+    rows = c.execute(
+        "SELECT ri.name, ri.canonical_name, ri.unit, ri.recipe_id "
+        "FROM recipe_ingredients ri JOIN recipes r ON r.id=ri.recipe_id "
+        "WHERE r.deleted_at IS NULL "
+        "AND COALESCE(r.ingredients_status, '')<>? "
+        "AND TRIM(COALESCE(ri.name, ''))<>''",
+        (RECIPE_VARIANT_PENDING_STATUS,),
+    ).fetchall()
+    catalog: Dict[str, Dict[str, Any]] = {}
+    for name, stored_canonical, unit, recipe_id in rows:
+        display_name = " ".join(str(name or "").split())
+        canonical = canonicalize(stored_canonical or display_name)
+        if not canonical or not is_shopping_catalog_candidate(display_name, canonical):
+            continue
+        item = catalog.setdefault(
+            canonical,
+            {"names": Counter(), "units": Counter(), "recipe_ids": set()},
+        )
+        item["names"][display_name] += 1
+        normalized_unit = normalize_unit(unit)
+        if normalized_unit in allowed_units:
+            item["units"][normalized_unit] += 1
+        item["recipe_ids"].add(int(recipe_id))
+
+    # Vor Schema 250 steckte die Rezept-Häufigkeit im usage_count. Nur echte
+    # Einkaufshistorie hat last_used_at und wird deshalb beibehalten.
+    c.execute(
+        "UPDATE shopping_products SET recipe_count=0, "
+        "usage_count=CASE WHEN last_used_at IS NULL THEN 0 ELSE usage_count END"
+    )
+    now = time.time()
+    unassigned = 0
+    for canonical, item in catalog.items():
+        display_name = min(
+            item["names"],
+            key=lambda value: (-item["names"][value], len(value), value.casefold()),
+        )
+        default_unit = None
+        if item["units"]:
+            default_unit = min(
+                item["units"],
+                key=lambda value: (-item["units"][value], value.casefold()),
+            )
+        category = infer_shopping_category(display_name, canonical)
+        if category == "Sonstiges":
+            unassigned += 1
+        icon = category_icon(category)
+        c.execute(
+            "INSERT INTO shopping_products(canonical_name, display_name, category, icon, "
+            "default_unit, usage_count, recipe_count, last_used_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?, NULL, ?) "
+            "ON CONFLICT(canonical_name) DO UPDATE SET "
+            "display_name=excluded.display_name, category=excluded.category, icon=excluded.icon, "
+            "default_unit=excluded.default_unit, "
+            "recipe_count=excluded.recipe_count, updated_at=excluded.updated_at",
+            (
+                canonical,
+                display_name,
+                category,
+                icon,
+                default_unit,
+                len(item["recipe_ids"]),
+                now,
+            ),
+        )
+
+    removed = c.execute(
+        "DELETE FROM shopping_products WHERE recipe_count=0 AND last_used_at IS NULL "
+        "AND canonical_name NOT IN ("
+        "SELECT canonical_name FROM shopping_cart WHERE canonical_name IS NOT NULL "
+        "UNION SELECT canonical_name FROM shopping_recurring WHERE canonical_name IS NOT NULL"
+        ")"
+    ).rowcount
+    return {
+        "ingredient_rows": len(rows),
+        "products": len(catalog),
+        "unassigned": unassigned,
+        "removed_stale": int(removed),
+    }
+
+
+def _clean_recipe_ingredients(c) -> Dict[str, int]:
+    """Bereinigt den bestehenden Zutatenstamm ohne Rezeptdetails zu verlieren.
+
+    Anzeigenamen werden nur typografisch geglättet. Die kanonischen Namen
+    werden dagegen vollständig aus dem Anzeigenamen neu berechnet, damit neue
+    Alias-Regeln auch für den Altbestand gelten. Unbekannte Einheiten bleiben
+    erhalten; nur nachweislich falsch einsortierte Beschreibungswörter werden
+    entfernt.
+    """
+    from .recipes.canonical import canonical_name as canonicalize
+    from .recipes.units import normalize_unit
+
+    invalid_units = {
+        "groß", "große", "großer", "großes",
+        "hand", "hände", "kcal",
+        "klein", "kleine", "kleiner", "kleines",
+        "mittel", "mittlere", "nach geschmack",
+    }
+    rows = c.execute(
+        "SELECT id, name, canonical_name, unit FROM recipe_ingredients"
+    ).fetchall()
+    names_changed = 0
+    canonicals_changed = 0
+    units_changed = 0
+    for ingredient_id, stored_name, stored_canonical, stored_unit in rows:
+        display_name = " ".join(str(stored_name or "").split())
+        canonical = canonicalize(display_name)
+        unit = normalize_unit(stored_unit)
+        if unit and unit.casefold() in invalid_units:
+            unit = None
+
+        if display_name != stored_name:
+            names_changed += 1
+        if canonical != stored_canonical:
+            canonicals_changed += 1
+        if unit != stored_unit:
+            units_changed += 1
+        if (
+            display_name != stored_name
+            or canonical != stored_canonical
+            or unit != stored_unit
+        ):
+            c.execute(
+                "UPDATE recipe_ingredients SET name=?, canonical_name=?, unit=? WHERE id=?",
+                (display_name, canonical, unit, ingredient_id),
+            )
+
+    return {
+        "ingredient_rows": len(rows),
+        "names_changed": names_changed,
+        "canonicals_changed": canonicals_changed,
+        "units_changed": units_changed,
+    }
 
 
 class Database:
@@ -549,6 +802,15 @@ class Database:
         """Idempotente ALTER-Statements für Schema-Erweiterungen die nach der
         initialen DDL kamen. SQLite hat kein IF NOT EXISTS für ADD COLUMN,
         also via PRAGMA table_info() prüfen ob die Spalte fehlt."""
+        shopping_product_cols = {
+            r[1] for r in c.execute("PRAGMA table_info(shopping_products)").fetchall()
+        }
+        if "recipe_count" not in shopping_product_cols:
+            c.execute(
+                "ALTER TABLE shopping_products ADD COLUMN "
+                "recipe_count INTEGER NOT NULL DEFAULT 0"
+            )
+
         cols = {r[1] for r in c.execute("PRAGMA table_info(recipes)").fetchall()}
         if "servings" not in cols:
             # Anzahl Portionen, für die das Rezept ausgelegt ist (aus Caption
@@ -593,6 +855,13 @@ class Database:
             # der Lease automatisch wieder auf pending gesetzt.
             ("extraction_claimed_at", "REAL"),
             ("extraction_claim_owner", "TEXT"),
+            # Reversible KI-Bildgenerierung. Ein Backfill sichert zunächst alle
+            # alten Bilder und ersetzt sie erst in einem zweiten Durchlauf.
+            ("image_generation_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("image_generated_at", "REAL"),
+            ("image_generation_model", "TEXT"),
+            ("image_generation_prompt", "TEXT"),
+            ("image_generation_batch_id", "TEXT"),
         ):
             if col not in cols:
                 c.execute(f"ALTER TABLE recipes ADD COLUMN {col} {sqltype}")
@@ -914,7 +1183,7 @@ class Database:
         ).fetchone()
         hardening_migration = c.execute(
             "SELECT 1 FROM schema_migrations WHERE version=?",
-            (210,),
+            (230,),
         ).fetchone()
         if recipe_name_migration is None or hardening_migration is None:
             for recipe_id, stored_name in c.execute(
@@ -936,6 +1205,157 @@ class Database:
             "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
             (210, "transactional_boundaries_and_runtime_hardening", time.time()),
         )
+
+        shopping_catalog_migration = c.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?", (220,)
+        ).fetchone()
+        if shopping_catalog_migration is None:
+            from .recipes.canonical import canonical_name as canonicalize
+            from .recipes.shopping_catalog import product_defaults
+
+            now = time.time()
+            rows = c.execute(
+                "SELECT COALESCE(NULLIF(TRIM(canonical_name), ''), TRIM(name)) AS canonical, "
+                "MAX(TRIM(name)) AS display_name, MAX(NULLIF(TRIM(unit), '')) AS default_unit, "
+                "COUNT(*) AS uses FROM recipe_ingredients "
+                "WHERE TRIM(COALESCE(name, ''))<>'' GROUP BY canonical"
+            ).fetchall()
+            for row in rows:
+                canonical = canonicalize(row[0] or row[1] or "")
+                if not canonical:
+                    continue
+                display_name = str(row[1] or canonical).strip()
+                defaults = product_defaults(display_name, canonical)
+                c.execute(
+                    "INSERT INTO shopping_products(canonical_name, display_name, category, icon, "
+                    "default_unit, usage_count, last_used_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(canonical_name) DO UPDATE SET "
+                    "usage_count=shopping_products.usage_count+excluded.usage_count, "
+                    "default_unit=COALESCE(shopping_products.default_unit, excluded.default_unit), "
+                    "updated_at=excluded.updated_at",
+                    (
+                        canonical, display_name, defaults["category"], defaults["icon"],
+                        row[2], int(row[3] or 0), None, now,
+                    ),
+                )
+            c.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                (220, "shopping_catalog_autocomplete_and_icons", now),
+            )
+
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (230, "transactional_boundaries_and_runtime_hardening", time.time()),
+        )
+
+        allergen_backfill_migration = c.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?", (240,)
+        ).fetchone()
+        if allergen_backfill_migration is None:
+            from .recipes.auto_tags import backfill_diet_auto_tags_connection
+
+            summary = backfill_diet_auto_tags_connection(c)
+            logger.info(
+                "Allergiker-Backfill: %s Rezepte geprüft, %s geändert",
+                summary["recipes_checked"],
+                summary["recipes_changed"],
+            )
+            c.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) "
+                "VALUES (?, ?, ?)",
+                (240, "backfill_allergen_free_tags", time.time()),
+            )
+
+        shopping_category_repair = c.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?", (250,)
+        ).fetchone()
+        if shopping_category_repair is None:
+            from .recipes.shopping_catalog import (
+                category_icon,
+                repaired_shopping_category,
+            )
+
+            now = time.time()
+            catalog_summary = _rebuild_shopping_catalog_from_recipes(c)
+            repaired_products = 0
+            repaired_cart_items = 0
+            repaired_recurring_items = 0
+            product_rows = c.execute(
+                "SELECT canonical_name, display_name, category FROM shopping_products"
+            ).fetchall()
+            for canonical, display_name, current_category in product_rows:
+                repaired = repaired_shopping_category(
+                    display_name, canonical, current_category
+                )
+                icon = category_icon(repaired)
+                cur = c.execute(
+                    "UPDATE shopping_products SET category=?, icon=?, updated_at=? "
+                    "WHERE canonical_name=? AND (category<>? OR icon<>?)",
+                    (repaired, icon, now, canonical, repaired, icon),
+                )
+                repaired_products += int(cur.rowcount)
+
+            for table, counter_name in (
+                ("shopping_cart", "cart"),
+                ("shopping_recurring", "recurring"),
+            ):
+                rows = c.execute(
+                    f"SELECT id, name, canonical_name, category FROM {table}"
+                ).fetchall()
+                for item_id, name, canonical, current_category in rows:
+                    repaired = repaired_shopping_category(
+                        name, canonical, current_category
+                    )
+                    if repaired == (current_category or "Sonstiges"):
+                        continue
+                    cur = c.execute(
+                        f"UPDATE {table} SET category=? WHERE id=?",
+                        (repaired, item_id),
+                    )
+                    if counter_name == "cart":
+                        repaired_cart_items += int(cur.rowcount)
+                    else:
+                        repaired_recurring_items += int(cur.rowcount)
+
+            logger.info(
+                "Einkaufskatalog aus Rezepten: %s Produkte aus %s Zutaten, %s noch sonstig, "
+                "%s Altzeilen entfernt; Kategorien repariert: %s Produkte, "
+                "%s Listeneinträge, %s Wiederholungen",
+                catalog_summary["products"],
+                catalog_summary["ingredient_rows"],
+                catalog_summary["unassigned"],
+                catalog_summary["removed_stale"],
+                repaired_products,
+                repaired_cart_items,
+                repaired_recurring_items,
+            )
+            c.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) "
+                "VALUES (?, ?, ?)",
+                (250, "repair_shopping_categories_and_matching", now),
+            )
+
+        ingredient_cleanup_migration = c.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?", (260,)
+        ).fetchone()
+        if ingredient_cleanup_migration is None:
+            now = time.time()
+            cleanup_summary = _clean_recipe_ingredients(c)
+            catalog_summary = _rebuild_shopping_catalog_from_recipes(c)
+            logger.info(
+                "Zutatenbereinigung: %s Zeilen geprüft, %s Namen, %s Canonicals "
+                "und %s Einheiten korrigiert; Katalog: %s Produkte",
+                cleanup_summary["ingredient_rows"],
+                cleanup_summary["names_changed"],
+                cleanup_summary["canonicals_changed"],
+                cleanup_summary["units_changed"],
+                catalog_summary["products"],
+            )
+            c.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) "
+                "VALUES (?, ?, ?)",
+                (260, "clean_recipe_ingredients_and_rebuild_catalog", now),
+            )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
             defaults = {
@@ -1761,12 +2181,19 @@ class Database:
         video_filename: Optional[str],
         source_added_at: Optional[float],
         preserve_existing: Iterable[str] = (),
+        initial_ingredients_status: str = "pending",
     ) -> int:
         """Legt einen Recipe-Eintrag an oder aktualisiert ihn (Key: folder_path).
         Zutaten-Status wird NICHT überschrieben — ein bereits extrahiertes
         Rezept bleibt ohne erneuten KI-Lauf bestehen, auch wenn der Indexer
         es nochmal sieht (z.B. nach FS-Resync)."""
         name = normalize_recipe_name(name) or "Unbekannt"
+        initial_ingredients_status = str(initial_ingredients_status or "pending").strip()
+        if initial_ingredients_status not in {
+            "pending", "running", "ok", "error", "skipped",
+            RECIPE_VARIANT_PENDING_STATUS,
+        }:
+            raise ValueError("Ungültiger initialer Zutatenstatus")
         now = time.time()
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
@@ -1813,16 +2240,149 @@ class Database:
                 "INSERT INTO recipes (url, name, type, category, folder_path, "
                 "description, thumb_filename, video_filename, source_added_at, "
                 "indexed_at, ingredients_extracted_at, ingredients_status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending')",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
                 (url, name, type, category, folder_path, description,
-                 thumb_filename, video_filename, source_added_at, now),
+                 thumb_filename, video_filename, source_added_at, now,
+                 initial_ingredients_status),
             )
             return int(cur.lastrowid)
 
-    def recipe_get(self, recipe_id: int) -> Optional[Dict[str, Any]]:
+    def recipe_get(
+        self,
+        recipe_id: int,
+        *,
+        include_pending: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a recipe row; crash-recoverable variants stay private by default."""
         with self.conn() as c:
-            row = c.execute("SELECT * FROM recipes WHERE id=?", (recipe_id,)).fetchone()
+            sql = "SELECT * FROM recipes WHERE id=?"
+            params: tuple[Any, ...] = (recipe_id,)
+            if not include_pending:
+                sql += " AND COALESCE(ingredients_status, '')<>?"
+                params = (*params, RECIPE_VARIANT_PENDING_STATUS)
+            row = c.execute(sql, params).fetchone()
             return dict(row) if row else None
+
+    def recipes_for_image_backfill(self) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM recipes WHERE deleted_at IS NULL "
+                "AND COALESCE(ingredients_status, '')<>? ORDER BY id",
+                (RECIPE_VARIANT_PENDING_STATUS,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def recipe_image_generation_status(
+        self,
+        recipe_id: int,
+        *,
+        status: str,
+        model: Optional[str] = None,
+        prompt: Optional[str] = None,
+        batch_id: Optional[str] = None,
+        generated_at: Optional[float] = None,
+        thumb_filename: Optional[str] = None,
+    ) -> None:
+        allowed = {"pending", "backed_up", "running", "ok", "error", "restored", "skipped"}
+        if status not in allowed:
+            raise ValueError(f"Ungültiger Bildstatus: {status}")
+        with self.conn() as c:
+            assignments = [
+                "image_generation_status=?",
+                "image_generation_model=COALESCE(?, image_generation_model)",
+                "image_generation_prompt=COALESCE(?, image_generation_prompt)",
+                "image_generation_batch_id=COALESCE(?, image_generation_batch_id)",
+                "image_generated_at=COALESCE(?, image_generated_at)",
+            ]
+            params: List[Any] = [status, model, prompt, batch_id, generated_at]
+            if thumb_filename is not None:
+                assignments.append("thumb_filename=?")
+                params.append(thumb_filename)
+            params.append(int(recipe_id))
+            c.execute(
+                f"UPDATE recipes SET {', '.join(assignments)} WHERE id=?",
+                params,
+            )
+
+    def recipe_image_backup_create(
+        self,
+        *,
+        batch_id: str,
+        recipe_id: int,
+        original_filename: str,
+        backup_path: str,
+        original_sha256: str,
+    ) -> int:
+        with self.conn() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO recipe_image_backups("
+                "batch_id, recipe_id, original_filename, backup_path, original_sha256, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    batch_id, int(recipe_id), original_filename, backup_path,
+                    original_sha256, time.time(),
+                ),
+            )
+            row = c.execute(
+                "SELECT id FROM recipe_image_backups WHERE batch_id=? AND recipe_id=?",
+                (batch_id, int(recipe_id)),
+            ).fetchone()
+            if not row:
+                raise RuntimeError("Bildsicherung konnte nicht registriert werden")
+            return int(row[0])
+
+    def recipe_image_backup_mark_generated(
+        self,
+        backup_id: int,
+        *,
+        generated_sha256: str,
+        model: str,
+        prompt: str,
+    ) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE recipe_image_backups SET generated_sha256=?, model=?, prompt=?, "
+                "generated_at=? WHERE id=?",
+                (generated_sha256, model, prompt, time.time(), int(backup_id)),
+            )
+
+    def recipe_image_backup_mark_restored(self, backup_id: int) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE recipe_image_backups SET restored_at=? WHERE id=?",
+                (time.time(), int(backup_id)),
+            )
+
+    def recipe_image_backup_get(self, backup_id: int) -> Optional[Dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT b.*, r.name AS recipe_name, r.folder_path, r.thumb_filename "
+                "FROM recipe_image_backups b LEFT JOIN recipes r ON r.id=b.recipe_id "
+                "WHERE b.id=?",
+                (int(backup_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def recipe_image_backup_list(
+        self, recipe_id: Optional[int] = None, limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        safe_limit = max(1, min(1000, int(limit)))
+        with self.conn() as c:
+            if recipe_id is None:
+                rows = c.execute(
+                    "SELECT b.*, r.name AS recipe_name FROM recipe_image_backups b "
+                    "LEFT JOIN recipes r ON r.id=b.recipe_id "
+                    "ORDER BY b.created_at DESC LIMIT ?",
+                    (safe_limit,),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT b.*, r.name AS recipe_name FROM recipe_image_backups b "
+                    "LEFT JOIN recipes r ON r.id=b.recipe_id WHERE b.recipe_id=? "
+                    "ORDER BY b.created_at DESC LIMIT ?",
+                    (int(recipe_id), safe_limit),
+                ).fetchall()
+        return [dict(row) for row in rows]
 
     def recipe_get_by_url(self, url: str) -> Optional[Dict[str, Any]]:
         """Liefert das aktive Rezept einer Quell-URL für idempotente Importe."""
@@ -1833,12 +2393,198 @@ class Database:
             ).fetchone()
             return dict(row) if row else None
 
+    # ─── Quellenwächter ────────────────────────────────────────────────
+    def recipe_source_snapshot_create(
+        self,
+        recipe_id: int,
+        *,
+        source_url: str,
+        content_sha256: Optional[str],
+        content_text: Optional[str],
+        state: str,
+        observed_url: Optional[str] = None,
+        page_title: Optional[str] = None,
+        description_source: Optional[str] = None,
+        error: Optional[str] = None,
+        checked_at: Optional[float] = None,
+        baseline_if_missing: bool = False,
+        force_baseline: bool = False,
+        accepted_by: Optional[str] = None,
+    ) -> int:
+        """Speichert eine Quellbeobachtung und hält den Verlauf kompakt.
+
+        ``baseline_if_missing`` wird innerhalb desselben Writer-Locks geprüft,
+        damit parallele Erstprüfungen nicht zwei Baselines erzeugen.
+        """
+        allowed_states = {"baseline", "current", "changed", "unavailable"}
+        if state not in allowed_states:
+            raise ValueError(f"Ungültiger Quellenstatus: {state}")
+        source_url = str(source_url or "").strip()
+        if not source_url:
+            raise ValueError("Quelladresse fehlt")
+        content_text = str(content_text or "")[:200_000] or None
+        error = str(error or "")[:1_000] or None
+        now = float(checked_at if checked_at is not None else time.time())
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            if not c.execute(
+                "SELECT 1 FROM recipes WHERE id=? AND deleted_at IS NULL",
+                (int(recipe_id),),
+            ).fetchone():
+                raise LookupError("Rezept nicht gefunden")
+            has_baseline = c.execute(
+                "SELECT 1 FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND source_url=? AND is_baseline=1 LIMIT 1",
+                (int(recipe_id), source_url),
+            ).fetchone() is not None
+            make_baseline = bool(force_baseline or (baseline_if_missing and not has_baseline))
+            if make_baseline:
+                c.execute(
+                    "UPDATE recipe_source_snapshots SET is_baseline=0 "
+                    "WHERE recipe_id=? AND source_url=?",
+                    (int(recipe_id), source_url),
+                )
+            cur = c.execute(
+                "INSERT INTO recipe_source_snapshots ("
+                "recipe_id, source_url, observed_url, content_sha256, content_text, "
+                "page_title, description_source, checked_at, state, error, "
+                "is_baseline, accepted_at, accepted_by"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(recipe_id), source_url, observed_url, content_sha256,
+                    content_text, page_title, description_source, now,
+                    "baseline" if make_baseline else state, error,
+                    1 if make_baseline else 0,
+                    now if make_baseline and accepted_by else None,
+                    accepted_by if make_baseline else None,
+                ),
+            )
+            snapshot_id = int(cur.lastrowid)
+            # Maximal 25 reine Beobachtungen pro Rezept behalten. Baselines
+            # werden nie durch die Aufräumlogik entfernt.
+            c.execute(
+                "DELETE FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND is_baseline=0 AND id NOT IN ("
+                "SELECT id FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND is_baseline=0 "
+                "ORDER BY checked_at DESC, id DESC LIMIT 25)",
+                (int(recipe_id), int(recipe_id)),
+            )
+            return snapshot_id
+
+    def recipe_source_snapshot_state(
+        self, recipe_id: int, source_url: str
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        with self.conn() as c:
+            baseline = c.execute(
+                "SELECT * FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND source_url=? AND is_baseline=1 "
+                "ORDER BY checked_at DESC, id DESC LIMIT 1",
+                (int(recipe_id), source_url),
+            ).fetchone()
+            latest = c.execute(
+                "SELECT * FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND source_url=? "
+                "ORDER BY checked_at DESC, id DESC LIMIT 1",
+                (int(recipe_id), source_url),
+            ).fetchone()
+        return {
+            "baseline": dict(baseline) if baseline else None,
+            "latest": dict(latest) if latest else None,
+        }
+
+    def recipe_source_snapshot_accept_latest(
+        self,
+        recipe_id: int,
+        source_url: str,
+        *,
+        accepted_by: str,
+        expected_snapshot_id: Optional[int] = None,
+        expected_content_sha256: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Bestätigt exakt die zuletzt vom Aufrufer geprüfte Beobachtung.
+
+        Auswahl, CAS-Vergleich und Baseline-Wechsel liegen unter demselben
+        Writer-Lock. Ein zwischen Anzeige und Bestätigung hinzugekommener
+        Snapshot kann dadurch niemals ungesehen akzeptiert werden.
+        """
+        expected_hash = str(expected_content_sha256 or "").strip().casefold() or None
+        if expected_snapshot_id is None and expected_hash is None:
+            raise ValueError("Erwarteter Quellenstand fehlt")
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            latest = c.execute(
+                "SELECT * FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND source_url=? "
+                "ORDER BY checked_at DESC, id DESC LIMIT 1",
+                (int(recipe_id), source_url),
+            ).fetchone()
+            if not latest:
+                raise ValueError("Es gibt noch keinen Quellstand")
+            latest_id = int(latest["id"])
+            latest_hash = str(latest["content_sha256"] or "").strip().casefold() or None
+            if (
+                expected_snapshot_id is not None
+                and latest_id != int(expected_snapshot_id)
+            ) or (expected_hash is not None and latest_hash != expected_hash):
+                raise ValueError(
+                    "Der Quellenstand wurde zwischenzeitlich aktualisiert; bitte erneut prüfen"
+                )
+            if expected_snapshot_id is None and expected_hash is not None:
+                matching_hashes = int(c.execute(
+                    "SELECT COUNT(*) FROM recipe_source_snapshots "
+                    "WHERE recipe_id=? AND source_url=? AND LOWER(content_sha256)=?",
+                    (int(recipe_id), source_url, expected_hash),
+                ).fetchone()[0])
+                if matching_hashes != 1:
+                    raise ValueError(
+                        "Der Quellen-Fingerprint ist nicht mehr eindeutig; "
+                        "bitte den neuesten Snapshot erneut prüfen"
+                    )
+            if latest_hash is None:
+                raise ValueError("Der neueste Quellstand ist nicht erreichbar")
+            baseline = c.execute(
+                "SELECT * FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND source_url=? AND is_baseline=1 "
+                "ORDER BY checked_at DESC, id DESC LIMIT 1",
+                (int(recipe_id), source_url),
+            ).fetchone()
+            if (
+                not baseline
+                or int(baseline["id"]) == latest_id
+                or str(baseline["content_sha256"] or "").strip().casefold() == latest_hash
+            ):
+                raise ValueError("Es gibt keine neue Quelländerung zu bestätigen")
+            now = time.time()
+            c.execute(
+                "UPDATE recipe_source_snapshots SET is_baseline=0 "
+                "WHERE recipe_id=? AND source_url=?",
+                (int(recipe_id), source_url),
+            )
+            c.execute(
+                "UPDATE recipe_source_snapshots SET is_baseline=1, state='baseline', "
+                "accepted_at=?, accepted_by=? WHERE id=?",
+                (now, accepted_by, latest_id),
+            )
+            accepted = c.execute(
+                "SELECT * FROM recipe_source_snapshots WHERE id=?",
+                (latest_id,),
+            ).fetchone()
+        return dict(accepted)
+
     def recipe_get_by_folder(self, folder_path: str) -> Optional[Dict[str, Any]]:
         with self.conn() as c:
             row = c.execute("SELECT * FROM recipes WHERE folder_path=?", (folder_path,)).fetchone()
             return dict(row) if row else None
 
-    def recipe_clone_content(self, source_id: int, target_id: int) -> None:
+    def recipe_clone_content(
+        self,
+        source_id: int,
+        target_id: int,
+        *,
+        expected_ingredients: Optional[List[Dict[str, Any]]] = None,
+        preserve_target_status: bool = False,
+    ) -> None:
         """Kopiert alle logischen Rezeptinhalte atomar in eine neue Rezeptzeile.
 
         Favorit, Bewertung und User-Verifikation bleiben absichtlich beim
@@ -1852,11 +2598,30 @@ class Database:
                 (source_id,),
             ).fetchone()
             target = c.execute(
-                "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL",
+                "SELECT id, ingredients_status FROM recipes "
+                "WHERE id=? AND deleted_at IS NULL",
                 (target_id,),
             ).fetchone()
             if not source or not target:
                 raise ValueError("Original oder Variante nicht gefunden")
+            if expected_ingredients is not None:
+                snapshot_fields = (
+                    "id", "name", "canonical_name", "amount", "unit", "raw",
+                    "sort_order",
+                )
+                current_ingredients = [dict(row) for row in c.execute(
+                    "SELECT id, name, canonical_name, amount, unit, raw, sort_order "
+                    "FROM recipe_ingredients WHERE recipe_id=? ORDER BY sort_order, id",
+                    (source_id,),
+                ).fetchall()]
+                expected_snapshot = [
+                    {field: ingredient.get(field) for field in snapshot_fields}
+                    for ingredient in expected_ingredients
+                ]
+                if current_ingredients != expected_snapshot:
+                    raise RuntimeError(
+                        "Die Zutaten wurden parallel geändert; Variante nicht erstellt"
+                    )
             c.execute(
                 "INSERT INTO recipe_ingredients "
                 "(recipe_id, name, canonical_name, amount, unit, raw, sort_order, calories) "
@@ -1876,6 +2641,11 @@ class Database:
                 "SELECT ?, tag_id, auto FROM recipe_tags WHERE recipe_id=?",
                 (target_id, source_id),
             )
+            cloned_status = (
+                target["ingredients_status"]
+                if preserve_target_status
+                else source["ingredients_status"]
+            )
             c.execute(
                 "UPDATE recipes SET servings=?, ingredients_extracted_at=?, "
                 "ingredients_status=?, calories_per_serving=?, protein_g=?, "
@@ -1883,12 +2653,41 @@ class Database:
                 "extraction_claimed_at=NULL, extraction_claim_owner=NULL "
                 "WHERE id=?",
                 (
-                    source["servings"], source["ingredients_extracted_at"],
-                    source["ingredients_status"], source["calories_per_serving"],
+                    source["servings"], source["ingredients_extracted_at"], cloned_status,
+                    source["calories_per_serving"],
                     source["protein_g"], source["carbs_g"], source["fat_g"],
                     source["nutrition_computed_at"], target_id,
                 ),
             )
+
+    def recipe_variant_finalize(self, recipe_id: int, *, status: str = "ok") -> bool:
+        """Expose a fully prepared variant; idempotent for crash recovery."""
+        status = str(status or "ok").strip()
+        if status not in {"pending", "running", "ok", "error", "skipped"}:
+            raise ValueError("Ungültiger finaler Zutatenstatus")
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            updated = c.execute(
+                "UPDATE recipes SET ingredients_status=? "
+                "WHERE id=? AND ingredients_status=? AND deleted_at IS NULL",
+                (status, int(recipe_id), RECIPE_VARIANT_PENDING_STATUS),
+            ).rowcount
+            if updated:
+                _rebuild_shopping_catalog_from_recipes(c)
+                return True
+            current = c.execute(
+                "SELECT ingredients_status FROM recipes "
+                "WHERE id=? AND deleted_at IS NULL",
+                (int(recipe_id),),
+            ).fetchone()
+            if not current:
+                raise ValueError("Rezeptvariante nicht gefunden")
+            if current["ingredients_status"] != status:
+                raise RuntimeError("Rezeptvariante ist nicht finalisierbar")
+            # Idempotent recovery also repairs a catalog left stale by an older
+            # interrupted deployment.
+            _rebuild_shopping_catalog_from_recipes(c)
+            return False
 
     def recipe_delete(self, recipe_id: int) -> None:
         """Endgültig aus DB löschen (HARD-DELETE). Nur für Cleanup-Job
@@ -2170,6 +2969,7 @@ class Database:
             include_deleted=include_deleted,
             only_deleted=only_deleted,
         )
+        where_sql, where_params = _exclude_pending_variants(where_sql, where_params)
         select_sql = (
             "SELECT r.*, "
             "(SELECT COUNT(*) FROM recipe_ingredients ri "
@@ -2237,6 +3037,7 @@ class Database:
             include_deleted=include_deleted,
             only_deleted=only_deleted,
         )
+        where_sql, params = _exclude_pending_variants(where_sql, params)
         with self.conn() as c:
             row = c.execute(f"SELECT COUNT(*) AS n FROM recipes r{where_sql}", params).fetchone()
         return int(row["n"])
@@ -2356,12 +3157,21 @@ class Database:
             if status == "ok" and ingredients is not None:
                 c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
                 for idx, ing in enumerate(ingredients):
+                    ingredient_name = ing.get("name") or ""
                     c.execute(
                         "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, "
                         "amount, unit, raw, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (recipe_id, ing.get("name") or "", ing.get("canonical_name"),
+                        (recipe_id, ingredient_name, ing.get("canonical_name"),
                          ing.get("amount"), ing.get("unit"), ing.get("raw"), idx),
                     )
+                    self._shopping_product_upsert_conn(
+                        c,
+                        canonical_name=ing.get("canonical_name"),
+                        display_name=ingredient_name,
+                        default_unit=ing.get("unit"),
+                        increment_usage=False,
+                    )
+                _invalidate_recipe_nutrition(c, recipe_id)
             c.execute(
                 "UPDATE recipes SET ingredients_status=?, ingredients_extracted_at=?, "
                 "extraction_claimed_at=NULL, extraction_claim_owner=NULL WHERE id=?",
@@ -2414,12 +3224,13 @@ class Database:
             if replace_ingredients:
                 c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
                 for idx, ing in enumerate(ingredients):
+                    ingredient_name = ing.get("name") or ""
                     c.execute(
                         "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, "
                         "amount, unit, raw, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (
                             recipe_id,
-                            ing.get("name") or "",
+                            ingredient_name,
                             ing.get("canonical_name"),
                             ing.get("amount"),
                             ing.get("unit"),
@@ -2427,6 +3238,14 @@ class Database:
                             idx,
                         ),
                     )
+                    self._shopping_product_upsert_conn(
+                        c,
+                        canonical_name=ing.get("canonical_name"),
+                        display_name=ingredient_name,
+                        default_unit=ing.get("unit"),
+                        increment_usage=False,
+                    )
+                _invalidate_recipe_nutrition(c, recipe_id)
 
             if replace_steps:
                 c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
@@ -2528,9 +3347,10 @@ class Database:
                 JOIN recipes r ON r.id=mp.recipe_id
                 WHERE mp.planned_for BETWEEN ? AND ?
                   AND r.deleted_at IS NULL
+                  AND COALESCE(r.ingredients_status, '')<>?
                 ORDER BY mp.planned_for, mp.sort_order, mp.id
                 """,
-                (start_date, end_date),
+                (start_date, end_date, RECIPE_VARIANT_PENDING_STATUS),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -2544,8 +3364,9 @@ class Database:
         now = time.time()
         with self.conn() as c:
             recipe = c.execute(
-                "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL",
-                (recipe_id,),
+                "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL "
+                "AND COALESCE(ingredients_status, '')<>?",
+                (recipe_id, RECIPE_VARIANT_PENDING_STATUS),
             ).fetchone()
             if not recipe:
                 raise ValueError("Rezept nicht gefunden")
@@ -2886,6 +3707,7 @@ class Database:
             include_deleted=include_deleted,
             only_deleted=only_deleted,
         )
+        where_sql, params = _exclude_pending_variants(where_sql, params)
         return ([where_sql.removeprefix(" WHERE ")] if where_sql else []), params
 
     def tag_facets(
@@ -2962,12 +3784,38 @@ class Database:
         Für die Filter-UI: "Tomate (12 Rezepte)", "Knoblauch (8)"."""
         with self.conn() as c:
             rows = c.execute(
-                "SELECT canonical_name, MIN(name) AS display_name, COUNT(DISTINCT recipe_id) AS n "
-                "FROM recipe_ingredients "
-                "WHERE canonical_name IS NOT NULL AND canonical_name != '' "
-                "GROUP BY canonical_name ORDER BY n DESC, canonical_name"
+                "SELECT ri.canonical_name, MIN(ri.name) AS display_name, "
+                "COUNT(DISTINCT ri.recipe_id) AS n "
+                "FROM recipe_ingredients ri JOIN recipes r ON r.id=ri.recipe_id "
+                "WHERE r.deleted_at IS NULL "
+                "AND COALESCE(r.ingredients_status, '')<>? "
+                "AND ri.canonical_name IS NOT NULL AND ri.canonical_name != '' "
+                "GROUP BY ri.canonical_name ORDER BY n DESC, ri.canonical_name",
+                (RECIPE_VARIANT_PENDING_STATUS,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def ingredient_name_hints(self, limit: int = 500) -> List[str]:
+        """Bevorzugte vorhandene Anzeigenamen für die KI-Extraktion.
+
+        Die Reihenfolge folgt der Rezept-Häufigkeit. Anders als der bewusst
+        gröbere Einkaufskatalog bleiben hier fachlich wichtige Varianten wie
+        Cherrytomate, Tomatenmark oder Hähnchenbrust einzeln sichtbar.
+        """
+        safe_limit = max(1, min(int(limit or 500), 1000))
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT MIN(TRIM(ri.name)) AS display_name, "
+                "COUNT(DISTINCT ri.recipe_id) AS uses "
+                "FROM recipe_ingredients ri JOIN recipes r ON r.id=ri.recipe_id "
+                "WHERE r.deleted_at IS NULL AND TRIM(COALESCE(ri.name, ''))<>'' "
+                "AND COALESCE(r.ingredients_status, '')<>? "
+                "GROUP BY LOWER(TRIM(ri.name)) "
+                "ORDER BY uses DESC, LENGTH(display_name), "
+                "display_name COLLATE NOCASE LIMIT ?",
+                (RECIPE_VARIANT_PENDING_STATUS, safe_limit),
+            ).fetchall()
+            return [str(row[0]) for row in rows if row[0]]
 
     # ─── Tags ─────────────────────────────────────────────────────────────
     def tag_get_or_create(self, name: str) -> int:
@@ -2985,9 +3833,12 @@ class Database:
         """Alle Tags mit Recipe-Count."""
         with self.conn() as c:
             rows = c.execute(
-                "SELECT t.id, t.name, COUNT(rt.recipe_id) AS n "
-                "FROM tags t LEFT JOIN recipe_tags rt ON rt.tag_id = t.id "
-                "GROUP BY t.id ORDER BY n DESC, t.name"
+                "SELECT t.id, t.name, ("
+                "SELECT COUNT(*) FROM recipe_tags rt JOIN recipes r ON r.id=rt.recipe_id "
+                "WHERE rt.tag_id=t.id AND r.deleted_at IS NULL "
+                "AND COALESCE(r.ingredients_status, '')<>?"
+                ") AS n FROM tags t ORDER BY n DESC, t.name",
+                (RECIPE_VARIANT_PENDING_STATUS,),
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -3438,8 +4289,9 @@ class Database:
         sql = ("SELECT f.*, r.name as recipe_name, r.folder_path "
                "FROM audit_ai_findings f "
                "JOIN recipes r ON r.id = f.recipe_id "
-               "WHERE r.deleted_at IS NULL")
-        params: list = []
+               "WHERE r.deleted_at IS NULL "
+               "AND COALESCE(r.ingredients_status, '')<>?")
+        params: list = [RECIPE_VARIANT_PENDING_STATUS]
         if finding_type:
             sql += " AND f.finding_type=?"; params.append(finding_type)
         if only_open:
@@ -3460,22 +4312,151 @@ class Database:
         with self.conn() as c:
             sql = (
                 "SELECT f.finding_type, COUNT(*) FROM audit_ai_findings f "
-                "JOIN recipes r ON r.id=f.recipe_id WHERE r.deleted_at IS NULL"
+                "JOIN recipes r ON r.id=f.recipe_id WHERE r.deleted_at IS NULL "
+                "AND COALESCE(r.ingredients_status, '')<>?"
             )
+            params: list[Any] = [RECIPE_VARIANT_PENDING_STATUS]
             if only_open:
                 sql += " AND f.resolved=0"
             sql += " GROUP BY f.finding_type"
-            return {r[0]: int(r[1]) for r in c.execute(sql).fetchall()}
+            return {r[0]: int(r[1]) for r in c.execute(sql, params).fetchall()}
 
     # ─── Shopping Cart ────────────────────────────────────────────────────
+    def shopping_catalog_rebuild(self) -> Dict[str, int]:
+        """Synchronisiert Vorschläge und Bereiche mit allen aktiven Rezepten."""
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            return _rebuild_shopping_catalog_from_recipes(c)
+
+    @staticmethod
+    def _shopping_product_upsert_conn(
+        c,
+        *,
+        canonical_name: Optional[str],
+        display_name: str,
+        category: Optional[str] = None,
+        default_unit: Optional[str] = None,
+        increment_usage: bool = True,
+    ) -> None:
+        if not canonical_name:
+            from .recipes.canonical import canonical_name as canonicalize
+            canonical_name = canonicalize(display_name)
+        if not canonical_name:
+            return
+        from .recipes.shopping_catalog import product_defaults
+
+        defaults = product_defaults(display_name, canonical_name, category)
+        now = time.time()
+        c.execute(
+            "INSERT INTO shopping_products(canonical_name, display_name, category, icon, "
+            "default_unit, usage_count, last_used_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(canonical_name) DO UPDATE SET "
+            "display_name=excluded.display_name, category=excluded.category, icon=excluded.icon, "
+            "default_unit=COALESCE(excluded.default_unit, shopping_products.default_unit), "
+            "usage_count=shopping_products.usage_count+excluded.usage_count, "
+            "last_used_at=COALESCE(excluded.last_used_at, shopping_products.last_used_at), "
+            "updated_at=excluded.updated_at",
+            (
+                canonical_name,
+                display_name,
+                defaults["category"],
+                defaults["icon"],
+                default_unit,
+                1 if increment_usage else 0,
+                now if increment_usage else None,
+                now,
+            ),
+        )
+
+    def shopping_product_suggestions(
+        self, query: str = "", limit: int = 8
+    ) -> List[Dict[str, Any]]:
+        """Lokale Produktvorschläge, priorisiert nach Wortanfang und Nutzung.
+
+        Sehr kurze Teilstrings wie ``ei`` dürfen nicht mitten in ``Reis`` oder
+        ``Hackfleisch`` matchen. Ab drei Zeichen bleibt eine tolerante
+        Teilstringsuche als letzte Stufe erhalten.
+        """
+        needle = " ".join(str(query or "").split()).casefold()
+        safe_limit = max(1, min(25, int(limit)))
+        with self.conn() as c:
+            if needle:
+                rows = c.execute(
+                    "SELECT canonical_name, display_name AS name, category, icon, default_unit, "
+                    "usage_count, recipe_count FROM shopping_products"
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT canonical_name, display_name AS name, category, icon, default_unit, "
+                    "usage_count, recipe_count FROM shopping_products "
+                    "ORDER BY recipe_count DESC, usage_count DESC, last_used_at DESC, "
+                    "display_name COLLATE NOCASE LIMIT ?",
+                    (safe_limit,),
+                ).fetchall()
+        candidates = [dict(row) for row in rows]
+        if not needle:
+            for item in candidates:
+                item.pop("recipe_count", None)
+            return candidates
+
+        import re
+
+        def suggestion_rank(item: Dict[str, Any]) -> Optional[tuple]:
+            display = " ".join(str(item.get("name") or "").split()).casefold()
+            canonical = " ".join(
+                str(item.get("canonical_name") or "").split()
+            ).casefold()
+            values = (display, canonical)
+            if needle in values:
+                match_rank = 0
+            elif any(value.startswith(needle) for value in values):
+                match_rank = 1
+            elif any(
+                token.startswith(needle)
+                for value in values
+                for token in re.findall(r"\w+", value, flags=re.UNICODE)
+            ):
+                match_rank = 2
+            elif len(needle) >= 3 and any(needle in value for value in values):
+                match_rank = 3
+            else:
+                return None
+            return (
+                match_rank,
+                -int(item.get("recipe_count") or 0),
+                -int(item.get("usage_count") or 0),
+                display,
+            )
+
+        ranked = [
+            (rank, item)
+            for item in candidates
+            if (rank := suggestion_rank(item)) is not None
+        ]
+        ranked.sort(key=lambda entry: entry[0])
+        result = [item for _, item in ranked[:safe_limit]]
+        for item in result:
+            item.pop("recipe_count", None)
+        return result
+
     def cart_list(self) -> List[Dict[str, Any]]:
         with self.conn() as c:
             rows = c.execute(
-                "SELECT * FROM shopping_cart ORDER BY checked ASC, "
+                "SELECT sc.*, COALESCE(sc.category, sp.category, 'Sonstiges') AS resolved_category, "
+                "CASE WHEN sc.category IS NULL OR sc.category=sp.category "
+                "THEN sp.icon ELSE NULL END AS icon FROM shopping_cart sc "
+                "LEFT JOIN shopping_products sp ON sp.canonical_name=sc.canonical_name "
+                "ORDER BY sc.checked ASC, "
                 "CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END, "
-                "sort_order ASC, added_at DESC"
+                "sort_order ASC, sc.added_at DESC"
             ).fetchall()
-            return [dict(r) for r in rows]
+            result = []
+            for row in rows:
+                item = dict(row)
+                item["category"] = item.pop("resolved_category")
+                result.append(item)
+            return result
 
     def cart_find_mergeable(self, canonical_name: str, unit: Optional[str]) -> Optional[Dict[str, Any]]:
         """Sucht einen Cart-Eintrag mit gleichem canonical+unit (case unit==None matched unit==None)."""
@@ -3500,10 +4481,13 @@ class Database:
         amount: Optional[float],
         unit: Optional[str],
         source_recipe_id: Optional[int],
+        category: Optional[str] = None,
     ) -> int:
         """Insert oder Merge basierend auf canonical_name+unit.
         Die eigentliche Einheiten-Konvertierung passiert vor diesem Call in
         cart_logic.add_to_cart() — hier wird nur summiert wenn unit gleich ist."""
+        from .recipes.shopping_catalog import product_defaults
+        resolved_category = product_defaults(name, canonical_name, category)["category"]
         with self.conn() as c:
             # Lesen und Schreiben müssen in derselben Write-Transaction liegen.
             # Sonst können zwei schnelle Adds beide "nicht vorhanden" sehen und
@@ -3528,15 +4512,25 @@ class Database:
                 if source_recipe_id and source_recipe_id not in src_ids:
                     src_ids.append(source_recipe_id)
                 c.execute(
-                    "UPDATE shopping_cart SET amount=?, source_recipe_ids=? WHERE id=?",
-                    (new_amount, json.dumps(src_ids), existing["id"]),
+                    "UPDATE shopping_cart SET amount=?, source_recipe_ids=?, "
+                    "category=COALESCE(category, ?) WHERE id=?",
+                    (new_amount, json.dumps(src_ids), resolved_category, existing["id"]),
+                )
+                self._shopping_product_upsert_conn(
+                    c, canonical_name=canonical_name, display_name=name,
+                    category=resolved_category or existing.get("category"), default_unit=unit,
                 )
                 return int(existing["id"])
             src_json = json.dumps([source_recipe_id] if source_recipe_id else [])
             cur = c.execute(
                 "INSERT INTO shopping_cart (name, canonical_name, amount, unit, "
-                "checked, added_at, source_recipe_ids) VALUES (?, ?, ?, ?, 0, ?, ?)",
-                (name, canonical_name, amount, unit, time.time(), src_json),
+                "checked, added_at, source_recipe_ids, category) "
+                "VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
+                (name, canonical_name, amount, unit, time.time(), src_json, resolved_category),
+            )
+            self._shopping_product_upsert_conn(
+                c, canonical_name=canonical_name, display_name=name,
+                category=resolved_category, default_unit=unit,
             )
             return int(cur.lastrowid)
 
@@ -3560,11 +4554,16 @@ class Database:
         today = date.today()
         with self.conn() as c:
             rows = c.execute(
-                "SELECT * FROM shopping_recurring ORDER BY active DESC, next_due_on, name COLLATE NOCASE"
+                "SELECT sr.*, COALESCE(sr.category, sp.category, 'Sonstiges') AS resolved_category, "
+                "CASE WHEN sr.category IS NULL OR sr.category=sp.category "
+                "THEN sp.icon ELSE NULL END AS icon FROM shopping_recurring sr "
+                "LEFT JOIN shopping_products sp ON sp.canonical_name=sr.canonical_name "
+                "ORDER BY sr.active DESC, sr.next_due_on, sr.name COLLATE NOCASE"
             ).fetchall()
         result: List[Dict[str, Any]] = []
         for row in rows:
             item = dict(row)
+            item["category"] = item.pop("resolved_category")
             try:
                 item["due_in_days"] = (date.fromisoformat(item["next_due_on"]) - today).days
             except (TypeError, ValueError):
@@ -3594,14 +4593,21 @@ class Database:
     ) -> int:
         now = time.time()
         with self.conn() as c:
+            from .recipes.shopping_catalog import product_defaults
+            resolved_category = product_defaults(name, canonical_name, category)["category"]
             cur = c.execute(
                 "INSERT INTO shopping_recurring "
                 "(name, canonical_name, amount, unit, category, interval_days, next_due_on, "
                 "active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    name, canonical_name, amount, unit, category, int(interval_days),
+                    name, canonical_name, amount, unit, resolved_category, int(interval_days),
                     next_due_on, 1 if active else 0, now, now,
                 ),
+            )
+            self._shopping_product_upsert_conn(
+                c, canonical_name=canonical_name, display_name=name,
+                category=resolved_category, default_unit=unit,
+                increment_usage=False,
             )
             return int(cur.lastrowid)
 
@@ -3745,9 +4751,16 @@ class Database:
         now = time.time()
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
-            current = [dict(row) for row in c.execute(
-                "SELECT * FROM shopping_cart ORDER BY id"
-            ).fetchall()]
+            current = []
+            for row in c.execute(
+                "SELECT sc.*, COALESCE(sc.category, sp.category, 'Sonstiges') "
+                "AS resolved_category FROM shopping_cart sc "
+                "LEFT JOIN shopping_products sp ON sp.canonical_name=sc.canonical_name "
+                "ORDER BY sc.id"
+            ).fetchall():
+                item = dict(row)
+                item["category"] = item.pop("resolved_category")
+                current.append(item)
             if cart_fingerprint(current) != expected_fingerprint:
                 return None
             c.execute("DELETE FROM shopping_cart")
@@ -4182,6 +5195,7 @@ class Database:
         params.append(recipe_id)
         try:
             with self.conn() as c:
+                c.execute("BEGIN IMMEDIATE")
                 if sets:
                     c.execute(f"UPDATE recipes SET {', '.join(sets)} WHERE id=?", params)
                 c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
@@ -4193,6 +5207,7 @@ class Database:
                          ing.get("amount"), ing.get("unit"), ing.get("raw"),
                          ing.get("sort_order", idx), ing.get("calories")),
                     )
+                _invalidate_recipe_nutrition(c, recipe_id)
                 c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
                 for idx, step in enumerate(snap.get("steps") or [], start=1):
                     c.execute(

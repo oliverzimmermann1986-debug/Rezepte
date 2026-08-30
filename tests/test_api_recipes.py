@@ -162,6 +162,50 @@ def test_empty_ingredients_cannot_be_marked_verified(client, test_db):
     assert test_db.recipe_get(recipe["id"])["user_verified"] == 0
 
 
+def test_recipe_text_translation_uses_selected_language_without_overwriting_source(
+    client, test_db, monkeypatch
+):
+    import app.routes.api_recipes as api_recipes
+
+    recipe = _create_recipe(
+        test_db,
+        name="Pasta",
+        folder_path="/tmp/translate",
+        description="Ein deutscher Rezepttext, der unverändert gespeichert bleiben muss.",
+    )
+
+    class FakeAnalyzer:
+        def translate_text(self, text, target_language):
+            assert text == "Kommentar mit 200 g Mehl"
+            assert target_language == "en"
+            return "Comment with 200 g flour"
+
+    monkeypatch.setattr(api_recipes, "build_analyzer", lambda _config: FakeAnalyzer())
+
+    response = client.post(
+        f"/api/recipes/{recipe['id']}/translate",
+        json={"target_language": "en", "text": "Kommentar mit 200 g Mehl"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "translation": "Comment with 200 g flour",
+        "target_language": "en",
+    }
+    assert test_db.recipe_get(recipe["id"])["description"].startswith("Ein deutscher")
+
+
+def test_recipe_text_translation_rejects_unknown_language(client, test_db):
+    recipe = _create_recipe(test_db, name="Pasta", folder_path="/tmp/translate-invalid")
+
+    response = client.post(
+        f"/api/recipes/{recipe['id']}/translate",
+        json={"target_language": "xx", "text": "Kommentar"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_step_timer_requires_whole_seconds(client, test_db):
     recipe = _create_recipe(test_db, name="Timer", folder_path="/tmp/timer")
 
@@ -199,6 +243,31 @@ def test_list_filter_by_type(client, test_db):
     body = r.json()
     assert body["total"] == 1
     assert body["items"][0]["name"] == "Suppe"
+
+
+def test_list_combines_multiple_allergen_free_tags_with_and(client, test_db):
+    both = _create_recipe(test_db, name="Beides frei", folder_path="/tmp/allergen-both")
+    gluten = _create_recipe(test_db, name="Nur glutenfrei", folder_path="/tmp/allergen-gluten")
+    nuts = _create_recipe(test_db, name="Nur nussfrei", folder_path="/tmp/allergen-nuts")
+    test_db.recipe_tags_set(both["id"], ["glutenfrei", "nussfrei"])
+    test_db.recipe_tags_set(gluten["id"], ["glutenfrei"])
+    test_db.recipe_tags_set(nuts["id"], ["nussfrei"])
+    tag_ids = {
+        tag["name"]: int(tag["id"])
+        for tag in test_db.recipe_tags_get(both["id"])
+    }
+
+    response = client.get(
+        "/api/recipes",
+        params=[
+            ("tag_id", tag_ids["glutenfrei"]),
+            ("tag_id", tag_ids["nussfrei"]),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert [item["name"] for item in response.json()["items"]] == ["Beides frei"]
 
 
 def test_list_can_include_and_exclude_ingredients(client, test_db):
@@ -306,6 +375,7 @@ def test_get_detail(client, test_db):
     body = r.json()
     assert body["name"] == "Detail-Test"
     assert body["folder_path"] == "/tmp/d"
+    assert body["user_verified"] is False
 
 
 def test_get_detail_404(client, test_db):

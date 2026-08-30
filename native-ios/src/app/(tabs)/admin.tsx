@@ -231,13 +231,13 @@ export default function AdminScreen() {
 
           <View style={sharedStyles.card}>
             <Text style={sharedStyles.sectionTitle}>Direktimport</Text>
-            <Text style={styles.help}>TikTok-/Instagram-Link, Foto oder lokales PDF übernehmen. Social-Medien bleiben bei der Plattform; gespeichert werden Link und erkannte Rezeptdaten, kein Video.</Text>
+            <Text style={styles.help}>Rezept-Webseite, Pinterest-, YouTube-, TikTok- oder Instagram-Link übernehmen. Videos bleiben bei der Plattform; gespeichert werden Link und erkannte Rezeptdaten.</Text>
             <TextInput
-              accessibilityLabel="TikTok- oder Instagram-Link"
+              accessibilityLabel="Link zu einem Rezept"
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"
-              placeholder="https://www.tiktok.com/…"
+              placeholder="https://…/mein-rezept"
               placeholderTextColor={colors.muted}
               value={url}
               onChangeText={setUrl}

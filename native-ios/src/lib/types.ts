@@ -114,6 +114,7 @@ export type CartItem = {
   unit?: string | null;
   checked: boolean;
   category?: string | null;
+  icon?: string | null;
 };
 
 export type RecurringCartItem = {
@@ -122,10 +123,20 @@ export type RecurringCartItem = {
   amount?: number | null;
   default_unit?: string | null;
   category?: string | null;
+  icon?: string | null;
   interval_days: number;
   next_due_on: string;
   due_in_days: number;
   active: boolean;
+};
+
+export type ShoppingSuggestion = {
+  canonical_name: string;
+  name: string;
+  category: string;
+  icon: string;
+  default_unit?: string | null;
+  usage_count: number;
 };
 
 export type MealPlanItem = {

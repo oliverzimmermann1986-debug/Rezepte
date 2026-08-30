@@ -11,19 +11,7 @@ import json
 from typing import Any, Dict, Iterable, List
 
 from .cart_logic import display_amount, prepare_for_cart
-
-
-SHOPPING_CATEGORIES = (
-    "Obst & Gemüse",
-    "Bäckerei",
-    "Fleisch & Fisch",
-    "Kühlregal",
-    "Vorrat & Konserven",
-    "Getränke",
-    "Tiefkühl",
-    "Drogerie & Haushalt",
-    "Sonstiges",
-)
+from .shopping_catalog import SHOPPING_CATEGORIES
 _CATEGORY_ORDER = {name: index for index, name in enumerate(SHOPPING_CATEGORIES)}
 
 

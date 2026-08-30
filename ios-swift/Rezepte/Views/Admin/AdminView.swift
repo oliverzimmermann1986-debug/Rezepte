@@ -4,8 +4,12 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct AdminView: View {
+    let presented: Bool
+
     @EnvironmentObject private var session: SessionStore
     @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.recipeTheme) private var theme
     @State private var overview: AdminOverview?
     @State private var pending: [PendingItem] = []
     @State private var failedDownloads: [FailedDownload] = []
@@ -17,6 +21,13 @@ struct AdminView: View {
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var showFileImporter = false
     @State private var isUploading = false
+    @State private var imageBackfill: ImageBackfillRun?
+    @State private var isStartingImageBackfill = false
+    @State private var showImageBackfillConfirmation = false
+
+    init(presented: Bool = false) {
+        self.presented = presented
+    }
 
     var body: some View {
         NavigationStack {
@@ -30,8 +41,70 @@ struct AdminView: View {
                     }
                 }
 
+                if let resultMessage {
+                    Section {
+                        Label(resultMessage, systemImage: "info.circle")
+                            .font(.footnote)
+                            .foregroundStyle(theme.muted)
+                    }
+                }
+
+                Section("Bibliothek") {
+                    NavigationLink {
+                        AdminLibraryToolsView().environmentObject(session)
+                    } label: {
+                        Label("Papierkorb, Versionen & KI-Prüfung", systemImage: "archivebox")
+                    }
+                    if let overview {
+                        Text("\(overview.counts.trash) im Papierkorb · \(overview.counts.versions) Versionen · \(overview.counts.openFindings) offene Hinweise")
+                            .font(.caption)
+                            .foregroundStyle(theme.muted)
+                    }
+                }
+
+                Section("System") {
+                    if session.supports("native-admin-config-v1") {
+                        NavigationLink {
+                            AdminSettingsView().environmentObject(session)
+                        } label: {
+                            Label("Admin-Einstellungen", systemImage: "gearshape.2")
+                        }
+                        Text("KI, Postfächer, PDF, Automatisierung, Einkauf-Anbindung, Backups und Logs sicher verwalten.")
+                            .font(.caption)
+                            .foregroundStyle(theme.muted)
+                    } else {
+                        Label("Admin-Einstellungen benötigen einen neueren Server.", systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(theme.warning)
+                    }
+                }
+
+                Section("Rezeptbilder") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Sicherungsbarriere", systemImage: "externaldrive.badge.checkmark")
+                            .font(.headline)
+                        Text("Vor der ersten Neugenerierung wird der komplette vorhandene Bildbestand checksummiert gesichert. Schon ein Sicherungsfehler stoppt den Lauf.")
+                            .font(.caption)
+                            .foregroundStyle(theme.muted)
+                    }
+
+                    if let imageBackfill {
+                        imageBackfillProgress(imageBackfill)
+                    }
+
+                    Button {
+                        showImageBackfillConfirmation = true
+                    } label: {
+                        Label(
+                            isStartingImageBackfill ? "Bildlauf wird gestartet …" : "Altbilder sichern & neu generieren",
+                            systemImage: "photo.stack"
+                        )
+                    }
+                    .disabled(isStartingImageBackfill || imageBackfill?.status == "running")
+                }
+
                 Section("Link importieren") {
-                    TextField("TikTok- oder Instagram-Link", text: $importLink)
+                    TextField("Website, Pinterest, YouTube oder Social-Link", text: $importLink)
                         .textContentType(.URL)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
@@ -47,11 +120,6 @@ struct AdminView: View {
                     }
                     .disabled(importLink.trimmingCharacters(in: .whitespaces).isEmpty || isImporting)
 
-                    if let resultMessage {
-                        Text(resultMessage)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
                 }
 
                 Section("Foto oder PDF importieren") {
@@ -94,7 +162,7 @@ struct AdminView: View {
                                 if let reason = item.reason?.nilIfEmpty {
                                     Text(reason)
                                         .font(.caption)
-                                        .foregroundStyle(AppTheme.warning)
+                                        .foregroundStyle(theme.warning)
                                 }
                                 Text("Antippen zum Bearbeiten")
                                     .font(.caption2)
@@ -119,7 +187,7 @@ struct AdminView: View {
                                     .lineLimit(3)
                                 Text("\(item.attempts) Versuche · \(item.lastError ?? "Unbekannter Fehler")")
                                     .font(.caption)
-                                    .foregroundStyle(AppTheme.warning)
+                                    .foregroundStyle(theme.warning)
                                 HStack {
                                     Button("Erneut versuchen") {
                                         Task { await retry(item) }
@@ -152,8 +220,11 @@ struct AdminView: View {
                     LabeledContent("Angemeldet als", value: session.username)
                     Button {
                         Task {
-                            if let url = try? await session.api.privacyURL() {
+                            do {
+                                let url = try await session.api.privacyURL()
                                 openURL(url)
+                            } catch {
+                                session.handle(error)
                             }
                         }
                     } label: {
@@ -167,7 +238,14 @@ struct AdminView: View {
             .overlay {
                 if isLoading { ProgressView() }
             }
-            .navigationTitle("Verwalten")
+            .navigationTitle("Administration")
+            .toolbar {
+                if presented {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Schließen") { dismiss() }
+                    }
+                }
+            }
             .refreshable { await load() }
             .task { await load() }
             .onChange(of: selectedPhoto) { _, item in
@@ -190,6 +268,50 @@ struct AdminView: View {
                     await load()
                 }
                 .environmentObject(session)
+            }
+            .confirmationDialog(
+                "Alle Rezeptbilder neu erstellen?",
+                isPresented: $showImageBackfillConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Sicherung und Generierung starten") {
+                    Task { await startImageBackfill() }
+                }
+                Button("Abbrechen", role: .cancel) {}
+            } message: {
+                Text("Die Originalbilder bleiben als prüfbare Sicherungen erhalten und können einzeln wiederhergestellt werden.")
+            }
+        }
+    }
+
+    private func imageBackfillProgress(_ run: ImageBackfillRun) -> some View {
+        let result = run.result
+        let total = max(result.total ?? 0, 1)
+        let processed = result.processed ?? (run.status == "ok" ? total : 0)
+        let title: String = switch result.phase {
+        case "backup": "Originale werden gesichert"
+        case "generate": "Sicherung vollständig · Bilder werden generiert"
+        case "done": "Bildlauf abgeschlossen"
+        case "backup_failed": "Sicherung gestoppt"
+        default: run.status == "running" ? "Bildlauf läuft" : "Bildlauf beendet"
+        }
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.subheadline.bold())
+            ProgressView(value: Double(processed), total: Double(total))
+            HStack {
+                Label("\(result.backedUp ?? 0) gesichert", systemImage: "externaldrive.fill")
+                Spacer()
+                Label("\(result.generated ?? 0) erzeugt", systemImage: "sparkles")
+            }
+            .font(.caption)
+            .foregroundStyle(theme.muted)
+            if let error = result.error?.nilIfEmpty {
+                Text(error).font(.caption).foregroundStyle(theme.danger)
+            } else if (result.errorCount ?? 0) > 0 {
+                Text("\(result.errorCount ?? 0) Bilder konnten nicht erzeugt werden.")
+                    .font(.caption)
+                    .foregroundStyle(theme.warning)
             }
         }
     }
@@ -235,6 +357,41 @@ struct AdminView: View {
             resultMessage = "Die Postfachprüfung wurde gestartet."
         } catch {
             session.handle(error)
+        }
+    }
+
+    private func startImageBackfill() async {
+        guard !isStartingImageBackfill else { return }
+        isStartingImageBackfill = true
+        resultMessage = nil
+        do {
+            let start = try await session.api.startImageBackfill()
+            isStartingImageBackfill = false
+            resultMessage = "Bildlauf gestartet. Zuerst wird der vollständige Altbestand gesichert."
+            await monitorImageBackfill(runID: start.runId)
+        } catch {
+            isStartingImageBackfill = false
+            resultMessage = error.localizedDescription
+            session.handle(error)
+        }
+    }
+
+    private func monitorImageBackfill(runID: Int) async {
+        while !Task.isCancelled {
+            do {
+                let run = try await session.api.imageBackfillStatus(runID: runID)
+                imageBackfill = run
+                if run.status != "running" {
+                    resultMessage = run.status == "ok"
+                        ? "Alle Originale wurden gesichert; der Bildlauf ist abgeschlossen."
+                        : "Der Bildlauf wurde mit Fehlern beendet. Die Sicherungen bleiben erhalten."
+                    return
+                }
+            } catch {
+                resultMessage = error.localizedDescription
+                return
+            }
+            try? await Task.sleep(for: .seconds(2))
         }
     }
 

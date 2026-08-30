@@ -7,6 +7,7 @@ struct AuthenticatedImage: View {
     let height: CGFloat
 
     @EnvironmentObject private var session: SessionStore
+    @Environment(\.recipeTheme) private var theme
     @State private var image: UIImage?
     @State private var failed = false
 
@@ -18,10 +19,10 @@ struct AuthenticatedImage: View {
                     .scaledToFill()
             } else {
                 ZStack {
-                    AppTheme.butterSoft
+                    theme.accentSoft
                     Image(systemName: failed ? "fork.knife" : "photo")
                         .font(.system(size: 30, weight: .medium))
-                        .foregroundStyle(AppTheme.cocoa.opacity(0.7))
+                        .foregroundStyle(theme.ink.opacity(0.7))
                 }
             }
         }

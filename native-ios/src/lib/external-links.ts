@@ -17,7 +17,9 @@ export function externalSourceLabel(value?: string | null) {
   const host = new URL(normalized).hostname.toLowerCase();
   if (host === 'instagram.com' || host.endsWith('.instagram.com')) return 'Instagram';
   if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) return 'TikTok';
-  return 'Quelle';
+  if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be') return 'YouTube';
+  if (host === 'pinterest.com' || host.endsWith('.pinterest.com') || host === 'pin.it') return 'Pinterest';
+  return 'Webseite';
 }
 
 export async function openExternalUrl(value?: string | null) {

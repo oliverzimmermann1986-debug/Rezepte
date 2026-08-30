@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct RecipeDetailView: View {
     let recipeID: Int
@@ -6,15 +7,30 @@ struct RecipeDetailView: View {
     @EnvironmentObject private var session: SessionStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @Environment(\.recipeTheme) private var theme
     @State private var recipe: Recipe?
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var showIngredientsEditor = false
     @State private var showStepsEditor = false
+    @State private var showShoppingServings = false
+    @State private var shoppingServings = 1
+    @State private var isAddingToCart = false
     @State private var cartConfirmation = false
     @State private var showOriginalText = false
     @State private var showDeleteConfirmation = false
     @State private var isDeleting = false
+    @State private var imageRefreshToken = UUID()
+    @State private var showMetadataEditor = false
+    @State private var showShareLinks = false
+    @State private var showPDF = false
+    @State private var showDuplicatePrompt = false
+    @State private var showSubstitutionLab = false
+    @State private var duplicateName = ""
+    @State private var isManaging = false
+    @State private var translatedDescription: String?
+    @State private var sourceCopied = false
+    @AppStorage("content-language-v1") private var contentLanguage = ContentLanguage.de.rawValue
 
     var body: some View {
         Group {
@@ -28,12 +44,13 @@ struct RecipeDetailView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         AuthenticatedImage(recipeID: recipe.id, height: 270)
+                            .id(imageRefreshToken)
                             .clipShape(RoundedRectangle(cornerRadius: 24))
 
                         VStack(alignment: .leading, spacing: 8) {
                             Text(recipe.name)
                                 .font(.largeTitle.bold())
-                                .foregroundStyle(AppTheme.cocoa)
+                                .foregroundStyle(theme.ink)
                         }
 
                         if recipe.needsManualCare {
@@ -41,64 +58,93 @@ struct RecipeDetailView: View {
                         }
 
                         actionBar(recipe)
+                        recipePassportSection(recipe)
+
+                        ratingAndNutritionSection(recipe)
 
                         ingredientSection(recipe)
                         stepsSection(recipe)
 
-                        if let sourceURL = safeExternalURL(recipe.url) {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Quelle")
-                                    .font(.title2.bold())
-                                Button {
-                                    openURL(sourceURL)
-                                } label: {
-                                    Label("TikTok-/Original-Link öffnen", systemImage: "arrow.up.right.square")
-                                        .frame(maxWidth: .infinity, minHeight: 44)
-                                }
-                                .buttonStyle(.bordered)
-                            }
-                        }
+                        sourceSection(recipe)
 
                         originalTextSection(recipe)
 
-                        Button(role: .destructive) {
-                            showDeleteConfirmation = true
-                        } label: {
-                            Label(
-                                isDeleting ? "Rezept wird gelöscht …" : "Rezept löschen",
-                                systemImage: "trash"
-                            )
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                        if !session.readOnly {
+                            Button(role: .destructive) {
+                                showDeleteConfirmation = true
+                            } label: {
+                                Label(
+                                    isDeleting ? "Rezept wird gelöscht …" : "Rezept löschen",
+                                    systemImage: "trash"
+                                )
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.red)
+                            .disabled(isDeleting)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
-                        .disabled(isDeleting)
                     }
                     .padding()
                 }
-                .background(AppTheme.cream)
+                .background(theme.background)
             }
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let recipe {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    ShareLink(item: shareText(recipe)) {
-                        Image(systemName: "square.and.arrow.up")
+                    if session.readOnly {
+                        ShareLink(item: [recipe.name, recipe.url].compactMap { $0 }.joined(separator: "\n")) {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                    } else {
+                        Button { showShareLinks = true } label: {
+                            Image(systemName: "square.and.arrow.up")
+                        }
                     }
-                    Button {
-                        Task { await toggleFavorite() }
-                    } label: {
-                        Image(systemName: recipe.isFavorite ? "heart.fill" : "heart")
-                            .foregroundStyle(recipe.isFavorite ? Color.red : Color.primary)
+                    if !session.readOnly {
+                        Button {
+                            Task { await toggleFavorite() }
+                        } label: {
+                            Image(systemName: recipe.isFavorite ? "heart.fill" : "heart")
+                                .foregroundStyle(recipe.isFavorite ? Color.red : Color.primary)
+                        }
+                        .accessibilityLabel(recipe.isFavorite ? "Aus Favoriten entfernen" : "Als Favorit speichern")
+                        Menu {
+                            Button("Rezeptdaten bearbeiten", systemImage: "pencil") {
+                                showMetadataEditor = true
+                            }
+                            Button("Als Variante duplizieren", systemImage: "plus.square.on.square") {
+                                duplicateName = "\(recipe.name) – Variante"
+                                showDuplicatePrompt = true
+                            }
+                            Button(
+                                recipe.userVerified == true ? "Prüfung zurücknehmen" : "Zutaten als geprüft markieren",
+                                systemImage: recipe.userVerified == true ? "checkmark.seal" : "checkmark.seal.fill"
+                            ) {
+                                Task { await setVerified(recipe.userVerified != true) }
+                            }
+                            Button("Nährwerte neu berechnen", systemImage: "bolt.heart") {
+                                Task { await computeNutrition() }
+                            }
+                            if recipe.pdfFilename != nil {
+                                Button("Original-PDF öffnen", systemImage: "doc.richtext") {
+                                    showPDF = true
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
                     }
-                    .accessibilityLabel(recipe.isFavorite ? "Aus Favoriten entfernen" : "Als Favorit speichern")
                 }
             }
         }
         .overlay(alignment: .bottom) {
             if cartConfirmation {
-                Label("Zur Einkaufsliste hinzugefügt", systemImage: "checkmark.circle.fill")
+                Label(
+                    "Für \(shoppingServings) \(shoppingServings == 1 ? "Portion" : "Portionen") hinzugefügt",
+                    systemImage: "checkmark.circle.fill"
+                )
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .background(.thinMaterial, in: Capsule())
@@ -120,6 +166,46 @@ struct RecipeDetailView: View {
                 }
             }
         }
+        .sheet(isPresented: $showMetadataEditor) {
+            if let recipe {
+                RecipeMetadataEditorView(recipe: recipe) { await load() }
+                    .environmentObject(session)
+            }
+        }
+        .sheet(isPresented: $showShareLinks) {
+            if let recipe {
+                RecipeShareLinksView(recipeID: recipe.id, recipeName: recipe.name)
+                    .environmentObject(session)
+            }
+        }
+        .sheet(isPresented: $showPDF) {
+            if let recipe {
+                PDFPreviewSheet(title: recipe.name) {
+                    try await session.api.recipePDF(id: recipe.id)
+                }
+            }
+        }
+        .sheet(isPresented: $showSubstitutionLab) {
+            if let recipe {
+                SubstitutionLabView(recipeID: recipe.id, recipeName: recipe.name)
+                    .environmentObject(session)
+            }
+        }
+        .sheet(isPresented: $showShoppingServings) {
+            if let recipe, let originalServings = recipe.servings {
+                ShoppingServingsSheet(
+                    recipeName: recipe.name,
+                    originalServings: originalServings,
+                    servings: $shoppingServings,
+                    isAdding: isAddingToCart
+                ) {
+                    Task { await addToCart(servings: shoppingServings) }
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .interactiveDismissDisabled(isAddingToCart)
+            }
+        }
         .confirmationDialog(
             "Rezept löschen?",
             isPresented: $showDeleteConfirmation,
@@ -132,30 +218,74 @@ struct RecipeDetailView: View {
         } message: {
             Text("Das Rezept kann 30 Tage lang im Admin-Bereich wiederhergestellt werden.")
         }
+        .alert("Variante erstellen", isPresented: $showDuplicatePrompt) {
+            TextField("Name der Variante", text: $duplicateName)
+            Button("Erstellen") { Task { await duplicateRecipe() } }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Zutaten, Schritte, Tags und Nährwerte werden kopiert; Favorit, Bewertung und Prüfstatus bleiben unabhängig.")
+        }
         .task { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { notification in
+            guard notification.object as? Int == recipeID else { return }
+            imageRefreshToken = UUID()
+            Task { await load() }
+        }
     }
 
     private func actionBar(_ recipe: Recipe) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                Task { await addToCart() }
-            } label: {
-                Label("Einkaufen", systemImage: "cart.badge.plus")
-                    .frame(maxWidth: .infinity, minHeight: 44)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(AppTheme.butter)
-            .foregroundStyle(AppTheme.cocoa)
+        VStack(spacing: 12) {
+            if session.readOnly {
+                Label("Gastzugang · Rezept nur ansehen", systemImage: "eye")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .cardSurface()
+            } else {
+                HStack(spacing: 12) {
+                    NavigationLink {
+                        CookingModeView(recipe: recipe)
+                    } label: {
+                        Label("Kochen", systemImage: "fork.knife")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(theme.accent)
+                    .foregroundStyle(theme.ink)
+                    .disabled(recipe.steps.isEmpty || recipe.servings == nil)
 
-            if let sourceURL = safeExternalURL(recipe.url) {
-                Button {
-                    openURL(sourceURL)
-                } label: {
-                    Image(systemName: "link")
-                        .frame(width: 44, height: 44)
+                    Button {
+                        shoppingServings = recipe.servings ?? 1
+                        showShoppingServings = true
+                    } label: {
+                        Label("Einkaufen", systemImage: "cart.badge.plus")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(recipe.ingredients.isEmpty || recipe.servings == nil)
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Original-Link öffnen")
+
+                if recipe.steps.isEmpty || recipe.servings == nil {
+                    Label(
+                        recipe.steps.isEmpty
+                            ? "Zum Kochen fehlen Zubereitungsschritte."
+                            : "Zum Skalieren fehlt die Portionszahl.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(theme.warning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if recipe.ingredients.isEmpty {
+                    Label(
+                        "Für die Einkaufsliste fehlen Zutaten.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(theme.warning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
     }
@@ -166,11 +296,22 @@ struct RecipeDetailView: View {
                 Text("Zutaten")
                     .font(.title2.bold())
                 Spacer()
-                Button("Bearbeiten") { showIngredientsEditor = true }
+                if !session.readOnly {
+                    HStack(spacing: 10) {
+                        if session.fullAccess, session.supports("substitution-lab-v1") {
+                            Button {
+                                showSubstitutionLab = true
+                            } label: {
+                                Label("Ersetzen", systemImage: "flask")
+                            }
+                        }
+                        Button("Bearbeiten") { showIngredientsEditor = true }
+                    }
+                }
             }
             if recipe.ingredients.isEmpty {
                 Text("Keine Zutaten vorhanden. Bitte manuell ergänzen.")
-                    .foregroundStyle(AppTheme.warning)
+                    .foregroundStyle(theme.warning)
                     .cardSurface()
             } else {
                 VStack(spacing: 0) {
@@ -178,7 +319,7 @@ struct RecipeDetailView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 12) {
                             Image(systemName: "circle.fill")
                                 .font(.system(size: 6))
-                                .foregroundStyle(AppTheme.butter)
+                                .foregroundStyle(theme.accent)
                             Text(ingredient.displayText)
                             Spacer(minLength: 0)
                         }
@@ -191,17 +332,272 @@ struct RecipeDetailView: View {
         }
     }
 
+    private func recipePassportSection(_ recipe: Recipe) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Rezeptpass")
+                    .font(.title2.bold())
+                Spacer()
+                Label(
+                    recipe.userVerified == true ? "Zutaten geprüft" : "Prüfung offen",
+                    systemImage: recipe.userVerified == true ? "checkmark.seal.fill" : "questionmark.diamond"
+                )
+                .font(.caption.bold())
+                .foregroundStyle(recipe.userVerified == true ? theme.success : theme.warning)
+            }
+
+            LabeledContent("Rezept-ID") {
+                Text("#\(recipe.id)")
+                    .font(.body.monospacedDigit())
+                    .textSelection(.enabled)
+            }
+
+            if let notice = recipe.variantReviewNotice?.nilIfEmpty {
+                Label(notice, systemImage: "exclamationmark.triangle.fill")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(theme.warning)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(theme.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityLabel("Prüfhinweis für Rezeptvariante: \(notice)")
+            }
+
+            if let provenance = recipe.variantProvenance {
+                variantProvenanceSection(provenance)
+            }
+
+            if session.supports("source-integrity-v2") {
+                NavigationLink {
+                    RecipeSourceIntegrityView(
+                        recipeID: recipe.id,
+                        recipeName: recipe.name
+                    )
+                    .environmentObject(session)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "checkmark.shield")
+                            .foregroundStyle(theme.accentPressed)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Quellenwächter & Rezept-TÜV")
+                                .font(.subheadline.bold())
+                            Text("Herkunft, Änderungen und Qualität prüfen")
+                                .font(.caption)
+                                .foregroundStyle(theme.muted)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+
+            if let url = safeExternalURL(recipe.url) {
+                LabeledContent("Quelle", value: sourceName(url))
+            } else {
+                LabeledContent("Quelle", value: "Datei oder eigener Eintrag")
+            }
+
+            if let sourceAddedAt = recipe.sourceAddedAt {
+                LabeledContent(
+                    "Importiert",
+                    value: Date(timeIntervalSince1970: sourceAddedAt).formatted(
+                        date: .abbreviated,
+                        time: .shortened
+                    )
+                )
+            }
+
+            if let status = recipe.imageGenerationStatus?.nilIfEmpty {
+                LabeledContent("Bildstatus", value: imageStatusLabel(status))
+            }
+
+            if let tags = recipe.tags, !tags.isEmpty {
+                LabeledContent("Tags", value: tags.map(\.name).joined(separator: ", "))
+            }
+
+            if let summary = recipe.cookSummary, summary.count > 0 {
+                LabeledContent("Gekocht", value: "\(summary.count)×")
+                if let timestamp = summary.lastCookedAt {
+                    LabeledContent(
+                        "Zuletzt",
+                        value: Date(timeIntervalSince1970: timestamp).formatted(date: .abbreviated, time: .shortened)
+                    )
+                }
+            }
+
+            if session.fullAccess {
+                Divider()
+                NavigationLink {
+                    RecipeImageHistoryView(recipeID: recipe.id, recipeName: recipe.name)
+                } label: {
+                    Label("Originale vergleichen & Bild verwalten", systemImage: "photo.on.rectangle.angled")
+                }
+            }
+        }
+        .cardSurface()
+    }
+
+    private func variantProvenanceSection(_ provenance: RecipeVariantProvenance) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("Nachvollziehbare Substitutionsvariante", systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.subheadline.bold())
+
+            if let sourceRecipeID = provenance.sourceRecipeId {
+                LabeledContent("Abgeleitet von", value: "Rezept #\(sourceRecipeID)")
+            }
+            if let source = provenance.sourceIngredient, let result = provenance.resultIngredient {
+                LabeledContent("Ersetzung", value: "\(source.displayText) → \(result.displayText)")
+            } else if let result = provenance.resultIngredient {
+                LabeledContent("Neue Zutat", value: result.displayText)
+            }
+            if let effect = provenance.functionalEffect?.nilIfEmpty {
+                Text(effect)
+                    .font(.caption)
+                    .foregroundStyle(theme.muted)
+            }
+            if let blockedTags = provenance.blockedAutoTags, !blockedTags.isEmpty {
+                LabeledContent(
+                    "Nicht automatisch freigegeben",
+                    value: blockedTags.map(variantTagLabel).joined(separator: ", ")
+                )
+            }
+            if let removedTags = provenance.removedManualSafetyTags, !removedTags.isEmpty {
+                LabeledContent(
+                    "Zur erneuten Prüfung entfernt",
+                    value: removedTags.map(variantTagLabel).joined(separator: ", ")
+                )
+            }
+            if let appliedAt = provenance.appliedAt {
+                LabeledContent(
+                    "Variante erstellt",
+                    value: Date(timeIntervalSince1970: appliedAt).formatted(
+                        date: .abbreviated,
+                        time: .shortened
+                    )
+                )
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func variantTagLabel(_ value: String) -> String {
+        AllergenInfo(rawValue: value)?.title ?? value
+    }
+
+    @ViewBuilder
+    private func sourceSection(_ recipe: Recipe) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Originalquelle")
+                .font(.title2.bold())
+
+            if let sourceURL = safeExternalURL(recipe.url) {
+                Text(sourceURL.absoluteString)
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(theme.muted)
+                    .textSelection(.enabled)
+                    .lineLimit(4)
+
+                HStack(spacing: 10) {
+                    Button {
+                        openURL(sourceURL)
+                    } label: {
+                        Label("Öffnen", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        UIPasteboard.general.string = sourceURL.absoluteString
+                        sourceCopied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            sourceCopied = false
+                        }
+                    } label: {
+                        Label(
+                            sourceCopied ? "Kopiert" : "Kopieren",
+                            systemImage: sourceCopied ? "checkmark" : "doc.on.doc"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+
+                    ShareLink(item: sourceURL) {
+                        Label("Teilen", systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .labelStyle(.iconOnly)
+            } else {
+                Label("Für dieses Rezept ist keine gültige Original-URL gespeichert.", systemImage: "link.badge.plus")
+                    .font(.footnote)
+                    .foregroundStyle(theme.warning)
+
+                if !session.readOnly {
+                    Button("Originalquelle ergänzen") {
+                        showMetadataEditor = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .cardSurface()
+        .accessibilityElement(children: .contain)
+    }
+
+    private func ratingAndNutritionSection(_ recipe: Recipe) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Bewertung & Nährwerte").font(.title2.bold())
+                Spacer()
+                if isManaging { ProgressView() }
+            }
+            HStack(spacing: 8) {
+                ForEach(1...5, id: \.self) { value in
+                    Button {
+                        Task { await setRating(value) }
+                    } label: {
+                        Image(systemName: value <= (recipe.rating ?? 0) ? "star.fill" : "star")
+                            .foregroundStyle(theme.accent)
+                    }
+                    .disabled(session.readOnly || isManaging)
+                    .accessibilityLabel("\(value) Sterne")
+                }
+            }
+            if let calories = recipe.caloriesPerServing {
+                LabeledContent("Pro Portion", value: "\(Int(calories.rounded())) kcal")
+                HStack {
+                    nutrient("Eiweiß", recipe.proteinG)
+                    nutrient("Kohlenhydrate", recipe.carbsG)
+                    nutrient("Fett", recipe.fatG)
+                }
+            } else {
+                Text("Noch keine Nährwertschätzung vorhanden.")
+                    .font(.caption).foregroundStyle(theme.muted)
+            }
+        }
+        .cardSurface()
+    }
+
+    private func nutrient(_ label: String, _ value: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption).foregroundStyle(theme.muted)
+            Text(value.map { String(format: "%.1f g", $0) } ?? "–")
+                .font(.subheadline.bold())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func stepsSection(_ recipe: Recipe) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Zubereitung")
                     .font(.title2.bold())
                 Spacer()
-                Button("Bearbeiten") { showStepsEditor = true }
+                if !session.readOnly {
+                    Button("Bearbeiten") { showStepsEditor = true }
+                }
             }
             if recipe.steps.isEmpty {
                 Text("Keine Schritte vorhanden. Der Quelllink bleibt zur manuellen Pflege erhalten.")
-                    .foregroundStyle(AppTheme.warning)
+                    .foregroundStyle(theme.warning)
                     .cardSurface()
             } else {
                 ForEach(Array(recipe.steps.enumerated()), id: \.offset) { index, step in
@@ -213,7 +609,8 @@ struct RecipeDetailView: View {
 
     @ViewBuilder
     private func originalTextSection(_ recipe: Recipe) -> some View {
-        if let description = recipe.description?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let description = (translatedDescription ?? recipe.descriptionOriginal ?? recipe.description)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
            !description.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Button {
@@ -221,7 +618,7 @@ struct RecipeDetailView: View {
                 } label: {
                     HStack {
                         Label(
-                            showOriginalText ? "Originaltext ausblenden" : "Originaltext anzeigen",
+                            showOriginalText ? "Quelltext ausblenden" : "Quelltext anzeigen",
                             systemImage: "text.quote"
                         )
                         Spacer()
@@ -249,6 +646,21 @@ struct RecipeDetailView: View {
         defer { isLoading = false }
         do {
             recipe = try await session.api.recipe(id: recipeID)
+            translatedDescription = nil
+            if contentLanguage != ContentLanguage.de.rawValue,
+               let source = recipe?.descriptionOriginal ?? recipe?.description,
+               !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                do {
+                    translatedDescription = try await session.api.translateRecipeText(
+                        id: recipeID,
+                        language: contentLanguage,
+                        text: source
+                    ).translation
+                } catch {
+                    // Das Rezept bleibt auch ohne optionale KI-Übersetzung lesbar.
+                    translatedDescription = nil
+                }
+            }
             showOriginalText = false
         } catch {
             errorMessage = error.localizedDescription
@@ -256,9 +668,13 @@ struct RecipeDetailView: View {
         }
     }
 
-    private func addToCart() async {
+    private func addToCart(servings: Int) async {
+        guard !isAddingToCart else { return }
+        isAddingToCart = true
+        defer { isAddingToCart = false }
         do {
-            _ = try await session.api.addRecipeToCart(id: recipeID)
+            _ = try await session.api.addRecipeToCart(id: recipeID, servings: servings)
+            showShoppingServings = false
             withAnimation(.snappy) { cartConfirmation = true }
             try? await Task.sleep(for: .seconds(2))
             withAnimation(.snappy) { cartConfirmation = false }
@@ -274,6 +690,38 @@ struct RecipeDetailView: View {
         } catch {
             session.handle(error)
         }
+    }
+
+    private func setRating(_ value: Int) async {
+        isManaging = true
+        defer { isManaging = false }
+        do { _ = try await session.api.setRecipeRating(id: recipeID, value: value); await load() }
+        catch { session.handle(error) }
+    }
+
+    private func setVerified(_ verified: Bool) async {
+        isManaging = true
+        defer { isManaging = false }
+        do { _ = try await session.api.setRecipeVerified(id: recipeID, verified: verified); await load() }
+        catch { session.handle(error) }
+    }
+
+    private func computeNutrition() async {
+        isManaging = true
+        defer { isManaging = false }
+        do { _ = try await session.api.computeRecipeNutrition(id: recipeID); await load() }
+        catch { session.handle(error) }
+    }
+
+    private func duplicateRecipe() async {
+        let name = duplicateName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        isManaging = true
+        defer { isManaging = false }
+        do {
+            _ = try await session.api.duplicateRecipe(id: recipeID, newName: name)
+            NotificationCenter.default.post(name: .recipesChanged, object: nil)
+        } catch { session.handle(error) }
     }
 
     private func deleteRecipe() async {
@@ -297,14 +745,91 @@ struct RecipeDetailView: View {
         return url
     }
 
-    private func shareText(_ recipe: Recipe) -> String {
-        [recipe.name, recipe.url].compactMap { $0 }.joined(separator: "\n")
+    private func sourceName(_ url: URL) -> String {
+        let host = (url.host ?? "Webseite").lowercased()
+        if host.contains("pinterest") || host == "pin.it" { return "Pinterest" }
+        if host.contains("youtube") || host == "youtu.be" { return "YouTube" }
+        if host.contains("tiktok") { return "TikTok" }
+        if host.contains("instagram") { return "Instagram" }
+        return host.replacingOccurrences(of: "www.", with: "")
+    }
+
+    private func imageStatusLabel(_ status: String) -> String {
+        switch status {
+        case "ok": "Generiert"
+        case "pending", "running": "Wird generiert"
+        case "backed_up": "Original gesichert"
+        case "restored": "Original wiederhergestellt"
+        case "error": "Generierung fehlgeschlagen"
+        default: status
+        }
+    }
+
+}
+
+private struct ShoppingServingsSheet: View {
+    let recipeName: String
+    let originalServings: Int
+    @Binding var servings: Int
+    let isAdding: Bool
+    let onAdd: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.recipeTheme) private var theme
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    VStack(spacing: 6) {
+                        Text("Für wie viele Portionen einkaufen?")
+                            .font(.title2.bold())
+                            .multilineTextAlignment(.center)
+                        Text("Die Mengen von \(recipeName) werden vor dem Hinzufügen angepasst.")
+                            .font(.callout)
+                            .foregroundStyle(theme.muted)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    ServingPicker(
+                        value: $servings,
+                        original: originalServings,
+                        disabled: isAdding
+                    )
+
+                    Button(action: onAdd) {
+                        Label(
+                            isAdding
+                                ? "Wird hinzugefügt …"
+                                : "Für \(servings) \(servings == 1 ? "Portion" : "Portionen") hinzufügen",
+                            systemImage: "cart.badge.plus"
+                        )
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(theme.accent)
+                    .foregroundStyle(theme.ink)
+                    .disabled(isAdding)
+                }
+                .padding()
+            }
+            .background(theme.background)
+            .navigationTitle("Einkauf planen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Abbrechen") { dismiss() }
+                        .disabled(isAdding)
+                }
+            }
+        }
     }
 }
 
 private struct StepCard: View {
     let number: Int
     let step: RecipeStep
+    @Environment(\.recipeTheme) private var theme
     @State private var remaining: Int?
     @State private var timerTask: Task<Void, Never>?
 
@@ -314,8 +839,8 @@ private struct StepCard: View {
                 Text("\(number)")
                     .font(.headline)
                     .frame(width: 32, height: 32)
-                    .background(AppTheme.butter, in: Circle())
-                    .foregroundStyle(AppTheme.cocoa)
+                    .background(theme.accent, in: Circle())
+                    .foregroundStyle(theme.ink)
                 Text(step.instruction)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }

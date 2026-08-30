@@ -50,7 +50,7 @@ export function SharedLinkReceiver() {
     if (!source) {
       Alert.alert(
         'Kein Rezept-Link gefunden',
-        'Bitte einen TikTok- oder Instagram-Beitrag teilen.',
+        'Bitte eine Rezept-Webseite, einen Pinterest-Pin, ein YouTube-Video oder einen Social-Beitrag teilen.',
         [{
           text: 'OK',
           onPress: () => {

@@ -124,11 +124,16 @@ def _transport_timeout(value: Any) -> Timeout:
     return Timeout.from_float(float(value))
 
 
-def _response_from_urllib3(raw: Any, prepared: requests.PreparedRequest) -> requests.Response:
+def _response_from_urllib3(
+    raw: Any,
+    prepared: requests.PreparedRequest,
+    *,
+    content: bytes | None = None,
+) -> requests.Response:
     response = requests.Response()
     response.status_code = int(raw.status)
     response.headers = requests.structures.CaseInsensitiveDict(raw.headers)
-    response._content = raw.data
+    response._content = raw.data if content is None else content
     response.url = prepared.url
     response.reason = raw.reason
     response.request = prepared
@@ -147,6 +152,7 @@ def pinned_https_request(
     files: Any = None,
     params: Any = None,
     timeout: Any = 10,
+    max_response_bytes: int | None = None,
 ) -> requests.Response:
     """HTTPS-Request ohne zweite DNS-Auflösung.
 
@@ -203,9 +209,17 @@ def pinned_https_request(
                 retries=False,
                 assert_same_host=False,
                 timeout=transport_timeout,
-                preload_content=True,
+                preload_content=max_response_bytes is None,
                 decode_content=True,
             )
+            if max_response_bytes is not None:
+                limit = max(1, int(max_response_bytes))
+                content = raw.read(limit + 1, decode_content=True)
+                if len(content) > limit:
+                    raise ValueError(
+                        f"Antwort überschreitet das Limit von {limit} Bytes"
+                    )
+                return _response_from_urllib3(raw, prepared, content=content)
             return _response_from_urllib3(raw, prepared)
         except urllib3.exceptions.HTTPError as exc:
             last_error = exc
@@ -299,6 +313,7 @@ def server_configured_request(
     files: Any = None,
     params: Any = None,
     timeout: Any = 10,
+    max_response_bytes: int | None = None,
 ) -> requests.Response:
     """Öffentlich DNS-gepinnt, intern nur als exakte Literal-IP-Allowlist.
 
@@ -347,6 +362,7 @@ def server_configured_request(
         files=files,
         params=params,
         timeout=timeout,
+        max_response_bytes=max_response_bytes,
     )
 
 

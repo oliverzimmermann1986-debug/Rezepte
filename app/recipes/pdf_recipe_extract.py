@@ -48,6 +48,7 @@ class ExtractedRecipeData:
     steps: List[Dict[str, Any]] = field(default_factory=list)
     servings: Optional[int] = None
     tags: List[str] = field(default_factory=list)
+    allergen_info: Optional[Dict[str, str]] = None
     method: str = "none"
     warnings: List[str] = field(default_factory=list)
 
@@ -58,6 +59,7 @@ class ExtractedRecipeData:
             "steps": self.steps,
             "servings": self.servings,
             "tags": self.tags,
+            "allergen_info": self.allergen_info,
             "method": self.method,
             "warnings": self.warnings,
         }
@@ -300,6 +302,8 @@ def extract_recipe_data(text: str, *, analyzer=None,
         servings = None
     result.servings = servings
     result.tags = sorted({str(tag).strip() for tag in (content.get("tags") or []) if str(tag).strip()})[:60]
+    from .auto_tags import normalize_allergen_info
+    result.allergen_info = normalize_allergen_info(content.get("allergen_info"))
     return result
 
 
@@ -307,11 +311,7 @@ def existing_hints(db) -> tuple[List[str], List[str]]:
     try:
         with db.conn() as conn:
             tags = [row[0] for row in conn.execute("SELECT name FROM tags").fetchall()]
-            canon = [row[0] for row in conn.execute(
-                "SELECT DISTINCT canonical_name FROM recipe_ingredients "
-                "WHERE canonical_name IS NOT NULL AND canonical_name != ''"
-            ).fetchall()]
-        return tags, canon
+        return tags, db.ingredient_name_hints()
     except Exception as exc:
         logger.warning("Stammdaten-Hints konnten nicht geladen werden: %s", exc)
         return [], []
@@ -350,9 +350,14 @@ def apply_extracted_recipe_data(db, recipe_id: int, data: ExtractedRecipeData, *
         with db.conn() as conn:
             conn.execute("UPDATE recipes SET description=? WHERE id=?", (data.text, recipe_id))
     if will_write_ingredients:
-        auto_tags = sorted(set(data.tags) | set(compute_diet_tags([
-            item.get("canonical_name") for item in data.ingredients if item.get("canonical_name")
-        ])))
+        auto_tags = sorted(set(data.tags) | set(compute_diet_tags(
+            [
+                item.get("canonical_name")
+                for item in data.ingredients
+                if item.get("canonical_name")
+            ],
+            allergen_info=data.allergen_info,
+        )))
         db.recipe_apply_extraction_result(
             recipe_id,
             ingredients=data.ingredients,

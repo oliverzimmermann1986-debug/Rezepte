@@ -309,7 +309,7 @@ export function RecipeMetadataEditor({
               )}
             </View>
             <View style={sharedStyles.card}>
-              <Text style={styles.label}>TikTok-, Instagram- oder Quell-Link</Text>
+              <Text style={styles.label}>Rezept-Webseite oder Quell-Link</Text>
               <TextInput autoCapitalize="none" autoCorrect={false} keyboardType="url" placeholder="https://…" placeholderTextColor={colors.muted} value={url} onChangeText={setUrl} style={sharedStyles.input} />
               <Text style={styles.help}>Der Link wird ausschließlich in der jeweiligen Plattform geöffnet.</Text>
             </View>

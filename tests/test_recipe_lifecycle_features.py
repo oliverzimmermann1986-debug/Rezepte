@@ -208,6 +208,10 @@ def test_ingredient_update_revokes_previous_verification(client, test_db, tmp_pa
     assert recipe["verified_at"] is None
     assert recipe["verified_by"] is None
     assert test_db.recipe_ingredients_get(recipe_id)[0]["name"] == "Kartoffel"
+    suggestion = test_db.shopping_product_suggestions("kart", 8)[0]
+    assert suggestion["name"] == "Kartoffel"
+    assert suggestion["category"] == "Obst & Gemüse"
+    assert suggestion["default_unit"] == "Stück"
 
 
 def test_verification_rechecks_ingredients_after_concurrent_replacement(

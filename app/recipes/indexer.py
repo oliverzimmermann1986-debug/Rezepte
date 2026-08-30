@@ -522,11 +522,7 @@ def _extract_for_recipe(
         with db.conn() as c:
             tag_rows = c.execute("SELECT name FROM tags").fetchall()
             existing_tags = [r[0] for r in tag_rows]
-            can_rows = c.execute(
-                "SELECT DISTINCT canonical_name FROM recipe_ingredients "
-                "WHERE canonical_name IS NOT NULL AND canonical_name != ''"
-            ).fetchall()
-            existing_canonical = [r[0] for r in can_rows]
+            existing_canonical = db.ingredient_name_hints()
     except Exception as e:
         logger.warning(f"Rezept #{rid}: existing-Stammdaten-Lookup failed: {e}")
         existing_tags, existing_canonical = [], []
@@ -605,7 +601,10 @@ def _extract_for_recipe(
     # (auto=0) bleiben dabei unangetastet.
     from .auto_tags import compute_diet_tags
     ki_tags = content.get("tags") or []
-    diet_tags = compute_diet_tags([p["canonical_name"] for p in prepared])
+    diet_tags = compute_diet_tags(
+        [p["canonical_name"] for p in prepared],
+        allergen_info=content.get("allergen_info"),
+    )
     previous_auto_tags = [t["name"] for t in current_tags if t.get("auto")]
     all_auto_tags = sorted(set(previous_auto_tags) | set(ki_tags) | set(diet_tags))
     final_status = "ok" if prepared and steps else "error"
@@ -633,17 +632,24 @@ def _extract_for_recipe(
     # KI-Halbextrakt). +1 KI-Call, ~$0.0005. Skip wenn schon berechnet
     # (force-recompute geht über den dedicated Endpoint).
     nutrition_msg = ""
+    nutrition_owner = f"nutrition-extract:{rid}:{time.time_ns()}"
     try:
         if len(prepared) >= 3 and not recipe.get("calories_per_serving"):
-            nutr = analyzer.compute_nutrition(prepared, servings)
+            if not db.recipe_claim_nutrition(rid, nutrition_owner):
+                raise RuntimeError("Nährwert-Claim konnte nicht übernommen werden")
+            nutrition_ingredients = db.recipe_ingredients_get(rid)
+            nutr = analyzer.compute_nutrition(nutrition_ingredients, servings)
             if nutr:
                 db.recipe_set_nutrition(
                     rid, nutr["calories"], nutr["protein_g"],
                     nutr["carbs_g"], nutr["fat_g"],
+                    claim_owner=nutrition_owner,
                 )
                 nutrition_msg = f", ~{nutr['calories']} kcal/Portion"
     except Exception as e:
         logger.warning(f"Rezept #{rid}: compute_nutrition failed: {e}")
+    finally:
+        db.recipe_release_nutrition_claim(rid, nutrition_owner)
 
     logger.info(
         f"Rezept #{rid} '{recipe.get('name')}': "

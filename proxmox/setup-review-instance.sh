@@ -27,9 +27,15 @@ systemctl disable --now scrapper-job.timer
   --trusted-proxy-cidr "$REVERSE_PROXY_IP/32"
 
 install -d -m 0755 /etc/scrapper
-printf 'SCRAPPER_FORWARDED_ALLOW_IPS=%s\n' "$REVERSE_PROXY_IP" > /etc/scrapper/web.env
+printf 'SCRAPPER_BIND_HOST=0.0.0.0\nSCRAPPER_FORWARDED_ALLOW_IPS=%s\n' \
+  "$REVERSE_PROXY_IP" > /etc/scrapper/web.env
 chown root:root /etc/scrapper/web.env
 chmod 0600 /etc/scrapper/web.env
+
+# Marker für proxmox/update-local.sh: der Import-Timer bleibt auf dieser
+# Instanz auch über spätere Updates hinweg deaktiviert.
+: > /etc/scrapper/review-instance
+chmod 0644 /etc/scrapper/review-instance
 
 chown -R "$APP_USER:$APP_USER" \
   "$APP_DIR/data" "$APP_DIR/files/rezepte" "$APP_DIR/logs" "$APP_DIR/temp"

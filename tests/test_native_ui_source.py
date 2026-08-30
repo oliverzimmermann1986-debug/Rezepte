@@ -178,7 +178,18 @@ def test_testflight_group_assignment_requires_explicit_workflow_input():
     assert "assign_internal_testers:" in workflow
     assert "default: false" in workflow
     assert "ASC_ASSIGN_INTERNAL_GROUP" in workflow
+    assert "verify_marketing_version:" in workflow
+    assert "ASC_MARKETING_VERSION" in workflow
+    assert "ASC_UPLOAD_STARTED_AT" in workflow
+    assert 'ASC_ALLOW_EXISTING_BUILD: "true"' in workflow
     assert 'booleanEnvironment("ASC_ASSIGN_INTERNAL_GROUP")' in ensure
+    assert 'required("ASC_MARKETING_VERSION")' in ensure
+    assert "ASC_UPLOAD_STARTED_AT" in ensure
+    assert 'include: "preReleaseVersion"' in ensure
+    assert "preReleaseVersion" in ensure
+    assert '"filter[preReleaseVersion.version]": marketingVersion' in ensure
+    assert "preRelease?.version !== marketingVersion" in ensure
+    assert "uploadedAt >= uploadStartedAt" in ensure
     assert "if (assignInternalGroup)" in ensure
     assert "hasAccessToAllBuilds" in ensure
 

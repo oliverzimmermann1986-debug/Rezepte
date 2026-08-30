@@ -2,14 +2,27 @@
 
 ## Native iPhone-App
 
-Die native TypeScript-/Expo-App liegt in [`native-ios/`](native-ios/README.md).
-Sie lädt keine Plattformvideos, öffnet Quelllinks ausschließlich extern und
-kennzeichnet Rezepte ohne Zutaten oder Zubereitungsschritte zur manuellen
-Pflege. `ios-swift/` ist nur noch Altbestand und kein Releasepfad.
+Der neue iPhone-Hauptpfad liegt in [`ios-swift/`](ios-swift/README.md) und ist
+eine eigenständige SwiftUI-App. Ihre Quellenküche übernimmt Rezeptlinks aus
+Webseiten, Pinterest, YouTube, TikTok und Instagram sowie Fotos und PDFs. Die
+bisherige Expo-App bleibt unter [`native-ios/`](native-ios/README.md) als
+Vergleichs- und Rückfallstand erhalten, ist aber nicht mehr der automatisch
+geprüfte Hauptpfad.
+
+Die SwiftUI-App enthält außerdem die vollständige manuelle Importprüfung mit
+KI-Neuanalyse sowie einen servergespeicherten Kochmodus mit Portionsskalierung,
+Schritt-Timern und idempotentem Eintrag in die Kochhistorie.
+
+Der **Quellenwächter** macht aus dem Original-Link einen überprüfbaren
+Rezeptpass: Textstände werden als Fingerprint gesichert, spätere Änderungen als
+Diff angezeigt und niemals automatisch in das Rezept übernommen. Ein lokaler
+**Rezept-TÜV** markiert zusätzlich fehlende Portionen, Zutaten, Schritte,
+Mengenangaben und Dubletten. Wochenplanzutaten und wiederkehrender
+Haushaltsbedarf laufen in derselben Einkaufsliste zusammen.
 
 Proxmox-LXC-Container für den Scraper-Job:
 
-**Rezeptbibliothek mit TikTok/Instagram-Linkimport** — übernimmt Links aus zwei
+**Rezeptbibliothek mit offenem Quellenimport** — übernimmt Links aus zwei
 separaten E-Mail-Postfächern (Rezepte + Hochzeit). Plattformmedien werden nicht
 heruntergeladen. Unvollständige Eingänge bleiben mit ihrem Original-Link zur
 manuellen Bearbeitung erhalten.
@@ -19,13 +32,15 @@ Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Sta
 
 ## Oberfläche
 
-- Rezeptsuche ist die Startseite
-- festes Butter-Yellow-Design ohne alte Theme-Umschaltung
-- Favoriten und Einkaufsliste direkt in der Hauptnavigation
-- Mobile-First mit vollständig freigehaltener Bottom-Navigation und iPhone-Safe-Area
+- Quellen-Eingang ist die Startseite; das Archiv bleibt einen Tab entfernt
+- Butter, Salbei, Tomate und Pflaume sind gerätebezogen umschaltbar
+- Einkaufsliste mit lokalem Produktkatalog, Autovervollständigung, Icons und Supermarktbereichen
+- Quellenwächter mit unveränderlicher Baseline, Quell-Diff und Rezept-TÜV
+- wiederkehrender Haushaltsbedarf zusammen mit Rezept- und Wochenplanzutaten
+- native iPhone-Navigation mit Dynamic Type, Dark Mode und iOS-Safe-Areas
 - erweiterte Filter als Side-Sheet am Desktop und Bottom-Sheet auf Smartphones
 - keine externen Schriftarten oder Design-CDNs
-- zentraler Admin-Reiter für Import, Qualität, Versionen, PDF/Scan, Suche und Wartung
+- Administration in den Einstellungen für Konten mit Vollzugriff
 - automatische PDF-/Scan-Aufbereitung mit Ausrichtung, OCR, Randbeschnitt und Seiteneditor
 
 
@@ -514,8 +529,13 @@ cd /pfad/zum/entpackten/Release
 sudo bash proxmox/update-local.sh
 ```
 
-Das Skript überträgt Backend und Frontend gemeinsam, bewahrt alle Laufzeitdaten,
-startet `scrapper-web` neu und verifiziert anschließend Version und PDF-Routen.
+Das Skript überträgt Backend und Frontend gemeinsam, bewahrt auf Produktion alle
+Laufzeitdaten, startet `scrapper-web` neu und verifiziert anschließend Version,
+native Capabilities und die exakten OpenAPI-Methoden des ausgelieferten Vertrags.
+Nur auf der isolierten Instanz `rezepte-review` sichert es zusätzlich die rein
+künstlichen Review-Daten und hebt Quell-URL, Quell-Snapshots und Demo-Wochenplan
+atomar sowie wiederholbar auf den dokumentierten Sollstand an; Konten und
+Zugangsdaten bleiben dabei unverändert.
 
 ### PDF-Rezeptdaten
 

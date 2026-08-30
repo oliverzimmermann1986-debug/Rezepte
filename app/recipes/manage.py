@@ -33,8 +33,9 @@ from ..core.safety import (
     atomic_write_bytes,
     atomic_write_json,
     atomic_write_text,
+    write_manifest,
 )
-from ..db import Database
+from ..db import Database, RECIPE_VARIANT_PENDING_STATUS
 from ..jobs.locks import file_lock_path_or_none
 from .naming import normalize_recipe_name
 
@@ -50,6 +51,16 @@ def _recipe_mutation_lock(db: Database, recipe_id: int) -> Iterator[None]:
             raise RuntimeError(
                 f"Rezept #{recipe_id} wird gerade in einem anderen Prozess geändert"
             )
+        yield
+
+
+@contextmanager
+def _variant_creation_lock(db: Database) -> Iterator[None]:
+    """Serialize exact target selection across different source recipes."""
+    lock_path = db.path.parent / f".{db.path.name}.recipe-variants.lock"
+    with file_lock_path_or_none(lock_path, wait_seconds=5.0) as lock:
+        if lock is None:
+            raise RuntimeError("Eine andere Rezeptvariante wird gerade erstellt")
         yield
 
 
@@ -388,11 +399,135 @@ def _safe_update_recipe_metadata_locked(
     }
 
 
+def _variant_info(target: Path) -> Dict[str, Any]:
+    info_path = target / "info.json"
+    if not info_path.is_file() or info_path.is_symlink():
+        return {}
+    try:
+        parsed = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _recover_interrupted_variant(
+    db: Database,
+    source_recipe_id: int,
+    target: Path,
+) -> None:
+    """Recover only sidecar-proven pending variants; never delete user folders."""
+    existing = db.recipe_get_by_folder(str(target))
+    target_exists = target.exists()
+    if not existing and not target_exists:
+        return
+
+    info = _variant_info(target) if target_exists else {}
+    state = str(info.get("variant_state") or "").strip().casefold()
+    try:
+        sidecar_source_id = int(info.get("variant_of"))
+    except (TypeError, ValueError):
+        sidecar_source_id = None
+    pending_row = bool(
+        existing
+        and existing.get("ingredients_status") == RECIPE_VARIANT_PENDING_STATUS
+    )
+    matching_pending_folder = bool(
+        target_exists
+        and state in {"pending", "finalized"}
+        and sidecar_source_id == int(source_recipe_id)
+    )
+
+    if pending_row and matching_pending_folder and state == "finalized":
+        final_status = str(info.get("variant_final_status") or "ok")
+        write_manifest(target, source={
+            "operation": "recipe_variant",
+            "source_recipe_id": source_recipe_id,
+        })
+        db.recipe_variant_finalize(int(existing["id"]), status=final_status)
+        raise RuntimeError(f"Ziel-Folder existiert bereits: {target}")
+
+    if pending_row and (not target_exists or matching_pending_folder):
+        db.recipe_delete(int(existing["id"]))
+        if matching_pending_folder:
+            shutil.rmtree(_assert_inside_root(target))
+        return
+
+    if not existing and matching_pending_folder and state == "pending":
+        shutil.rmtree(_assert_inside_root(target))
+        return
+
+    raise RuntimeError(f"Ziel-Folder existiert bereits: {target}")
+
+
+def finalize_recipe_variant(
+    db: Database,
+    recipe_id: int,
+    *,
+    final_status: str = "ok",
+) -> None:
+    """Publish the filesystem finalization marker before exposing the DB row."""
+    recipe = db.recipe_get(recipe_id, include_pending=True)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
+    if recipe.get("ingredients_status") != RECIPE_VARIANT_PENDING_STATUS:
+        raise RuntimeError("Rezeptvariante ist nicht im finalisierbaren Zustand")
+    folder = _assert_inside_root(Path(str(recipe.get("folder_path") or "")))
+    info = _variant_info(folder)
+    if not info or str(info.get("variant_state") or "") != "pending":
+        raise RuntimeError("Pending-Sidecar der Rezeptvariante fehlt")
+    info["variant_state"] = "finalized"
+    info["variant_final_status"] = final_status
+    atomic_write_json(folder / "info.json", info)
+    write_manifest(folder, source={
+        "operation": "recipe_variant",
+        "source_recipe_id": info.get("variant_of"),
+    })
+    db.recipe_variant_finalize(recipe_id, status=final_status)
+
+
 def safe_duplicate_recipe(
     db: Database,
     recipe_id: int,
     *,
     new_name: str,
+    variant_provenance: Optional[Dict[str, Any]] = None,
+    review_notice: Optional[str] = None,
+    expected_ingredients: Optional[List[Dict[str, Any]]] = None,
+    defer_finalization: bool = False,
+    final_status: Optional[str] = None,
+) -> Dict[str, Any]:
+    with _recipe_mutation_lock(db, recipe_id):
+        return _safe_duplicate_recipe_locked(
+            db,
+            recipe_id,
+            new_name=new_name,
+            variant_provenance=variant_provenance,
+            review_notice=review_notice,
+            expected_ingredients=expected_ingredients,
+            defer_finalization=defer_finalization,
+            final_status=final_status,
+        )
+
+
+def _safe_duplicate_recipe_locked(
+    db: Database,
+    recipe_id: int,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    with _variant_creation_lock(db):
+        return _safe_duplicate_recipe_serialized(db, recipe_id, **kwargs)
+
+
+def _safe_duplicate_recipe_serialized(
+    db: Database,
+    recipe_id: int,
+    *,
+    new_name: str,
+    variant_provenance: Optional[Dict[str, Any]] = None,
+    review_notice: Optional[str] = None,
+    expected_ingredients: Optional[List[Dict[str, Any]]] = None,
+    defer_finalization: bool = False,
+    final_status: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Erstellt eine eigenständige Rezeptvariante ohne Social-Media-Video.
 
@@ -408,6 +543,9 @@ def safe_duplicate_recipe(
         raise ValueError("Der Name der Variante ist zu lang (maximal 200 Zeichen)")
     if any(part in name for part in ("/", "\\", "..")):
         raise ValueError("Der Name darf keine Pfad-Separatoren oder '..' enthalten")
+    notice = str(review_notice or "").strip()
+    if len(notice) > 2_000:
+        raise ValueError("Der Varianten-Hinweis ist zu lang")
 
     recipe = db.recipe_get(recipe_id)
     if not recipe or recipe.get("deleted_at") is not None:
@@ -424,8 +562,7 @@ def safe_duplicate_recipe(
         / sanitize_filename(category)
         / sanitize_filename(name)
     )
-    if target.exists():
-        raise RuntimeError(f"Ziel-Folder existiert bereits: {target}")
+    _recover_interrupted_variant(db, recipe_id, target)
 
     copied_names: set[str] = set()
     published: Optional[Path] = None
@@ -434,8 +571,15 @@ def safe_duplicate_recipe(
         ".jpg", ".jpeg", ".png", ".webp", ".heic",
         ".pdf", ".txt",
     }
+    source_status = str(recipe.get("ingredients_status") or "pending")
+    completed_status = str(final_status or source_status)
+    if completed_status == RECIPE_VARIANT_PENDING_STATUS:
+        completed_status = "ok"
     try:
-        with AtomicDirectoryCommit(target) as transaction:
+        with AtomicDirectoryCommit(
+            target,
+            allow_unique_suffix=False,
+        ) as transaction:
             for source in source_folder.iterdir():
                 if (
                     not source.is_file()
@@ -464,6 +608,13 @@ def safe_duplicate_recipe(
                         "Recipe #%s: ungültige info.json beim Varianten-Klon ignoriert",
                         recipe_id,
                     )
+            for inherited_key in (
+                "variant_provenance",
+                "variant_review_notice",
+                "variant_state",
+                "variant_final_status",
+            ):
+                info.pop(inherited_key, None)
             info.update({
                 "name": name,
                 "type": recipe_type,
@@ -472,29 +623,43 @@ def safe_duplicate_recipe(
                 "url": None,
                 "variant_of": recipe_id,
                 "created_at": time.time(),
+                "variant_state": "pending" if defer_finalization else "finalized",
+                "variant_final_status": completed_status,
             })
+            if variant_provenance:
+                info["variant_provenance"] = dict(variant_provenance)
+            if notice:
+                info["variant_review_notice"] = notice
             info.pop("video_filename", None)
             atomic_write_json(transaction.path("info.json"), info)
+
+            thumb_filename = str(recipe.get("thumb_filename") or "")
+            if thumb_filename not in copied_names:
+                thumb_filename = None
+            new_id = db.recipe_upsert(
+                url=None,
+                name=name,
+                type=recipe_type,
+                category=category,
+                folder_path=str(target),
+                description=recipe.get("description"),
+                thumb_filename=thumb_filename,
+                video_filename=None,
+                source_added_at=time.time(),
+                initial_ingredients_status=RECIPE_VARIANT_PENDING_STATUS,
+            )
+            db.recipe_clone_content(
+                recipe_id,
+                new_id,
+                expected_ingredients=expected_ingredients,
+                preserve_target_status=True,
+            )
             published = transaction.commit(manifest_source={
                 "operation": "recipe_variant",
                 "source_recipe_id": recipe_id,
             })
-
-        thumb_filename = str(recipe.get("thumb_filename") or "")
-        if thumb_filename not in copied_names:
-            thumb_filename = None
-        new_id = db.recipe_upsert(
-            url=None,
-            name=name,
-            type=recipe_type,
-            category=category,
-            folder_path=str(published),
-            description=recipe.get("description"),
-            thumb_filename=thumb_filename,
-            video_filename=None,
-            source_added_at=time.time(),
-        )
-        db.recipe_clone_content(recipe_id, new_id)
+        if not defer_finalization:
+            db.recipe_variant_finalize(new_id, status=completed_status)
     except Exception as exc:
         if new_id is not None:
             try:
@@ -519,6 +684,9 @@ def safe_duplicate_recipe(
         "folder_path": str(published),
         "copied_files": len(copied_names),
         "video_copied": False,
+        "variant_provenance": dict(variant_provenance or {}),
+        "review_notice": notice or None,
+        "finalized": not defer_finalization,
     }
 
 
@@ -532,6 +700,7 @@ def safe_delete_recipe(
     *,
     delete_files: bool = False,
     hard: bool = False,
+    include_pending: bool = False,
 ) -> Dict[str, Any]:
     with _recipe_mutation_lock(db, recipe_id):
         return _safe_delete_recipe_locked(
@@ -539,6 +708,7 @@ def safe_delete_recipe(
             recipe_id,
             delete_files=delete_files,
             hard=hard,
+            include_pending=include_pending,
         )
 
 
@@ -548,6 +718,7 @@ def _safe_delete_recipe_locked(
     *,
     delete_files: bool = False,
     hard: bool = False,
+    include_pending: bool = False,
 ) -> Dict[str, Any]:
     """Löscht ein Rezept. Standardmäßig SOFT-DELETE (→ Papierkorb).
 
@@ -569,7 +740,7 @@ def _safe_delete_recipe_locked(
 
     Returns: {ok, deleted_id, name, folder_deleted, cart_entries_updated, soft}
     """
-    recipe = db.recipe_get(recipe_id)
+    recipe = db.recipe_get(recipe_id, include_pending=include_pending)
     if not recipe:
         raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
     if not hard and recipe.get("deleted_at") is not None:

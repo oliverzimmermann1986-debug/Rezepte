@@ -12,9 +12,24 @@ BACKUP_ROOT="${BACKUP_ROOT:-/opt/scrapper-code-backups}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_FILE="$BACKUP_ROOT/code-$STAMP.tar.gz"
 
+# Die App-Review-Instanz (review-demo/DEPLOYMENT.md) betreibt bewusst keinen
+# Import-Job; ein Update darf scrapper-job.timer dort nicht reaktivieren.
+REVIEW_MARKER="/etc/scrapper/review-instance"
+IS_REVIEW_INSTANCE=0
+if [[ -f "$REVIEW_MARKER" || "$(hostname)" == "rezepte-review" ]]; then
+  IS_REVIEW_INSTANCE=1
+fi
+
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo "Fehler: Bitte als root ausführen." >&2
   exit 1
+fi
+if [[ "$(hostname)" == "rezepte-review" && ! -f "$REVIEW_MARKER" ]]; then
+  # Der Hostname ist die bestehende, dokumentierte Zweit-Erkennung. Fehlt der
+  # Marker auf einer älteren Review-Instanz, wird die Isolation dauerhaft
+  # selbst repariert, bevor irgendein Timer neu konfiguriert werden kann.
+  install -d -m 0755 "$(dirname "$REVIEW_MARKER")"
+  install -m 0644 /dev/null "$REVIEW_MARKER"
 fi
 if [[ ! -f "$SOURCE_DIR/app/main.py" || ! -f "$SOURCE_DIR/requirements.txt" ]]; then
   echo "Fehler: Das Skript muss aus einem vollständig entpackten Rezepte-Release stammen." >&2
@@ -83,7 +98,10 @@ restore_on_error() {
       fi
       systemctl daemon-reload || true
       systemctl restart scrapper-web.service || true
-      systemctl restart scrapper-job.timer scrapper-db-backup.timer || true
+      if [[ "$IS_REVIEW_INSTANCE" != "1" ]]; then
+        systemctl restart scrapper-job.timer || true
+      fi
+      systemctl restart scrapper-db-backup.timer || true
     fi
   fi
   exit "$rc"
@@ -160,10 +178,17 @@ find "$APP_DIR" -path "$APP_DIR/data" -prune -o -path "$APP_DIR/logs" -prune \
   -o -exec chown root:root {} +
 
 systemctl daemon-reload
-systemctl enable scrapper-web.service scrapper-job.timer scrapper-db-backup.timer >/dev/null
+systemctl enable scrapper-web.service scrapper-db-backup.timer >/dev/null
+if [[ "$IS_REVIEW_INSTANCE" == "1" ]]; then
+  systemctl disable --now scrapper-job.timer >/dev/null 2>&1 || true
+else
+  systemctl enable scrapper-job.timer >/dev/null
+fi
 systemctl restart scrapper-web.service
-systemctl restart scrapper-job.timer
-systemctl restart scrapper-db-backup.timer
+if [[ "$IS_REVIEW_INSTANCE" != "1" ]]; then
+  systemctl restart scrapper-job.timer
+  systemctl restart scrapper-db-backup.timer
+fi
 
 for _ in {1..30}; do
   if curl -fsS http://127.0.0.1:8000/healthz > /tmp/rezepte-health.json 2>/dev/null; then
@@ -180,7 +205,15 @@ if [[ -z "$EXPECTED_VERSION" || "$HEALTH_VERSION" != "$EXPECTED_VERSION" ]]; the
   false
 fi
 
-for REQUIRED_CAPABILITY in ai-shopping-optimization shopping-categories native-admin-roles; do
+for REQUIRED_CAPABILITY in \
+  ai-shopping-optimization \
+  shopping-categories \
+  native-admin-roles \
+  native-admin-config-v1 \
+  recurring-shopping \
+  meal-conductor-v1 \
+  source-integrity-v2 \
+  substitution-lab-v1; do
   if ! python3 -c 'import json,sys; raise SystemExit(0 if sys.argv[2] in json.load(open(sys.argv[1])).get("capabilities", []) else 1)' \
       /tmp/rezepte-health.json "$REQUIRED_CAPABILITY"; then
     echo "Fehler: Backend-Faehigkeit '$REQUIRED_CAPABILITY' fehlt nach dem Update." >&2
@@ -189,29 +222,92 @@ for REQUIRED_CAPABILITY in ai-shopping-optimization shopping-categories native-a
   fi
 done
 
-# Die native App braucht diese Route fuer KI-Sortierung und Kategorien. Ohne
-# Cookie ist 401 korrekt; 404 oder keine Verbindung beweist einen alten Server.
-OPTIMIZER_STATUS="$(curl -sS -o /tmp/rezepte-optimizer-route.json -w '%{http_code}' \
-  -X POST http://127.0.0.1:8000/api/cart/optimize/preview || true)"
-if [[ "$OPTIMIZER_STATUS" == "404" || "$OPTIMIZER_STATUS" == "000" ]]; then
-  echo "Fehler: Einkaufslisten-KI wurde nach dem Update nicht registriert (HTTP $OPTIMIZER_STATUS)." >&2
+# Prüfe die tatsächlich registrierten FastAPI-Verträge samt HTTP-Methode. Ein
+# 404-Smoke gegen Beispiel-IDs wäre mehrdeutig (Route, Auth oder Datensatz) und
+# könnte insbesondere eine fehlende zweite Methode auf derselben Route übersehen.
+if ! (
+  cd "$APP_DIR"
+  runuser -u "$APP_USER" -- env \
+    SCRAPPER_CONFIG="$APP_DIR/data/config.yaml" \
+    "$APP_DIR/venv/bin/python" - <<'PY'
+import sys
+
+from app.main import app
+
+
+required_methods = {
+    "/api/admin/pdf/preflight": {"get"},
+    "/api/cart/optimize/preview": {"post"},
+    "/api/meal-plan/conductor/preview": {"get", "post"},
+    "/api/recipes/{recipe_id}/source-integrity": {"get"},
+    "/api/recipes/{recipe_id}/source-integrity/check": {"post"},
+    "/api/recipes/{recipe_id}/source-integrity/accept": {"post"},
+    "/api/recipes/{recipe_id}/substitutions": {"get"},
+    "/api/recipes/{recipe_id}/substitutions/apply": {"post"},
+}
+paths = app.openapi().get("paths", {})
+missing = [
+    f"{method.upper()} {path}"
+    for path, methods in required_methods.items()
+    for method in sorted(methods)
+    if method not in paths.get(path, {})
+]
+if missing:
+    print("Fehler: Erforderliche API-Vertraege fehlen:", file=sys.stderr)
+    for contract in missing:
+        print(f"  - {contract}", file=sys.stderr)
+    raise SystemExit(1)
+
+print(f"OpenAPI-Gate: {sum(map(len, required_methods.values()))} Methoden registriert.")
+PY
+); then
   journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
   false
 fi
 
-# PDF-Route muss nach dem Neustart existieren. Ohne Cookie ist 401 korrekt;
-# nur 404 würde erneut einen gemischten Versionsstand beweisen.
-PDF_STATUS="$(curl -sS -o /tmp/rezepte-pdf-route.json -w '%{http_code}' \
-  http://127.0.0.1:8000/api/admin/pdf/preflight || true)"
-if [[ "$PDF_STATUS" == "404" || "$PDF_STATUS" == "000" ]]; then
-  echo "Fehler: PDF-API wurde nach dem Update nicht registriert (HTTP $PDF_STATUS)." >&2
-  journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
-  false
+# Bestehende CT117-Review-Daten werden erst nach erfolgreicher Schema-,
+# Dienst-, Capability- und OpenAPI-Prüfung angehoben. Der Fixer validiert die
+# isolierte künstliche Instanz erneut, erstellt als APP_USER ein geprüftes
+# SQLite-Backup und schreibt URL, Quellenstände und Wochenplan atomar. Jeder
+# Fehler bricht durch `set -e` hart ab und lässt das Backup zur Wiederherstellung
+# unter data/backups/review-refresh liegen.
+if [[ "$IS_REVIEW_INSTANCE" == "1" ]]; then
+  # Die neue Version wurde oben bereits gegen Health, Capabilities und OpenAPI
+  # geprüft. Für Backup und atomare Demo-Migration wird der einzige
+  # schreibende Review-Dienst angehalten, damit zwischen Sicherung und
+  # Transaktion kein Wochenplan- oder Konfigurations-Write verloren gehen kann.
+  systemctl stop scrapper-web.service
+  pushd "$APP_DIR" >/dev/null
+  runuser -u "$APP_USER" -- env \
+    SCRAPPER_CONFIG="$APP_DIR/data/config.yaml" \
+    "$APP_DIR/venv/bin/python" -m tools.refresh_app_review_demo \
+    --db "$APP_DIR/data/scrapper.db" \
+    --recipe-root "$APP_DIR/files/rezepte" \
+    --config "$APP_DIR/data/config.yaml" \
+    --backup-dir "$APP_DIR/data/backups/review-refresh" \
+    --public-url "https://rezepte-review.mausbaeren.me"
+  popd >/dev/null
+  systemctl start scrapper-web.service
+  rm -f /tmp/rezepte-health-after-review-refresh.json
+  for _ in {1..30}; do
+    if curl -fsS http://127.0.0.1:8000/healthz \
+      > /tmp/rezepte-health-after-review-refresh.json 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+  REFRESHED_HEALTH_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version", ""))' \
+    /tmp/rezepte-health-after-review-refresh.json 2>/dev/null || true)"
+  if [[ "$REFRESHED_HEALTH_VERSION" != "$EXPECTED_VERSION" ]]; then
+    echo "Fehler: Review-Dienst meldet nach Demo-Migration Version '$REFRESHED_HEALTH_VERSION' statt '$EXPECTED_VERSION'." >&2
+    journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
+    false
+  fi
+  systemctl restart scrapper-db-backup.timer
 fi
 
 trap - ERR
 rm -rf -- "$APP_DIR/venv.previous" "$APP_DIR/playwright-browsers.previous"
 echo "Update erfolgreich. Backend und Frontend laufen gemeinsam auf Version $EXPECTED_VERSION."
 echo "Gesundheit: $(cat /tmp/rezepte-health.json)"
-echo "Einkaufslisten-KI: HTTP $OPTIMIZER_STATUS (400, 401 oder 422 sind ohne Nutzdaten korrekt)"
-echo "PDF-Route: HTTP $PDF_STATUS (200 oder 401 sind korrekt)"
+echo "API-Vertraege: OpenAPI-Methoden vollständig registriert"

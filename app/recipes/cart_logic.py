@@ -200,8 +200,13 @@ def cart_for_display(db) -> List[Dict[str, object]]:
     """Holt den Cart-Inhalt aus der DB und konvertiert Basis-Mengen in
        Anzeige-Mengen. Frontend rendert direkt dieses Resultat."""
     out = []
+    from .shopping_catalog import category_icon, infer_shopping_category
+
     for row in db.cart_list():
         d_amount, d_unit = display_amount(row.get("amount"), row.get("unit"))
+        category = row.get("category") or infer_shopping_category(
+            row.get("name") or "", row.get("canonical_name")
+        )
         out.append({
             "id": row["id"],
             "name": row["name"],
@@ -213,7 +218,8 @@ def cart_for_display(db) -> List[Dict[str, object]]:
             "checked": bool(row.get("checked")),
             "added_at": row.get("added_at"),
             "source_recipe_ids": _parse_json_array(row.get("source_recipe_ids")),
-            "category": row.get("category"),
+            "category": category,
+            "icon": row.get("icon") or category_icon(category),
             "sort_order": row.get("sort_order"),
         })
     return out

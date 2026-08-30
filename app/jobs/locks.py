@@ -30,6 +30,41 @@ logger = logging.getLogger(__name__)
 LOCK_DIR = Path("/opt/scrapper/data/locks")
 
 
+def _ensure_lock_file(lock_path: Path) -> None:
+    """Create the Windows lock byte without racing another opener.
+
+    ``msvcrt.locking`` needs an existing byte. Writing that byte after two
+    handles have already opened the same empty file can fail once one handle
+    locks byte zero. The exclusive creator writes first; observers wait for
+    that initialization and only repair an orphaned empty file.
+    """
+    try:
+        descriptor = os.open(
+            lock_path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+    except FileExistsError:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            try:
+                if lock_path.stat().st_size > 0:
+                    return
+            except FileNotFoundError:
+                return _ensure_lock_file(lock_path)
+            time.sleep(0.01)
+        # A creator may have died between CREATE_NEW and its first write.
+        # Appending repairs that orphan; multiple repairers are harmless.
+        with open(lock_path, "ab", buffering=0) as initializer:
+            if initializer.tell() == 0:
+                initializer.write(b"\n")
+        return
+    try:
+        os.write(descriptor, b"\n")
+    finally:
+        os.close(descriptor)
+
+
 def _try_lock(fh) -> bool:
     """Non-blocking Lock für POSIX und Windows."""
     if os.name == "nt":
@@ -69,16 +104,12 @@ def file_lock_path_or_none(
     fh = None
     acquired = False
     try:
-        fh = open(lock_path, "a+")
+        _ensure_lock_file(lock_path)
+        fh = open(lock_path, "r+")
         try:
             os.chmod(lock_path, 0o600)
         except OSError:
             pass
-        # msvcrt.locking benötigt ein vorhandenes Byte.
-        fh.seek(0, os.SEEK_END)
-        if fh.tell() == 0:
-            fh.write("\n")
-            fh.flush()
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
         while True:
             if _try_lock(fh):

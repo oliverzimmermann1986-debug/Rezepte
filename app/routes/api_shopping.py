@@ -39,6 +39,7 @@ from ..recipes.shopping_optimizer import (
     build_optimized_cart,
     cart_fingerprint,
 )
+from ..recipes.shopping_catalog import SHOPPING_CATEGORY_ICONS, normalize_shopping_category
 from .api_einkauf import einkauf_response, status as einkauf_status
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,22 @@ def get_cart():
     db = get_db()
     materialized = db.recurring_run_due()
     return {"items": cart_for_display(db), "recurring_added": len(materialized)}
+
+
+@router.get("/suggestions")
+def product_suggestions(q: str = "", limit: int = 8):
+    """Lokale Autovervollständigung aus Rezeptzutaten und bisherigen Einkäufen."""
+    return {"items": get_db().shopping_product_suggestions(q, limit)}
+
+
+@router.get("/categories")
+def shopping_categories():
+    return {
+        "items": [
+            {"name": category, "icon": SHOPPING_CATEGORY_ICONS[category]}
+            for category in SHOPPING_CATEGORIES
+        ]
+    }
 
 
 @router.get("/export.txt", response_class=PlainTextResponse)
@@ -155,6 +172,7 @@ class AddItem(BaseModel):
     name: str
     amount: Optional[float] = None
     unit: Optional[str] = None
+    category: Optional[str] = None
 
 
 @router.post("/add")
@@ -169,6 +187,7 @@ def add_item(payload: AddItem):
         amount=p["amount"],
         unit=p["unit"],
         source_recipe_id=None,
+        category=(payload.category or "").strip() or None,
     )
     return {"ok": True, "id": item_id}
 
@@ -211,7 +230,7 @@ def create_recurring(payload: RecurringCreate):
         canonical_name=prepared["canonical_name"],
         amount=prepared["amount"],
         unit=prepared["unit"],
-        category=(payload.category or "").strip() or None,
+        category=normalize_shopping_category(payload.category) if payload.category else None,
         interval_days=payload.interval_days,
         next_due_on=(payload.next_due_on or date.today()).isoformat(),
         active=payload.active,
@@ -241,7 +260,9 @@ def update_recurring(item_id: int, payload: RecurringUpdate):
             unit=prepared["unit"],
         )
     if "category" in fields:
-        values["category"] = (payload.category or "").strip() or None
+        values["category"] = (
+            normalize_shopping_category(payload.category) if payload.category else None
+        )
     if "interval_days" in fields:
         values["interval_days"] = payload.interval_days
     if "next_due_on" in fields:

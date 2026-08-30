@@ -9,8 +9,10 @@ Benötigt werden:
 1. ein expliziter App Identifier für `de.mausbaeren.rezepte`;
 2. ein **Apple Distribution**-Zertifikat samt privatem Schlüssel;
 3. ein **App Store Connect** Provisioning Profile für denselben Identifier;
-4. ein App-Store-Connect-API-Schlüssel (`.p8`) mit Zugriff auf die App;
-5. Team ID, Key ID und Issuer ID.
+4. ein zweites **App Store Connect** Provisioning Profile für die Share
+   Extension `de.mausbaeren.rezepte.share`;
+5. ein App-Store-Connect-API-Schlüssel (`.p8`) mit Zugriff auf die App;
+6. Team ID, Key ID und Issuer ID.
 
 ## Bereits vorbereitet
 
@@ -32,9 +34,11 @@ Repository kopieren.
 3. Unter **Profiles** ein Profil vom Typ **App Store Connect** für genau diesen
    Identifier und das neue Zertifikat erstellen; `.mobileprovision`
    herunterladen.
-4. In App Store Connect die App **Rezepte** mit diesem Bundle Identifier
-   anlegen.
-5. Unter **Users and Access > Integrations > App Store Connect API** einen
+4. Den Identifier `de.mausbaeren.rezepte.share` mit derselben App Group
+   registrieren und dafür ein separates App-Store-Profil herunterladen.
+5. In App Store Connect die App **Quellenküche** mit dem bestehenden Bundle
+   Identifier anlegen beziehungsweise den Namen aktualisieren.
+6. Unter **Users and Access > Integrations > App Store Connect API** einen
    Schlüssel mit Zugriff auf die App erstellen. Die `.p8`-Datei kann nur
    einmal heruntergeladen werden; zusätzlich Key ID und Issuer ID notieren.
 
@@ -43,5 +47,5 @@ Die drei heruntergeladenen Dateien können im lokalen Ordner
 
 Nach dem Herunterladen dieser Dateien wird auf Windows
 `Complete-TestFlightSetup.ps1` ausgeführt. Danach kann auf GitHub unter
-**Actions > Native iOS > Run workflow** die Option zum TestFlight-Upload
+**Actions > SwiftUI iPhone App > Run workflow** die Option zum TestFlight-Upload
 aktiviert werden.

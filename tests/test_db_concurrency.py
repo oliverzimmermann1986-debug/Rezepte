@@ -135,7 +135,7 @@ def test_upgrade_normalizes_existing_recipe_display_names(tmp_path):
         )
         connection.execute(
             "DELETE FROM schema_migrations WHERE version=?",
-            (CURRENT_SCHEMA_VERSION,),
+            (200,),
         )
 
     Database(path)
@@ -148,8 +148,8 @@ def test_upgrade_normalizes_existing_recipe_display_names(tmp_path):
         assert stored == ("Omas Kuchen", "/tmp/Omas_Kuchen")
         assert connection.execute(
             "SELECT name FROM schema_migrations WHERE version=?",
-            (CURRENT_SCHEMA_VERSION,),
-        ).fetchone()[0] == "transactional_boundaries_and_runtime_hardening"
+            (200,),
+        ).fetchone()[0] == "normalize_recipe_display_names"
 
 
 def test_concurrent_recipe_upserts_converge_on_one_row(tmp_path):

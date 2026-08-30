@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..core.safety import atomic_write_json, resolve_directory_under, resolve_regular_file_under
+from .auto_tags import normalize_allergen_info
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,13 @@ class VideoAnalysisResult:
 
 
 def _empty_content() -> dict:
-    return {"ingredients": [], "steps": [], "servings": None, "tags": []}
+    return {
+        "ingredients": [],
+        "steps": [],
+        "servings": None,
+        "tags": [],
+        "allergen_info": None,
+    }
 
 
 def _is_complete(content: Optional[dict]) -> bool:
@@ -79,6 +86,23 @@ def _merge_missing(primary: Optional[dict], enrichment: Optional[dict]) -> Optio
     if out.get("servings") is None and extra.get("servings") is not None:
         out["servings"] = extra["servings"]
     out["tags"] = sorted(set(out.get("tags") or []) | set(extra.get("tags") or []))
+    primary_allergens = normalize_allergen_info(out.get("allergen_info"))
+    extra_allergens = normalize_allergen_info(extra.get("allergen_info"))
+    if primary_allergens is None:
+        out["allergen_info"] = extra_allergens
+    elif extra_allergens is None:
+        out["allergen_info"] = primary_allergens
+    else:
+        # Warnungen gewinnen immer. Nur zwei übereinstimmende/unkritische
+        # Einschätzungen dürfen am Ende als "frei" stehen bleiben.
+        precedence = {"frei": 0, "unklar": 1, "enthält": 2}
+        out["allergen_info"] = {
+            key: max(
+                (primary_allergens[key], extra_allergens[key]),
+                key=precedence.__getitem__,
+            )
+            for key in primary_allergens
+        }
     return out
 
 

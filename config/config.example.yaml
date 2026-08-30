@@ -107,6 +107,14 @@ ai:
     max_seconds: 600
     transcription_model: gpt-4o-mini-transcribe
     cache_filename: .video-ai-evidence.json
+  # Neue Rezeptbilder werden im Hintergrund erzeugt. Vor dem ersten Ersetzen
+  # wird das vorhandene Bild checksummiert unter paths.data_dir gesichert.
+  image_generation:
+    enabled: true
+    model: gpt-image-2
+    size: 1536x1024
+    quality: medium
+    output_format: jpeg
 
 # PDF-Verarbeitung. Falsch gedrehte Seiten werden beim Mail-Import
 # automatisch ausgerichtet. Text-PDFs werden lokal über den Text-Layer

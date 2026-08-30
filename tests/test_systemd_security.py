@@ -30,6 +30,15 @@ def test_web_service_never_trusts_forwarded_headers_from_every_peer():
         assert "/etc/scrapper/web.env" in installer
 
 
+def test_review_instance_binds_for_the_dedicated_tunnel_peer():
+    setup = (ROOT / "proxmox" / "setup-review-instance.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "SCRAPPER_BIND_HOST=0.0.0.0" in setup
+    assert "SCRAPPER_FORWARDED_ALLOW_IPS=%s" in setup
+    assert '"$REVERSE_PROXY_IP" > /etc/scrapper/web.env' in setup
+
+
 def test_mutating_services_are_sandboxed_and_resource_bounded():
     for name in (
         "scrapper-web.service",

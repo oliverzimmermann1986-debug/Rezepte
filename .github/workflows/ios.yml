@@ -1,4 +1,4 @@
-name: TypeScript iPhone App
+name: Legacy Expo iPhone App
 
 on:
   workflow_dispatch:
@@ -18,18 +18,16 @@ on:
         required: false
         default: ""
         type: string
-  push:
-    paths:
-      - "native-ios/**"
-      - ".github/workflows/ios.yml"
-  pull_request:
-    paths:
-      - "native-ios/**"
-      - ".github/workflows/ios.yml"
-
+      verify_marketing_version:
+        description: "Marketingversion des vorhandenen Builds (z. B. 1.1.0)"
+        required: false
+        default: ""
+        type: string
+# Ausschließlich workflow_dispatch-Läufe (Release/Verify): ein laufender
+# TestFlight-Upload darf nie durch einen neuen Lauf abgebrochen werden.
 concurrency:
   group: native-ios-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   verify:
@@ -156,8 +154,16 @@ jobs:
           app_plist="$(find .ipa-inspect/Payload -maxdepth 2 -name Info.plist -print -quit)"
           test -n "$app_plist"
           build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_plist")"
+          marketing_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_plist")"
           [[ "$build_number" =~ ^[1-9][0-9]*$ ]]
+          test -n "$marketing_version"
           echo "number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "marketing_version=$marketing_version" >> "$GITHUB_OUTPUT"
+
+      - name: Record App Store upload start
+        id: upload-start
+        shell: bash
+        run: echo "value=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
       - name: Submit signed IPA to App Store Connect
         run: >-
@@ -176,6 +182,8 @@ jobs:
           ASC_APP_ID: "6803595058"
           ASC_BETA_GROUP_ID: ${{ vars.ASC_BETA_GROUP_ID || '5b41ef54-1e4f-4c3b-98e6-294d6db16233' }}
           ASC_BUILD_NUMBER: ${{ steps.submitted-build.outputs.number }}
+          ASC_MARKETING_VERSION: ${{ steps.submitted-build.outputs.marketing_version }}
+          ASC_UPLOAD_STARTED_AT: ${{ steps.upload-start.outputs.value }}
           ASC_ASSIGN_INTERNAL_GROUP: ${{ inputs.assign_internal_testers && 'true' || 'false' }}
         run: node scripts/testflight-ensure.mjs
 
@@ -219,6 +227,8 @@ jobs:
           ASC_APP_ID: "6803595058"
           ASC_BETA_GROUP_ID: ${{ vars.ASC_BETA_GROUP_ID || '5b41ef54-1e4f-4c3b-98e6-294d6db16233' }}
           ASC_BUILD_NUMBER: ${{ inputs.verify_build_number }}
+          ASC_MARKETING_VERSION: ${{ inputs.verify_marketing_version }}
+          ASC_ALLOW_EXISTING_BUILD: "true"
           ASC_ASSIGN_INTERNAL_GROUP: ${{ inputs.assign_internal_testers && 'true' || 'false' }}
         run: node scripts/testflight-ensure.mjs
 

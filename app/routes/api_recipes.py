@@ -19,9 +19,11 @@ Endpoint schnell auch bei 500+ Rezepten.
 """
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
@@ -41,13 +43,33 @@ from pydantic import BaseModel, Field
 
 from ..auth import require_admin, require_auth
 from ..core.analyzer import build_analyzer
+from ..core.recipe_web import (
+    extract_recipe_web_metadata,
+    normalize_recipe_url,
+    recipe_source_platform,
+)
 from ..core.safety import resolve_directory_under, resolve_regular_file_under
 from ..core.ttl_cache import TTLCache
 from ..config_store import get_config
-from ..db import CookingCompletionConflictError, get_db
+from ..db import (
+    CookingCompletionConflictError,
+    RECIPE_VARIANT_PENDING_STATUS,
+    get_db,
+)
 from pathlib import Path
 from ..recipes.canonical import canonical_name as _canonical
 from ..recipes.search import suggest_query
+from ..recipes.source_integrity import (
+    normalize_source_text,
+    recipe_quality_report,
+    source_change_impact,
+    source_diff,
+    source_fingerprint,
+)
+from ..recipes.substitution_lab import (
+    resolve_candidate,
+    substitution_lab_payload,
+)
 
 logger = logging.getLogger(__name__)
 from ..recipes.indexer import (
@@ -399,15 +421,157 @@ def known_ingredients():
     return {"ingredients": get_db().ingredients_known()}
 
 
+def _public_image_backup(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value for key, value in item.items()
+        if key not in {"backup_path", "folder_path"}
+    } | {"file_url": f"/api/recipes/image-backups/{int(item['id'])}/file"}
+
+
+@router.post(
+    "/images/backfill", status_code=202, dependencies=[Depends(require_admin)]
+)
+def start_image_backfill(request: Request):
+    """Sichert alle alten Bilder und startet erst danach die Generierung."""
+    from ..jobs.task_queue import enqueue
+    from ..recipes.image_generation import ensure_image_generation_configured
+
+    try:
+        ensure_image_generation_configured()
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    db = get_db()
+    batch_id = uuid.uuid4().hex
+    run_id = db.maintenance_start("recipe_image_backfill", _actor(request))
+    try:
+        task_id = enqueue(
+            "recipe_image_backfill",
+            {"run_id": run_id, "batch_id": batch_id},
+            max_active=1,
+        )
+    except Exception as exc:
+        db.maintenance_finish(
+            run_id, ok=False, result={"error": f"Task konnte nicht gestartet werden: {exc}"}
+        )
+        raise HTTPException(409, str(exc)) from exc
+    return {"ok": True, "task_id": task_id, "run_id": run_id, "batch_id": batch_id}
+
+
+@router.get(
+    "/images/backfill/{run_id}", dependencies=[Depends(require_admin)]
+)
+def image_backfill_status(run_id: int):
+    run = get_db().maintenance_get(run_id)
+    if not run or run.get("kind") != "recipe_image_backfill":
+        raise HTTPException(404, "Bildlauf nicht gefunden")
+    return run
+
+
+@router.get("/images/backups", dependencies=[Depends(require_admin)])
+def list_image_backups(
+    recipe_id: Optional[int] = Query(None, ge=1),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    items = get_db().recipe_image_backup_list(recipe_id, limit)
+    return {"items": [_public_image_backup(item) for item in items]}
+
+
+@router.get(
+    "/image-backups/{backup_id}/file", dependencies=[Depends(require_admin)]
+)
+def get_image_backup_file(backup_id: int):
+    from ..recipes.image_generation import image_backup_root
+
+    backup = get_db().recipe_image_backup_get(backup_id)
+    if not backup:
+        raise HTTPException(404, "Bildsicherung nicht gefunden")
+    root = image_backup_root()
+    try:
+        source = resolve_regular_file_under(root / str(backup["backup_path"]), root)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(404, "Bildsicherungsdatei fehlt") from exc
+    return FileResponse(
+        source,
+        headers={"Cache-Control": "private, no-store", "Content-Disposition": "inline"},
+    )
+
+
+@router.post(
+    "/image-backups/{backup_id}/restore", dependencies=[Depends(require_admin)]
+)
+def restore_image_backup(backup_id: int):
+    from ..recipes.image_generation import restore_recipe_image_backup
+
+    try:
+        return restore_recipe_image_backup(backup_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/allergens/backfill", dependencies=[Depends(require_admin)])
+def backfill_allergen_info():
+    """Berechnet die sicheren Allergiker-Auto-Tags des Altbestands neu."""
+    from ..recipes.auto_tags import backfill_diet_auto_tags
+
+    return backfill_diet_auto_tags(get_db())
+
+
+@router.post(
+    "/{recipe_id}/generate-image",
+    status_code=202,
+    dependencies=[Depends(require_admin)],
+)
+def queue_recipe_image(recipe_id: int):
+    from ..jobs.task_queue import enqueue
+    from ..recipes.image_generation import ensure_image_generation_configured
+
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    try:
+        settings = ensure_image_generation_configured()
+        batch_id = uuid.uuid4().hex
+        task_id = enqueue(
+            "recipe_image_generate",
+            {"recipe_id": recipe_id, "batch_id": batch_id},
+            dedupe_key=str(recipe_id),
+        )
+        task = db.background_task_get(task_id) or {}
+        existing_payload = task.get("payload") or {}
+        batch_id = str(existing_payload.get("batch_id") or batch_id)
+        if task.get("status") != "running":
+            db.recipe_image_generation_status(
+                recipe_id,
+                status="pending",
+                model=settings["model"],
+                batch_id=batch_id,
+            )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"ok": True, "task_id": task_id, "recipe_id": recipe_id, "batch_id": batch_id}
+
+
 @router.get("/{recipe_id}")
 def get_recipe(recipe_id: int):
     db = get_db()
     r = db.recipe_get(recipe_id)
-    if not r:
+    if (
+        not r
+        or r.get("deleted_at") is not None
+        or r.get("ingredients_status") == RECIPE_VARIANT_PENDING_STATUS
+    ):
         raise HTTPException(404, "Rezept nicht gefunden")
     r["ingredients"] = db.recipe_ingredients_get(recipe_id)
     r["steps"] = db.recipe_steps_get(recipe_id)
     r["is_favorite"] = bool(r.get("is_favorite"))
+    # SQLite speichert Booleans als 0/1. Listenantworten normalisieren
+    # ``user_verified`` bereits; der Detail-Endpunkt muss denselben JSON-Typ
+    # liefern, damit native Codable-Clients nicht an einzelnen Rezepten
+    # scheitern.
+    r["user_verified"] = bool(r.get("user_verified"))
     r["needs_manual_care"] = not r["ingredients"] or not r["steps"]
     r["manual_care_reasons"] = [
         label for missing, label in (
@@ -418,6 +582,10 @@ def get_recipe(recipe_id: int):
     r["tags"] = db.recipe_tags_get(recipe_id)
     r["cook_summary"] = db.recipe_cook_summary(recipe_id)
     r["cook_history"] = db.recipe_cook_history(recipe_id, limit=10)
+    r["image_backups"] = [
+        _public_image_backup(item)
+        for item in db.recipe_image_backup_list(recipe_id, limit=20)
+    ]
     # PDF-Rezepte (Mail-Import): Original-PDF melden, damit das Frontend
     # einen "PDF öffnen"-Button zeigen kann (Bild allein reicht nicht).
     try:
@@ -433,10 +601,460 @@ def get_recipe(recipe_id: int):
             )[:20000]
         else:
             r["description_original"] = None
+        r["variant_provenance"] = None
+        r["variant_review_notice"] = None
+        info_path = folder / "info.json"
+        if info_path.is_file() and not info_path.is_symlink():
+            try:
+                variant_info = json.loads(info_path.read_text(encoding="utf-8"))
+                if isinstance(variant_info, dict):
+                    provenance = variant_info.get("variant_provenance")
+                    if isinstance(provenance, dict):
+                        r["variant_provenance"] = provenance
+                    notice = variant_info.get("variant_review_notice")
+                    if isinstance(notice, str) and notice.strip():
+                        r["variant_review_notice"] = notice.strip()
+            except (OSError, ValueError, TypeError):
+                logger.warning(
+                    "Recipe #%s: Varianten-Provenienz konnte nicht gelesen werden",
+                    recipe_id,
+                )
     except Exception:
         r["pdf_filename"] = None
         r["description_original"] = None
+        r["variant_provenance"] = None
+        r["variant_review_notice"] = None
     return r
+
+
+def _source_snapshot_public(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not snapshot:
+        return None
+    text = normalize_source_text(snapshot.get("content_text"))
+    preview = text[:900]
+    if len(text) > len(preview):
+        preview += " …"
+    return {
+        "id": int(snapshot["id"]),
+        "source_url": snapshot.get("source_url"),
+        "observed_url": snapshot.get("observed_url"),
+        "content_sha256": snapshot.get("content_sha256"),
+        "preview": preview or None,
+        "page_title": snapshot.get("page_title"),
+        "description_source": snapshot.get("description_source"),
+        "checked_at": snapshot.get("checked_at"),
+        "state": snapshot.get("state"),
+        "error": snapshot.get("error"),
+        "is_baseline": bool(snapshot.get("is_baseline")),
+        "accepted_at": snapshot.get("accepted_at"),
+        "accepted_by": snapshot.get("accepted_by"),
+    }
+
+
+def _stored_source_text(recipe: Dict[str, Any]) -> str:
+    """Bevorzugt das bewahrte Original, fällt sicher auf Description zurück."""
+    try:
+        folder = _safe_recipe_folder(recipe)
+        original = folder / "description_original.txt"
+        if original.is_file() and not original.is_symlink():
+            text = original.read_text(encoding="utf-8", errors="replace")
+            if text.strip():
+                return text[:200_000]
+    except HTTPException:
+        pass
+    return str(recipe.get("description") or "")[:200_000]
+
+
+def _source_integrity_report(recipe_id: int) -> Dict[str, Any]:
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    ingredients = db.recipe_ingredients_get(recipe_id)
+    steps = db.recipe_steps_get(recipe_id)
+    raw_url = str(recipe.get("url") or "").strip()
+    normalized_url = normalize_recipe_url(raw_url) if raw_url else None
+    state = (
+        db.recipe_source_snapshot_state(recipe_id, raw_url)
+        if raw_url else {"baseline": None, "latest": None}
+    )
+    baseline = state.get("baseline")
+    latest = state.get("latest")
+    if not raw_url:
+        status = "missing"
+    elif not latest:
+        status = "local" if not normalized_url else "unchecked"
+    elif latest.get("state") == "unavailable":
+        status = "unavailable"
+    elif (
+        baseline
+        and latest.get("content_sha256")
+        and baseline.get("content_sha256") != latest.get("content_sha256")
+    ):
+        status = "changed"
+    else:
+        status = "current"
+    comparison = None
+    if baseline and latest and baseline.get("content_text") and latest.get("content_text"):
+        comparison = source_diff(baseline["content_text"], latest["content_text"])
+    impact = source_change_impact(
+        comparison,
+        ingredients,
+        baseline_text=baseline.get("content_text") if baseline else None,
+        current_text=latest.get("content_text") if latest else None,
+    )
+    quality = recipe_quality_report(
+        recipe, ingredients, steps, source_status=status
+    )
+    return {
+        "recipe_id": recipe_id,
+        "recipe_name": recipe.get("name"),
+        "source_url": raw_url or None,
+        "platform": recipe_source_platform(normalized_url) if normalized_url else "Datei / eigener Eintrag",
+        "status": status,
+        "checked_at": latest.get("checked_at") if latest else None,
+        "baseline": _source_snapshot_public(baseline),
+        "latest": _source_snapshot_public(latest),
+        "diff": comparison,
+        "impact": impact,
+        "quality": quality,
+        "verified": bool(recipe.get("user_verified")),
+        "verified_at": recipe.get("verified_at"),
+        "verified_by": recipe.get("verified_by"),
+        "automatic_overwrite": False,
+    }
+
+
+@router.get("/{recipe_id}/source-integrity")
+def source_integrity(recipe_id: int) -> Dict[str, Any]:
+    """Liefert Quellenstatus, Diff und den lokalen Rezept-TÜV ohne Netzwerkzugriff."""
+    return _source_integrity_report(recipe_id)
+
+
+@router.post(
+    "/{recipe_id}/source-integrity/check",
+    dependencies=[Depends(require_admin)],
+)
+def check_source_integrity(recipe_id: int, request: Request) -> Dict[str, Any]:
+    """Prüft die öffentliche Quelle, ohne das gespeicherte Rezept zu verändern."""
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    source_url = str(recipe.get("url") or "").strip()
+    normalized_url = normalize_recipe_url(source_url)
+    if not normalized_url:
+        raise HTTPException(409, "Diese Datei- oder Eigenquelle kann nicht online geprüft werden")
+    actor = _actor(request)
+    try:
+        metadata = extract_recipe_web_metadata(normalized_url, include_thumbnail=False)
+        fetched_text = normalize_source_text(
+            metadata.get("description_text") or metadata.get("page_title")
+        )
+        fetched_hash = source_fingerprint(fetched_text)
+        if not fetched_hash:
+            raise ValueError("Die Quelle enthält keinen vergleichbaren Rezepttext")
+    except Exception as exc:
+        logger.warning("Quellenprüfung für Rezept #%s fehlgeschlagen: %s", recipe_id, exc)
+        db.recipe_source_snapshot_create(
+            recipe_id,
+            source_url=source_url,
+            content_sha256=None,
+            content_text=None,
+            state="unavailable",
+            observed_url=normalized_url,
+            error=str(exc),
+        )
+        return _source_integrity_report(recipe_id)
+
+    state = db.recipe_source_snapshot_state(recipe_id, source_url)
+    baseline = state.get("baseline")
+    if not baseline:
+        stored_text = normalize_source_text(_stored_source_text(recipe))
+        stored_hash = source_fingerprint(stored_text)
+        if stored_hash:
+            db.recipe_source_snapshot_create(
+                recipe_id,
+                source_url=source_url,
+                content_sha256=stored_hash,
+                content_text=stored_text,
+                state="baseline",
+                checked_at=recipe.get("source_added_at") or recipe.get("indexed_at"),
+                baseline_if_missing=True,
+                description_source="imported-original",
+            )
+        else:
+            db.recipe_source_snapshot_create(
+                recipe_id,
+                source_url=source_url,
+                observed_url=metadata.get("canonical_url") or normalized_url,
+                content_sha256=fetched_hash,
+                content_text=fetched_text,
+                state="current",
+                page_title=metadata.get("page_title"),
+                description_source=metadata.get("description_source"),
+                baseline_if_missing=True,
+                accepted_by=actor,
+            )
+            logger.info("Quellenbaseline für Rezept #%s von %s angelegt", recipe_id, actor)
+            return _source_integrity_report(recipe_id)
+        baseline = db.recipe_source_snapshot_state(recipe_id, source_url).get("baseline")
+
+    status = (
+        "current"
+        if baseline and baseline.get("content_sha256") == fetched_hash
+        else "changed"
+    )
+    db.recipe_source_snapshot_create(
+        recipe_id,
+        source_url=source_url,
+        observed_url=metadata.get("canonical_url") or normalized_url,
+        content_sha256=fetched_hash,
+        content_text=fetched_text,
+        state=status,
+        page_title=metadata.get("page_title"),
+        description_source=metadata.get("description_source"),
+    )
+    logger.info("Quellenprüfung für Rezept #%s: %s von %s", recipe_id, status, actor)
+    return _source_integrity_report(recipe_id)
+
+
+class SourceIntegrityAccept(BaseModel):
+    expected_snapshot_id: Optional[int] = Field(default=None, gt=0)
+    expected_content_sha256: Optional[str] = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
+
+
+@router.post(
+    "/{recipe_id}/source-integrity/accept",
+    dependencies=[Depends(require_admin)],
+)
+def accept_source_integrity(
+    recipe_id: int,
+    payload: SourceIntegrityAccept,
+    request: Request,
+) -> Dict[str, Any]:
+    """Bestätigt nur den Vergleichsanker; Rezeptinhalte bleiben unverändert."""
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    source_url = str(recipe.get("url") or "").strip()
+    if not normalize_recipe_url(source_url):
+        raise HTTPException(409, "Für diese Quelle gibt es keinen Online-Vergleich")
+    if (
+        payload.expected_snapshot_id is None
+        and payload.expected_content_sha256 is None
+    ):
+        raise HTTPException(422, "Erwarteter Quellenstand fehlt")
+    try:
+        db.recipe_source_snapshot_accept_latest(
+            recipe_id,
+            source_url,
+            accepted_by=_actor(request),
+            expected_snapshot_id=payload.expected_snapshot_id,
+            expected_content_sha256=payload.expected_content_sha256,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    logger.info("Neue Quellenbaseline für Rezept #%s bestätigt", recipe_id)
+    return _source_integrity_report(recipe_id)
+
+
+class SubstitutionApply(BaseModel):
+    ingredient_id: int = Field(gt=0)
+    candidate_id: str = Field(min_length=1, max_length=80)
+    variant_name: str = Field(min_length=1, max_length=200)
+
+
+@router.get("/{recipe_id}/substitutions")
+def recipe_substitutions(recipe_id: int) -> Dict[str, Any]:
+    """Liefert nur kuratierte Vorschlaege; nichts wird automatisch veraendert."""
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    return substitution_lab_payload(
+        recipe,
+        db.recipe_ingredients_get(recipe_id),
+    )
+
+
+@router.post(
+    "/{recipe_id}/substitutions/apply",
+    dependencies=[Depends(require_admin)],
+)
+def apply_recipe_substitution(
+    recipe_id: int,
+    payload: SubstitutionApply,
+) -> Dict[str, Any]:
+    """Erstellt eine Variante und wendet genau eine bestaetigte Ersetzung an."""
+    from ..recipes.auto_tags import (
+        SAFETY_CLAIM_TAGS,
+        refresh_diet_auto_tags,
+        remove_manual_safety_claim_tags,
+    )
+    from ..recipes.manage import (
+        _recipe_mutation_lock,
+        _safe_duplicate_recipe_serialized,
+        _variant_creation_lock,
+        finalize_recipe_variant,
+        safe_delete_recipe,
+    )
+
+    db = get_db()
+    try:
+        with _recipe_mutation_lock(db, recipe_id), _variant_creation_lock(db):
+            recipe = db.recipe_get(recipe_id)
+            if not recipe or recipe.get("deleted_at") is not None:
+                raise HTTPException(404, "Rezept nicht gefunden")
+            ingredients = db.recipe_ingredients_get(recipe_id)
+            source_index = next(
+                (
+                    index
+                    for index, item in enumerate(ingredients)
+                    if int(item["id"]) == payload.ingredient_id
+                ),
+                None,
+            )
+            if source_index is None:
+                raise HTTPException(404, "Zutat nicht gefunden")
+            original = ingredients[source_index]
+            candidate = resolve_candidate(original, payload.candidate_id)
+            result_ingredient = dict(candidate["result_ingredient"])
+            inherited_manual_safety_tags = sorted({
+                str(tag["name"]).strip().casefold()
+                for tag in db.recipe_tags_get(recipe_id)
+                if tag.get("auto") == 0
+                and str(tag["name"]).strip().casefold() in SAFETY_CLAIM_TAGS
+            })
+            source_label = str(
+                original.get("raw") or original.get("name") or "Zutat"
+            ).strip()
+            result_label = str(
+                result_ingredient.get("raw") or candidate["replacement_name"]
+            )
+            review_notice = (
+                f"Substitutionsvariante: {source_label} wurde durch {result_label} ersetzt. "
+                "Zubereitungsschritte und Produktetiketten vor dem Kochen prüfen; "
+                "keine medizinische Sicherheitsfreigabe."
+            )
+            provenance = {
+                "kind": "ingredient_substitution",
+                "source_recipe_id": recipe_id,
+                "candidate_id": candidate["id"],
+                "source_ingredient": {
+                    "name": original.get("name"),
+                    "canonical_name": original.get("canonical_name"),
+                    "amount": original.get("amount"),
+                    "unit": original.get("unit"),
+                    "raw": original.get("raw"),
+                },
+                "result_ingredient": result_ingredient,
+                "blocked_auto_tags": list(candidate.get("blocked_auto_tags") or []),
+                "removed_manual_safety_tags": inherited_manual_safety_tags,
+                "confidence": candidate["confidence"],
+                "functional_effect": candidate["functional_effect"],
+                "allergen_notes": list(candidate["allergen_notes"]),
+                "nutrition_notes": list(candidate["nutrition_notes"]),
+                "applied_at": time.time(),
+                "review_required": True,
+                "medical_safety_claim": False,
+            }
+            clone = _safe_duplicate_recipe_serialized(
+                db,
+                recipe_id,
+                new_name=payload.variant_name,
+                variant_provenance=provenance,
+                review_notice=review_notice,
+                expected_ingredients=ingredients,
+                defer_finalization=True,
+                final_status="ok",
+            )
+
+            variant_id = int(clone["recipe_id"])
+            try:
+                cloned_ingredients = db.recipe_ingredients_get(variant_id)
+                if len(cloned_ingredients) != len(ingredients):
+                    raise RuntimeError(
+                        "Die geklonte Zutatenliste ist nicht vollständig"
+                    )
+                prepared = [
+                    {
+                        "name": item.get("name"),
+                        "canonical_name": item.get("canonical_name"),
+                        "amount": item.get("amount"),
+                        "unit": item.get("unit"),
+                        "raw": item.get("raw"),
+                    }
+                    for item in cloned_ingredients
+                ]
+                prepared[source_index] = result_ingredient
+                _replace_ingredients_and_reset_verification(
+                    db,
+                    variant_id,
+                    prepared,
+                    ingredients_status=RECIPE_VARIANT_PENDING_STATUS,
+                )
+                removed_manual_safety_tags = remove_manual_safety_claim_tags(
+                    db, variant_id
+                )
+                refresh_diet_auto_tags(
+                    db,
+                    variant_id,
+                    [str(item.get("canonical_name") or "") for item in prepared],
+                    blocked_tags=candidate.get("blocked_auto_tags"),
+                )
+                finalize_recipe_variant(db, variant_id, final_status="ok")
+                clone["finalized"] = True
+            except Exception as exc:
+                logger.exception(
+                    "Substitutionsvariante #%s wird nach Fehler zurueckgerollt",
+                    variant_id,
+                )
+                try:
+                    safe_delete_recipe(
+                        db,
+                        variant_id,
+                        delete_files=True,
+                        hard=True,
+                        include_pending=True,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Rollback der Substitutionsvariante #%s fehlgeschlagen",
+                        variant_id,
+                    )
+                if isinstance(exc, (ValueError, RuntimeError)):
+                    raise
+                raise RuntimeError(
+                    "Substitutionsvariante konnte nicht erstellt werden"
+                ) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    return {
+        **clone,
+        "substitution": {
+            "ingredient_id": payload.ingredient_id,
+            "from_name": original.get("name"),
+            "to_name": candidate["replacement_name"],
+            "ratio": candidate["ratio"],
+            "result_ingredient": result_ingredient,
+            "blocked_auto_tags": list(candidate.get("blocked_auto_tags") or []),
+            "removed_manual_safety_tags": removed_manual_safety_tags,
+            "review_notice": review_notice,
+            "provenance": provenance,
+            "review_required": True,
+            "nutrition_invalidated": True,
+        },
+    }
 
 
 @router.get("/{recipe_id}/pdf")
@@ -467,6 +1085,34 @@ def get_recipe_pdf(recipe_id: int):
 
 class TagsUpdate(BaseModel):
     tags: List[str] = Field(default_factory=list, max_length=30)
+
+
+class TranslationRequest(BaseModel):
+    target_language: str = Field(pattern="^(de|en|fr|it|es|nl)$")
+    text: Optional[str] = Field(default=None, max_length=8_000)
+
+
+@router.post("/{recipe_id}/translate")
+def translate_recipe_text(recipe_id: int, payload: TranslationRequest) -> Dict[str, Any]:
+    """Übersetzt Beschreibung oder einen mitgesendeten Kommentar für die App.
+
+    Der kanonische Rezepttext bleibt unverändert; die Übersetzung ist eine
+    reine Anzeigeantwort und erzeugt deshalb auch keine Rezeptversion.
+    """
+    recipe = get_db().recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    source = (payload.text if payload.text is not None else recipe.get("description") or "").strip()
+    if not source:
+        return {"translation": "", "target_language": payload.target_language}
+    try:
+        analyzer = build_analyzer(get_config().get("ai", default={}) or {})
+        translated = analyzer.translate_text(source, payload.target_language)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not translated:
+        raise HTTPException(502, "KI konnte den Text nicht übersetzen")
+    return {"translation": translated, "target_language": payload.target_language}
 
 
 def _normalized_user_tags(tags: List[str]) -> List[str]:
@@ -796,7 +1442,11 @@ class IngredientsUpdate(BaseModel):
 
 
 def _replace_ingredients_and_reset_verification(
-    db: Any, recipe_id: int, ingredients: List[Dict[str, Any]]
+    db: Any,
+    recipe_id: int,
+    ingredients: List[Dict[str, Any]],
+    *,
+    ingredients_status: str = "ok",
 ) -> None:
     """Ersetzt Zutaten und widerruft die darauf bezogene Prüfung atomar.
 
@@ -827,10 +1477,13 @@ def _replace_ingredients_and_reset_verification(
                 ),
             )
         connection.execute(
-            "UPDATE recipes SET ingredients_status='ok', ingredients_extracted_at=?, "
+            "UPDATE recipes SET ingredients_status=?, ingredients_extracted_at=?, "
             "extraction_claimed_at=NULL, extraction_claim_owner=NULL, "
-            "user_verified=0, verified_at=NULL, verified_by=NULL WHERE id=?",
-            (now, recipe_id),
+            "user_verified=0, verified_at=NULL, verified_by=NULL, "
+            "calories_per_serving=NULL, protein_g=NULL, carbs_g=NULL, fat_g=NULL, "
+            "nutrition_computed_at=NULL, nutrition_claimed_at=NULL, "
+            "nutrition_claim_owner=NULL WHERE id=?",
+            (ingredients_status, now, recipe_id),
         )
 
 
@@ -845,36 +1498,46 @@ def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Requ
     pasta) bleiben unangetastet weil die aus der Description kommen, die
     sich nicht geändert hat."""
     from ..recipes.auto_tags import refresh_diet_auto_tags
+    from ..recipes.manage import _recipe_mutation_lock
     db = get_db()
-    if not db.recipe_get(recipe_id):
-        raise HTTPException(404, "Rezept nicht gefunden")
-    _version_before(recipe_id, request, "Zutaten manuell geändert")
     prepared = []
     for ing in payload.ingredients:
-        if not ing.name.strip():
+        clean_name = " ".join(ing.name.split())
+        if not clean_name:
             continue
         prepared.append({
-            "name": ing.name.strip(),
-            "canonical_name": _canonical(ing.name),
+            "name": clean_name,
+            "canonical_name": _canonical(clean_name),
             "amount": ing.amount,
             "unit": normalize_unit(ing.unit),
             "raw": ing.raw,
         })
-    _replace_ingredients_and_reset_verification(db, recipe_id, prepared)
-
-    # Diät-Tags recompute: nimm existierende auto-Tags die NICHT in DIET_TAGS
-    # sind (das sind die KI-Stil-Tags wie 'pasta', 'schnell') und merge sie
-    # mit den frisch berechneten Diät-Tags aus der neuen Zutatenliste.
     try:
-        refresh_diet_auto_tags(
-            db,
-            recipe_id,
-            [p["canonical_name"] for p in prepared],
-        )
-    except Exception as e:
-        # Diät-Tag-Recompute ist nice-to-have — bei Fehler nur loggen,
-        # Save selbst ist erfolgreich.
-        logger.warning(f"Rezept #{recipe_id}: diet-tag-recompute failed: {e}")
+        with _recipe_mutation_lock(db, recipe_id):
+            recipe = db.recipe_get(recipe_id)
+            if not recipe or recipe.get("deleted_at") is not None:
+                raise HTTPException(404, "Rezept nicht gefunden")
+            _version_before(recipe_id, request, "Zutaten manuell geändert")
+            _replace_ingredients_and_reset_verification(db, recipe_id, prepared)
+            # Manuell gepflegte Zutaten gehören genauso in die große lokale
+            # Einkaufsvorschlagsliste wie KI-extrahierte Zutaten.
+            db.shopping_catalog_rebuild()
+
+            # Diät-Tags recompute: nimm existierende auto-Tags die NICHT in DIET_TAGS
+            # sind (das sind die KI-Stil-Tags wie 'pasta', 'schnell') und merge sie
+            # mit den frisch berechneten Diät-Tags aus der neuen Zutatenliste.
+            try:
+                refresh_diet_auto_tags(
+                    db,
+                    recipe_id,
+                    [p["canonical_name"] for p in prepared],
+                )
+            except Exception as e:
+                # Diät-Tag-Recompute ist nice-to-have — bei Fehler nur loggen,
+                # Save selbst ist erfolgreich.
+                logger.warning(f"Rezept #{recipe_id}: diet-tag-recompute failed: {e}")
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
     return {"ok": True, "ingredients": db.recipe_ingredients_get(recipe_id)}
 
@@ -1436,14 +2099,18 @@ def compute_nutrition_for(recipe_id: int, request: Request) -> Dict[str, Any]:
             409,
             "Für dieses Rezept läuft bereits eine Extraktion",
         )
-    ings = db.recipe_ingredients_get(recipe_id)
-    if len(ings) < 3:
-        raise HTTPException(400, f"Zu wenig Zutaten ({len(ings)}) für sinnvolle Schätzung")
     claim_owner = f"nutrition-one:{time.time_ns()}"
     if not db.recipe_claim_nutrition(recipe_id, claim_owner):
         raise HTTPException(409, "Für dieses Rezept läuft bereits eine Nährwertberechnung")
     cfg = get_config()
     try:
+        recipe = db.recipe_get(recipe_id)
+        ings = db.recipe_ingredients_get(recipe_id)
+        if len(ings) < 3:
+            raise HTTPException(
+                400,
+                f"Zu wenig Zutaten ({len(ings)}) für sinnvolle Schätzung",
+            )
         try:
             analyzer = build_analyzer(cfg.get("ai", default={}) or {})
         except Exception as e:
@@ -1562,11 +2229,7 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
         with db.conn() as c:
             tag_rows = c.execute("SELECT name FROM tags").fetchall()
             existing_tags = [r[0] for r in tag_rows]
-            can_rows = c.execute(
-                "SELECT DISTINCT canonical_name FROM recipe_ingredients "
-                "WHERE canonical_name IS NOT NULL AND canonical_name != ''"
-            ).fetchall()
-            existing_canonical = [r[0] for r in can_rows]
+            existing_canonical = db.ingredient_name_hints()
     except Exception:
         existing_tags, existing_canonical = [], []
 
@@ -1613,7 +2276,10 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
     # Auto-Tags (KI + Regel-Pass)
     from ..recipes.auto_tags import compute_diet_tags
     ki_tags = content.get("tags") or []
-    diet_tags = compute_diet_tags([p.get("canonical_name") or "" for p in prepared])
+    diet_tags = compute_diet_tags(
+        [p.get("canonical_name") or "" for p in prepared],
+        allergen_info=content.get("allergen_info"),
+    )
     previous_auto_tags = [t["name"] for t in current_tags if t.get("auto")]
     all_auto_tags = sorted(set(previous_auto_tags) | set(ki_tags) | set(diet_tags))
     final_status = "ok" if prepared and steps else "error"

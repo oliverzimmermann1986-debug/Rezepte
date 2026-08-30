@@ -6,17 +6,18 @@ final class ShareViewController: SLComposeServiceViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Zu Rezeptregal"
-        placeholder = "TikTok- oder Instagram-Link importieren"
+        title = "Zu Quellenküche"
+        placeholder = "Rezeptlink aus Website, Pinterest oder YouTube importieren"
         loadSharedURL()
     }
 
     override func isContentValid() -> Bool {
-        guard let sharedURL, let host = URL(string: sharedURL)?.host?.lowercased() else {
+        guard let sharedURL, let url = URL(string: sharedURL),
+              ["https", "http"].contains(url.scheme?.lowercased()),
+              url.host?.isEmpty == false else {
             return false
         }
-        return host == "tiktok.com" || host.hasSuffix(".tiktok.com")
-            || host == "instagram.com" || host.hasSuffix(".instagram.com")
+        return true
     }
 
     override func didSelectPost() {

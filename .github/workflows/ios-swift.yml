@@ -1,0 +1,390 @@
+name: SwiftUI iPhone App
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_testflight:
+        description: "Geprüften SwiftUI-Build zu TestFlight hochladen"
+        required: false
+        default: false
+        type: boolean
+      build_number:
+        description: "CFBundleVersion für diesen Upload (leer = automatisch aus Laufnummer und Versuch)"
+        required: false
+        default: ""
+        type: string
+  push:
+    paths:
+      - "ios-swift/**"
+      - "native-ios/scripts/testflight-ensure.mjs"
+      - "app/main.py"
+      - "app/auth.py"
+      - "app/db.py"
+      - "app/routes/**"
+      - "app/recipes/**"
+      - "tests/test_swiftui_redesign_source.py"
+      - ".github/workflows/ios-swift.yml"
+  pull_request:
+    paths:
+      - "ios-swift/**"
+      - "native-ios/scripts/testflight-ensure.mjs"
+      - "app/main.py"
+      - "app/auth.py"
+      - "app/db.py"
+      - "app/routes/**"
+      - "app/recipes/**"
+      - "tests/test_swiftui_redesign_source.py"
+      - ".github/workflows/ios-swift.yml"
+
+env:
+  XCODEGEN_VERSION: "2.46.0"
+  XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
+
+# Release-Uploads (workflow_dispatch) laufen in einer eigenen Gruppe und werden
+# nicht abgebrochen; Push-/PR-Läufe canceln sich weiterhin gegenseitig.
+concurrency:
+  group: ios-swift-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  test:
+    name: Generate project, build and test
+    runs-on: macos-26
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: ios-swift
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen-dist"
+          xcodegen_bin="$(find "$RUNNER_TEMP/xcodegen-dist" -type f -name xcodegen -path '*/bin/*' -print -quit)"
+          test -n "$xcodegen_bin"
+          chmod +x "$xcodegen_bin"
+          "$xcodegen_bin" --version | grep -F "$XCODEGEN_VERSION"
+          dirname "$xcodegen_bin" >> "$GITHUB_PATH"
+
+      - name: Show native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          xcodegen --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Select an available iPhone simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          simulator_id="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/{print $2; exit}')"
+          test -n "$simulator_id"
+          echo "id=$simulator_id" >> "$GITHUB_OUTPUT"
+
+      - name: Build and run XCTest
+        run: >-
+          xcodebuild
+          -project Rezepte.xcodeproj
+          -scheme Rezepte
+          -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}"
+          -resultBundlePath TestResults.xcresult
+          CODE_SIGNING_ALLOWED=NO
+          test
+
+      - name: Upload XCTest diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftui-xcresult-${{ github.sha }}
+          path: ios-swift/TestResults.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
+
+  testflight:
+    name: Archive and upload SwiftUI app to TestFlight
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_testflight }}
+    needs: test
+    runs-on: macos-26
+    timeout-minutes: 55
+    environment: testflight
+    env:
+      IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID || 'de.mausbaeren.rezepte' }}
+      IOS_SHARE_BUNDLE_ID: ${{ vars.IOS_SHARE_BUNDLE_ID || 'de.mausbaeren.rezepte.share' }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_APP_ID: ${{ vars.ASC_APP_ID || '6803595058' }}
+    defaults:
+      run:
+        working-directory: ios-swift
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen-dist"
+          xcodegen_bin="$(find "$RUNNER_TEMP/xcodegen-dist" -type f -name xcodegen -path '*/bin/*' -print -quit)"
+          test -n "$xcodegen_bin"
+          chmod +x "$xcodegen_bin"
+          "$xcodegen_bin" --version | grep -F "$XCODEGEN_VERSION"
+          dirname "$xcodegen_bin" >> "$GITHUB_PATH"
+
+      - name: Show native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          xcodegen --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Validate signing configuration
+        shell: bash
+        env:
+          IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
+          IOS_APPSTORE_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROFILE_BASE64 }}
+          IOS_SHARE_PROFILE_BASE64: ${{ secrets.IOS_SHARE_PROFILE_BASE64 }}
+          ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          required=(
+            APPLE_TEAM_ID P12_PASSWORD KEYCHAIN_PASSWORD
+            ASC_KEY_ID ASC_ISSUER_ID ASC_APP_ID IOS_BUNDLE_ID IOS_SHARE_BUNDLE_ID
+            IOS_DISTRIBUTION_P12_BASE64 IOS_APPSTORE_PROFILE_BASE64
+            IOS_SHARE_PROFILE_BASE64 ASC_PRIVATE_KEY_BASE64
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing TestFlight configuration: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install distribution certificate and profiles
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          certificate_path="$RUNNER_TEMP/ios-distribution.p12"
+          app_profile_path="$RUNNER_TEMP/ios-appstore.mobileprovision"
+          share_profile_path="$RUNNER_TEMP/ios-share-appstore.mobileprovision"
+          keychain_path="$RUNNER_TEMP/quellenkueche-signing.keychain-db"
+          profile_plist="$RUNNER_TEMP/profile.plist"
+
+          echo -n "${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}" | base64 --decode > "$certificate_path"
+          echo -n "${{ secrets.IOS_APPSTORE_PROFILE_BASE64 }}" | base64 --decode > "$app_profile_path"
+          echo -n "${{ secrets.IOS_SHARE_PROFILE_BASE64 }}" | base64 --decode > "$share_profile_path"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security list-keychain -d user -s "$keychain_path" login.keychain-db
+
+          security cms -D -i "$app_profile_path" > "$profile_plist"
+          app_profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
+          app_profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile_plist")"
+          app_profile_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile_plist")"
+          if [[ "$app_profile_id" != "$APPLE_TEAM_ID.$IOS_BUNDLE_ID" ]]; then
+            echo "App profile is for $app_profile_id, expected $APPLE_TEAM_ID.$IOS_BUNDLE_ID" >&2
+            exit 1
+          fi
+
+          security cms -D -i "$share_profile_path" > "$profile_plist"
+          share_profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
+          share_profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile_plist")"
+          share_profile_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile_plist")"
+          if [[ "$share_profile_id" != "$APPLE_TEAM_ID.$IOS_SHARE_BUNDLE_ID" ]]; then
+            echo "Share profile is for $share_profile_id, expected $APPLE_TEAM_ID.$IOS_SHARE_BUNDLE_ID" >&2
+            exit 1
+          fi
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$app_profile_path" "$HOME/Library/MobileDevice/Provisioning Profiles/$app_profile_uuid.mobileprovision"
+          cp "$share_profile_path" "$HOME/Library/MobileDevice/Provisioning Profiles/$share_profile_uuid.mobileprovision"
+          echo "app_profile_name=$app_profile_name" >> "$GITHUB_OUTPUT"
+          echo "share_profile_name=$share_profile_name" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve unique build number
+        id: buildnum
+        shell: bash
+        env:
+          OVERRIDE_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$OVERRIDE_BUILD_NUMBER" ]]; then
+            build_number="$OVERRIDE_BUILD_NUMBER"
+          else
+            # Re-runs behalten GITHUB_RUN_NUMBER; erst der Attempt hält die
+            # CFBundleVersion je Wiederholung eindeutig und monoton steigend.
+            build_number="$(( GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT ))"
+          fi
+          [[ "$build_number" =~ ^[1-9][0-9]*$ ]]
+          echo "value=$build_number" >> "$GITHUB_OUTPUT"
+
+      - name: Create signed archive
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project Rezepte.xcodeproj \
+            -scheme Rezepte \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/Quellenkueche.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            IOS_APP_PROFILE_NAME="${{ steps.signing.outputs.app_profile_name }}" \
+            IOS_SHARE_PROFILE_NAME="${{ steps.signing.outputs.share_profile_name }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.buildnum.outputs.value }}"
+
+      - name: Validate archive metadata
+        shell: bash
+        env:
+          EXPECTED_MARKETING_VERSION: "1.2.0"
+          EXPECTED_BUILD_NUMBER: ${{ steps.buildnum.outputs.value }}
+        run: |
+          set -euo pipefail
+
+          assert_bundle_metadata() {
+            local label="$1"
+            local plist_path="$2"
+            local expected_bundle_id="$3"
+            local actual_bundle_id actual_marketing_version actual_build_number
+
+            actual_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist_path")"
+            actual_marketing_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist_path")"
+            actual_build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist_path")"
+
+            if [[ "$actual_bundle_id" != "$expected_bundle_id" \
+              || "$actual_marketing_version" != "$EXPECTED_MARKETING_VERSION" \
+              || "$actual_build_number" != "$EXPECTED_BUILD_NUMBER" ]]; then
+              echo "$label archive metadata mismatch" >&2
+              echo "  bundle: $actual_bundle_id (expected $expected_bundle_id)" >&2
+              echo "  version: $actual_marketing_version (expected $EXPECTED_MARKETING_VERSION)" >&2
+              echo "  build: $actual_build_number (expected $EXPECTED_BUILD_NUMBER)" >&2
+              exit 1
+            fi
+          }
+
+          applications_path="$RUNNER_TEMP/Quellenkueche.xcarchive/Products/Applications"
+          set -- "$applications_path"/*.app
+          if [[ "$#" -ne 1 || ! -d "$1" ]]; then
+            echo "Expected exactly one main app in $applications_path, found $#" >&2
+            exit 1
+          fi
+          app_path="$1"
+          assert_bundle_metadata "Main app" "$app_path/Info.plist" "$IOS_BUNDLE_ID"
+
+          share_path=""
+          for candidate in "$app_path"/PlugIns/*.appex; do
+            [[ -d "$candidate" ]] || continue
+            candidate_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Info.plist" 2>/dev/null || true)"
+            if [[ "$candidate_bundle_id" == "$IOS_SHARE_BUNDLE_ID" ]]; then
+              if [[ -n "$share_path" ]]; then
+                echo "Found more than one Share extension for $IOS_SHARE_BUNDLE_ID" >&2
+                exit 1
+              fi
+              share_path="$candidate"
+            fi
+          done
+          if [[ -z "$share_path" ]]; then
+            echo "Share extension $IOS_SHARE_BUNDLE_ID is missing from the archive" >&2
+            exit 1
+          fi
+          assert_bundle_metadata "Share extension" "$share_path/Info.plist" "$IOS_SHARE_BUNDLE_ID"
+
+      - name: Export signed IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_options="$RUNNER_TEMP/ExportOptions.plist"
+          /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" "$export_options"
+          /usr/libexec/PlistBuddy -c "Add :destination string export" "$export_options"
+          /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$export_options"
+          /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$export_options"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$export_options"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$IOS_BUNDLE_ID string ${{ steps.signing.outputs.app_profile_name }}" "$export_options"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$IOS_SHARE_BUNDLE_ID string ${{ steps.signing.outputs.share_profile_name }}" "$export_options"
+          /usr/libexec/PlistBuddy -c "Add :stripSwiftSymbols bool true" "$export_options"
+          /usr/libexec/PlistBuddy -c "Add :uploadSymbols bool true" "$export_options"
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Quellenkueche.xcarchive" \
+            -exportPath "$RUNNER_TEMP/Export" \
+            -exportOptionsPlist "$export_options"
+
+      - name: Upload IPA to App Store Connect
+        id: upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_directory="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$key_directory"
+          echo -n "${{ secrets.ASC_PRIVATE_KEY_BASE64 }}" | base64 --decode > "$key_directory/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$key_directory/AuthKey_$ASC_KEY_ID.p8"
+          ipa_path="$(find "$RUNNER_TEMP/Export" -maxdepth 1 -name '*.ipa' -print -quit)"
+          test -n "$ipa_path"
+          echo "started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$ipa_path" \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Wait for TestFlight processing
+        shell: bash
+        env:
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_BUILD_NUMBER: ${{ steps.buildnum.outputs.value }}
+          ASC_MARKETING_VERSION: "1.2.0"
+          ASC_UPLOAD_STARTED_AT: ${{ steps.upload.outputs.started_at }}
+          ASC_ASSIGN_INTERNAL_GROUP: "false"
+        run: |
+          set -euo pipefail
+          export ASC_API_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_API_KEY_ID.p8"
+          node ../native-ios/scripts/testflight-ensure.mjs
+
+      - name: Upload archive diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftui-archive-diagnostics-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/Quellenkueche.xcarchive
+            ${{ runner.temp }}/Export
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove temporary signing files
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/quellenkueche-signing.keychain-db" 2>/dev/null || true
+          rm -f \
+            "$RUNNER_TEMP/ios-distribution.p12" \
+            "$RUNNER_TEMP/ios-appstore.mobileprovision" \
+            "$RUNNER_TEMP/ios-share-appstore.mobileprovision" \
+            "$RUNNER_TEMP/profile.plist" \
+            "$RUNNER_TEMP/ExportOptions.plist" \
+            "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
