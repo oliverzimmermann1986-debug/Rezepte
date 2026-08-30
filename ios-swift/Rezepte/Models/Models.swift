@@ -233,11 +233,37 @@ struct RecipeSourceIntegrity: Codable {
     let baseline: RecipeSourceSnapshot?
     let latest: RecipeSourceSnapshot?
     let diff: RecipeSourceDiff?
+    let impact: RecipeSourceImpact?
     let quality: RecipeQualityReport
     let verified: Bool
     let verifiedAt: Double?
     let verifiedBy: String?
     let automaticOverwrite: Bool
+}
+
+struct RecipeSourceImpact: Codable {
+    let ingredientChanges: [SourceContentChange]
+    let instructionChanges: [SourceContentChange]
+    let possibleAllergenChanges: [SourceAllergenChange]
+    let reviewRequired: Bool
+    let automaticSafetyClaim: Bool
+}
+
+struct SourceContentChange: Codable, Identifiable {
+    let direction: String
+    let text: String
+
+    var id: String { "\(direction)-\(text)" }
+}
+
+struct SourceAllergenChange: Codable, Identifiable {
+    let allergen: String
+    let label: String
+    let direction: String
+    let matchedTerms: [String]
+    let evidence: [String]
+
+    var id: String { "\(direction)-\(allergen)-\(evidence.joined(separator: "|"))" }
 }
 
 struct RecipeSourceSnapshot: Codable, Identifiable {
@@ -611,6 +637,90 @@ struct MealSummary: Codable {
     let plannedMeals: Int
     let plannedDays: Int
     let shoppingItems: Int
+}
+
+struct MealConductorPlan: Codable {
+    let plannedFor: String
+    let serveAt: String
+    let serveTime: String
+    let startAt: String
+    let events: [MealConductorEvent]
+    let warnings: [String]
+    let summary: MealConductorSummary
+}
+
+struct MealConductorEvent: Codable, Identifiable {
+    let id: String
+    let recipeId: Int
+    let recipeName: String
+    let plannedServings: Int?
+    let stepNumber: Int
+    let instruction: String
+    let resource: String
+    let durationMinutes: Int
+    let estimated: Bool
+    let resourceAdjusted: Bool
+    let startAt: String
+    let endAt: String
+    let startTime: String
+    let endTime: String
+}
+
+struct MealConductorSummary: Codable {
+    let recipes: Int
+    let steps: Int
+    let estimatedSteps: Int
+    let resourceAdjustments: Int
+    let burners: Int
+    let ovenSlots: Int
+}
+
+struct SubstitutionLab: Codable {
+    let recipeId: Int
+    let recipeName: String
+    let items: [SubstitutionIngredient]
+    let automaticApply: Bool
+    let medicalSafetyClaim: Bool
+}
+
+struct SubstitutionIngredient: Codable, Identifiable {
+    let ingredientId: Int
+    let name: String
+    let canonicalName: String?
+    let amount: Double?
+    let unit: String?
+    let candidates: [SubstitutionCandidate]
+
+    var id: Int { ingredientId }
+}
+
+struct SubstitutionCandidate: Codable, Identifiable {
+    let id: String
+    let replacementName: String
+    let replacementCanonical: String
+    let ratio: Double
+    let unitOverride: String?
+    let confidence: String
+    let functionalEffect: String
+    let allergenNotes: [String]
+    let nutritionNotes: [String]
+    let requiresReview: Bool
+}
+
+struct SubstitutionApplyResponse: Codable {
+    let ok: Bool
+    let recipeId: Int
+    let name: String
+    let substitution: AppliedSubstitution
+}
+
+struct AppliedSubstitution: Codable {
+    let ingredientId: Int
+    let fromName: String?
+    let toName: String
+    let ratio: Double
+    let reviewRequired: Bool
+    let nutritionInvalidated: Bool
 }
 
 struct AdminOverview: Codable {

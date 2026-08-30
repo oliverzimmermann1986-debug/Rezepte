@@ -13,6 +13,9 @@ import re
 import unicodedata
 from typing import Any, Dict, Iterable, List, Optional
 
+from .auto_tags import ALLERGEN_FREE_TAGS
+from .canonical import canonical_name
+
 
 _MISSING_AMOUNT_EXCEPTIONS = (
     "nach geschmack",
@@ -76,6 +79,121 @@ def source_diff(
         "similarity": round(difflib.SequenceMatcher(None, baseline, current).ratio(), 3),
         "lines": diff_lines[:max_lines],
         "truncated": truncated,
+    }
+
+
+_MEASURE_RE = re.compile(
+    r"(?:^|\s)(?:\d+(?:[.,]\d+)?\s*)?"
+    r"(?:mg|g|kg|ml|cl|dl|l|tl|el|stueck|stück|prise|tasse|dose|bund)\b",
+    flags=re.IGNORECASE,
+)
+_AMOUNT_RE = re.compile(r"^\d+(?:[.,]\d+)?(?:\s|$)")
+_STEP_MARKERS = (
+    "backen", "kochen", "köcheln", "koecheln", "braten", "schneiden",
+    "rühren", "ruehren", "mischen", "erhitzen", "servieren", "ziehen lassen",
+    "vorheizen", "abschmecken", "garen",
+)
+_ALLERGEN_LABELS = {
+    "gluten": "Gluten",
+    "lactose": "Milch/Laktose",
+    "egg": "Ei",
+    "nuts": "Nüsse",
+}
+
+
+def _changed_content_lines(comparison: Dict[str, Any], prefix: str) -> List[str]:
+    return [
+        re.sub(r"^[*+-]\s+", "", line[1:].strip())
+        for line in comparison.get("lines", [])
+        if line.startswith(prefix)
+        and not line.startswith(prefix * 3)
+        and line[1:].strip()
+    ]
+
+
+def _term_in_text(term: str, text: str) -> bool:
+    normalized_term = term.casefold().strip()
+    normalized_text = text.casefold()
+    if not normalized_term:
+        return False
+    canonical_tokens = {
+        str(canonical_name(token) or "").casefold()
+        for token in re.findall(r"[\wäöüÄÖÜß-]+", normalized_text)
+    }
+    if normalized_term in canonical_tokens:
+        return True
+    if len(normalized_term) < 4:
+        return bool(re.search(rf"\b{re.escape(normalized_term)}\b", normalized_text))
+    return normalized_term in normalized_text
+
+
+def source_change_impact(
+    comparison: Optional[Dict[str, Any]],
+    ingredients: Iterable[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Ordnet Quell-Diffs vorsichtig Zutaten, Schritten und Allergenen zu.
+
+    Das Ergebnis ist immer ein Review-Hinweis. Es behauptet weder, dass eine
+    Zeile sicher eine Zutat ist, noch dass ein Rezept allergenfrei oder
+    medizinisch sicher sei.
+    """
+    if not comparison or not comparison.get("changed"):
+        return None
+    added = _changed_content_lines(comparison, "+")
+    removed = _changed_content_lines(comparison, "-")
+    known_ingredients = {
+        str(item.get(key) or "").casefold().strip()
+        for item in ingredients
+        for key in ("canonical_name", "name")
+        if str(item.get(key) or "").strip()
+    }
+
+    def classify(lines: List[str], direction: str) -> tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+        ingredient_changes: List[Dict[str, str]] = []
+        instruction_changes: List[Dict[str, str]] = []
+        for line in lines:
+            lower = line.casefold()
+            looks_like_ingredient = (
+                bool(_MEASURE_RE.search(line))
+                or bool(_AMOUNT_RE.search(line))
+                or any(_term_in_text(term, lower) for term in known_ingredients)
+            )
+            looks_like_step = any(marker in lower for marker in _STEP_MARKERS)
+            if looks_like_ingredient:
+                ingredient_changes.append({"direction": direction, "text": line})
+            if looks_like_step:
+                instruction_changes.append({"direction": direction, "text": line})
+        return ingredient_changes, instruction_changes
+
+    added_ingredients, added_steps = classify(added, "added")
+    removed_ingredients, removed_steps = classify(removed, "removed")
+    allergen_changes: List[Dict[str, Any]] = []
+    for direction, lines in (("added", added), ("removed", removed)):
+        for _tag_name, (allergen_key, sources) in ALLERGEN_FREE_TAGS.items():
+            evidence: List[str] = []
+            matched_terms: set[str] = set()
+            for line in lines:
+                matches = sorted(term for term in sources if _term_in_text(term, line))
+                if matches:
+                    evidence.append(line)
+                    matched_terms.update(matches)
+            if evidence:
+                allergen_changes.append({
+                    "allergen": allergen_key,
+                    "label": _ALLERGEN_LABELS.get(allergen_key, allergen_key),
+                    "direction": direction,
+                    "matched_terms": sorted(matched_terms),
+                    "evidence": evidence[:5],
+                })
+
+    return {
+        "ingredient_changes": (added_ingredients + removed_ingredients)[:20],
+        "instruction_changes": (added_steps + removed_steps)[:20],
+        "possible_allergen_changes": allergen_changes,
+        "review_required": any(
+            item["direction"] == "added" for item in allergen_changes
+        ),
+        "automatic_safety_claim": False,
     }
 
 

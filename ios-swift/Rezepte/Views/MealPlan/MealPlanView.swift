@@ -7,6 +7,7 @@ struct MealPlanView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var selectedDay: MealDay?
+    @State private var conductorDay: MealDay?
     @State private var cartConfirmation = false
     @State private var showPDF = false
 
@@ -49,6 +50,10 @@ struct MealPlanView: View {
                 RecipePickerView(day: day) {
                     await load(start: week?.weekStart)
                 }
+            }
+            .sheet(item: $conductorDay) { day in
+                MealConductorView(day: day)
+                    .environmentObject(session)
             }
             .overlay(alignment: .bottom) {
                 if cartConfirmation {
@@ -123,12 +128,22 @@ struct MealPlanView: View {
                         .foregroundStyle(day.isToday ? theme.warning : .secondary)
                 }
                 Spacer()
-                Button {
-                    selectedDay = day
-                } label: {
-                    Label("Rezept", systemImage: "plus")
+                HStack(spacing: 8) {
+                    if !day.items.isEmpty, session.supports("meal-conductor-v1") {
+                        Button {
+                            conductorDay = day
+                        } label: {
+                            Label("Dirigieren", systemImage: "wand.and.stars")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Button {
+                        selectedDay = day
+                    } label: {
+                        Label("Rezept", systemImage: "plus")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
             }
 
             if day.items.isEmpty {

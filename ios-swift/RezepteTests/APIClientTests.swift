@@ -642,6 +642,56 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(preview.summary.mergedCount, 1)
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/optimize/preview")
     }
+
+    func testMealConductorSendsResourcesAndDecodesTimeline() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "api-token")
+        MockURLProtocol.respond(json: """
+        {"planned_for":"2026-07-27","serve_at":"2026-07-27T19:00","serve_time":"19:00","start_at":"2026-07-27T18:30","events":[{"id":"42-1","recipe_id":42,"recipe_name":"Pasta","planned_servings":2,"step_number":1,"instruction":"Kochen","resource":"burner","duration_minutes":30,"estimated":false,"resource_adjusted":false,"start_at":"2026-07-27T18:30","end_at":"2026-07-27T19:00","start_time":"18:30","end_time":"19:00"}],"warnings":[],"summary":{"recipes":1,"steps":1,"estimated_steps":0,"resource_adjustments":0,"burners":2,"oven_slots":1}}
+        """)
+
+        let plan = try await client.mealConductorPreview(
+            date: "2026-07-27",
+            serveAt: "19:00",
+            burners: 2,
+            ovenSlots: 1
+        )
+
+        XCTAssertEqual(plan.events.first?.resource, "burner")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/meal-plan/conductor/preview")
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any]
+        )
+        XCTAssertEqual(payload["serve_at"] as? String, "19:00")
+        XCTAssertEqual(payload["burners"] as? Int, 2)
+    }
+
+    func testSubstitutionApplyCreatesNamedVariantThroughDedicatedEndpoint() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "api-token")
+        MockURLProtocol.respond(json: """
+        {"ok":true,"recipe_id":84,"name":"Pasta mit Haferdrink","substitution":{"ingredient_id":9,"from_name":"Milch","to_name":"Haferdrink","ratio":1.0,"review_required":true,"nutrition_invalidated":true}}
+        """)
+
+        let result = try await client.applyRecipeSubstitution(
+            id: 42,
+            ingredientID: 9,
+            candidateID: "milk-oat-drink",
+            variantName: "Pasta mit Haferdrink"
+        )
+
+        XCTAssertEqual(result.recipeId, 84)
+        XCTAssertTrue(result.substitution.reviewRequired)
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/substitutions/apply")
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any]
+        )
+        XCTAssertEqual(payload["ingredient_id"] as? Int, 9)
+        XCTAssertEqual(payload["candidate_id"] as? String, "milk-oat-drink")
+    }
 }
 
 /// Fängt Requests des injizierten URLSession ab, damit der Query-Aufbau

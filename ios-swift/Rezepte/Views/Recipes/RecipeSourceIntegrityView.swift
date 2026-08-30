@@ -26,6 +26,10 @@ struct RecipeSourceIntegrityView: View {
                         statusCard(report)
                         qualityCard(report.quality)
 
+                        if let impact = report.impact {
+                            impactCard(impact)
+                        }
+
                         if let diff = report.diff, diff.changed {
                             diffCard(diff)
                         }
@@ -46,6 +50,78 @@ struct RecipeSourceIntegrityView: View {
         .navigationTitle("Quellenwächter")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+    }
+
+    private func impactCard(_ impact: RecipeSourceImpact) -> some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Label("Änderungswirkung", systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.title3.bold())
+
+            if impact.ingredientChanges.isEmpty,
+               impact.instructionChanges.isEmpty,
+               impact.possibleAllergenChanges.isEmpty {
+                Text("Die geänderten Zeilen konnten keiner Rezeptsektion sicher zugeordnet werden.")
+                    .font(.subheadline)
+                    .foregroundStyle(theme.muted)
+            }
+
+            changeGroup("Zutaten", changes: impact.ingredientChanges, icon: "carrot")
+            changeGroup("Zubereitung", changes: impact.instructionChanges, icon: "list.number")
+
+            if !impact.possibleAllergenChanges.isEmpty {
+                Divider()
+                Text("Mögliche Allergen-Auswirkung")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(theme.warning)
+                ForEach(impact.possibleAllergenChanges) { change in
+                    HStack(alignment: .top, spacing: 9) {
+                        Image(systemName: change.direction == "added" ? "plus.circle.fill" : "minus.circle.fill")
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(change.label) · \(directionLabel(change.direction))")
+                                .font(.subheadline.bold())
+                            Text(change.evidence.joined(separator: ", "))
+                                .font(.caption)
+                                .foregroundStyle(theme.muted)
+                        }
+                    }
+                    .foregroundStyle(theme.warning)
+                }
+            }
+
+            Label(
+                "Nur möglicher Hinweis – keine medizinische Sicherheitsfreigabe. Zutaten und Produktetiketten vollständig prüfen.",
+                systemImage: "exclamationmark.shield"
+            )
+            .font(.caption.bold())
+            .foregroundStyle(theme.warning)
+        }
+        .cardSurface()
+    }
+
+    @ViewBuilder
+    private func changeGroup(
+        _ title: String,
+        changes: [SourceContentChange],
+        icon: String
+    ) -> some View {
+        if !changes.isEmpty {
+            VStack(alignment: .leading, spacing: 7) {
+                Label(title, systemImage: icon)
+                    .font(.subheadline.bold())
+                ForEach(changes) { change in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: change.direction == "added" ? "plus" : "minus")
+                            .foregroundStyle(change.direction == "added" ? theme.success : theme.danger)
+                        Text(change.text)
+                            .font(.caption)
+                    }
+                }
+            }
+        }
+    }
+
+    private func directionLabel(_ direction: String) -> String {
+        direction == "added" ? "hinzugekommen" : "entfernt"
     }
 
     private func statusCard(_ report: RecipeSourceIntegrity) -> some View {

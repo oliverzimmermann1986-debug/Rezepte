@@ -25,6 +25,7 @@ struct RecipeDetailView: View {
     @State private var showShareLinks = false
     @State private var showPDF = false
     @State private var showDuplicatePrompt = false
+    @State private var showSubstitutionLab = false
     @State private var duplicateName = ""
     @State private var isManaging = false
     @State private var translatedDescription: String?
@@ -184,6 +185,12 @@ struct RecipeDetailView: View {
                 }
             }
         }
+        .sheet(isPresented: $showSubstitutionLab) {
+            if let recipe {
+                SubstitutionLabView(recipeID: recipe.id, recipeName: recipe.name)
+                    .environmentObject(session)
+            }
+        }
         .sheet(isPresented: $showShoppingServings) {
             if let recipe, let originalServings = recipe.servings {
                 ShoppingServingsSheet(
@@ -290,7 +297,16 @@ struct RecipeDetailView: View {
                     .font(.title2.bold())
                 Spacer()
                 if !session.readOnly {
-                    Button("Bearbeiten") { showIngredientsEditor = true }
+                    HStack(spacing: 10) {
+                        if session.fullAccess, session.supports("substitution-lab-v1") {
+                            Button {
+                                showSubstitutionLab = true
+                            } label: {
+                                Label("Ersetzen", systemImage: "flask")
+                            }
+                        }
+                        Button("Bearbeiten") { showIngredientsEditor = true }
+                    }
                 }
             }
             if recipe.ingredients.isEmpty {

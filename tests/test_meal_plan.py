@@ -135,6 +135,82 @@ def test_update_delete_and_duplicate_day_recipe_are_deterministic(
     assert client.delete(f"/api/meal-plan/items/{item_id}").status_code == 404
 
 
+def test_conductor_builds_resource_aware_timeline_without_persisting(
+    client,
+    test_db: Database,
+):
+    first = _meal_recipe(
+        test_db,
+        name="Ofengemuese",
+        folder="/tmp/conductor-oven-one",
+        servings=2,
+        pasta_grams=100,
+    )
+    second = _meal_recipe(
+        test_db,
+        name="Auflauf",
+        folder="/tmp/conductor-oven-two",
+        servings=2,
+        pasta_grams=100,
+    )
+    test_db.recipe_steps_set(first, [
+        {"instruction": "Gemüse schneiden"},
+        {"instruction": "Im Backofen garen", "timer_seconds": 1_800},
+    ])
+    test_db.recipe_steps_set(second, [
+        {"instruction": "Sauce verrühren"},
+        {"instruction": "Auflauf im Ofen backen", "timer_seconds": 1_200},
+    ])
+    for recipe_id in (first, second):
+        response = client.post(
+            "/api/meal-plan/items",
+            json={
+                "planned_for": "2026-07-27",
+                "recipe_id": recipe_id,
+                "planned_servings": 4,
+            },
+        )
+        assert response.status_code == 200
+
+    response = client.post(
+        "/api/meal-plan/conductor/preview",
+        json={
+            "planned_for": "2026-07-27",
+            "serve_at": "19:00",
+            "burners": 2,
+            "oven_slots": 1,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    plan = response.json()
+    assert plan["serve_time"] == "19:00"
+    assert plan["summary"]["recipes"] == 2
+    assert plan["summary"]["steps"] == 4
+    assert plan["summary"]["estimated_steps"] == 2
+    assert plan["summary"]["resource_adjustments"] >= 1
+    assert any("5 Minuten" in warning for warning in plan["warnings"])
+    oven_events = [event for event in plan["events"] if event["resource"] == "oven"]
+    assert len(oven_events) == 2
+    assert (
+        oven_events[0]["end_at"] <= oven_events[1]["start_at"]
+        or oven_events[1]["end_at"] <= oven_events[0]["start_at"]
+    )
+    assert test_db.meal_plan_entries("2026-07-27", "2026-07-27")[0][
+        "planned_servings"
+    ] == 4
+
+
+def test_conductor_requires_a_planned_recipe(client):
+    response = client.post(
+        "/api/meal-plan/conductor/preview",
+        json={"planned_for": "2026-07-27", "serve_at": "19:00"},
+    )
+
+    assert response.status_code == 400
+    assert "keine Gerichte" in response.json()["detail"]
+
+
 def test_week_cart_merges_into_the_one_local_list(
     client,
     test_db: Database,

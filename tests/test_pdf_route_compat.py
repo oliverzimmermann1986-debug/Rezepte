@@ -30,6 +30,9 @@ def test_health_and_system_info_report_build_version(client):
     assert "weekly-meal-plan" in health.json()["capabilities"]
     assert "weekly-meal-plan-pdf" in health.json()["capabilities"]
     assert "recipe-pdf-export" in health.json()["capabilities"]
+    assert "meal-conductor-v1" in health.json()["capabilities"]
+    assert "source-integrity-v2" in health.json()["capabilities"]
+    assert "substitution-lab-v1" in health.json()["capabilities"]
 
     info = client.get("/api/system/info")
     assert info.status_code == 200

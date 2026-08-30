@@ -279,6 +279,27 @@ actor APIClient {
         )
     }
 
+    func recipeSubstitutions(id: Int) async throws -> SubstitutionLab {
+        try await send("/api/recipes/\(id)/substitutions")
+    }
+
+    func applyRecipeSubstitution(
+        id: Int,
+        ingredientID: Int,
+        candidateID: String,
+        variantName: String
+    ) async throws -> SubstitutionApplyResponse {
+        try await send(
+            "/api/recipes/\(id)/substitutions/apply",
+            method: "POST",
+            body: SubstitutionApplyPayload(
+                ingredientId: ingredientID,
+                candidateId: candidateID,
+                variantName: variantName
+            )
+        )
+    }
+
     func duplicateRecipe(id: Int, newName: String) async throws -> DuplicateRecipeResponse {
         try await send(
             "/api/recipes/\(id)/duplicate",
@@ -575,6 +596,24 @@ actor APIClient {
             "/api/meal-plan/pdf",
             query: [URLQueryItem(name: "week_start", value: start)],
             accept: "application/pdf"
+        )
+    }
+
+    func mealConductorPreview(
+        date: String,
+        serveAt: String,
+        burners: Int,
+        ovenSlots: Int
+    ) async throws -> MealConductorPlan {
+        try await send(
+            "/api/meal-plan/conductor/preview",
+            method: "POST",
+            body: MealConductorPayload(
+                plannedFor: date,
+                serveAt: serveAt,
+                burners: burners,
+                ovenSlots: ovenSlots
+            )
         )
     }
 
@@ -1080,6 +1119,11 @@ private struct RecipeMetadataPayload: Codable {
 }
 private struct RecipeTagsPayload: Codable { let tags: [String] }
 private struct DuplicateRecipePayload: Codable { let newName: String }
+private struct SubstitutionApplyPayload: Codable {
+    let ingredientId: Int
+    let candidateId: String
+    let variantName: String
+}
 private struct OptimizeApplyPayload: Codable { let previewId: String }
 private struct ShoppingPushPayload: Codable {
     let consolidate: Bool
@@ -1130,6 +1174,12 @@ private struct RecurringActivePayload: Codable { let active: Bool }
 private struct AddMealPayload: Codable { let plannedFor: String; let recipeId: Int; let plannedServings: Int }
 private struct UpdateMealPayload: Codable { let plannedServings: Int }
 private struct WeekCartPayload: Codable { let weekStart: String }
+private struct MealConductorPayload: Codable {
+    let plannedFor: String
+    let serveAt: String
+    let burners: Int
+    let ovenSlots: Int
+}
 private struct ImportPayload: Codable { let url: String; let type: String }
 private struct ResolvePendingPayload: Codable {
     let url: String

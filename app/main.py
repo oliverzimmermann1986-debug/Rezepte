@@ -361,8 +361,11 @@ APP_CAPABILITIES = [
     "ingredient-tristate-filter",
     "weekly-meal-plan",
     "weekly-meal-plan-pdf",
+    "meal-conductor-v1",
     "recipe-pdf-export",
     "source-integrity-v1",
+    "source-integrity-v2",
+    "substitution-lab-v1",
 ]
 
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).

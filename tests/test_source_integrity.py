@@ -73,6 +73,16 @@ def test_source_watcher_detects_change_without_overwriting_recipe(
     assert body["status"] == "changed"
     assert body["diff"]["changed"] is True
     assert body["diff"]["added_lines"] == 2
+    assert body["impact"]["review_required"] is True
+    assert body["impact"]["automatic_safety_claim"] is False
+    assert any(
+        change["label"] == "Ei" and change["direction"] == "added"
+        for change in body["impact"]["possible_allergen_changes"]
+    )
+    assert any(
+        change["text"] == "2 Eier"
+        for change in body["impact"]["ingredient_changes"]
+    )
     assert any(issue["id"] == "source-changed" for issue in body["quality"]["issues"])
     assert test_db.recipe_get(recipe["id"])["description"] == recipe["description"]
 

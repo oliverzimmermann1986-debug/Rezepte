@@ -57,8 +57,14 @@ from ..recipes.search import suggest_query
 from ..recipes.source_integrity import (
     normalize_source_text,
     recipe_quality_report,
+    source_change_impact,
     source_diff,
     source_fingerprint,
+)
+from ..recipes.substitution_lab import (
+    resolve_candidate,
+    substituted_ingredient,
+    substitution_lab_payload,
 )
 
 logger = logging.getLogger(__name__)
@@ -663,6 +669,7 @@ def _source_integrity_report(recipe_id: int) -> Dict[str, Any]:
     comparison = None
     if baseline and latest and baseline.get("content_text") and latest.get("content_text"):
         comparison = source_diff(baseline["content_text"], latest["content_text"])
+    impact = source_change_impact(comparison, ingredients)
     quality = recipe_quality_report(
         recipe, ingredients, steps, source_status=status
     )
@@ -676,6 +683,7 @@ def _source_integrity_report(recipe_id: int) -> Dict[str, Any]:
         "baseline": _source_snapshot_public(baseline),
         "latest": _source_snapshot_public(latest),
         "diff": comparison,
+        "impact": impact,
         "quality": quality,
         "verified": bool(recipe.get("user_verified")),
         "verified_at": recipe.get("verified_at"),
@@ -801,6 +809,110 @@ def accept_source_integrity(recipe_id: int, request: Request) -> Dict[str, Any]:
         raise HTTPException(409, str(exc)) from exc
     logger.info("Neue Quellenbaseline für Rezept #%s bestätigt", recipe_id)
     return _source_integrity_report(recipe_id)
+
+
+class SubstitutionApply(BaseModel):
+    ingredient_id: int = Field(gt=0)
+    candidate_id: str = Field(min_length=1, max_length=80)
+    variant_name: str = Field(min_length=1, max_length=200)
+
+
+@router.get("/{recipe_id}/substitutions")
+def recipe_substitutions(recipe_id: int) -> Dict[str, Any]:
+    """Liefert nur kuratierte Vorschlaege; nichts wird automatisch veraendert."""
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    return substitution_lab_payload(
+        recipe,
+        db.recipe_ingredients_get(recipe_id),
+    )
+
+
+@router.post(
+    "/{recipe_id}/substitutions/apply",
+    dependencies=[Depends(require_admin)],
+)
+def apply_recipe_substitution(
+    recipe_id: int,
+    payload: SubstitutionApply,
+) -> Dict[str, Any]:
+    """Erstellt eine Variante und wendet genau eine bestaetigte Ersetzung an."""
+    from ..recipes.auto_tags import refresh_diet_auto_tags
+    from ..recipes.manage import safe_delete_recipe, safe_duplicate_recipe
+
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    ingredients = db.recipe_ingredients_get(recipe_id)
+    original = next(
+        (item for item in ingredients if int(item["id"]) == payload.ingredient_id),
+        None,
+    )
+    if original is None:
+        raise HTTPException(404, "Zutat nicht gefunden")
+    try:
+        candidate = resolve_candidate(original, payload.candidate_id)
+        clone = safe_duplicate_recipe(
+            db,
+            recipe_id,
+            new_name=payload.variant_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    variant_id = int(clone["recipe_id"])
+    try:
+        cloned_ingredients = db.recipe_ingredients_get(variant_id)
+        target_sort_order = int(original.get("sort_order") or 0)
+        prepared: List[Dict[str, Any]] = []
+        applied = False
+        for item in cloned_ingredients:
+            if not applied and int(item.get("sort_order") or 0) == target_sort_order:
+                prepared.append(substituted_ingredient(item, candidate))
+                applied = True
+            else:
+                prepared.append({
+                    "name": item.get("name"),
+                    "canonical_name": item.get("canonical_name"),
+                    "amount": item.get("amount"),
+                    "unit": item.get("unit"),
+                    "raw": item.get("raw"),
+                })
+        if not applied:
+            raise RuntimeError("Die Zutat konnte in der neuen Variante nicht zugeordnet werden")
+        _replace_ingredients_and_reset_verification(db, variant_id, prepared)
+        refresh_diet_auto_tags(
+            db,
+            variant_id,
+            [str(item.get("canonical_name") or "") for item in prepared],
+        )
+        db.shopping_catalog_rebuild()
+    except Exception as exc:
+        logger.exception("Substitutionsvariante #%s wird nach Fehler zurueckgerollt", variant_id)
+        try:
+            safe_delete_recipe(db, variant_id, delete_files=True, hard=True)
+        except Exception:
+            logger.exception("Rollback der Substitutionsvariante #%s fehlgeschlagen", variant_id)
+        if isinstance(exc, (ValueError, RuntimeError)):
+            raise HTTPException(409, str(exc)) from exc
+        raise HTTPException(500, "Substitutionsvariante konnte nicht erstellt werden") from exc
+
+    return {
+        **clone,
+        "substitution": {
+            "ingredient_id": payload.ingredient_id,
+            "from_name": original.get("name"),
+            "to_name": candidate["replacement_name"],
+            "ratio": candidate["ratio"],
+            "review_required": True,
+            "nutrition_invalidated": True,
+        },
+    }
 
 
 @router.get("/{recipe_id}/pdf")
@@ -1221,7 +1333,9 @@ def _replace_ingredients_and_reset_verification(
         connection.execute(
             "UPDATE recipes SET ingredients_status='ok', ingredients_extracted_at=?, "
             "extraction_claimed_at=NULL, extraction_claim_owner=NULL, "
-            "user_verified=0, verified_at=NULL, verified_by=NULL WHERE id=?",
+            "user_verified=0, verified_at=NULL, verified_by=NULL, "
+            "calories_per_serving=NULL, protein_g=NULL, carbs_g=NULL, fat_g=NULL, "
+            "nutrition_computed_at=NULL WHERE id=?",
             (now, recipe_id),
         )
 

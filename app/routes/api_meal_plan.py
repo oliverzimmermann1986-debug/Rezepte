@@ -14,6 +14,7 @@ from ..recipes.cart_logic import (
     aggregated_cart_for_display,
 )
 from ..recipes.meal_plan_pdf import build_meal_plan_pdf
+from ..recipes.meal_conductor import build_conductor_plan
 
 router = APIRouter(
     prefix="/api/meal-plan",
@@ -130,6 +131,41 @@ def get_week_pdf(week_start: Optional[str] = Query(None)):
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+class MealConductorPreview(BaseModel):
+    planned_for: str
+    serve_at: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    burners: int = Field(default=4, ge=1, le=8)
+    oven_slots: int = Field(default=1, ge=1, le=4)
+
+
+@router.post("/conductor/preview")
+def conductor_preview(payload: MealConductorPreview):
+    """Erzeugt einen gemeinsamen, nicht-persistierenden Tages-Zeitplan."""
+    planned_for = _parse_date(payload.planned_for, field="planned_for")
+    hour, minute = (int(part) for part in payload.serve_at.split(":"))
+    db = get_db()
+    entries = db.meal_plan_entries(
+        planned_for.isoformat(),
+        planned_for.isoformat(),
+    )
+    steps_by_recipe = {
+        int(entry["recipe_id"]): db.recipe_steps_get(int(entry["recipe_id"]))
+        for entry in entries
+    }
+    try:
+        return build_conductor_plan(
+            entries,
+            steps_by_recipe,
+            planned_for=planned_for,
+            serve_hour=hour,
+            serve_minute=minute,
+            burners=payload.burners,
+            oven_slots=payload.oven_slots,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 class MealPlanCreate(BaseModel):

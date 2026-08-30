@@ -140,6 +140,36 @@ def test_swiftui_source_watcher_exposes_diff_quality_and_safe_review_flow():
     assert '"source-integrity-v1"' in main
 
 
+def test_swiftui_selected_differentiators_are_native_and_capability_gated():
+    detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
+    meal_plan = _read(SWIFT / "Views" / "MealPlan" / "MealPlanView.swift")
+    conductor = _read(SWIFT / "Views" / "MealPlan" / "MealConductorView.swift")
+    watcher = _read(SWIFT / "Views" / "Recipes" / "RecipeSourceIntegrityView.swift")
+    substitutions = _read(SWIFT / "Views" / "Recipes" / "SubstitutionLabView.swift")
+    api = _read(SWIFT / "Networking" / "APIClient.swift")
+    main = _read(ROOT / "app" / "main.py")
+
+    assert 'session.supports("meal-conductor-v1")' in meal_plan
+    assert "MealConductorView(day: day)" in meal_plan
+    assert "Gemeinsamer Ablauf" in conductor
+    assert "/api/meal-plan/conductor/preview" in api
+
+    assert 'session.supports("substitution-lab-v1")' in detail
+    assert "SubstitutionLabView" in detail
+    assert "/substitutions/apply" in api
+    assert "Das Original bleibt unverändert" in substitutions
+
+    assert "Änderungswirkung" in watcher
+    assert "keine medizinische Sicherheitsfreigabe" in watcher
+    assert "Keine medizinische Sicherheitsfreigabe" in substitutions
+    for capability in (
+        "meal-conductor-v1",
+        "source-integrity-v2",
+        "substitution-lab-v1",
+    ):
+        assert f'"{capability}"' in main
+
+
 def test_swiftui_admin_settings_use_safe_partial_config_contract():
     api = _read(SWIFT / "Networking" / "APIClient.swift")
     models = _read(SWIFT / "Models" / "AdminConfigModels.swift")
