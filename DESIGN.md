@@ -3,14 +3,14 @@
 ## Leitidee
 
 Rezepte ist eine warme, robuste Küchenwerkzeugtafel für einen privaten Haushalt.
-Butter Yellow markiert aktive Arbeitsbereiche und wichtige Aktionen. Cremeflächen
+Warmes Pflaume markiert aktive Arbeitsbereiche und wichtige Aktionen. Cremeflächen
 halten die Oberfläche ruhig, während dunkle Serifentitel den Rezeptcharakter
 tragen. Die Anwendung soll auch mit einer Hand und mitten im Kochvorgang klar
 bedienbar bleiben.
 
 ## Farben
 
-- `--brand`: Butter Yellow für Primäraktionen, aktive Navigation und Fokus.
+- `--brand`: Pflaume für Primäraktionen, aktive Navigation und Fokus.
 - `--bg`: warmes Creme als Seitenhintergrund.
 - `--surface`: helle Arbeitsflächen und Karten.
 - `--ink`: dunkles Braun für Text und Icons.
@@ -38,7 +38,7 @@ der einzige Zustandsträger.
 
 ## Komponenten und Zustände
 
-- Primärbuttons sind Butter Yellow und haben eine klare Text- oder Icon-Beschriftung.
+- Primärbuttons sind Pflaume mit heller Beschriftung und haben eine klare Text- oder Icon-Beschriftung.
 - Sekundärbuttons bleiben hell mit sichtbarer Kontur.
 - Touch-Ziele sind mindestens 44 x 44 px groß.
 - Filter öffnen auf kleinen Bildschirmen als Sheet.

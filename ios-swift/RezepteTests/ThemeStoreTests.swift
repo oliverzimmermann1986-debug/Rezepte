@@ -4,6 +4,14 @@ import XCTest
 
 @MainActor
 final class ThemeStoreTests: XCTestCase {
+    func testPlumIsTheDefaultTheme() throws {
+        let suiteName = "ThemeStoreDefaultTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(ThemeStore(defaults: defaults).selection, .plum)
+    }
+
     func testThemeAndAppearancePersistPerDevice() throws {
         let suiteName = "ThemeStoreTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

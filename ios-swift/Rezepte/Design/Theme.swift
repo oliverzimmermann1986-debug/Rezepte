@@ -2,10 +2,10 @@ import SwiftUI
 import UIKit
 
 enum ThemeChoice: String, CaseIterable, Codable, Identifiable {
+    case plum
     case butter
     case sage
     case tomato
-    case plum
 
     var id: String { rawValue }
 
@@ -23,7 +23,7 @@ enum ThemeChoice: String, CaseIterable, Codable, Identifiable {
         case .butter: "warm und vertraut"
         case .sage: "ruhig und natürlich"
         case .tomato: "kräftig und kulinarisch"
-        case .plum: "dunkel und editorial"
+        case .plum: "warm und editorial"
         }
     }
 
@@ -38,7 +38,8 @@ enum ThemeChoice: String, CaseIterable, Codable, Identifiable {
                 surface: Color.dynamic(light: 0xFFFDF8, dark: 0x211B14),
                 ink: Color.dynamic(light: 0x433427, dark: 0xF6EBDD),
                 muted: Color.dynamic(light: 0x77685B, dark: 0xBEB0A2),
-                warning: Color.dynamic(light: 0x9A4D18, dark: 0xF0A465)
+                warning: Color.dynamic(light: 0x9A4D18, dark: 0xF0A465),
+                outline: Color.dynamic(light: 0xE4D9CB, dark: 0x4A4037)
             )
         case .sage:
             RecipeTheme(
@@ -49,7 +50,8 @@ enum ThemeChoice: String, CaseIterable, Codable, Identifiable {
                 surface: Color.dynamic(light: 0xFCFDF8, dark: 0x1B241B),
                 ink: Color.dynamic(light: 0x29372A, dark: 0xEBF3E8),
                 muted: Color.dynamic(light: 0x657066, dark: 0xAAB8A8),
-                warning: Color.dynamic(light: 0x98511E, dark: 0xEBA66F)
+                warning: Color.dynamic(light: 0x98511E, dark: 0xEBA66F),
+                outline: Color.dynamic(light: 0xD5DFD1, dark: 0x3D4A3D)
             )
         case .tomato:
             RecipeTheme(
@@ -60,18 +62,20 @@ enum ThemeChoice: String, CaseIterable, Codable, Identifiable {
                 surface: Color.dynamic(light: 0xFFFCF9, dark: 0x281917),
                 ink: Color.dynamic(light: 0x482A24, dark: 0xF8E9E4),
                 muted: Color.dynamic(light: 0x78635D, dark: 0xC1AAA4),
-                warning: Color.dynamic(light: 0x87520F, dark: 0xE9AA54)
+                warning: Color.dynamic(light: 0x87520F, dark: 0xE9AA54),
+                outline: Color.dynamic(light: 0xE7D3CD, dark: 0x50312C)
             )
         case .plum:
             RecipeTheme(
                 accent: Color(red: 0.54, green: 0.34, blue: 0.50),
                 accentPressed: Color(red: 0.42, green: 0.24, blue: 0.39),
                 accentSoft: Color.dynamic(light: 0xEBDDEA, dark: 0x402A3E),
-                background: Color.dynamic(light: 0xFAF5F8, dark: 0x181116),
-                surface: Color.dynamic(light: 0xFFF9FC, dark: 0x251A22),
+                background: Color.dynamic(light: 0xFFF9EE, dark: 0x181116),
+                surface: Color.dynamic(light: 0xFFFDF8, dark: 0x251A22),
                 ink: Color.dynamic(light: 0x3E2B39, dark: 0xF4E9F1),
                 muted: Color.dynamic(light: 0x74636F, dark: 0xBBAAB6),
-                warning: Color.dynamic(light: 0x985020, dark: 0xEDA56E)
+                warning: Color.dynamic(light: 0x985020, dark: 0xEDA56E),
+                outline: Color.dynamic(light: 0xE0D2DC, dark: 0x51394B)
             )
         }
     }
@@ -110,10 +114,10 @@ struct RecipeTheme: Equatable {
     let ink: Color
     let muted: Color
     let warning: Color
+    let outline: Color
 
     let success = Color.dynamic(light: 0x287A4B, dark: 0x63C88F)
     let danger = Color.dynamic(light: 0xA43D35, dark: 0xF08B83)
-    let outline = Color.dynamic(light: 0xE4D9CB, dark: 0x4A4037)
 }
 
 @MainActor
@@ -132,7 +136,7 @@ final class ThemeStore: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        selection = ThemeChoice(rawValue: defaults.string(forKey: Self.themeKey) ?? "") ?? .butter
+        selection = ThemeChoice(rawValue: defaults.string(forKey: Self.themeKey) ?? "") ?? .plum
         appearance = AppearanceMode(rawValue: defaults.string(forKey: Self.appearanceKey) ?? "") ?? .system
     }
 
@@ -140,7 +144,7 @@ final class ThemeStore: ObservableObject {
 }
 
 private struct RecipeThemeKey: EnvironmentKey {
-    static let defaultValue = ThemeChoice.butter.theme
+    static let defaultValue = ThemeChoice.plum.theme
 }
 
 extension EnvironmentValues {

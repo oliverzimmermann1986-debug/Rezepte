@@ -38,7 +38,7 @@ def test_legacy_theme_switcher_is_gone():
     assert "data-theme" not in combined
     assert "themePicker" not in combined
     assert "fonts.googleapis" not in combined
-    assert "One coherent Butter Yellow design system" in css
+    assert "One coherent Plum design system" in css
 
 
 def test_mobile_footer_reserves_content_space_and_is_opaque():
@@ -50,11 +50,17 @@ def test_mobile_footer_reserves_content_space_and_is_opaque():
     assert "inset: auto 0 0" in css
 
 
-def test_manifest_uses_rezepte_brand_and_butter_palette():
+def test_manifest_uses_rezepte_brand_and_plum_palette():
+    css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
     manifest = json.loads((STATIC / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["name"] == "Rezepte"
-    assert manifest["theme_color"] == "#f5c84f"
+    assert manifest["theme_color"] == "#8a577f"
     assert manifest["background_color"] == "#fffaf0"
+    assert "--accent: #8a577f" in css
+    assert "background: linear-gradient(135deg, var(--accent), var(--accent-2))" in css
+    assert "background: linear-gradient(135deg, var(--accent-soft), var(--accent-soft-strong))" in css
+    assert ".nav-primary.active { color: var(--accent-deep); background: var(--accent-soft); }" in css
+    assert "background: linear-gradient(90deg, var(--accent-soft-strong), var(--accent-soft))" in css
     assert any(shortcut["url"] == "/?tab=recipes" for shortcut in manifest["shortcuts"])
     assert any(shortcut["url"] == "/?tab=cart" for shortcut in manifest["shortcuts"])
     assert not any(shortcut["url"] == "/?tab=favorites" for shortcut in manifest["shortcuts"])

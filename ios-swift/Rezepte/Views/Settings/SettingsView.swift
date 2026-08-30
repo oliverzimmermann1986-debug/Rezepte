@@ -25,7 +25,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Farbwelt")
                             .font(.headline)
-                        Text("Die Auswahl gilt auf diesem Gerät. Butter bleibt die wiedererkennbare Standardfarbe.")
+                        Text("Die Auswahl gilt auf diesem Gerät. Pflaume ist die wiedererkennbare Standardfarbe.")
                             .font(.caption)
                             .foregroundStyle(theme.muted)
 

@@ -1,4 +1,4 @@
-"""Druckbares Butter-Yellow-PDF für ein einzelnes Rezept."""
+"""Druckbares Pflaumen-PDF für ein einzelnes Rezept."""
 from __future__ import annotations
 
 import html
@@ -51,12 +51,13 @@ def build_recipe_pdf(recipe: dict) -> bytes:
             "PDF-Erstellung ist nicht installiert (reportlab fehlt)"
         ) from exc
 
-    butter = colors.HexColor("#F5C84F")
-    butter_light = colors.HexColor("#FFF3C4")
+    brand = colors.HexColor("#8A577F")
+    brand_light = colors.HexColor("#EBDDEA")
     cream = colors.HexColor("#FFFDF8")
-    ink = colors.HexColor("#433427")
-    muted = colors.HexColor("#746553")
-    border = colors.HexColor("#E7D7B7")
+    ink = colors.HexColor("#3E2B39")
+    muted = colors.HexColor("#74636F")
+    border = colors.HexColor("#E0D2DC")
+    white = colors.white
 
     buffer = BytesIO()
     name = str(recipe.get("name") or "Unbenannt")
@@ -125,7 +126,7 @@ def build_recipe_pdf(recipe: dict) -> bytes:
         fontName="Helvetica-Bold",
         fontSize=10,
         leading=14,
-        textColor=ink,
+        textColor=white,
     )
 
     meta = " - ".join(
@@ -163,7 +164,7 @@ def build_recipe_pdf(recipe: dict) -> bytes:
             ]],
             colWidths=[142 * mm, 33 * mm],
             style=TableStyle([
-                ("BACKGROUND", (0, 0), (-1, -1), butter_light),
+                ("BACKGROUND", (0, 0), (-1, -1), brand_light),
                 ("BOX", (0, 0), (-1, -1), 0.8, border),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 10),
@@ -187,7 +188,7 @@ def build_recipe_pdf(recipe: dict) -> bytes:
                 style=TableStyle([
                     ("BACKGROUND", (0, 0), (-1, -1), cream),
                     ("BOX", (0, 0), (-1, -1), 0.6, border),
-                    ("LINEBEFORE", (0, 0), (0, 0), 3, butter),
+                    ("LINEBEFORE", (0, 0), (0, 0), 3, brand),
                     ("LEFTPADDING", (0, 0), (-1, -1), 10),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 10),
                     ("TOPPADDING", (0, 0), (-1, -1), 8),
@@ -264,7 +265,7 @@ def build_recipe_pdf(recipe: dict) -> bytes:
                     ]],
                     colWidths=[12 * mm, 163 * mm],
                     style=TableStyle([
-                        ("BACKGROUND", (0, 0), (0, 0), butter),
+                        ("BACKGROUND", (0, 0), (0, 0), brand),
                         ("BACKGROUND", (1, 0), (1, 0), cream),
                         ("BOX", (0, 0), (-1, -1), 0.45, border),
                         ("VALIGN", (0, 0), (-1, -1), "TOP"),
