@@ -34,6 +34,8 @@ def test_swiftui_theme_is_user_selectable_and_persisted():
         assert f"case {choice}" in theme
     assert "appearance-theme-v1" in theme
     assert "appearance-mode-v1" in theme
+    assert "?? .plum" in theme
+    assert "ThemeChoice.plum.theme" in theme
     assert "themeStore.selection" in settings
     assert "preferredColorScheme" in settings
 

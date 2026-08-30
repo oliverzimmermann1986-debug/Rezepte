@@ -41,7 +41,7 @@ Kein Rezept-Manager, in den man Rezepte tippt, sondern eine **Auffang-Anlage fü
 ## Brand Commitments
 
 - Name: **Rezepte**.
-- **Butter Yellow ist bindend** (Nutzerentscheidung, 27.07.2026): `#F5C84F` Butter Yellow, Creme `#FFFAF0` / `#FFFDF8`, warmes Dunkelbraun `#433427`. Die Palette bleibt; ihre Verwendung ist damit nicht festgelegt.
+- **Pflaume ist die Basisfarbe** (Nutzerentscheidung, 30.08.2026): `#8A577F` für Primäraktionen und Auswahl, `#6B3D63` für gedrückte Zustände, Creme `#FFFAF0` / `#FFFDF8` als ruhige Arbeitsfläche und tiefes Pflaumenbraun `#3E2B39` für Text. Butter bleibt in der nativen Farbauswahl als Alternative erhalten.
 - Oberflächensprache: Deutsch.
 
 ## Evidence on Hand

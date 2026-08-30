@@ -1,4 +1,4 @@
-"""Druckbares Butter-Yellow-PDF für Wochenplan und Einkaufsliste."""
+"""Druckbares Pflaumen-PDF für Wochenplan und Einkaufsliste."""
 from __future__ import annotations
 
 from io import BytesIO
@@ -43,12 +43,12 @@ def build_meal_plan_pdf(week: dict) -> bytes:
             "PDF-Erstellung ist nicht installiert (reportlab fehlt)"
         ) from exc
 
-    butter = colors.HexColor("#F5C84F")
-    butter_light = colors.HexColor("#FFF3C4")
+    brand = colors.HexColor("#8A577F")
+    brand_light = colors.HexColor("#EBDDEA")
     cream = colors.HexColor("#FFFDF8")
-    ink = colors.HexColor("#433427")
-    muted = colors.HexColor("#746553")
-    border = colors.HexColor("#E7D7B7")
+    ink = colors.HexColor("#3E2B39")
+    muted = colors.HexColor("#74636F")
+    border = colors.HexColor("#E0D2DC")
     white = colors.white
 
     buffer = BytesIO()
@@ -88,7 +88,7 @@ def build_meal_plan_pdf(week: dict) -> bytes:
         fontName="Helvetica-Bold",
         fontSize=11,
         leading=14,
-        textColor=ink,
+        textColor=white,
         spaceAfter=0,
     )
     recipe_style = ParagraphStyle(
@@ -106,6 +106,11 @@ def build_meal_plan_pdf(week: dict) -> bytes:
         fontSize=7.5,
         leading=10,
         textColor=muted,
+    )
+    day_date_style = ParagraphStyle(
+        "MealPlanDayDate",
+        parent=small_style,
+        textColor=white,
     )
     section_style = ParagraphStyle(
         "MealPlanSection",
@@ -164,7 +169,7 @@ def build_meal_plan_pdf(week: dict) -> bytes:
             ]],
             colWidths=[130 * mm, 45 * mm],
             style=TableStyle([
-                ("BACKGROUND", (0, 0), (-1, -1), butter_light),
+                ("BACKGROUND", (0, 0), (-1, -1), brand_light),
                 ("BOX", (0, 0), (-1, -1), 0.8, border),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 10),
@@ -202,14 +207,14 @@ def build_meal_plan_pdf(week: dict) -> bytes:
         date_label = f"{day_date[8:10]}.{day_date[5:7]}."
         day_heading = [
             Paragraph(str(day.get("label") or ""), day_style),
-            Paragraph(date_label, small_style),
+            Paragraph(date_label, day_date_style),
         ]
         story.extend([
             KeepTogether(Table(
                 [[day_heading, recipe_blocks]],
                 colWidths=[34 * mm, 141 * mm],
                 style=TableStyle([
-                    ("BACKGROUND", (0, 0), (0, 0), butter),
+                    ("BACKGROUND", (0, 0), (0, 0), brand),
                     ("BACKGROUND", (1, 0), (1, 0), cream),
                     ("BOX", (0, 0), (-1, -1), 0.7, border),
                     ("LINEBEFORE", (1, 0), (1, 0), 0.7, border),
