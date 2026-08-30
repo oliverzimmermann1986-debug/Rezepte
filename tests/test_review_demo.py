@@ -62,6 +62,15 @@ def test_review_demo_is_artificial_complete_and_sanitized(tmp_path: Path):
     assert db.recipe_count() == 6
     assert len(db.meal_plan_entries("2000-01-01", "2100-01-01")) == 3
     assert len(db.cart_list()) == 3
+    assert result["recurring_items"] == 1
+    assert len(db.recurring_list()) == 1
+    hafermilch = next(item for item in db.cart_list() if item["canonical_name"] == "hafermilch")
+    assert hafermilch["amount"] == 2
+    source_state = db.recipe_source_snapshot_state(
+        db.recipe_get_by_url("review-demo://zitronen-ricotta-pasta")["id"],
+        "review-demo://zitronen-ricotta-pasta",
+    )
+    assert source_state["baseline"]["content_sha256"] != source_state["latest"]["content_sha256"]
     assert db.user_get_by_name("app-review")["role"] == "admin"
     assert len(list(inputs["recipe_root"].rglob("*.png"))) == 6
     if os.name != "nt":

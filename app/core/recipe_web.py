@@ -249,8 +249,15 @@ def _fetch_image(url: str) -> tuple[Optional[bytes], Optional[str]]:
     return response.content, suffix
 
 
-def extract_recipe_web_metadata(url: str) -> Dict[str, Any]:
-    """Extrahiert Recipe-JSON-LD, sichtbare Metadaten und ein sicheres Cover."""
+def extract_recipe_web_metadata(
+    url: str, *, include_thumbnail: bool = True
+) -> Dict[str, Any]:
+    """Extrahiert Recipe-JSON-LD, sichtbare Metadaten und optional ein Cover.
+
+    Der Quellenwächter braucht nur Text und lädt deshalb keine möglicherweise
+    großen Bilder nach. Bestehende Importaufrufe behalten das bisherige
+    Verhalten über ``include_thumbnail=True``.
+    """
     response, final_url = _request_following_public_redirects(
         url,
         max_bytes=_MAX_HTML_BYTES,
@@ -308,7 +315,9 @@ def extract_recipe_web_metadata(url: str) -> Dict[str, Any]:
     image_url = _image_url(recipe_node.get("image")) or meta("og:image", "twitter:image")
     if image_url:
         image_url = urljoin(final_url, image_url)
-    thumbnail_bytes, thumbnail_suffix = _fetch_image(image_url) if image_url else (None, None)
+    thumbnail_bytes, thumbnail_suffix = (
+        _fetch_image(image_url) if include_thumbnail and image_url else (None, None)
+    )
 
     return {
         "canonical_url": canonical_url,

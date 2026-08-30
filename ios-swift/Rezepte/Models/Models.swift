@@ -223,6 +223,65 @@ struct Recipe: Codable, Identifiable {
     let fatG: Double?
 }
 
+struct RecipeSourceIntegrity: Codable {
+    let recipeId: Int
+    let recipeName: String
+    let sourceUrl: String?
+    let platform: String
+    let status: String
+    let checkedAt: Double?
+    let baseline: RecipeSourceSnapshot?
+    let latest: RecipeSourceSnapshot?
+    let diff: RecipeSourceDiff?
+    let quality: RecipeQualityReport
+    let verified: Bool
+    let verifiedAt: Double?
+    let verifiedBy: String?
+    let automaticOverwrite: Bool
+}
+
+struct RecipeSourceSnapshot: Codable, Identifiable {
+    let id: Int
+    let sourceUrl: String
+    let observedUrl: String?
+    let contentSha256: String?
+    let preview: String?
+    let pageTitle: String?
+    let descriptionSource: String?
+    let checkedAt: Double
+    let state: String
+    let error: String?
+    let isBaseline: Bool
+    let acceptedAt: Double?
+    let acceptedBy: String?
+}
+
+struct RecipeSourceDiff: Codable {
+    let changed: Bool
+    let addedLines: Int
+    let removedLines: Int
+    let baselineLines: Int
+    let currentLines: Int
+    let similarity: Double
+    let lines: [String]
+    let truncated: Bool
+}
+
+struct RecipeQualityReport: Codable {
+    let status: String
+    let score: Int
+    let issues: [RecipeQualityIssue]
+    let checkedRules: Int
+}
+
+struct RecipeQualityIssue: Codable, Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let severity: String
+    let section: String
+}
+
 struct RecipeTag: Codable, Identifiable, Hashable {
     let id: Int
     let name: String

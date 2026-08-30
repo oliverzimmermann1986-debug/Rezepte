@@ -612,6 +612,22 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
     }
 
+    func testSourceIntegrityCheckUsesDedicatedNonDestructiveEndpoint() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "api-token")
+        MockURLProtocol.respond(json: """
+        {"recipe_id":42,"recipe_name":"Pasta","source_url":"https://example.de/pasta","platform":"Webseite","status":"current","quality":{"status":"review","score":96,"issues":[],"checked_rules":8},"verified":false,"automatic_overwrite":false}
+        """)
+
+        let report = try await client.checkRecipeSourceIntegrity(id: 42)
+
+        XCTAssertEqual(report.status, "current")
+        XCTAssertFalse(report.automaticOverwrite)
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/source-integrity/check")
+    }
+
     func testShoppingOptimizationPreviewDecodesServerContract() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)

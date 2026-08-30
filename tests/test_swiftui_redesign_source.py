@@ -120,6 +120,26 @@ def test_swiftui_recipe_passport_exposes_stable_identity_and_original_source():
     assert "sourceAddedAt" in detail
 
 
+def test_swiftui_source_watcher_exposes_diff_quality_and_safe_review_flow():
+    detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
+    watcher = _read(SWIFT / "Views" / "Recipes" / "RecipeSourceIntegrityView.swift")
+    api = _read(SWIFT / "Networking" / "APIClient.swift")
+    main = _read(ROOT / "app" / "main.py")
+
+    assert 'session.supports("source-integrity-v1")' in detail
+    assert "Quellenwächter & Rezept-TÜV" in detail
+    for endpoint in (
+        "/source-integrity",
+        "/source-integrity/check",
+        "/source-integrity/accept",
+    ):
+        assert endpoint in api
+    assert "Quelle hat sich geändert" in watcher
+    assert "Quellprüfungen überschreiben niemals Rezeptdaten" in watcher
+    assert "Als neuen Quellstand bestätigen" in watcher
+    assert '"source-integrity-v1"' in main
+
+
 def test_swiftui_admin_settings_use_safe_partial_config_contract():
     api = _read(SWIFT / "Networking" / "APIClient.swift")
     models = _read(SWIFT / "Models" / "AdminConfigModels.swift")

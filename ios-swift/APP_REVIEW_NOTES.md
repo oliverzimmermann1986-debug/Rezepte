@@ -9,10 +9,15 @@ Template-App. Der zentrale Ablauf lautet:
    oder PDF in den Eingang legen.
 2. Zutaten und Schritte serverseitig erkennen, die Originalquelle aber sichtbar
    am Rezept bewahren.
-3. Unsichere Ergebnisse in einer manuellen Prüfwarteschlange bearbeiten.
-4. Aus Rezeptzutaten eine lokale, nach Supermarktbereichen sortierte
+3. Im Quellenwächter den gespeicherten Quellstand mit der aktuellen Seite
+   vergleichen. Änderungen erscheinen als Diff und überschreiben das Rezept
+   niemals automatisch.
+4. Unsichere Ergebnisse im Rezept-TÜV und in einer manuellen
+   Prüfwarteschlange bearbeiten.
+5. Aus Rezeptzutaten und wiederkehrendem Haushaltsbedarf eine nach
+   Supermarktbereichen sortierte
    Einkaufsliste mit Autovervollständigung aufbauen.
-5. Rezeptbilder generieren, nachdem vorhandene Bilder checksummiert gesichert
+6. Rezeptbilder generieren, nachdem vorhandene Bilder checksummiert gesichert
    wurden; Original und Neufassung können verglichen und wiederhergestellt
    werden.
 
@@ -33,13 +38,19 @@ Template-App. Der zentrale Ablauf lautet:
 > Quellenküche 1.1 is a native SwiftUI redesign centered on source-aware recipe
 > capture. Reviewers can share or paste a recipe URL from a website, Pinterest,
 > YouTube, TikTok or Instagram, or upload a photo/PDF. The original source stays
-> visible while uncertain extraction results enter a manual review queue. The
-> shopping list uses an account-local ingredient catalog with supermarket
-> categories and icons. Administrators can generate recipe images only after
+> visible. The in-app Source Watcher stores a text fingerprint, compares a
+> later source revision, and presents a structured diff without ever
+> overwriting the saved recipe. A deterministic Recipe Check highlights missing
+> servings, ingredients, steps and duplicate entries. The shopping list merges
+> planned recipe ingredients with recurring household purchases and uses an
+> account-local ingredient catalog with supermarket categories and icons.
+> Administrators can generate recipe images only after
 > existing images are checksum-backed up, compare both versions and restore an
 > original. Reviewers may also choose "Als Gast ansehen" for a read-only archive
 > tour without creating an account. No purchased app template, WebView or
 > third-party UI kit is used.
 
-Vor der Einreichung in App Store Connect zusätzlich ein funktionierendes
-Review-Konto und kurze Schritte für einen Beispielimport angeben.
+Vor der Einreichung in App Store Connect zusätzlich ein funktionierendes,
+nicht ablaufendes Review-Konto und kurze Schritte für einen Beispielimport
+angeben. In den ersten drei Screenshots Quellenwächter, Rezept-TÜV und die
+konsolidierte Einkaufsliste zeigen, nicht nur die Rezeptübersicht.

@@ -362,6 +362,7 @@ APP_CAPABILITIES = [
     "weekly-meal-plan",
     "weekly-meal-plan-pdf",
     "recipe-pdf-export",
+    "source-integrity-v1",
 ]
 
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).

@@ -50,3 +50,34 @@ def test_json_ld_recipe_page_is_extracted(monkeypatch):
     assert "500 g Kartoffeln" in result["description_text"]
     assert "20 Minuten kochen" in result["description_text"]
     assert result["description_source"] == "recipe-json-ld"
+
+
+def test_source_check_can_skip_thumbnail_download(monkeypatch):
+    html = """
+    <html><head>
+      <meta property="og:title" content="Pasta">
+      <meta property="og:description" content="Ein vollständiger Rezepttext">
+      <meta property="og:image" content="https://koch.example/cover.jpg">
+    </head></html>
+    """
+
+    def fake_request(url, *, max_bytes, accept):
+        assert max_bytes == recipe_web._MAX_HTML_BYTES
+        return (
+            SimpleNamespace(
+                status_code=200,
+                headers={"content-type": "text/html"},
+                text=html,
+                content=html.encode(),
+            ),
+            url,
+        )
+
+    monkeypatch.setattr(recipe_web, "_request_following_public_redirects", fake_request)
+    result = recipe_web.extract_recipe_web_metadata(
+        "https://koch.example/pasta", include_thumbnail=False
+    )
+
+    assert result["page_title"] == "Pasta"
+    assert result["thumbnail_bytes"] is None
+    assert result["thumbnail_suffix"] is None

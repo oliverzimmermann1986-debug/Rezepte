@@ -258,6 +258,27 @@ actor APIClient {
         )
     }
 
+    func recipeSourceIntegrity(id: Int) async throws -> RecipeSourceIntegrity {
+        try await send("/api/recipes/\(id)/source-integrity")
+    }
+
+    func checkRecipeSourceIntegrity(id: Int) async throws -> RecipeSourceIntegrity {
+        try await send(
+            "/api/recipes/\(id)/source-integrity/check",
+            method: "POST",
+            body: EmptyBody(),
+            timeout: 30
+        )
+    }
+
+    func acceptRecipeSourceIntegrity(id: Int) async throws -> RecipeSourceIntegrity {
+        try await send(
+            "/api/recipes/\(id)/source-integrity/accept",
+            method: "POST",
+            body: EmptyBody()
+        )
+    }
+
     func duplicateRecipe(id: Int, newName: String) async throws -> DuplicateRecipeResponse {
         try await send(
             "/api/recipes/\(id)/duplicate",

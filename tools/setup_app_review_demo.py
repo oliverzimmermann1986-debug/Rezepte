@@ -24,6 +24,7 @@ import yaml
 
 from app.db import Database
 from app.recipes.canonical import canonical_name
+from app.recipes.source_integrity import normalize_source_text, source_fingerprint
 
 
 REVIEW_HOSTNAME = "rezepte-review"
@@ -305,6 +306,35 @@ def seed_review_demo(
             )
         created_ids.append(recipe_id)
 
+    # Sichtbarer, rein künstlicher Quellenänderungs-Fall für den Review-Ablauf.
+    # Die beiden Snapshots verändern das gespeicherte Rezept ausdrücklich nicht.
+    demo_source_url = "review-demo://zitronen-ricotta-pasta"
+    baseline_text = normalize_source_text(
+        "Zitronen-Ricotta-Pasta\n250 g Pasta\n200 g Ricotta\n1 Bio-Zitrone"
+    )
+    changed_text = normalize_source_text(
+        "Zitronen-Ricotta-Pasta\n250 g Pasta\n250 g Ricotta\n2 Bio-Zitronen"
+    )
+    db.recipe_source_snapshot_create(
+        created_ids[0],
+        source_url=demo_source_url,
+        content_sha256=source_fingerprint(baseline_text),
+        content_text=baseline_text,
+        state="baseline",
+        checked_at=time.time() - 86400,
+        baseline_if_missing=True,
+        description_source="app-review-demo",
+    )
+    db.recipe_source_snapshot_create(
+        created_ids[0],
+        source_url=demo_source_url,
+        content_sha256=source_fingerprint(changed_text),
+        content_text=changed_text,
+        state="changed",
+        checked_at=time.time(),
+        description_source="app-review-demo",
+    )
+
     monday = date.today() - timedelta(days=date.today().weekday())
     for day_offset, recipe_index, servings in ((0, 0, 2), (2, 1, 4), (4, 4, 2)):
         db.meal_plan_add(
@@ -319,6 +349,17 @@ def seed_review_demo(
     ]
     with db.conn() as connection:
         connection.execute("UPDATE shopping_cart SET checked=1 WHERE id=?", (cart_ids[-1],))
+    db.recurring_create(
+        name="Hafermilch",
+        canonical_name="hafermilch",
+        amount=1,
+        unit="l",
+        category="Kühlregal",
+        interval_days=7,
+        next_due_on=date.today().isoformat(),
+        active=True,
+    )
+    db.recurring_run_due(due_on=date.today())
 
     credential_output.parent.mkdir(parents=True, exist_ok=True)
     credential_output.write_text(
@@ -327,7 +368,7 @@ def seed_review_demo(
             f"Server: {public_url}",
             f"Username: {REVIEW_USERNAME}",
             f"Password: {password}",
-            "Role: standard review user (no production or admin access)",
+            "Role: review administrator (isolated demo instance only)",
             "Data: artificial demo recipes only",
             "",
         ]),
@@ -341,6 +382,8 @@ def seed_review_demo(
         "manual_care_recipes": sum(not item["ingredients"] for item in RECIPES),
         "meal_plan_entries": 3,
         "shopping_items": 3,
+        "recurring_items": 1,
+        "source_change_demos": 1,
         "review_username": REVIEW_USERNAME,
         "credential_output": str(credential_output),
     }

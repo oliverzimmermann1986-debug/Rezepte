@@ -25,6 +25,13 @@ Zutaten nach Portionen, führt schrittweise durch die Zubereitung, bietet Timer
 und speichert den Fortschritt pro Konto. Ein bestätigter Abschluss wird mit
 einer stabilen Idempotenz-ID genau einmal in die Kochhistorie eingetragen.
 
+Unter **Quellenwächter & Rezept-TÜV** zeigt der Rezeptpass den gespeicherten
+Quellstand, den letzten sicheren Abruf und erkannte Textänderungen als Diff.
+Keine Prüfung überschreibt das Rezept automatisch. Erst eine ausdrückliche
+Bestätigung verschiebt den Vergleichsanker; Zutaten und Schritte bleiben davon
+unberührt. Der Rezept-TÜV ergänzt diesen Nachweis um lokale, deterministische
+Hinweise zu Vollständigkeit, Mengen und Dubletten.
+
 Im Rezeptfilter sind Allergiker-Infos separat von allgemeinen Tags auswählbar.
 Glutenfrei, laktosefrei, eifrei und nussfrei lassen sich kombinieren; die Liste
 zeigt dann nur Rezepte mit allen ausgewählten Frei-von-Tags. Diese automatisch
@@ -92,7 +99,7 @@ dem Gerät installiert und als vertrauenswürdig markiert ist.
 ## Vor der App-Store-Einreichung testen
 
 1. Unit-Tests mit `Cmd-U` ausführen.
-2. Im iPhone-Simulator Login, Quellen-Eingang, Rezeptpass, Bildverlauf,
+2. Im iPhone-Simulator Login, Quellen-Eingang, Rezeptpass, Quellenwächter, Bildverlauf,
    Wochenplan, Farbwelten und Einkaufskatalog prüfen. Bei aktiviertem Cloudflare Access auch Login mit
    gültigem sowie absichtlich ungültigem Geräte-Token testen.
 3. Auf einem registrierten iPhone aus Xcode installieren.

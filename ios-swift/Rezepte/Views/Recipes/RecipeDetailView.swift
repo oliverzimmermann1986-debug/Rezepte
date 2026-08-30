@@ -323,7 +323,7 @@ struct RecipeDetailView: View {
                     .font(.title2.bold())
                 Spacer()
                 Label(
-                    recipe.userVerified == true ? "Geprüft" : "Zu prüfen",
+                    recipe.userVerified == true ? "Zutaten geprüft" : "Prüfung offen",
                     systemImage: recipe.userVerified == true ? "checkmark.seal.fill" : "questionmark.diamond"
                 )
                 .font(.caption.bold())
@@ -334,6 +334,30 @@ struct RecipeDetailView: View {
                 Text("#\(recipe.id)")
                     .font(.body.monospacedDigit())
                     .textSelection(.enabled)
+            }
+
+            if session.supports("source-integrity-v1") {
+                NavigationLink {
+                    RecipeSourceIntegrityView(
+                        recipeID: recipe.id,
+                        recipeName: recipe.name
+                    )
+                    .environmentObject(session)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "checkmark.shield")
+                            .foregroundStyle(theme.accentPressed)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Quellenwächter & Rezept-TÜV")
+                                .font(.subheadline.bold())
+                            Text("Herkunft, Änderungen und Qualität prüfen")
+                                .font(.caption)
+                                .foregroundStyle(theme.muted)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+                }
             }
 
             if let url = safeExternalURL(recipe.url) {

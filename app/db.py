@@ -129,6 +129,30 @@ CREATE INDEX IF NOT EXISTS idx_recipes_extract  ON recipes(ingredients_status, i
 -- idx_recipes_deleted wird in _migrate erstellt NACHDEM die deleted_at-Spalte
 -- via ALTER COLUMN hinzugefügt ist (DDL läuft auf bestehender DB sonst vor Migration).
 
+-- Unveränderliche Beobachtungen der öffentlichen Originalquelle. Die
+-- Baseline ist nur ein Vergleichsanker; Quellprüfungen überschreiben niemals
+-- Rezepttext, Zutaten oder Schritte.
+CREATE TABLE IF NOT EXISTS recipe_source_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  source_url TEXT NOT NULL,
+  observed_url TEXT,
+  content_sha256 TEXT,
+  content_text TEXT,
+  page_title TEXT,
+  description_source TEXT,
+  checked_at REAL NOT NULL,
+  state TEXT NOT NULL,                      -- baseline | current | changed | unavailable
+  error TEXT,
+  is_baseline INTEGER NOT NULL DEFAULT 0,
+  accepted_at REAL,
+  accepted_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_source_snapshots_recipe
+  ON recipe_source_snapshots(recipe_id, checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_recipe_source_snapshots_baseline
+  ON recipe_source_snapshots(recipe_id, source_url, is_baseline);
+
 -- Widerrufbare, kurzlebige öffentliche Rezeptfreigaben. Der eigentliche
 -- signierte Token wird nicht gespeichert; die zufällige Share-ID im Token
 -- reicht zum Sperren und Auditieren.
@@ -2316,6 +2340,140 @@ class Database:
                 (url,),
             ).fetchone()
             return dict(row) if row else None
+
+    # ─── Quellenwächter ────────────────────────────────────────────────
+    def recipe_source_snapshot_create(
+        self,
+        recipe_id: int,
+        *,
+        source_url: str,
+        content_sha256: Optional[str],
+        content_text: Optional[str],
+        state: str,
+        observed_url: Optional[str] = None,
+        page_title: Optional[str] = None,
+        description_source: Optional[str] = None,
+        error: Optional[str] = None,
+        checked_at: Optional[float] = None,
+        baseline_if_missing: bool = False,
+        force_baseline: bool = False,
+        accepted_by: Optional[str] = None,
+    ) -> int:
+        """Speichert eine Quellbeobachtung und hält den Verlauf kompakt.
+
+        ``baseline_if_missing`` wird innerhalb desselben Writer-Locks geprüft,
+        damit parallele Erstprüfungen nicht zwei Baselines erzeugen.
+        """
+        allowed_states = {"baseline", "current", "changed", "unavailable"}
+        if state not in allowed_states:
+            raise ValueError(f"Ungültiger Quellenstatus: {state}")
+        source_url = str(source_url or "").strip()
+        if not source_url:
+            raise ValueError("Quelladresse fehlt")
+        content_text = str(content_text or "")[:200_000] or None
+        error = str(error or "")[:1_000] or None
+        now = float(checked_at if checked_at is not None else time.time())
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            if not c.execute(
+                "SELECT 1 FROM recipes WHERE id=? AND deleted_at IS NULL",
+                (int(recipe_id),),
+            ).fetchone():
+                raise LookupError("Rezept nicht gefunden")
+            has_baseline = c.execute(
+                "SELECT 1 FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND source_url=? AND is_baseline=1 LIMIT 1",
+                (int(recipe_id), source_url),
+            ).fetchone() is not None
+            make_baseline = bool(force_baseline or (baseline_if_missing and not has_baseline))
+            if make_baseline:
+                c.execute(
+                    "UPDATE recipe_source_snapshots SET is_baseline=0 "
+                    "WHERE recipe_id=? AND source_url=?",
+                    (int(recipe_id), source_url),
+                )
+            cur = c.execute(
+                "INSERT INTO recipe_source_snapshots ("
+                "recipe_id, source_url, observed_url, content_sha256, content_text, "
+                "page_title, description_source, checked_at, state, error, "
+                "is_baseline, accepted_at, accepted_by"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(recipe_id), source_url, observed_url, content_sha256,
+                    content_text, page_title, description_source, now,
+                    "baseline" if make_baseline else state, error,
+                    1 if make_baseline else 0,
+                    now if make_baseline and accepted_by else None,
+                    accepted_by if make_baseline else None,
+                ),
+            )
+            snapshot_id = int(cur.lastrowid)
+            # Maximal 25 reine Beobachtungen pro Rezept behalten. Baselines
+            # werden nie durch die Aufräumlogik entfernt.
+            c.execute(
+                "DELETE FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND is_baseline=0 AND id NOT IN ("
+                "SELECT id FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND is_baseline=0 "
+                "ORDER BY checked_at DESC, id DESC LIMIT 25)",
+                (int(recipe_id), int(recipe_id)),
+            )
+            return snapshot_id
+
+    def recipe_source_snapshot_state(
+        self, recipe_id: int, source_url: str
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        with self.conn() as c:
+            baseline = c.execute(
+                "SELECT * FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND source_url=? AND is_baseline=1 "
+                "ORDER BY checked_at DESC, id DESC LIMIT 1",
+                (int(recipe_id), source_url),
+            ).fetchone()
+            latest = c.execute(
+                "SELECT * FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND source_url=? "
+                "ORDER BY checked_at DESC, id DESC LIMIT 1",
+                (int(recipe_id), source_url),
+            ).fetchone()
+        return {
+            "baseline": dict(baseline) if baseline else None,
+            "latest": dict(latest) if latest else None,
+        }
+
+    def recipe_source_snapshot_accept_latest(
+        self, recipe_id: int, source_url: str, *, accepted_by: str
+    ) -> Dict[str, Any]:
+        """Bestätigt die letzte erreichbare Beobachtung als Vergleichsbasis.
+
+        Rezeptinhalte bleiben davon vollständig unberührt.
+        """
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            latest = c.execute(
+                "SELECT * FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND source_url=? AND content_sha256 IS NOT NULL "
+                "ORDER BY checked_at DESC, id DESC LIMIT 1",
+                (int(recipe_id), source_url),
+            ).fetchone()
+            if not latest:
+                raise ValueError("Es gibt noch keinen erreichbaren Quellstand")
+            now = time.time()
+            c.execute(
+                "UPDATE recipe_source_snapshots SET is_baseline=0 "
+                "WHERE recipe_id=? AND source_url=?",
+                (int(recipe_id), source_url),
+            )
+            c.execute(
+                "UPDATE recipe_source_snapshots SET is_baseline=1, state='baseline', "
+                "accepted_at=?, accepted_by=? WHERE id=?",
+                (now, accepted_by, int(latest["id"])),
+            )
+            accepted = c.execute(
+                "SELECT * FROM recipe_source_snapshots WHERE id=?",
+                (int(latest["id"]),),
+            ).fetchone()
+        return dict(accepted)
 
     def recipe_get_by_folder(self, folder_path: str) -> Optional[Dict[str, Any]]:
         with self.conn() as c:

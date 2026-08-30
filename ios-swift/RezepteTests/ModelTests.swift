@@ -108,4 +108,70 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(item.aiSuggestion?.category, "Allgemein")
         XCTAssertEqual(item.displayName, "Unbekannt")
     }
+
+    func testSourceIntegrityDecodesChangedSourceAndQualityIssues() throws {
+        let json = """
+        {
+          "recipe_id": 42,
+          "recipe_name": "Quellenpasta",
+          "source_url": "https://example.de/pasta",
+          "platform": "Webseite",
+          "status": "changed",
+          "checked_at": 12,
+          "baseline": {
+            "id": 1,
+            "source_url": "https://example.de/pasta",
+            "content_sha256": "old",
+            "preview": "200 g Mehl",
+            "checked_at": 10,
+            "state": "baseline",
+            "is_baseline": true
+          },
+          "latest": {
+            "id": 2,
+            "source_url": "https://example.de/pasta",
+            "content_sha256": "new",
+            "preview": "250 g Mehl",
+            "checked_at": 12,
+            "state": "changed",
+            "is_baseline": false
+          },
+          "diff": {
+            "changed": true,
+            "added_lines": 1,
+            "removed_lines": 1,
+            "baseline_lines": 1,
+            "current_lines": 1,
+            "similarity": 0.5,
+            "lines": ["-200 g Mehl", "+250 g Mehl"],
+            "truncated": false
+          },
+          "quality": {
+            "status": "review",
+            "score": 88,
+            "issues": [{
+              "id": "source-changed",
+              "title": "Originalquelle wurde verändert",
+              "detail": "Bitte prüfen.",
+              "severity": "warning",
+              "section": "source"
+            }],
+            "checked_rules": 8
+          },
+          "verified": true,
+          "verified_at": 9,
+          "verified_by": "anna",
+          "automatic_overwrite": false
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let report = try decoder.decode(RecipeSourceIntegrity.self, from: Data(json.utf8))
+
+        XCTAssertEqual(report.status, "changed")
+        XCTAssertEqual(report.diff?.addedLines, 1)
+        XCTAssertEqual(report.quality.issues.first?.id, "source-changed")
+        XCTAssertFalse(report.automaticOverwrite)
+    }
 }

@@ -42,6 +42,11 @@ from pydantic import BaseModel, Field
 
 from ..auth import require_admin, require_auth
 from ..core.analyzer import build_analyzer
+from ..core.recipe_web import (
+    extract_recipe_web_metadata,
+    normalize_recipe_url,
+    recipe_source_platform,
+)
 from ..core.safety import resolve_directory_under, resolve_regular_file_under
 from ..core.ttl_cache import TTLCache
 from ..config_store import get_config
@@ -49,6 +54,12 @@ from ..db import CookingCompletionConflictError, get_db
 from pathlib import Path
 from ..recipes.canonical import canonical_name as _canonical
 from ..recipes.search import suggest_query
+from ..recipes.source_integrity import (
+    normalize_source_text,
+    recipe_quality_report,
+    source_diff,
+    source_fingerprint,
+)
 
 logger = logging.getLogger(__name__)
 from ..recipes.indexer import (
@@ -580,6 +591,216 @@ def get_recipe(recipe_id: int):
         r["pdf_filename"] = None
         r["description_original"] = None
     return r
+
+
+def _source_snapshot_public(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not snapshot:
+        return None
+    text = normalize_source_text(snapshot.get("content_text"))
+    preview = text[:900]
+    if len(text) > len(preview):
+        preview += " …"
+    return {
+        "id": int(snapshot["id"]),
+        "source_url": snapshot.get("source_url"),
+        "observed_url": snapshot.get("observed_url"),
+        "content_sha256": snapshot.get("content_sha256"),
+        "preview": preview or None,
+        "page_title": snapshot.get("page_title"),
+        "description_source": snapshot.get("description_source"),
+        "checked_at": snapshot.get("checked_at"),
+        "state": snapshot.get("state"),
+        "error": snapshot.get("error"),
+        "is_baseline": bool(snapshot.get("is_baseline")),
+        "accepted_at": snapshot.get("accepted_at"),
+        "accepted_by": snapshot.get("accepted_by"),
+    }
+
+
+def _stored_source_text(recipe: Dict[str, Any]) -> str:
+    """Bevorzugt das bewahrte Original, fällt sicher auf Description zurück."""
+    try:
+        folder = _safe_recipe_folder(recipe)
+        original = folder / "description_original.txt"
+        if original.is_file() and not original.is_symlink():
+            text = original.read_text(encoding="utf-8", errors="replace")
+            if text.strip():
+                return text[:200_000]
+    except HTTPException:
+        pass
+    return str(recipe.get("description") or "")[:200_000]
+
+
+def _source_integrity_report(recipe_id: int) -> Dict[str, Any]:
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    ingredients = db.recipe_ingredients_get(recipe_id)
+    steps = db.recipe_steps_get(recipe_id)
+    raw_url = str(recipe.get("url") or "").strip()
+    normalized_url = normalize_recipe_url(raw_url) if raw_url else None
+    state = (
+        db.recipe_source_snapshot_state(recipe_id, raw_url)
+        if raw_url else {"baseline": None, "latest": None}
+    )
+    baseline = state.get("baseline")
+    latest = state.get("latest")
+    if not raw_url:
+        status = "missing"
+    elif not latest:
+        status = "local" if not normalized_url else "unchecked"
+    elif latest.get("state") == "unavailable":
+        status = "unavailable"
+    elif (
+        baseline
+        and latest.get("content_sha256")
+        and baseline.get("content_sha256") != latest.get("content_sha256")
+    ):
+        status = "changed"
+    else:
+        status = "current"
+    comparison = None
+    if baseline and latest and baseline.get("content_text") and latest.get("content_text"):
+        comparison = source_diff(baseline["content_text"], latest["content_text"])
+    quality = recipe_quality_report(
+        recipe, ingredients, steps, source_status=status
+    )
+    return {
+        "recipe_id": recipe_id,
+        "recipe_name": recipe.get("name"),
+        "source_url": raw_url or None,
+        "platform": recipe_source_platform(normalized_url) if normalized_url else "Datei / eigener Eintrag",
+        "status": status,
+        "checked_at": latest.get("checked_at") if latest else None,
+        "baseline": _source_snapshot_public(baseline),
+        "latest": _source_snapshot_public(latest),
+        "diff": comparison,
+        "quality": quality,
+        "verified": bool(recipe.get("user_verified")),
+        "verified_at": recipe.get("verified_at"),
+        "verified_by": recipe.get("verified_by"),
+        "automatic_overwrite": False,
+    }
+
+
+@router.get("/{recipe_id}/source-integrity")
+def source_integrity(recipe_id: int) -> Dict[str, Any]:
+    """Liefert Quellenstatus, Diff und den lokalen Rezept-TÜV ohne Netzwerkzugriff."""
+    return _source_integrity_report(recipe_id)
+
+
+@router.post(
+    "/{recipe_id}/source-integrity/check",
+    dependencies=[Depends(require_admin)],
+)
+def check_source_integrity(recipe_id: int, request: Request) -> Dict[str, Any]:
+    """Prüft die öffentliche Quelle, ohne das gespeicherte Rezept zu verändern."""
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    source_url = str(recipe.get("url") or "").strip()
+    normalized_url = normalize_recipe_url(source_url)
+    if not normalized_url:
+        raise HTTPException(409, "Diese Datei- oder Eigenquelle kann nicht online geprüft werden")
+    actor = _actor(request)
+    try:
+        metadata = extract_recipe_web_metadata(normalized_url, include_thumbnail=False)
+        fetched_text = normalize_source_text(
+            metadata.get("description_text") or metadata.get("page_title")
+        )
+        fetched_hash = source_fingerprint(fetched_text)
+        if not fetched_hash:
+            raise ValueError("Die Quelle enthält keinen vergleichbaren Rezepttext")
+    except Exception as exc:
+        logger.warning("Quellenprüfung für Rezept #%s fehlgeschlagen: %s", recipe_id, exc)
+        db.recipe_source_snapshot_create(
+            recipe_id,
+            source_url=source_url,
+            content_sha256=None,
+            content_text=None,
+            state="unavailable",
+            observed_url=normalized_url,
+            error=str(exc),
+        )
+        return _source_integrity_report(recipe_id)
+
+    state = db.recipe_source_snapshot_state(recipe_id, source_url)
+    baseline = state.get("baseline")
+    if not baseline:
+        stored_text = normalize_source_text(_stored_source_text(recipe))
+        stored_hash = source_fingerprint(stored_text)
+        if stored_hash:
+            db.recipe_source_snapshot_create(
+                recipe_id,
+                source_url=source_url,
+                content_sha256=stored_hash,
+                content_text=stored_text,
+                state="baseline",
+                checked_at=recipe.get("source_added_at") or recipe.get("indexed_at"),
+                baseline_if_missing=True,
+                description_source="imported-original",
+            )
+        else:
+            db.recipe_source_snapshot_create(
+                recipe_id,
+                source_url=source_url,
+                observed_url=metadata.get("canonical_url") or normalized_url,
+                content_sha256=fetched_hash,
+                content_text=fetched_text,
+                state="current",
+                page_title=metadata.get("page_title"),
+                description_source=metadata.get("description_source"),
+                baseline_if_missing=True,
+                accepted_by=actor,
+            )
+            logger.info("Quellenbaseline für Rezept #%s von %s angelegt", recipe_id, actor)
+            return _source_integrity_report(recipe_id)
+        baseline = db.recipe_source_snapshot_state(recipe_id, source_url).get("baseline")
+
+    status = (
+        "current"
+        if baseline and baseline.get("content_sha256") == fetched_hash
+        else "changed"
+    )
+    db.recipe_source_snapshot_create(
+        recipe_id,
+        source_url=source_url,
+        observed_url=metadata.get("canonical_url") or normalized_url,
+        content_sha256=fetched_hash,
+        content_text=fetched_text,
+        state=status,
+        page_title=metadata.get("page_title"),
+        description_source=metadata.get("description_source"),
+    )
+    logger.info("Quellenprüfung für Rezept #%s: %s von %s", recipe_id, status, actor)
+    return _source_integrity_report(recipe_id)
+
+
+@router.post(
+    "/{recipe_id}/source-integrity/accept",
+    dependencies=[Depends(require_admin)],
+)
+def accept_source_integrity(recipe_id: int, request: Request) -> Dict[str, Any]:
+    """Bestätigt nur den Vergleichsanker; Rezeptinhalte bleiben unverändert."""
+    db = get_db()
+    recipe = db.recipe_get(recipe_id)
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    source_url = str(recipe.get("url") or "").strip()
+    if not normalize_recipe_url(source_url):
+        raise HTTPException(409, "Für diese Quelle gibt es keinen Online-Vergleich")
+    if _source_integrity_report(recipe_id)["status"] != "changed":
+        raise HTTPException(409, "Es gibt keine neue Quelländerung zu bestätigen")
+    try:
+        db.recipe_source_snapshot_accept_latest(
+            recipe_id, source_url, accepted_by=_actor(request)
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    logger.info("Neue Quellenbaseline für Rezept #%s bestätigt", recipe_id)
+    return _source_integrity_report(recipe_id)
 
 
 @router.get("/{recipe_id}/pdf")

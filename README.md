@@ -13,6 +13,13 @@ Die SwiftUI-App enthält außerdem die vollständige manuelle Importprüfung mit
 KI-Neuanalyse sowie einen servergespeicherten Kochmodus mit Portionsskalierung,
 Schritt-Timern und idempotentem Eintrag in die Kochhistorie.
 
+Der **Quellenwächter** macht aus dem Original-Link einen überprüfbaren
+Rezeptpass: Textstände werden als Fingerprint gesichert, spätere Änderungen als
+Diff angezeigt und niemals automatisch in das Rezept übernommen. Ein lokaler
+**Rezept-TÜV** markiert zusätzlich fehlende Portionen, Zutaten, Schritte,
+Mengenangaben und Dubletten. Wochenplanzutaten und wiederkehrender
+Haushaltsbedarf laufen in derselben Einkaufsliste zusammen.
+
 Proxmox-LXC-Container für den Scraper-Job:
 
 **Rezeptbibliothek mit offenem Quellenimport** — übernimmt Links aus zwei
@@ -28,6 +35,8 @@ Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Sta
 - Quellen-Eingang ist die Startseite; das Archiv bleibt einen Tab entfernt
 - Butter, Salbei, Tomate und Pflaume sind gerätebezogen umschaltbar
 - Einkaufsliste mit lokalem Produktkatalog, Autovervollständigung, Icons und Supermarktbereichen
+- Quellenwächter mit unveränderlicher Baseline, Quell-Diff und Rezept-TÜV
+- wiederkehrender Haushaltsbedarf zusammen mit Rezept- und Wochenplanzutaten
 - native iPhone-Navigation mit Dynamic Type, Dark Mode und iOS-Safe-Areas
 - erweiterte Filter als Side-Sheet am Desktop und Bottom-Sheet auf Smartphones
 - keine externen Schriftarten oder Design-CDNs
