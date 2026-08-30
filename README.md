@@ -534,8 +534,9 @@ Laufzeitdaten, startet `scrapper-web` neu und verifiziert anschließend Version,
 native Capabilities und die exakten OpenAPI-Methoden des ausgelieferten Vertrags.
 Nur auf der isolierten Instanz `rezepte-review` sichert es zusätzlich die rein
 künstlichen Review-Daten und hebt Quell-URL, Quell-Snapshots und Demo-Wochenplan
-atomar sowie wiederholbar auf den dokumentierten Sollstand an; Konten und
-Zugangsdaten bleiben dabei unverändert.
+einschließlich des künstlichen Warenkorbs und der wöchentlichen Einkaufsregel
+atomar sowie wiederholbar auf den dokumentierten Sollstand an; Konten,
+Zugangsdaten und Produkt-Nutzungsstatistiken bleiben dabei unverändert.
 
 ### PDF-Rezeptdaten
 

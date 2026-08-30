@@ -11,6 +11,27 @@ SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/scrapper-code-backups}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_FILE="$BACKUP_ROOT/code-$STAMP.tar.gz"
+HEALTH_FILE=""
+REVIEW_HEALTH_FILE=""
+
+cleanup_health_files() {
+  [[ -z "$HEALTH_FILE" ]] || rm -f -- "$HEALTH_FILE" || true
+  [[ -z "$REVIEW_HEALTH_FILE" ]] || rm -f -- "$REVIEW_HEALTH_FILE" || true
+}
+
+poll_local_health() {
+  local output_file="$1"
+  for _ in {1..30}; do
+    if curl -fsS --connect-timeout 1 --max-time 2 \
+      --output "$output_file" http://127.0.0.1:8000/healthz 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+trap cleanup_health_files EXIT
 
 # Die App-Review-Instanz (review-demo/DEPLOYMENT.md) betreibt bewusst keinen
 # Import-Job; ein Update darf scrapper-job.timer dort nicht reaktivieren.
@@ -190,15 +211,16 @@ if [[ "$IS_REVIEW_INSTANCE" != "1" ]]; then
   systemctl restart scrapper-db-backup.timer
 fi
 
-for _ in {1..30}; do
-  if curl -fsS http://127.0.0.1:8000/healthz > /tmp/rezepte-health.json 2>/dev/null; then
-    break
-  fi
-  sleep 1
-done
+HEALTH_FILE="$(mktemp /tmp/rezepte-health.XXXXXX)"
+chmod 0600 "$HEALTH_FILE"
+if ! poll_local_health "$HEALTH_FILE"; then
+  echo "Fehler: Der Dienst hat innerhalb des Health-Timeouts nicht geantwortet." >&2
+  journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
+  false
+fi
 
 EXPECTED_VERSION="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$APP_DIR/app/__init__.py" | head -n 1 | tr -d '\r')"
-HEALTH_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version", ""))' /tmp/rezepte-health.json 2>/dev/null || true)"
+HEALTH_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version", ""))' "$HEALTH_FILE" 2>/dev/null || true)"
 if [[ -z "$EXPECTED_VERSION" || "$HEALTH_VERSION" != "$EXPECTED_VERSION" ]]; then
   echo "Fehler: Erwartete Version '$EXPECTED_VERSION', Dienst meldet '$HEALTH_VERSION'." >&2
   journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
@@ -215,7 +237,7 @@ for REQUIRED_CAPABILITY in \
   source-integrity-v2 \
   substitution-lab-v1; do
   if ! python3 -c 'import json,sys; raise SystemExit(0 if sys.argv[2] in json.load(open(sys.argv[1])).get("capabilities", []) else 1)' \
-      /tmp/rezepte-health.json "$REQUIRED_CAPABILITY"; then
+      "$HEALTH_FILE" "$REQUIRED_CAPABILITY"; then
     echo "Fehler: Backend-Faehigkeit '$REQUIRED_CAPABILITY' fehlt nach dem Update." >&2
     journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
     false
@@ -268,7 +290,8 @@ fi
 # Bestehende CT117-Review-Daten werden erst nach erfolgreicher Schema-,
 # Dienst-, Capability- und OpenAPI-Prüfung angehoben. Der Fixer validiert die
 # isolierte künstliche Instanz erneut, erstellt als APP_USER ein geprüftes
-# SQLite-Backup und schreibt URL, Quellenstände und Wochenplan atomar. Jeder
+# SQLite-Backup und schreibt URL, Quellenstände, Wochenplan und Einkaufsszenario
+# atomar. Jeder
 # Fehler bricht durch `set -e` hart ab und lässt das Backup zur Wiederherstellung
 # unter data/backups/review-refresh liegen.
 if [[ "$IS_REVIEW_INSTANCE" == "1" ]]; then
@@ -288,16 +311,15 @@ if [[ "$IS_REVIEW_INSTANCE" == "1" ]]; then
     --public-url "https://rezepte-review.mausbaeren.me"
   popd >/dev/null
   systemctl start scrapper-web.service
-  rm -f /tmp/rezepte-health-after-review-refresh.json
-  for _ in {1..30}; do
-    if curl -fsS http://127.0.0.1:8000/healthz \
-      > /tmp/rezepte-health-after-review-refresh.json 2>/dev/null; then
-      break
-    fi
-    sleep 1
-  done
+  REVIEW_HEALTH_FILE="$(mktemp /tmp/rezepte-health-after-review-refresh.XXXXXX)"
+  chmod 0600 "$REVIEW_HEALTH_FILE"
+  if ! poll_local_health "$REVIEW_HEALTH_FILE"; then
+    echo "Fehler: Der Review-Dienst hat nach der Demo-Migration nicht geantwortet." >&2
+    journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
+    false
+  fi
   REFRESHED_HEALTH_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version", ""))' \
-    /tmp/rezepte-health-after-review-refresh.json 2>/dev/null || true)"
+    "$REVIEW_HEALTH_FILE" 2>/dev/null || true)"
   if [[ "$REFRESHED_HEALTH_VERSION" != "$EXPECTED_VERSION" ]]; then
     echo "Fehler: Review-Dienst meldet nach Demo-Migration Version '$REFRESHED_HEALTH_VERSION' statt '$EXPECTED_VERSION'." >&2
     journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
@@ -309,5 +331,5 @@ fi
 trap - ERR
 rm -rf -- "$APP_DIR/venv.previous" "$APP_DIR/playwright-browsers.previous"
 echo "Update erfolgreich. Backend und Frontend laufen gemeinsam auf Version $EXPECTED_VERSION."
-echo "Gesundheit: $(cat /tmp/rezepte-health.json)"
+echo "Gesundheit: $(cat "$HEALTH_FILE")"
 echo "API-Vertraege: OpenAPI-Methoden vollständig registriert"

@@ -34,6 +34,9 @@
 - Die isolierte App-Review-Instanz repariert ihren Schutzmarker selbst und hält
   den Importtimer nach Updates deaktiviert. Bestehende künstliche Review-Daten
   werden nach einem geprüften SQLite-Backup atomar und wiederholbar auf den
-  dokumentierten Quellen- und Zwölf-Wochen-Planstand angehoben; dadurch bleibt
-  der Menü-Dirigent auch nach einem Wochenwechsel sofort prüfbar. Benutzerkonten
-  und Zugangsdaten werden nicht verändert.
+  dokumentierten Quellen-, Zwölf-Wochen-Plan- und Einkaufsstand angehoben;
+  dadurch bleiben Menü-Dirigent, Warenkorb und wiederkehrender Einkauf auch nach
+  einem Wochenwechsel sofort prüfbar. Benutzerkonten, Zugangsdaten und lokale
+  Produktstatistiken werden nicht verändert.
+- Der Deployment-Health-Poll verwirft alte Antwortdateien und verlangt einen
+  explizit erfolgreichen neuen Abruf, bevor die Versionsprüfung beginnt.
