@@ -1,4 +1,4 @@
-# App-Review-Notizen – Quellenküche 1.1
+# App-Review-Notizen – Quellenküche 1.2
 
 ## Eigenständiges Produktkonzept
 
@@ -17,7 +17,13 @@ Template-App. Der zentrale Ablauf lautet:
 5. Aus Rezeptzutaten und wiederkehrendem Haushaltsbedarf eine nach
    Supermarktbereichen sortierte
    Einkaufsliste mit Autovervollständigung aufbauen.
-6. Rezeptbilder generieren, nachdem vorhandene Bilder checksummiert gesichert
+6. Mehrere geplante Gerichte im Menü-Dirigenten rückwärts zu einer gemeinsamen
+   Servierzeit koordinieren. Herd, Ofen und aktive Kochkapazität werden als
+   begrenzte Ressourcen behandelt.
+7. Eine fehlende Zutat im Substitutionslabor als nachvollziehbare Variante
+   ersetzen. Konkrete Vorher-/Nachher-Mengen und Einschränkungen bleiben
+   sichtbar; das Original wird nie überschrieben.
+8. Rezeptbilder generieren, nachdem vorhandene Bilder checksummiert gesichert
    wurden; Original und Neufassung können verglichen und wiederhergestellt
    werden.
 
@@ -35,7 +41,7 @@ Template-App. Der zentrale Ablauf lautet:
 
 ## Vorschlag für das Feld „App Review Notes“
 
-> Quellenküche 1.1 is a native SwiftUI redesign centered on source-aware recipe
+> Quellenküche 1.2 is a native SwiftUI app centered on source-aware recipe
 > capture. Reviewers can share or paste a recipe URL from a website, Pinterest,
 > YouTube, TikTok or Instagram, or upload a photo/PDF. The original source stays
 > visible. The in-app Source Watcher stores a text fingerprint, compares a
@@ -44,6 +50,10 @@ Template-App. Der zentrale Ablauf lautet:
 > servings, ingredients, steps and duplicate entries. The shopping list merges
 > planned recipe ingredients with recurring household purchases and uses an
 > account-local ingredient catalog with supermarket categories and icons.
+> Its Menu Conductor schedules several dishes backwards from one serving time
+> while respecting oven, burner and active-cook capacity. The Substitution Lab
+> previews exact before/after ingredients and creates a traceable recipe
+> variant without overwriting the original.
 > Administrators can generate recipe images only after
 > existing images are checksum-backed up, compare both versions and restore an
 > original. Reviewers may also choose "Als Gast ansehen" for a read-only archive
@@ -52,5 +62,5 @@ Template-App. Der zentrale Ablauf lautet:
 
 Vor der Einreichung in App Store Connect zusätzlich ein funktionierendes,
 nicht ablaufendes Review-Konto und kurze Schritte für einen Beispielimport
-angeben. In den ersten drei Screenshots Quellenwächter, Rezept-TÜV und die
-konsolidierte Einkaufsliste zeigen, nicht nur die Rezeptübersicht.
+angeben. In den ersten drei Screenshots Menü-Dirigent, Quellenwächter und
+Substitutionslabor zeigen, nicht nur die Rezeptübersicht.

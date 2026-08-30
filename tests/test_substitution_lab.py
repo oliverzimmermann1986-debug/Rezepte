@@ -75,6 +75,35 @@ def _recipe_with_files(
     return recipe_id, folder
 
 
+def _rbac_tokens(monkeypatch, test_db) -> dict[str, str]:
+    from app import auth
+
+    class Config:
+        def get(self, *keys, default=None):
+            values = {
+                ("web",): {"auth_disabled": False},
+                ("web", "secret_key"): "s" * 48,
+            }
+            return values.get(keys, default)
+
+    monkeypatch.setattr(auth, "get_config", lambda: Config())
+    test_db.user_create(
+        "substitution-admin",
+        auth.hash_password("admin-password"),
+        role="admin",
+    )
+    test_db.user_create(
+        "substitution-reader",
+        auth.hash_password("reader-password"),
+        role="user",
+    )
+    return {
+        "admin": auth.create_session("substitution-admin"),
+        "user": auth.create_session("substitution-reader"),
+        "guest": auth.create_guest_session(),
+    }
+
+
 def test_cold_lock_file_initialization_is_thread_safe(tmp_path):
     lock_path = tmp_path / "cold-start.lock"
     barrier = threading.Barrier(8)
@@ -89,6 +118,75 @@ def test_cold_lock_file_initialization_is_thread_safe(tmp_path):
 
     assert acquired == [True] * 8
     assert lock_path.read_text(encoding="utf-8").strip()
+
+
+def test_substitution_routes_enforce_real_admin_user_and_guest_sessions(
+    client,
+    test_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app import auth
+    from app.main import app
+
+    root = tmp_path / "recipes"
+    recipe_id, _folder = _recipe_with_files(test_db, root)
+    monkeypatch.setattr(manage, "_recipe_root", lambda: root.resolve())
+    tokens = _rbac_tokens(monkeypatch, test_db)
+    ingredient_id = test_db.recipe_ingredients_get(recipe_id)[0]["id"]
+    apply_payload = {
+        "ingredient_id": ingredient_id,
+        "candidate_id": "milk-oat-drink",
+        "variant_name": "RBAC Haferdrink",
+    }
+
+    app.dependency_overrides.pop(auth.require_auth, None)
+    app.dependency_overrides.pop(auth.require_admin, None)
+    try:
+        anonymous_preview = client.get(
+            f"/api/recipes/{recipe_id}/substitutions"
+        )
+        previews = {
+            role: client.get(
+                f"/api/recipes/{recipe_id}/substitutions",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            for role, token in tokens.items()
+        }
+        user_apply = client.post(
+            f"/api/recipes/{recipe_id}/substitutions/apply",
+            headers={"Authorization": f"Bearer {tokens['user']}"},
+            json=apply_payload,
+        )
+        guest_apply = client.post(
+            f"/api/recipes/{recipe_id}/substitutions/apply",
+            headers={"Authorization": f"Bearer {tokens['guest']}"},
+            json=apply_payload,
+        )
+        count_after_denials = test_db.recipe_count()
+        admin_apply = client.post(
+            f"/api/recipes/{recipe_id}/substitutions/apply",
+            headers={"Authorization": f"Bearer {tokens['admin']}"},
+            json=apply_payload,
+        )
+    finally:
+        app.dependency_overrides[auth.require_auth] = lambda: None
+        app.dependency_overrides[auth.require_admin] = lambda: {
+            "username": "test-admin",
+            "role": "admin",
+            "full_access": True,
+        }
+
+    assert anonymous_preview.status_code == 401
+    for role, response in previews.items():
+        assert response.status_code == 200, f"{role}: {response.text}"
+    assert user_apply.status_code == 403
+    assert "Administratorrechte" in user_apply.json()["detail"]
+    assert guest_apply.status_code == 403
+    assert "schreibgeschützt" in guest_apply.json()["detail"]
+    assert count_after_denials == 1
+    assert admin_apply.status_code == 200, admin_apply.text
+    assert test_db.recipe_count() == 2
 
 
 def test_substitution_creates_reviewable_variant_and_preserves_original(

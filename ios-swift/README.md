@@ -99,8 +99,10 @@ dem Gerät installiert und als vertrauenswürdig markiert ist.
 ## Vor der App-Store-Einreichung testen
 
 1. Unit-Tests mit `Cmd-U` ausführen.
-2. Im iPhone-Simulator Login, Quellen-Eingang, Rezeptpass, Quellenwächter, Bildverlauf,
-   Wochenplan, Farbwelten und Einkaufskatalog prüfen. Bei aktiviertem Cloudflare Access auch Login mit
+2. Im iPhone-Simulator Login, Quellen-Eingang, Rezeptpass, Quellenwächter,
+   Substitutionslabor, Menü-Dirigent, Bildverlauf, Wochenplan, wiederkehrende
+   Einkäufe, Admin-Einstellungen, Farbwelten und Einkaufskatalog prüfen. Bei
+   aktiviertem Cloudflare Access auch Login mit
    gültigem sowie absichtlich ungültigem Geräte-Token testen.
 3. Auf einem registrierten iPhone aus Xcode installieren.
 4. Über **Product > Archive** einen internen TestFlight-Build hochladen.

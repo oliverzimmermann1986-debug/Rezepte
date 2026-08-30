@@ -529,8 +529,13 @@ cd /pfad/zum/entpackten/Release
 sudo bash proxmox/update-local.sh
 ```
 
-Das Skript überträgt Backend und Frontend gemeinsam, bewahrt alle Laufzeitdaten,
-startet `scrapper-web` neu und verifiziert anschließend Version und PDF-Routen.
+Das Skript überträgt Backend und Frontend gemeinsam, bewahrt auf Produktion alle
+Laufzeitdaten, startet `scrapper-web` neu und verifiziert anschließend Version,
+native Capabilities und die exakten OpenAPI-Methoden des ausgelieferten Vertrags.
+Nur auf der isolierten Instanz `rezepte-review` sichert es zusätzlich die rein
+künstlichen Review-Daten und hebt Quell-URL, Quell-Snapshots und Demo-Wochenplan
+atomar sowie wiederholbar auf den dokumentierten Sollstand an; Konten und
+Zugangsdaten bleiben dabei unverändert.
 
 ### PDF-Rezeptdaten
 

@@ -25,6 +25,9 @@ Mindestens ein kleines und ein großes aktuelles iPhone testen:
 - Einkauf abhaken, hinzufügen und löschen
 - Autovervollständigung, Artikel-Icons und Sortierung nach Supermarktbereichen
 - Wochen wechseln, Gericht einplanen, Portionen ändern und Wocheneinkauf erstellen
+- Mehrere Gerichte im Menü-Dirigenten mit begrenzter Koch-, Herd- und Ofenkapazität planen
+- Substitutionslabor: konkrete Vorher-/Nachher-Menge prüfen und eine Variante anlegen
+- Quellenwächter: Review-Status, Diff, Sicherheitswarnung und Konflikt beim veralteten Snapshot
 - Website-, Pinterest- und YouTube-Linkimport sowie manuelle Eingänge in **Eingang**
 - Vier Farbwelten und System-/Hell-/Dunkelmodus in **Einstellungen**
 - Bildverlauf: Original ansehen, Bild generieren, vergleichen und wiederherstellen
@@ -44,8 +47,12 @@ Mindestens ein kleines und ein großes aktuelles iPhone testen:
 - Ohne Mac auf GitHub **Actions > SwiftUI iPhone App > Run workflow** öffnen.
 - Erst einen Lauf ohne Upload vollständig grün abschließen.
 - Danach **Geprüften SwiftUI-Build zu TestFlight hochladen** aktivieren und starten.
-- Der Workflow lädt nur hoch; eine Testergruppe muss anschließend bewusst in
-  App Store Connect zugeordnet werden.
+- Unmittelbar vor dem Upload bestätigen, wer dadurch TestFlight-Zugriff erhält.
+  Eine interne Gruppe mit „Zugriff auf alle Builds“ sieht den neuen Build
+  automatisch, auch wenn der Workflow selbst keine Gruppe zuordnet.
+- Der Workflow muss Bundle-ID, Marketing- und Buildversion prüfen und erst grün
+  werden, wenn App Store Connect genau den nach Upload-Start eingegangenen Build
+  desselben Marketing-Versionszugs als `VALID` verarbeitet hat.
 - Mindestens einen vollständigen Testlauf auf einem zweiten iPhone durchführen.
 - Abstürze, Feedback und App-Hang-Berichte in App Store Connect prüfen.
 

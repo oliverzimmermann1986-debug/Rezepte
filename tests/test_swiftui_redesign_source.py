@@ -22,7 +22,8 @@ def test_swiftui_is_the_primary_native_path_with_source_first_navigation():
     assert "xcodebuild" in workflow
     assert "upload_testflight:" in workflow
     assert "IOS_SHARE_PROFILE_BASE64" in workflow
-    assert "ASC_ASSIGN_INTERNAL_GROUP" not in workflow
+    assert 'ASC_ASSIGN_INTERNAL_GROUP: "false"' in workflow
+    assert 'ASC_ASSIGN_INTERNAL_GROUP: "true"' not in workflow
 
 
 def test_swiftui_theme_is_user_selectable_and_persisted():

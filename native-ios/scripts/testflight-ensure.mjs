@@ -71,7 +71,17 @@ async function main() {
   const keyPath = required("ASC_API_KEY_PATH");
   const appId = required("ASC_APP_ID");
   const buildNumber = required("ASC_BUILD_NUMBER");
+  const marketingVersion = required("ASC_MARKETING_VERSION");
   const assignInternalGroup = booleanEnvironment("ASC_ASSIGN_INTERNAL_GROUP");
+  const allowExistingBuild = booleanEnvironment("ASC_ALLOW_EXISTING_BUILD");
+  const uploadStartedAtRaw = process.env.ASC_UPLOAD_STARTED_AT?.trim();
+  if (!allowExistingBuild && !uploadStartedAtRaw) {
+    throw new Error("Missing required environment variable: ASC_UPLOAD_STARTED_AT");
+  }
+  const uploadStartedAt = uploadStartedAtRaw ? Date.parse(uploadStartedAtRaw) : null;
+  if (uploadStartedAtRaw && !Number.isFinite(uploadStartedAt)) {
+    throw new Error("ASC_UPLOAD_STARTED_AT must be an ISO-8601 timestamp.");
+  }
   const groupId = assignInternalGroup ? required("ASC_BETA_GROUP_ID") : null;
   const timeoutSeconds = positiveInteger("ASC_PROCESSING_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS);
   const pollSeconds = positiveInteger("ASC_PROCESSING_POLL_SECONDS", DEFAULT_POLL_SECONDS);
@@ -111,25 +121,47 @@ async function main() {
       "filter[app]": appId,
       "filter[version]": buildNumber,
       "filter[preReleaseVersion.platform]": "IOS",
-      "fields[builds]": "version,uploadedDate,processingState,expired",
+      "filter[preReleaseVersion.version]": marketingVersion,
+      "fields[builds]": "version,uploadedDate,processingState,expired,preReleaseVersion",
+      "fields[preReleaseVersions]": "version,platform",
+      include: "preReleaseVersion",
       limit: "20",
       sort: "-uploadedDate",
     });
     const buildsPayload = await request(`/v1/builds?${query}`);
-    build = buildsPayload?.data?.[0] ?? null;
+    const preReleaseVersions = new Map(
+      (buildsPayload?.included ?? [])
+        .filter((item) => item.type === "preReleaseVersions")
+        .map((item) => [item.id, item.attributes]),
+    );
+    build = (buildsPayload?.data ?? []).find((candidate) => {
+      const preReleaseId = candidate.relationships?.preReleaseVersion?.data?.id;
+      const preRelease = preReleaseVersions.get(preReleaseId);
+      if (
+        preRelease?.version !== marketingVersion ||
+        preRelease?.platform !== "IOS"
+      ) {
+        return false;
+      }
+      if (uploadStartedAt === null) return true;
+      const uploadedAt = Date.parse(candidate.attributes?.uploadedDate ?? "");
+      return Number.isFinite(uploadedAt) && uploadedAt >= uploadStartedAt;
+    }) ?? null;
     lastState = build?.attributes?.processingState ?? "NOT_FOUND";
-    console.log(`TestFlight build ${buildNumber}: ${lastState}`);
+    console.log(`TestFlight ${marketingVersion} (${buildNumber}): ${lastState}`);
 
     if (lastState === "VALID") break;
     if (lastState === "FAILED" || lastState === "INVALID") {
-      throw new Error(`Apple rejected TestFlight build ${buildNumber} during processing (${lastState}).`);
+      throw new Error(
+        `Apple rejected TestFlight ${marketingVersion} (${buildNumber}) during processing (${lastState}).`,
+      );
     }
     await sleep(pollSeconds * 1000);
   }
 
   if (!build || lastState !== "VALID") {
     throw new Error(
-      `TestFlight build ${buildNumber} did not become VALID within ${timeoutSeconds} seconds (last state: ${lastState}).`,
+      `TestFlight ${marketingVersion} (${buildNumber}) did not become VALID within ${timeoutSeconds} seconds (last state: ${lastState}).`,
     );
   }
   if (build.attributes?.expired) {
@@ -190,6 +222,7 @@ async function main() {
       {
         appId,
         buildId: build.id,
+        marketingVersion,
         buildNumber: build.attributes.version,
         uploadedDate: build.attributes.uploadedDate,
         processingState: build.attributes.processingState,

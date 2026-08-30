@@ -29,6 +29,56 @@ from app.recipes.source_integrity import normalize_source_text, source_fingerpri
 
 REVIEW_HOSTNAME = "rezepte-review"
 REVIEW_USERNAME = "app-review"
+REVIEW_PUBLIC_URL = "https://rezepte-review.mausbaeren.me"
+REVIEW_SOURCE_PATH = "/static/review-source-zitronen-ricotta-pasta.html"
+REVIEW_SOURCE_TITLE = "Zitronen-Ricotta-Pasta"
+REVIEW_SOURCE_DESCRIPTION_SOURCE = "recipe-json-ld"
+REVIEW_SOURCE_DESCRIPTION = (
+    "Cremige Pasta mit Ricotta, frischer Zitrone und Basilikum."
+)
+REVIEW_SOURCE_INSTRUCTIONS = (
+    "Pasta in Salzwasser bissfest kochen und etwas Kochwasser auffangen.",
+    "Ricotta mit Zitronenabrieb, Saft und Parmesan verrühren.",
+    "Pasta und etwas Kochwasser unterheben, abschmecken und mit Basilikum servieren.",
+)
+
+
+def review_source_url(public_url: str = REVIEW_PUBLIC_URL) -> str:
+    return f"{public_url.rstrip('/')}{REVIEW_SOURCE_PATH}"
+
+
+def review_source_text(*, ricotta_grams: int, lemon_count: int) -> str:
+    lemon_label = "Bio-Zitrone" if lemon_count == 1 else "Bio-Zitronen"
+    ingredients = (
+        "250 g Pasta",
+        f"{ricotta_grams} g Ricotta",
+        f"{lemon_count} {lemon_label}",
+        "30 g Parmesan",
+        "1 Bund Basilikum",
+        "1 Prise Pfeffer",
+    )
+    return "\n\n".join(
+        (
+            REVIEW_SOURCE_TITLE,
+            REVIEW_SOURCE_DESCRIPTION,
+            "Portionen: 2 Portionen",
+            "Zutaten:\n- " + "\n- ".join(ingredients),
+            "Zubereitung:\n" + "\n".join(
+                f"{index}. {instruction}"
+                for index, instruction in enumerate(REVIEW_SOURCE_INSTRUCTIONS, 1)
+            ),
+        )
+    )
+
+
+REVIEW_SOURCE_BASELINE_TEXT = review_source_text(ricotta_grams=200, lemon_count=1)
+REVIEW_SOURCE_CURRENT_TEXT = review_source_text(ricotta_grams=250, lemon_count=2)
+REVIEW_PLAN_WEEKS = 12
+REVIEW_PLAN_RECIPES: tuple[tuple[str, int], ...] = (
+    ("zitronen-ricotta-pasta", 2),
+    ("ofengemuese-feta", 4),
+    ("lachs-kraeuterkruste", 2),
+)
 
 RECIPES: list[dict[str, Any]] = [
     {
@@ -277,8 +327,13 @@ def seed_review_demo(
             ),
             encoding="utf-8",
         )
+        source_url = (
+            review_source_url(public_url)
+            if item["slug"] == "zitronen-ricotta-pasta"
+            else f"review-demo://{item['slug']}"
+        )
         recipe_id = db.recipe_upsert(
-            url=f"review-demo://{item['slug']}",
+            url=source_url,
             name=item["name"],
             type=item["type"],
             category=item["category"],
@@ -308,40 +363,50 @@ def seed_review_demo(
 
     # Sichtbarer, rein künstlicher Quellenänderungs-Fall für den Review-Ablauf.
     # Die beiden Snapshots verändern das gespeicherte Rezept ausdrücklich nicht.
-    demo_source_url = "review-demo://zitronen-ricotta-pasta"
-    baseline_text = normalize_source_text(
-        "Zitronen-Ricotta-Pasta\n250 g Pasta\n200 g Ricotta\n1 Bio-Zitrone"
-    )
-    changed_text = normalize_source_text(
-        "Zitronen-Ricotta-Pasta\n250 g Pasta\n250 g Ricotta\n2 Bio-Zitronen"
-    )
+    demo_source_url = review_source_url(public_url)
+    baseline_text = normalize_source_text(REVIEW_SOURCE_BASELINE_TEXT)
+    changed_text = normalize_source_text(REVIEW_SOURCE_CURRENT_TEXT)
     db.recipe_source_snapshot_create(
         created_ids[0],
         source_url=demo_source_url,
+        observed_url=demo_source_url,
         content_sha256=source_fingerprint(baseline_text),
         content_text=baseline_text,
+        page_title=REVIEW_SOURCE_TITLE,
         state="baseline",
         checked_at=time.time() - 86400,
         baseline_if_missing=True,
-        description_source="app-review-demo",
+        description_source=REVIEW_SOURCE_DESCRIPTION_SOURCE,
     )
     db.recipe_source_snapshot_create(
         created_ids[0],
         source_url=demo_source_url,
+        observed_url=demo_source_url,
         content_sha256=source_fingerprint(changed_text),
         content_text=changed_text,
+        page_title=REVIEW_SOURCE_TITLE,
         state="changed",
         checked_at=time.time(),
-        description_source="app-review-demo",
+        description_source=REVIEW_SOURCE_DESCRIPTION_SOURCE,
     )
 
-    monday = date.today() - timedelta(days=date.today().weekday())
-    for day_offset, recipe_index, servings in ((0, 0, 2), (2, 1, 4), (4, 4, 2)):
-        db.meal_plan_add(
-            planned_for=(monday + timedelta(days=day_offset)).isoformat(),
-            recipe_id=created_ids[recipe_index],
-            planned_servings=servings,
-        )
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    # Drei Gerichte am selben Tag machen den zentralen Menü-Dirigenten im
+    # kurzen App-Review-Ablauf unmittelbar prüfbar. Die Vorschau selbst bleibt
+    # vollständig nicht-persistierend.
+    created_by_slug = {
+        str(recipe["slug"]): recipe_id
+        for recipe, recipe_id in zip(RECIPES, created_ids)
+    }
+    for week_offset in range(REVIEW_PLAN_WEEKS):
+        planned_for = (monday + timedelta(weeks=week_offset)).isoformat()
+        for slug, servings in REVIEW_PLAN_RECIPES:
+            db.meal_plan_add(
+                planned_for=planned_for,
+                recipe_id=created_by_slug[slug],
+                planned_servings=servings,
+            )
     cart_ids = [
         db.cart_add_or_merge(name="Zitronen", canonical_name="zitrone", amount=2, unit="Stück", source_recipe_id=None),
         db.cart_add_or_merge(name="Hafermilch", canonical_name="hafermilch", amount=1, unit="l", source_recipe_id=None),
@@ -380,7 +445,7 @@ def seed_review_demo(
         "recipes": len(created_ids),
         "complete_recipes": sum(bool(item["ingredients"]) for item in RECIPES),
         "manual_care_recipes": sum(not item["ingredients"] for item in RECIPES),
-        "meal_plan_entries": 3,
+        "meal_plan_entries": REVIEW_PLAN_WEEKS * len(REVIEW_PLAN_RECIPES),
         "shopping_items": 3,
         "recurring_items": 1,
         "source_change_demos": 1,

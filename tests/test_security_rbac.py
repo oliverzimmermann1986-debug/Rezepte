@@ -107,6 +107,88 @@ def test_normal_user_cannot_access_admin_route_groups(
     assert "Administratorrechte" in response.json()["detail"]
 
 
+def test_source_integrity_routes_use_real_admin_user_and_guest_sessions(
+    client,
+    test_db,
+    monkeypatch,
+):
+    from app.main import app
+
+    config = _Config(
+        {
+            ("web",): {"auth_disabled": False},
+            ("web", "secret_key"): "i" * 48,
+        }
+    )
+    monkeypatch.setattr(auth, "get_config", lambda: config)
+    test_db.user_create(
+        "integrity-admin",
+        auth.hash_password("admin-password"),
+        role="admin",
+    )
+    test_db.user_create(
+        "integrity-reader",
+        auth.hash_password("reader-password"),
+        role="user",
+    )
+    tokens = {
+        "admin": auth.create_session("integrity-admin"),
+        "user": auth.create_session("integrity-reader"),
+        "guest": auth.create_guest_session(),
+    }
+    missing_recipe_id = 999_999
+    report_path = f"/api/recipes/{missing_recipe_id}/source-integrity"
+    mutations = {
+        "check": (f"{report_path}/check", None),
+        "accept": (f"{report_path}/accept", {"expected_snapshot_id": 1}),
+    }
+
+    app.dependency_overrides.pop(auth.require_auth, None)
+    app.dependency_overrides.pop(auth.require_admin, None)
+    try:
+        anonymous_report = client.get(report_path)
+        reports = {
+            role: client.get(
+                report_path,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            for role, token in tokens.items()
+        }
+        mutation_responses = {
+            (operation, role): client.post(
+                path,
+                headers={"Authorization": f"Bearer {token}"},
+                json=payload,
+            )
+            for operation, (path, payload) in mutations.items()
+            for role, token in tokens.items()
+        }
+        anonymous_mutations = {
+            operation: client.post(path, json=payload)
+            for operation, (path, payload) in mutations.items()
+        }
+    finally:
+        app.dependency_overrides[auth.require_auth] = lambda: None
+        app.dependency_overrides[auth.require_admin] = lambda: {
+            "username": "test-admin",
+            "role": "admin",
+            "full_access": True,
+        }
+
+    assert anonymous_report.status_code == 401
+    for response in reports.values():
+        assert response.status_code == 404
+    for operation in mutations:
+        assert mutation_responses[(operation, "admin")].status_code == 404
+        user_response = mutation_responses[(operation, "user")]
+        assert user_response.status_code == 403
+        assert "Administratorrechte" in user_response.json()["detail"]
+        guest_response = mutation_responses[(operation, "guest")]
+        assert guest_response.status_code == 403
+        assert "schreibgeschützt" in guest_response.json()["detail"]
+        assert anonymous_mutations[operation].status_code == 401
+
+
 def test_user_roles_are_managed_and_last_admin_is_protected(client, test_db):
     from app.main import app
 

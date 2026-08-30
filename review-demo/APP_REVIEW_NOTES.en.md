@@ -24,17 +24,24 @@ production data or infrastructure administration.
 2. Open **Zitronen-Ricotta-Pasta** from the recipe library.
 3. Open **Quellenwächter & Rezept-TÜV** in the recipe passport. Review the
    stored source fingerprint, deterministic quality score and the prepared
-   source-change diff. Source checks never overwrite recipe data.
+   source-change diff. The visible original link opens a first-party page that
+   is explicitly marked as artificial review data. Source checks never
+   overwrite recipe data.
 4. Review the image, ingredients and preparation steps, then start the guided
    cooking mode. Portions can be changed.
 5. Add its ingredients to **Einkauf**. The consolidated list also contains an
    artificial recurring household purchase; duplicate demand is merged.
 6. Open **Wochenplan**. Three artificial recipes are already planned for the
-   current week; the combined shopping list can be added from this screen.
-7. In **Rezepte**, use the filter **Manuelle Pflege**. The intentionally
+   current week. Open **Menü-Dirigent**, keep one active cook and create the
+   non-destructive preview for a shared serving time. The schedule respects
+   cook, oven and burner capacity.
+7. Open **Beeren-Pancakes**, then **Substitutionslabor**. Inspect the exact
+   before/after quantities and safety notes for egg or milk. Applying a choice
+   creates a traceable variant and never overwrites the original recipe.
+8. In **Rezepte**, use the filter **Manuelle Pflege**. The intentionally
    incomplete demo recipe **Sommerliche Tomaten-Galette** demonstrates how the
    app flags a recipe whose ingredients still need manual completion.
-8. Open **Admin** to inspect the isolated maintenance area. Return to
+9. Open **Admin** to inspect the isolated maintenance area. Return to
    **Rezepte**, where **Abmelden** is always available in the upper-right corner.
 
 All recipe names, text, images, meal-plan entries and shopping items on the

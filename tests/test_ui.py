@@ -223,7 +223,7 @@ def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
     assert "window.location.pathname.startsWith('/admin')" in js
     assert "params.get('tab') || routePage" in js
     assert "params.get('section')" in js
-    assert "rezepte-static-v1.4.0-weekly-meal-plan" in sw
+    assert "rezepte-static-v1.7.0-native-contracts" in sw
     assert "caches.delete" in sw
     assert "request.mode === 'navigate'" in sw
     assert "fetch(event.request, {cache: 'no-store'})" in sw

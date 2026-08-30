@@ -1,4 +1,4 @@
-# Rezepte — App-Review-Video (ca. 65 Sekunden)
+# Rezepte — App-Review-Video (ca. 85 Sekunden)
 
 Vor der Aufnahme: TestFlight-Build frisch installieren, AutoFill/Passwortmanager
 für die Aufnahme deaktivieren, Review-Zugang bereithalten und einmal prüfen,
@@ -9,12 +9,13 @@ Konten oder Zugangsdaten im Bild zeigen.
 |---|---|
 | 0–5 s | App starten. Review-Server und Benutzer sind eingetragen; Passwort verdeckt eingeben und **Anmelden** tippen. |
 | 5–13 s | Die gefüllte Rezeptübersicht mit künstlichen Food-Fotos kurz zeigen. Nach „Zitrone“ suchen. |
-| 13–24 s | **Zitronen-Ricotta-Pasta** öffnen: Titelbild, Portionen, Zutaten und Schritte sichtbar durchscrollen. |
-| 24–32 s | Zutaten zur Einkaufsliste hinzufügen. Zum Tab **Einkauf** wechseln und einen Artikel abhaken. Erfolg sichtbar stehen lassen. |
-| 32–43 s | **Wochenplan** öffnen. Drei geplante Gerichte und die gemeinsame Einkaufsvorschau zeigen. |
-| 43–51 s | Zu **Rezepte** zurück, Filter öffnen und **Manuelle Pflege** wählen. Die **Sommerliche Tomaten-Galette** mit Hinweis auf fehlende Zutaten zeigen. |
-| 51–60 s | Den Tab **Admin** öffnen und den isolierten Verwaltungsbereich kurz zeigen. Keine Lösch- oder Importaktion ausführen. |
-| 60–65 s | Zu **Rezepte** zurück. Die sichtbare Option **Abmelden** oben rechts zeigen und auf der stabil gefüllten Übersicht enden. |
+| 13–27 s | **Zitronen-Ricotta-Pasta** öffnen: Rezeptpass mit Rezept-ID und Originalquelle, danach **Quellenwächter & Rezept-TÜV** mit vorbereitetem Diff zeigen. |
+| 27–36 s | Zutaten zur Einkaufsliste hinzufügen. Zum Tab **Einkauf** wechseln und den wiederkehrenden Artikel zeigen. |
+| 36–52 s | **Wochenplan** öffnen. Drei geplante Gerichte zeigen, dann **Menü-Dirigent** öffnen und die Vorschau für eine gemeinsame Servierzeit berechnen. |
+| 52–65 s | **Beeren-Pancakes** öffnen und im **Substitutionslabor** eine konkrete Vorher-/Nachher-Menge samt Sicherheitshinweis zeigen; keine Variante anlegen. |
+| 65–74 s | Filter **Manuelle Pflege** wählen. Die **Sommerliche Tomaten-Galette** mit Hinweis auf fehlende Zutaten zeigen. |
+| 74–81 s | Den Tab **Admin** öffnen und die nativen Einstellungen kurz zeigen. Keine Lösch- oder Importaktion ausführen. |
+| 81–85 s | Zu **Rezepte** zurück. **Abmelden** oben rechts zeigen und auf der stabil gefüllten Übersicht enden. |
 
 Akzeptanzkriterien: vollständiger erfolgreicher Ablauf, keine Fehlermeldung,
 keine Systemdialoge, keine leeren Bilder, kein Produktionskonto und ein ruhiges

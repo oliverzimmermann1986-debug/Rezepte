@@ -16,10 +16,24 @@ on:
   push:
     paths:
       - "ios-swift/**"
+      - "native-ios/scripts/testflight-ensure.mjs"
+      - "app/main.py"
+      - "app/auth.py"
+      - "app/db.py"
+      - "app/routes/**"
+      - "app/recipes/**"
+      - "tests/test_swiftui_redesign_source.py"
       - ".github/workflows/ios-swift.yml"
   pull_request:
     paths:
       - "ios-swift/**"
+      - "native-ios/scripts/testflight-ensure.mjs"
+      - "app/main.py"
+      - "app/auth.py"
+      - "app/db.py"
+      - "app/routes/**"
+      - "app/recipes/**"
+      - "tests/test_swiftui_redesign_source.py"
       - ".github/workflows/ios-swift.yml"
 
 env:
@@ -110,6 +124,7 @@ jobs:
       KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_APP_ID: ${{ vars.ASC_APP_ID || '6803595058' }}
     defaults:
       run:
         working-directory: ios-swift
@@ -151,7 +166,7 @@ jobs:
           set -euo pipefail
           required=(
             APPLE_TEAM_ID P12_PASSWORD KEYCHAIN_PASSWORD
-            ASC_KEY_ID ASC_ISSUER_ID IOS_BUNDLE_ID IOS_SHARE_BUNDLE_ID
+            ASC_KEY_ID ASC_ISSUER_ID ASC_APP_ID IOS_BUNDLE_ID IOS_SHARE_BUNDLE_ID
             IOS_DISTRIBUTION_P12_BASE64 IOS_APPSTORE_PROFILE_BASE64
             IOS_SHARE_PROFILE_BASE64 ASC_PRIVATE_KEY_BASE64
           )
@@ -242,6 +257,62 @@ jobs:
             IOS_SHARE_PROFILE_NAME="${{ steps.signing.outputs.share_profile_name }}" \
             CURRENT_PROJECT_VERSION="${{ steps.buildnum.outputs.value }}"
 
+      - name: Validate archive metadata
+        shell: bash
+        env:
+          EXPECTED_MARKETING_VERSION: "1.2.0"
+          EXPECTED_BUILD_NUMBER: ${{ steps.buildnum.outputs.value }}
+        run: |
+          set -euo pipefail
+
+          assert_bundle_metadata() {
+            local label="$1"
+            local plist_path="$2"
+            local expected_bundle_id="$3"
+            local actual_bundle_id actual_marketing_version actual_build_number
+
+            actual_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist_path")"
+            actual_marketing_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist_path")"
+            actual_build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist_path")"
+
+            if [[ "$actual_bundle_id" != "$expected_bundle_id" \
+              || "$actual_marketing_version" != "$EXPECTED_MARKETING_VERSION" \
+              || "$actual_build_number" != "$EXPECTED_BUILD_NUMBER" ]]; then
+              echo "$label archive metadata mismatch" >&2
+              echo "  bundle: $actual_bundle_id (expected $expected_bundle_id)" >&2
+              echo "  version: $actual_marketing_version (expected $EXPECTED_MARKETING_VERSION)" >&2
+              echo "  build: $actual_build_number (expected $EXPECTED_BUILD_NUMBER)" >&2
+              exit 1
+            fi
+          }
+
+          applications_path="$RUNNER_TEMP/Quellenkueche.xcarchive/Products/Applications"
+          set -- "$applications_path"/*.app
+          if [[ "$#" -ne 1 || ! -d "$1" ]]; then
+            echo "Expected exactly one main app in $applications_path, found $#" >&2
+            exit 1
+          fi
+          app_path="$1"
+          assert_bundle_metadata "Main app" "$app_path/Info.plist" "$IOS_BUNDLE_ID"
+
+          share_path=""
+          for candidate in "$app_path"/PlugIns/*.appex; do
+            [[ -d "$candidate" ]] || continue
+            candidate_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Info.plist" 2>/dev/null || true)"
+            if [[ "$candidate_bundle_id" == "$IOS_SHARE_BUNDLE_ID" ]]; then
+              if [[ -n "$share_path" ]]; then
+                echo "Found more than one Share extension for $IOS_SHARE_BUNDLE_ID" >&2
+                exit 1
+              fi
+              share_path="$candidate"
+            fi
+          done
+          if [[ -z "$share_path" ]]; then
+            echo "Share extension $IOS_SHARE_BUNDLE_ID is missing from the archive" >&2
+            exit 1
+          fi
+          assert_bundle_metadata "Share extension" "$share_path/Info.plist" "$IOS_SHARE_BUNDLE_ID"
+
       - name: Export signed IPA
         shell: bash
         run: |
@@ -263,6 +334,7 @@ jobs:
             -exportOptionsPlist "$export_options"
 
       - name: Upload IPA to App Store Connect
+        id: upload
         shell: bash
         run: |
           set -euo pipefail
@@ -272,11 +344,26 @@ jobs:
           chmod 600 "$key_directory/AuthKey_$ASC_KEY_ID.p8"
           ipa_path="$(find "$RUNNER_TEMP/Export" -maxdepth 1 -name '*.ipa' -print -quit)"
           test -n "$ipa_path"
+          echo "started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
           xcrun altool --upload-app \
             --type ios \
             --file "$ipa_path" \
             --apiKey "$ASC_KEY_ID" \
             --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Wait for TestFlight processing
+        shell: bash
+        env:
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_BUILD_NUMBER: ${{ steps.buildnum.outputs.value }}
+          ASC_MARKETING_VERSION: "1.2.0"
+          ASC_UPLOAD_STARTED_AT: ${{ steps.upload.outputs.started_at }}
+          ASC_ASSIGN_INTERNAL_GROUP: "false"
+        run: |
+          set -euo pipefail
+          export ASC_API_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_API_KEY_ID.p8"
+          node ../native-ios/scripts/testflight-ensure.mjs
 
       - name: Upload archive diagnostics
         if: failure()

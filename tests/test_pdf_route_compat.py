@@ -17,6 +17,23 @@ def test_pdf_admin_routes_are_registered():
     assert "/api/system/info" in paths
 
 
+def test_native_release_contracts_publish_required_http_methods():
+    from app.main import app
+
+    paths = app.openapi()["paths"]
+    expected = {
+        "/api/meal-plan/conductor/preview": {"get", "post"},
+        "/api/recipes/{recipe_id}/source-integrity": {"get"},
+        "/api/recipes/{recipe_id}/source-integrity/check": {"post"},
+        "/api/recipes/{recipe_id}/source-integrity/accept": {"post"},
+        "/api/recipes/{recipe_id}/substitutions": {"get"},
+        "/api/recipes/{recipe_id}/substitutions/apply": {"post"},
+    }
+
+    for path, methods in expected.items():
+        assert methods <= set(paths[path]), path
+
+
 def test_health_and_system_info_report_build_version(client):
     health = client.get("/healthz")
     assert health.status_code == 200
@@ -111,6 +128,21 @@ def test_local_updater_does_not_git_pull():
     assert "ai-shopping-optimization" in updater
     assert "shopping-categories" in updater
     assert "native-admin-roles" in updater
+    assert "meal-conductor-v1" in updater
+    assert "source-integrity-v2" in updater
+    assert "substitution-lab-v1" in updater
+    assert "from app.main import app" in updater
+    assert 'paths = app.openapi().get("paths", {})' in updater
+    assert 'runuser -u "$APP_USER" -- env' in updater
+    assert 'SCRAPPER_CONFIG="$APP_DIR/data/config.yaml"' in updater
+    assert '"/api/meal-plan/conductor/preview": {"get", "post"}' in updater
+    assert '"/api/recipes/{recipe_id}/source-integrity": {"get"}' in updater
+    assert '"/api/recipes/{recipe_id}/source-integrity/check": {"post"}' in updater
+    assert '"/api/recipes/{recipe_id}/source-integrity/accept": {"post"}' in updater
+    assert '"/api/recipes/{recipe_id}/substitutions": {"get"}' in updater
+    assert '"/api/recipes/{recipe_id}/substitutions/apply": {"post"}' in updater
+    assert "OPTIMIZER_STATUS=" not in updater
+    assert "PDF_STATUS=" not in updater
     assert "EXPECTED_VERSION=" in updater
     assert 'app/__init__.py' in updater
     assert 'HEALTH_VERSION=' in updater
