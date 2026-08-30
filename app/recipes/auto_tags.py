@@ -21,7 +21,7 @@ ohne erkennbare Zutaten).
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Mapping, Optional, Set
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 # Forbidden-Listen pro Tag — wenn EINE dieser Zutaten in der Liste ist,
 # kann der Tag NICHT gesetzt werden. canonical_names sind lowercase.
@@ -137,6 +137,7 @@ def _contains_source(ingredients: Set[str], sources: Set[str]) -> bool:
 def compute_diet_tags(
     canonical_ingredients: List[str],
     allergen_info: Optional[Mapping[str, str]] = None,
+    blocked_tags: Optional[Iterable[str]] = None,
 ) -> List[str]:
     """Bestimmt deterministisch welche Diät/Allergie-Tags zutreffen.
 
@@ -147,6 +148,8 @@ def compute_diet_tags(
             muss die KI für ein Frei-von-Tag zusätzlich eindeutig ``frei``
             melden. ``enthält`` und ``unklar`` wirken nur als Veto; die KI
             kann niemals eine erkannte Allergenquelle überstimmen.
+        blocked_tags: Positive Tags, die wegen einer produktabhängigen
+            Unsicherheit der konkret gewählten Zutat nicht gesetzt werden dürfen.
 
     Returns: Liste von Tag-Namen die zugewiesen werden sollen, z.B.
         ["vegetarisch", "laktosefrei"] oder [].
@@ -169,6 +172,11 @@ def compute_diet_tags(
         return []
 
     tags: List[str] = []
+    blocked = {
+        str(tag).strip().casefold()
+        for tag in (blocked_tags or [])
+        if str(tag).strip()
+    }
 
     is_vegetarian = not _contains_source(ings, _NON_VEGETARIAN)
     is_animal_free = is_vegetarian and not _contains_source(ings, _ANIMAL_PRODUCTS)
@@ -186,6 +194,8 @@ def compute_diet_tags(
     # Regelwerk UND KI müssen die positive Frei-von-Aussage erlauben.
     if len(ings) >= 5:
         for tag_name, (allergen_key, forbidden) in ALLERGEN_FREE_TAGS.items():
+            if tag_name in blocked:
+                continue
             deterministic_free = not _contains_source(ings, forbidden)
             ai_allows = (
                 normalized_allergens is None
@@ -203,12 +213,34 @@ def compute_diet_tags(
 DIET_TAGS: frozenset = frozenset({
     "vegan", "vegetarisch", "laktosefrei", "glutenfrei", "eifrei", "nussfrei",
 })
+SAFETY_CLAIM_TAGS: frozenset[str] = frozenset(ALLERGEN_FREE_TAGS)
+
+
+def remove_manual_safety_claim_tags(db: Any, recipe_id: int) -> List[str]:
+    """Entfernt geerbte manuelle Frei-von-Claims aus einer neuen Variante."""
+    current_tags = db.recipe_tags_get(recipe_id)
+    preserved_manual = [
+        str(tag["name"])
+        for tag in current_tags
+        if tag.get("auto") == 0
+        and str(tag["name"]).strip().casefold() not in SAFETY_CLAIM_TAGS
+    ]
+    removed = sorted({
+        str(tag["name"]).strip().casefold()
+        for tag in current_tags
+        if tag.get("auto") == 0
+        and str(tag["name"]).strip().casefold() in SAFETY_CLAIM_TAGS
+    })
+    db.recipe_tags_set(recipe_id, preserved_manual)
+    return removed
 
 
 def refresh_diet_auto_tags(
     db: Any,
     recipe_id: int,
     canonical_ingredients: List[str],
+    *,
+    blocked_tags: Optional[Iterable[str]] = None,
 ) -> List[str]:
     """Ersetzt nur Diät-Auto-Tags und bewahrt stilistische KI-Tags."""
     current_tags = db.recipe_tags_get(recipe_id)
@@ -218,7 +250,8 @@ def refresh_diet_auto_tags(
         if tag.get("auto") == 1 and tag["name"] not in DIET_TAGS
     ]
     merged = sorted(
-        set(non_diet_auto) | set(compute_diet_tags(canonical_ingredients))
+        set(non_diet_auto)
+        | set(compute_diet_tags(canonical_ingredients, blocked_tags=blocked_tags))
     )
     db.recipe_auto_tags_set(recipe_id, merged)
     return merged

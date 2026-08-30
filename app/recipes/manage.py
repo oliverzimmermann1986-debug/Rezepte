@@ -393,6 +393,8 @@ def safe_duplicate_recipe(
     recipe_id: int,
     *,
     new_name: str,
+    variant_provenance: Optional[Dict[str, Any]] = None,
+    review_notice: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Erstellt eine eigenständige Rezeptvariante ohne Social-Media-Video.
 
@@ -408,6 +410,9 @@ def safe_duplicate_recipe(
         raise ValueError("Der Name der Variante ist zu lang (maximal 200 Zeichen)")
     if any(part in name for part in ("/", "\\", "..")):
         raise ValueError("Der Name darf keine Pfad-Separatoren oder '..' enthalten")
+    notice = str(review_notice or "").strip()
+    if len(notice) > 2_000:
+        raise ValueError("Der Varianten-Hinweis ist zu lang")
 
     recipe = db.recipe_get(recipe_id)
     if not recipe or recipe.get("deleted_at") is not None:
@@ -473,6 +478,10 @@ def safe_duplicate_recipe(
                 "variant_of": recipe_id,
                 "created_at": time.time(),
             })
+            if variant_provenance:
+                info["variant_provenance"] = dict(variant_provenance)
+            if notice:
+                info["variant_review_notice"] = notice
             info.pop("video_filename", None)
             atomic_write_json(transaction.path("info.json"), info)
             published = transaction.commit(manifest_source={
@@ -519,6 +528,8 @@ def safe_duplicate_recipe(
         "folder_path": str(published),
         "copied_files": len(copied_names),
         "video_copied": False,
+        "variant_provenance": dict(variant_provenance or {}),
+        "review_notice": notice or None,
     }
 
 

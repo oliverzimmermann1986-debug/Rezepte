@@ -57,6 +57,18 @@ def test_allergen_info_is_a_second_safety_gate() -> None:
     assert "glutenfrei" not in with_flour
 
 
+def test_product_dependent_blocked_tags_veto_positive_free_from_claims() -> None:
+    tags = compute_diet_tags(
+        SAFE_INGREDIENTS,
+        blocked_tags=["glutenfrei", "nussfrei"],
+    )
+
+    assert "laktosefrei" in tags
+    assert "eifrei" in tags
+    assert "glutenfrei" not in tags
+    assert "nussfrei" not in tags
+
+
 def test_backfill_preserves_manual_and_style_tags(test_db) -> None:
     recipe = _create_recipe(test_db, name="Mandel-Reis", folder_path="/tmp/allergen")
     recipe_id = int(recipe["id"])

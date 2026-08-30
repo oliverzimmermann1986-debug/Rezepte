@@ -1,6 +1,7 @@
 """Kuratierte, nachvollziehbare Zutaten-Ersetzungen mit Review-Hinweisen."""
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from .canonical import canonical_name
@@ -17,6 +18,7 @@ _CATALOG: tuple[Dict[str, Any], ...] = (
         "functional_effect": "Ähnliche Flüssigkeitsmenge; Geschmack und Bräunung können sich leicht ändern.",
         "allergen_notes": ["Hafer kann Gluten enthalten; Kennzeichnung des Produkts prüfen."],
         "nutrition_notes": ["Eiweiß- und Fettgehalt können niedriger sein als bei Kuhmilch."],
+        "blocked_auto_tags": ("glutenfrei",),
     },
     {
         "id": "milk-coconut-milk",
@@ -37,6 +39,7 @@ _CATALOG: tuple[Dict[str, Any], ...] = (
         "functional_effect": "Meist 1:1 einsetzbar; Wassergehalt beeinflusst Backergebnis und Bräunung.",
         "allergen_notes": ["Nur eine ausdrücklich milchfreie Margarine verwenden; Etikett prüfen."],
         "nutrition_notes": ["Fettsäureprofil hängt stark vom gewählten Produkt ab."],
+        "blocked_auto_tags": ("laktosefrei",),
     },
     {
         "id": "egg-applesauce",
@@ -44,6 +47,8 @@ _CATALOG: tuple[Dict[str, Any], ...] = (
         "replacement_name": "Apfelmus",
         "ratio": 60.0,
         "unit_override": "g",
+        "compatible_source_units": (None, "Stück"),
+        "source_amount_required": True,
         "confidence": "medium",
         "functional_effect": "Für saftige Backwaren; bindet, lockert aber weniger als Ei.",
         "allergen_notes": ["Ei entfällt nur an dieser Stelle; das gesamte Rezept separat prüfen."],
@@ -58,6 +63,7 @@ _CATALOG: tuple[Dict[str, Any], ...] = (
         "functional_effect": "Nur für eine geeignete Backmischung; Bindung und Flüssigkeitsbedarf können abweichen.",
         "allergen_notes": ["Nur zertifiziert glutenfreie Mischung verwenden und Kreuzkontamination beachten."],
         "nutrition_notes": ["Ballaststoff- und Eiweissgehalt variieren je nach Mischung."],
+        "blocked_auto_tags": ("glutenfrei",),
     },
     {
         "id": "yogurt-plant-yogurt",
@@ -68,6 +74,7 @@ _CATALOG: tuple[Dict[str, Any], ...] = (
         "functional_effect": "Konsistenz und Säuregrad können variieren; ungesüßtes Produkt verwenden.",
         "allergen_notes": ["Basisprodukt wie Soja, Hafer oder Nuss sowie dessen Etikett prüfen."],
         "nutrition_notes": ["Eiweißgehalt ist je nach Pflanzenbasis oft niedriger."],
+        "blocked_auto_tags": ("glutenfrei", "nussfrei"),
     },
     {
         "id": "parmesan-nutritional-yeast",
@@ -98,6 +105,7 @@ _CATALOG: tuple[Dict[str, Any], ...] = (
         "functional_effect": "Bindet anders und bleibt gröber; bei Bedarf vorher mahlen.",
         "allergen_notes": ["Bei Glutenverzicht nur zertifiziert glutenfreie Haferflocken verwenden."],
         "nutrition_notes": ["Ballaststoffgehalt kann steigen; Werte neu berechnen."],
+        "blocked_auto_tags": ("glutenfrei",),
     },
 )
 
@@ -106,9 +114,35 @@ def _canonical(value: Optional[str]) -> str:
     return str(canonical_name(value) or value or "").casefold().strip()
 
 
-def _candidate_public(candidate: Mapping[str, Any]) -> Dict[str, Any]:
+def _candidate_applicability_error(
+    ingredient: Mapping[str, Any], candidate: Mapping[str, Any]
+) -> Optional[str]:
+    """Liefert den Grund, warum eine mengenabhängige Ersetzung nicht passt."""
+    amount = ingredient.get("amount")
+    if candidate.get("source_amount_required"):
+        if amount is None:
+            return "Für diese Ersetzung muss eine Ausgangsmenge angegeben sein"
+        try:
+            numeric_amount = float(amount)
+        except (TypeError, ValueError):
+            return "Die Ausgangsmenge ist für diese Ersetzung ungültig"
+        if not math.isfinite(numeric_amount) or numeric_amount <= 0:
+            return "Die Ausgangsmenge muss größer als null sein"
+
+    compatible_units = candidate.get("compatible_source_units")
+    if compatible_units:
+        source_unit = normalize_unit(ingredient.get("unit"))
+        allowed = {normalize_unit(unit) for unit in compatible_units}
+        if source_unit not in allowed:
+            return "Diese Ersetzung ist nur für Stück-/Anzahlmengen geeignet"
+    return None
+
+
+def _candidate_public(
+    candidate: Mapping[str, Any], ingredient: Mapping[str, Any]
+) -> Dict[str, Any]:
     replacement_name = str(candidate["replacement_name"])
-    return {
+    public = {
         "id": candidate["id"],
         "replacement_name": replacement_name,
         "replacement_canonical": _canonical(replacement_name),
@@ -118,8 +152,11 @@ def _candidate_public(candidate: Mapping[str, Any]) -> Dict[str, Any]:
         "functional_effect": candidate["functional_effect"],
         "allergen_notes": list(candidate["allergen_notes"]),
         "nutrition_notes": list(candidate["nutrition_notes"]),
+        "blocked_auto_tags": list(candidate.get("blocked_auto_tags") or []),
         "requires_review": True,
     }
+    public["result_ingredient"] = substituted_ingredient(ingredient, candidate)
+    return public
 
 
 def substitution_candidates(ingredient: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -127,9 +164,10 @@ def substitution_candidates(ingredient: Mapping[str, Any]) -> List[Dict[str, Any
         str(ingredient.get("canonical_name") or ingredient.get("name") or "")
     )
     return [
-        _candidate_public(candidate)
+        _candidate_public(candidate, ingredient)
         for candidate in _CATALOG
         if source in {_canonical(item) for item in candidate["sources"]}
+        and _candidate_applicability_error(ingredient, candidate) is None
     ]
 
 
@@ -162,15 +200,27 @@ def substitution_lab_payload(
 def resolve_candidate(
     ingredient: Mapping[str, Any], candidate_id: str
 ) -> Dict[str, Any]:
-    for candidate in substitution_candidates(ingredient):
-        if candidate["id"] == candidate_id:
-            return candidate
+    source = _canonical(
+        str(ingredient.get("canonical_name") or ingredient.get("name") or "")
+    )
+    for candidate in _CATALOG:
+        if candidate["id"] != candidate_id:
+            continue
+        if source not in {_canonical(item) for item in candidate["sources"]}:
+            break
+        error = _candidate_applicability_error(ingredient, candidate)
+        if error:
+            raise ValueError(error)
+        return _candidate_public(candidate, ingredient)
     raise ValueError("Diese Ersetzung ist für die gewählte Zutat nicht freigegeben")
 
 
 def substituted_ingredient(
     ingredient: Mapping[str, Any], candidate: Mapping[str, Any]
 ) -> Dict[str, Any]:
+    error = _candidate_applicability_error(ingredient, candidate)
+    if error:
+        raise ValueError(error)
     amount = ingredient.get("amount")
     if amount is not None:
         amount = round(float(amount) * float(candidate["ratio"]), 4)
@@ -180,7 +230,7 @@ def substituted_ingredient(
     unit_text = "" if not unit else f"{unit} "
     return {
         "name": replacement_name,
-        "canonical_name": candidate["replacement_canonical"],
+        "canonical_name": candidate.get("replacement_canonical") or _canonical(replacement_name),
         "amount": amount,
         "unit": unit,
         "raw": f"{quantity}{unit_text}{replacement_name}".strip(),

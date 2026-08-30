@@ -19,6 +19,7 @@ Endpoint schnell auch bei 500+ Rezepten.
 """
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import time
@@ -63,7 +64,6 @@ from ..recipes.source_integrity import (
 )
 from ..recipes.substitution_lab import (
     resolve_candidate,
-    substituted_ingredient,
     substitution_lab_payload,
 )
 
@@ -593,9 +593,29 @@ def get_recipe(recipe_id: int):
             )[:20000]
         else:
             r["description_original"] = None
+        r["variant_provenance"] = None
+        r["variant_review_notice"] = None
+        info_path = folder / "info.json"
+        if info_path.is_file() and not info_path.is_symlink():
+            try:
+                variant_info = json.loads(info_path.read_text(encoding="utf-8"))
+                if isinstance(variant_info, dict):
+                    provenance = variant_info.get("variant_provenance")
+                    if isinstance(provenance, dict):
+                        r["variant_provenance"] = provenance
+                    notice = variant_info.get("variant_review_notice")
+                    if isinstance(notice, str) and notice.strip():
+                        r["variant_review_notice"] = notice.strip()
+            except (OSError, ValueError, TypeError):
+                logger.warning(
+                    "Recipe #%s: Varianten-Provenienz konnte nicht gelesen werden",
+                    recipe_id,
+                )
     except Exception:
         r["pdf_filename"] = None
         r["description_original"] = None
+        r["variant_provenance"] = None
+        r["variant_review_notice"] = None
     return r
 
 
@@ -839,7 +859,11 @@ def apply_recipe_substitution(
     payload: SubstitutionApply,
 ) -> Dict[str, Any]:
     """Erstellt eine Variante und wendet genau eine bestaetigte Ersetzung an."""
-    from ..recipes.auto_tags import refresh_diet_auto_tags
+    from ..recipes.auto_tags import (
+        SAFETY_CLAIM_TAGS,
+        refresh_diet_auto_tags,
+        remove_manual_safety_claim_tags,
+    )
     from ..recipes.manage import safe_delete_recipe, safe_duplicate_recipe
 
     db = get_db()
@@ -855,10 +879,48 @@ def apply_recipe_substitution(
         raise HTTPException(404, "Zutat nicht gefunden")
     try:
         candidate = resolve_candidate(original, payload.candidate_id)
+        result_ingredient = dict(candidate["result_ingredient"])
+        inherited_manual_safety_tags = sorted({
+            str(tag["name"]).strip().casefold()
+            for tag in db.recipe_tags_get(recipe_id)
+            if tag.get("auto") == 0
+            and str(tag["name"]).strip().casefold() in SAFETY_CLAIM_TAGS
+        })
+        source_label = str(original.get("raw") or original.get("name") or "Zutat").strip()
+        result_label = str(result_ingredient.get("raw") or candidate["replacement_name"])
+        review_notice = (
+            f"Substitutionsvariante: {source_label} wurde durch {result_label} ersetzt. "
+            "Zubereitungsschritte und Produktetiketten vor dem Kochen prüfen; "
+            "keine medizinische Sicherheitsfreigabe."
+        )
+        provenance = {
+            "kind": "ingredient_substitution",
+            "source_recipe_id": recipe_id,
+            "candidate_id": candidate["id"],
+            "source_ingredient": {
+                "name": original.get("name"),
+                "canonical_name": original.get("canonical_name"),
+                "amount": original.get("amount"),
+                "unit": original.get("unit"),
+                "raw": original.get("raw"),
+            },
+            "result_ingredient": result_ingredient,
+            "blocked_auto_tags": list(candidate.get("blocked_auto_tags") or []),
+            "removed_manual_safety_tags": inherited_manual_safety_tags,
+            "confidence": candidate["confidence"],
+            "functional_effect": candidate["functional_effect"],
+            "allergen_notes": list(candidate["allergen_notes"]),
+            "nutrition_notes": list(candidate["nutrition_notes"]),
+            "applied_at": time.time(),
+            "review_required": True,
+            "medical_safety_claim": False,
+        }
         clone = safe_duplicate_recipe(
             db,
             recipe_id,
             new_name=payload.variant_name,
+            variant_provenance=provenance,
+            review_notice=review_notice,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -873,7 +935,7 @@ def apply_recipe_substitution(
         applied = False
         for item in cloned_ingredients:
             if not applied and int(item.get("sort_order") or 0) == target_sort_order:
-                prepared.append(substituted_ingredient(item, candidate))
+                prepared.append(dict(result_ingredient))
                 applied = True
             else:
                 prepared.append({
@@ -886,10 +948,12 @@ def apply_recipe_substitution(
         if not applied:
             raise RuntimeError("Die Zutat konnte in der neuen Variante nicht zugeordnet werden")
         _replace_ingredients_and_reset_verification(db, variant_id, prepared)
+        removed_manual_safety_tags = remove_manual_safety_claim_tags(db, variant_id)
         refresh_diet_auto_tags(
             db,
             variant_id,
             [str(item.get("canonical_name") or "") for item in prepared],
+            blocked_tags=candidate.get("blocked_auto_tags"),
         )
         db.shopping_catalog_rebuild()
     except Exception as exc:
@@ -909,6 +973,11 @@ def apply_recipe_substitution(
             "from_name": original.get("name"),
             "to_name": candidate["replacement_name"],
             "ratio": candidate["ratio"],
+            "result_ingredient": result_ingredient,
+            "blocked_auto_tags": list(candidate.get("blocked_auto_tags") or []),
+            "removed_manual_safety_tags": removed_manual_safety_tags,
+            "review_notice": review_notice,
+            "provenance": provenance,
             "review_required": True,
             "nutrition_invalidated": True,
         },
