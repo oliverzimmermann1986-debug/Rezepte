@@ -12,6 +12,7 @@ struct MealConductorView: View {
         second: 0,
         of: Date()
     ) ?? Date()
+    @State private var activeCooks = 1
     @State private var burners = 4
     @State private var ovenSlots = 1
     @State private var plan: MealConductorPlan?
@@ -24,14 +25,16 @@ struct MealConductorView: View {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     configurationCard
 
-                    if isLoading && plan == nil {
-                        ProgressView("Ablauf wird berechnet …")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 36)
-                    } else if let errorMessage, plan == nil {
+                    if let errorMessage {
                         ErrorState(message: errorMessage) {
                             Task { await load() }
                         }
+                    }
+
+                    if isLoading {
+                        ProgressView("Ablauf wird berechnet …")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 36)
                     } else if let plan {
                         summaryCard(plan)
 
@@ -49,6 +52,12 @@ struct MealConductorView: View {
                         ForEach(plan.events) { event in
                             eventCard(event)
                         }
+                    } else if errorMessage == nil {
+                        ContentUnavailableView(
+                            "Ablauf neu berechnen",
+                            systemImage: "arrow.clockwise",
+                            description: Text("Die Kücheneinstellungen wurden geändert; der alte Ablauf wird nicht weiter angezeigt.")
+                        )
                     }
                 }
                 .padding()
@@ -62,6 +71,10 @@ struct MealConductorView: View {
                 }
             }
             .task { await load() }
+            .onChange(of: serveAt) { _, _ in invalidatePlan() }
+            .onChange(of: activeCooks) { _, _ in invalidatePlan() }
+            .onChange(of: burners) { _, _ in invalidatePlan() }
+            .onChange(of: ovenSlots) { _, _ in invalidatePlan() }
         }
     }
 
@@ -74,8 +87,13 @@ struct MealConductorView: View {
                 .foregroundStyle(theme.muted)
 
             DatePicker("Servieren", selection: $serveAt, displayedComponents: .hourAndMinute)
+                .disabled(isLoading)
+            Stepper("Aktive Köch:innen: \(activeCooks)", value: $activeCooks, in: 1...8)
+                .disabled(isLoading)
             Stepper("Herdplatten: \(burners)", value: $burners, in: 1...8)
+                .disabled(isLoading)
             Stepper("Ofenplätze: \(ovenSlots)", value: $ovenSlots, in: 1...4)
+                .disabled(isLoading)
 
             Button {
                 Task { await load() }
@@ -105,6 +123,23 @@ struct MealConductorView: View {
             }
             .font(.subheadline)
             .foregroundStyle(theme.muted)
+            HStack {
+                Label(
+                    "\(plan.summary.activeCooks ?? activeCooks) aktiv",
+                    systemImage: "person.2.fill"
+                )
+                Spacer()
+                if let duration = plan.summary.durationMinutes {
+                    Label("\(duration) Min. gesamt", systemImage: "clock")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(theme.muted)
+            if plan.summary.startsPreviousDay == true {
+                Label("Der Ablauf beginnt vor dem Serviertag.", systemImage: "calendar.badge.exclamationmark")
+                    .font(.caption.bold())
+                    .foregroundStyle(theme.warning)
+            }
         }
         .cardSurface()
     }
@@ -153,6 +188,7 @@ struct MealConductorView: View {
 
     private func load() async {
         guard !isLoading else { return }
+        plan = nil
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
@@ -166,13 +202,21 @@ struct MealConductorView: View {
             plan = try await session.api.mealConductorPreview(
                 date: day.date,
                 serveAt: serveTime,
+                activeCooks: activeCooks,
                 burners: burners,
-                ovenSlots: ovenSlots
+                ovenSlots: ovenSlots,
+                readOnly: session.readOnly
             )
         } catch {
             errorMessage = error.localizedDescription
             session.handle(error)
         }
+    }
+
+    private func invalidatePlan() {
+        guard !isLoading else { return }
+        plan = nil
+        errorMessage = nil
     }
 
     private func resourceLabel(_ resource: String) -> String {

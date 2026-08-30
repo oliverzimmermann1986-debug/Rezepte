@@ -221,6 +221,46 @@ struct Recipe: Codable, Identifiable {
     let proteinG: Double?
     let carbsG: Double?
     let fatG: Double?
+    let variantProvenance: RecipeVariantProvenance?
+    let variantReviewNotice: String?
+}
+
+struct SubstitutionIngredientValue: Codable, Hashable {
+    let name: String
+    let canonicalName: String?
+    let amount: Double?
+    let unit: String?
+    let raw: String?
+
+    var displayText: String {
+        if let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            return raw
+        }
+        let quantity = amount.map {
+            $0.rounded() == $0 ? String(Int($0)) : String(format: "%.2f", $0)
+        }
+        return [quantity, unit, name]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+}
+
+struct RecipeVariantProvenance: Codable {
+    let kind: String?
+    let sourceRecipeId: Int?
+    let candidateId: String?
+    let sourceIngredient: SubstitutionIngredientValue?
+    let resultIngredient: SubstitutionIngredientValue?
+    let blockedAutoTags: [String]?
+    let removedManualSafetyTags: [String]?
+    let confidence: String?
+    let functionalEffect: String?
+    let allergenNotes: [String]?
+    let nutritionNotes: [String]?
+    let appliedAt: Double?
+    let reviewRequired: Bool?
+    let medicalSafetyClaim: Bool?
 }
 
 struct RecipeSourceIntegrity: Codable {
@@ -280,6 +320,11 @@ struct RecipeSourceSnapshot: Codable, Identifiable {
     let isBaseline: Bool
     let acceptedAt: Double?
     let acceptedBy: String?
+}
+
+struct SourceIntegrityAcceptRequest: Codable, Equatable {
+    let expectedSnapshotId: Int
+    let expectedContentSha256: String?
 }
 
 struct RecipeSourceDiff: Codable {
@@ -671,8 +716,13 @@ struct MealConductorSummary: Codable {
     let steps: Int
     let estimatedSteps: Int
     let resourceAdjustments: Int
+    let counterAdjustments: Int?
+    let deviceAdjustments: Int?
+    let activeCooks: Int?
     let burners: Int
     let ovenSlots: Int
+    let durationMinutes: Int?
+    let startsPreviousDay: Bool?
 }
 
 struct SubstitutionLab: Codable {
@@ -704,6 +754,8 @@ struct SubstitutionCandidate: Codable, Identifiable {
     let functionalEffect: String
     let allergenNotes: [String]
     let nutritionNotes: [String]
+    let blockedAutoTags: [String]?
+    let resultIngredient: SubstitutionIngredientValue?
     let requiresReview: Bool
 }
 
@@ -719,6 +771,11 @@ struct AppliedSubstitution: Codable {
     let fromName: String?
     let toName: String
     let ratio: Double
+    let resultIngredient: SubstitutionIngredientValue?
+    let blockedAutoTags: [String]?
+    let removedManualSafetyTags: [String]?
+    let reviewNotice: String?
+    let provenance: RecipeVariantProvenance?
     let reviewRequired: Bool
     let nutritionInvalidated: Bool
 }

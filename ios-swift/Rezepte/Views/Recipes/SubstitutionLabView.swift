@@ -15,7 +15,9 @@ struct SubstitutionLabView: View {
     @State private var variantName = ""
     @State private var showApplyPrompt = false
     @State private var isApplying = false
+    @State private var applyTask: Task<Void, Never>?
     @State private var createdVariant: String?
+    @State private var createdReviewNotice: String?
 
     var body: some View {
         NavigationStack {
@@ -29,6 +31,26 @@ struct SubstitutionLabView: View {
                 } else if let lab {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 18) {
+                            if let errorMessage {
+                                feedbackCard(errorMessage)
+                            }
+
+                            if isApplying {
+                                HStack(spacing: 12) {
+                                    ProgressView()
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("Variante wird sicher angelegt …")
+                                            .font(.subheadline.bold())
+                                        Text("Bitte geöffnet lassen, bis die Bestätigung erscheint.")
+                                            .font(.caption)
+                                            .foregroundStyle(theme.muted)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .cardSurface()
+                                .accessibilityElement(children: .combine)
+                            }
+
                             safetyCard
 
                             if lab.items.isEmpty {
@@ -54,13 +76,18 @@ struct SubstitutionLabView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Schließen") { dismiss() }
+                        .disabled(isApplying)
                 }
             }
             .task { await load() }
+            .interactiveDismissDisabled(isApplying)
             .alert("Eigene Variante erstellen", isPresented: $showApplyPrompt) {
                 TextField("Name der Variante", text: $variantName)
-                Button("Variante erstellen") { Task { await apply() } }
-                    .disabled(variantName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Variante erstellen") { beginApply() }
+                    .disabled(
+                        isApplying
+                            || variantName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
                 Button("Abbrechen", role: .cancel) {}
             } message: {
                 Text("Das Original bleibt unverändert. Die neue Variante verliert Prüfstatus und berechnete Nährwerte, bis sie erneut geprüft wurde.")
@@ -74,7 +101,10 @@ struct SubstitutionLabView: View {
             ) {
                 Button("Fertig") { dismiss() }
             } message: {
-                Text("„\(createdVariant ?? "")“ wurde als eigenständiges Rezept angelegt.")
+                Text(
+                    createdReviewNotice
+                        ?? "„\(createdVariant ?? "")“ wurde als eigenständiges Rezept angelegt."
+                )
             }
         }
     }
@@ -111,9 +141,7 @@ struct SubstitutionLabView: View {
                             .font(.caption.bold())
                             .foregroundStyle(theme.accentPressed)
                     }
-                    Text("Mengenfaktor \(candidate.ratio.formatted())")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(theme.muted)
+                    substitutionPreview(ingredient: ingredient, candidate: candidate)
                     Label(candidate.functionalEffect, systemImage: "gearshape.2")
                         .font(.subheadline)
                     ForEach(candidate.allergenNotes, id: \.self) { note in
@@ -125,6 +153,22 @@ struct SubstitutionLabView: View {
                         Label(note, systemImage: "heart.text.square")
                             .font(.caption)
                             .foregroundStyle(theme.muted)
+                    }
+                    if let blockedTags = candidate.blockedAutoTags, !blockedTags.isEmpty {
+                        Label(
+                            "Keine automatische Freigabe als \(blockedTags.map(tagLabel).joined(separator: ", "))",
+                            systemImage: "tag.slash"
+                        )
+                        .font(.caption.bold())
+                        .foregroundStyle(theme.warning)
+                    }
+                    if candidate.requiresReview {
+                        Label(
+                            "Zubereitung und Produktetikett müssen vor dem Kochen manuell geprüft werden.",
+                            systemImage: "person.crop.circle.badge.checkmark"
+                        )
+                        .font(.caption.bold())
+                        .foregroundStyle(theme.warning)
                     }
                     Button {
                         selectedIngredientID = ingredient.ingredientId
@@ -145,6 +189,35 @@ struct SubstitutionLabView: View {
         .cardSurface()
     }
 
+    private func substitutionPreview(
+        ingredient: SubstitutionIngredient,
+        candidate: SubstitutionCandidate
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            LabeledContent("Vorher", value: ingredientDisplay(ingredient))
+            if let result = candidate.resultIngredient {
+                LabeledContent("Nachher", value: result.displayText)
+            } else {
+                LabeledContent("Nachher", value: candidate.replacementName)
+                Text("Legacy-Vorschau · Mengenfaktor \(candidate.ratio.formatted())")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(theme.muted)
+            }
+        }
+        .font(.subheadline)
+        .padding(10)
+        .background(theme.surface, in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func feedbackCard(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.subheadline)
+            .foregroundStyle(theme.danger)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .cardSurface()
+    }
+
     private func ingredientDisplay(_ ingredient: SubstitutionIngredient) -> String {
         let amount = ingredient.amount.map {
             $0.rounded() == $0 ? String(Int($0)) : $0.formatted()
@@ -162,7 +235,12 @@ struct SubstitutionLabView: View {
         }
     }
 
+    private func tagLabel(_ value: String) -> String {
+        AllergenInfo(rawValue: value)?.title ?? value
+    }
+
     private func load() async {
+        guard !isApplying else { return }
         isLoading = lab == nil
         defer { isLoading = false }
         do {
@@ -174,12 +252,20 @@ struct SubstitutionLabView: View {
         }
     }
 
-    private func apply() async {
-        guard !isApplying,
-              let ingredientID = selectedIngredientID,
-              let candidateID = selectedCandidateID else { return }
+    private func beginApply() {
+        guard applyTask == nil, !isApplying else { return }
         isApplying = true
+        errorMessage = nil
+        applyTask = Task { @MainActor in
+            await apply()
+            applyTask = nil
+        }
+    }
+
+    private func apply() async {
         defer { isApplying = false }
+        guard let ingredientID = selectedIngredientID,
+              let candidateID = selectedCandidateID else { return }
         do {
             let result = try await session.api.applyRecipeSubstitution(
                 id: recipeID,
@@ -188,7 +274,12 @@ struct SubstitutionLabView: View {
                 variantName: variantName.trimmingCharacters(in: .whitespacesAndNewlines)
             )
             createdVariant = result.name
+            createdReviewNotice = result.substitution.reviewNotice
+                ?? "„\(result.name)“ wurde angelegt. Zubereitung und Produktetiketten vor dem Kochen prüfen."
+            errorMessage = nil
             NotificationCenter.default.post(name: .recipesChanged, object: recipeID)
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = error.localizedDescription
             session.handle(error)

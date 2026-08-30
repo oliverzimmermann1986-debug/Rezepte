@@ -81,6 +81,51 @@ final class ModelTests: XCTestCase {
 
         XCTAssertEqual(recipe.id, 232)
         XCTAssertEqual(recipe.userVerified, true)
+        XCTAssertNil(recipe.variantProvenance)
+        XCTAssertNil(recipe.variantReviewNotice)
+    }
+
+    func testRecipeDetailDecodesPersistentSubstitutionProvenance() throws {
+        let json = """
+        {
+          "id": 84,
+          "name": "Pasta mit Haferdrink",
+          "is_favorite": false,
+          "ingredients": [],
+          "steps": [],
+          "needs_manual_care": true,
+          "manual_care_reasons": [],
+          "variant_review_notice": "Zubereitung und Produktetikett prüfen.",
+          "variant_provenance": {
+            "kind": "ingredient_substitution",
+            "source_recipe_id": 42,
+            "candidate_id": "milk-oat-drink",
+            "source_ingredient": {"name":"Milch","canonical_name":"milch","amount":250,"unit":"ml","raw":"250 ml Milch"},
+            "result_ingredient": {"name":"Haferdrink","canonical_name":"haferdrink","amount":250,"unit":"ml","raw":"250 ml Haferdrink"},
+            "blocked_auto_tags": ["glutenfrei"],
+            "removed_manual_safety_tags": ["laktosefrei"],
+            "confidence": "high",
+            "functional_effect": "Ähnliche Flüssigkeitsmenge",
+            "allergen_notes": ["Etikett prüfen"],
+            "nutrition_notes": ["Werte neu berechnen"],
+            "applied_at": 1785171600,
+            "review_required": true,
+            "medical_safety_claim": false
+          }
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let recipe = try decoder.decode(Recipe.self, from: Data(json.utf8))
+
+        XCTAssertEqual(recipe.variantReviewNotice, "Zubereitung und Produktetikett prüfen.")
+        XCTAssertEqual(recipe.variantProvenance?.sourceRecipeId, 42)
+        XCTAssertEqual(recipe.variantProvenance?.sourceIngredient?.displayText, "250 ml Milch")
+        XCTAssertEqual(recipe.variantProvenance?.resultIngredient?.displayText, "250 ml Haferdrink")
+        XCTAssertEqual(recipe.variantProvenance?.blockedAutoTags, ["glutenfrei"])
+        XCTAssertEqual(recipe.variantProvenance?.reviewRequired, true)
+        XCTAssertEqual(recipe.variantProvenance?.medicalSafetyClaim, false)
     }
 
     func testPendingImportDecodesEditableSuggestion() throws {
@@ -146,6 +191,19 @@ final class ModelTests: XCTestCase {
             "lines": ["-200 g Mehl", "+250 g Mehl"],
             "truncated": false
           },
+          "impact": {
+            "ingredient_changes": [{"direction":"added","text":"2 Eier"}],
+            "instruction_changes": [{"direction":"added","text":"Eier unterheben"}],
+            "possible_allergen_changes": [{
+              "allergen":"egg",
+              "label":"Ei",
+              "direction":"added",
+              "matched_terms":["eier"],
+              "evidence":["2 Eier"]
+            }],
+            "review_required": true,
+            "automatic_safety_claim": false
+          },
           "quality": {
             "status": "review",
             "score": 88,
@@ -171,6 +229,10 @@ final class ModelTests: XCTestCase {
 
         XCTAssertEqual(report.status, "changed")
         XCTAssertEqual(report.diff?.addedLines, 1)
+        XCTAssertEqual(report.impact?.ingredientChanges.first?.text, "2 Eier")
+        XCTAssertEqual(report.impact?.possibleAllergenChanges.first?.matchedTerms, ["eier"])
+        XCTAssertEqual(report.impact?.reviewRequired, true)
+        XCTAssertEqual(report.impact?.automaticSafetyClaim, false)
         XCTAssertEqual(report.quality.issues.first?.id, "source-changed")
         XCTAssertFalse(report.automaticOverwrite)
     }

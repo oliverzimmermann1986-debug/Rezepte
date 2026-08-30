@@ -126,7 +126,7 @@ def test_swiftui_source_watcher_exposes_diff_quality_and_safe_review_flow():
     api = _read(SWIFT / "Networking" / "APIClient.swift")
     main = _read(ROOT / "app" / "main.py")
 
-    assert 'session.supports("source-integrity-v1")' in detail
+    assert 'session.supports("source-integrity-v2")' in detail
     assert "Quellenwächter & Rezept-TÜV" in detail
     for endpoint in (
         "/source-integrity",
@@ -168,6 +168,50 @@ def test_swiftui_selected_differentiators_are_native_and_capability_gated():
         "substitution-lab-v1",
     ):
         assert f'"{capability}"' in main
+
+
+def test_swiftui_differentiator_safety_states_follow_the_hardened_contracts():
+    models = _read(SWIFT / "Models" / "Models.swift")
+    api = _read(SWIFT / "Networking" / "APIClient.swift")
+    detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
+    watcher = _read(SWIFT / "Views" / "Recipes" / "RecipeSourceIntegrityView.swift")
+    substitutions = _read(SWIFT / "Views" / "Recipes" / "SubstitutionLabView.swift")
+    conductor = _read(SWIFT / "Views" / "MealPlan" / "MealConductorView.swift")
+
+    for contract_field in (
+        "variantProvenance",
+        "variantReviewNotice",
+        "resultIngredient",
+        "blockedAutoTags",
+        "activeCooks",
+        "counterAdjustments",
+        "startsPreviousDay",
+    ):
+        assert contract_field in models
+
+    assert ".interactiveDismissDisabled(isApplying)" in substitutions
+    assert '.disabled(isApplying)' in substitutions
+    assert "applyTask?.cancel()" not in substitutions
+    assert "Variante wird sicher angelegt" in substitutions
+    assert 'LabeledContent("Vorher"' in substitutions
+    assert 'LabeledContent("Nachher"' in substitutions
+    assert "candidate.blockedAutoTags" in substitutions
+    assert "recipe.variantReviewNotice" in detail
+    assert "variantProvenanceSection" in detail
+
+    assert 'quality.status == "verified"' in watcher
+    assert "Struktur vollständig – manuelle Prüfung bleibt offen" in watcher
+    assert "keine Lebensmittel- oder Allergensicherheit" in watcher
+    assert "expectedSnapshotID: latest.id" in watcher
+    assert "status == 409" in watcher
+    assert "reloadAfterAcceptConflict" in watcher
+    assert "expectedSnapshotId" in api and "expectedContentSha256" in api
+
+    assert "Aktive Köch:innen" in conductor
+    assert "plan = nil" in conductor
+    assert "readOnly: session.readOnly" in conductor
+    assert 'URLQueryItem(name: "active_cooks"' in api
+    assert 'method: "POST"' in api
 
 
 def test_swiftui_admin_settings_use_safe_partial_config_contract():

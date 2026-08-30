@@ -23,7 +23,11 @@ struct RecipeSourceIntegrityView: View {
             } else if let report {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
+                        if let errorMessage {
+                            feedbackCard(errorMessage)
+                        }
                         statusCard(report)
+                        integrityScopeCard
                         qualityCard(report.quality)
 
                         if let impact = report.impact {
@@ -50,6 +54,26 @@ struct RecipeSourceIntegrityView: View {
         .navigationTitle("Quellenwächter")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+    }
+
+    private var integrityScopeCard: some View {
+        Label(
+            "Diese Prüfung bewertet Struktur und Quellenänderungen. Sie bestätigt keine Lebensmittel- oder Allergensicherheit und ersetzt keine Prüfung der Produktetiketten.",
+            systemImage: "info.circle.fill"
+        )
+        .font(.caption.bold())
+        .foregroundStyle(theme.warning)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
+        .accessibilityElement(children: .combine)
+    }
+
+    private func feedbackCard(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.subheadline)
+            .foregroundStyle(theme.danger)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .cardSurface()
     }
 
     private func impactCard(_ impact: RecipeSourceImpact) -> some View {
@@ -156,7 +180,8 @@ struct RecipeSourceIntegrityView: View {
     }
 
     private func qualityCard(_ quality: RecipeQualityReport) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let isVerified = quality.status == "verified"
+        return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 14) {
                 ZStack {
                     Circle()
@@ -164,7 +189,7 @@ struct RecipeSourceIntegrityView: View {
                     Circle()
                         .trim(from: 0, to: CGFloat(quality.score) / 100)
                         .stroke(
-                            qualityColor(quality.score),
+                            qualityColor(quality),
                             style: StrokeStyle(lineWidth: 7, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
@@ -176,6 +201,9 @@ struct RecipeSourceIntegrityView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Rezept-TÜV")
                         .font(.title3.bold())
+                    Text(qualityStatusTitle(quality.status))
+                        .font(.subheadline.bold())
+                        .foregroundStyle(qualityColor(quality))
                     Text("\(quality.checkedRules) nachvollziehbare Regeln · \(quality.issues.count) Hinweis(e)")
                         .font(.caption)
                         .foregroundStyle(theme.muted)
@@ -183,8 +211,13 @@ struct RecipeSourceIntegrityView: View {
             }
 
             if quality.issues.isEmpty {
-                Label("Keine offenen Qualitäts-Hinweise", systemImage: "checkmark.seal.fill")
-                    .foregroundStyle(theme.success)
+                Label(
+                    isVerified
+                        ? "Manuell verifiziert und ohne offene Strukturhinweise"
+                        : "Struktur vollständig – manuelle Prüfung bleibt offen",
+                    systemImage: isVerified ? "checkmark.seal.fill" : "questionmark.diamond.fill"
+                )
+                .foregroundStyle(isVerified ? theme.success : theme.warning)
             } else {
                 Divider()
                 ForEach(quality.issues) { issue in
@@ -359,7 +392,7 @@ struct RecipeSourceIntegrityView: View {
                         .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(isChecking || isAccepting)
+                    .disabled(isChecking || isAccepting || report.latest == nil)
                 }
             }
         }
@@ -391,14 +424,39 @@ struct RecipeSourceIntegrityView: View {
     }
 
     private func acceptLatest() async {
-        guard !isAccepting else { return }
+        guard !isAccepting, let latest = report?.latest else {
+            errorMessage = "Der zu bestätigende Quellenstand fehlt. Bitte die Quelle erneut prüfen."
+            return
+        }
         isAccepting = true
         defer { isAccepting = false }
         do {
-            report = try await session.api.acceptRecipeSourceIntegrity(id: recipeID)
+            report = try await session.api.acceptRecipeSourceIntegrity(
+                id: recipeID,
+                expectedSnapshotID: latest.id,
+                expectedContentSHA256: latest.contentSha256
+            )
             errorMessage = nil
+        } catch let error as APIError {
+            if case let .server(status, detail) = error, status == 409 {
+                await reloadAfterAcceptConflict(detail)
+            } else {
+                errorMessage = error.localizedDescription
+                session.handle(error)
+            }
         } catch {
             errorMessage = error.localizedDescription
+            session.handle(error)
+        }
+    }
+
+    private func reloadAfterAcceptConflict(_ detail: String) async {
+        let explanation = "Der Quellenstand hat sich seit deiner Prüfung geändert und wurde nicht bestätigt. Der aktuelle Stand wurde neu geladen. \(detail)"
+        do {
+            report = try await session.api.recipeSourceIntegrity(id: recipeID)
+            errorMessage = explanation
+        } catch {
+            errorMessage = "\(explanation) Der aktuelle Bericht konnte nicht geladen werden: \(error.localizedDescription)"
             session.handle(error)
         }
     }
@@ -444,9 +502,17 @@ struct RecipeSourceIntegrityView: View {
         }
     }
 
-    private func qualityColor(_ score: Int) -> Color {
-        if score >= 85 { return theme.success }
-        if score >= 60 { return theme.warning }
+    private func qualityStatusTitle(_ status: String) -> String {
+        switch status {
+        case "verified": "Manuell verifiziert"
+        case "review": "Manuelle Prüfung erforderlich"
+        default: "Prüfstatus unbekannt"
+        }
+    }
+
+    private func qualityColor(_ quality: RecipeQualityReport) -> Color {
+        if quality.status == "verified" { return theme.success }
+        if quality.score >= 60 { return theme.warning }
         return theme.danger
     }
 

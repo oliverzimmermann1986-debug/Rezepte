@@ -352,7 +352,21 @@ struct RecipeDetailView: View {
                     .textSelection(.enabled)
             }
 
-            if session.supports("source-integrity-v1") {
+            if let notice = recipe.variantReviewNotice?.nilIfEmpty {
+                Label(notice, systemImage: "exclamationmark.triangle.fill")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(theme.warning)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(theme.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityLabel("Prüfhinweis für Rezeptvariante: \(notice)")
+            }
+
+            if let provenance = recipe.variantProvenance {
+                variantProvenanceSection(provenance)
+            }
+
+            if session.supports("source-integrity-v2") {
                 NavigationLink {
                     RecipeSourceIntegrityView(
                         recipeID: recipe.id,
@@ -420,6 +434,54 @@ struct RecipeDetailView: View {
             }
         }
         .cardSurface()
+    }
+
+    private func variantProvenanceSection(_ provenance: RecipeVariantProvenance) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("Nachvollziehbare Substitutionsvariante", systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.subheadline.bold())
+
+            if let sourceRecipeID = provenance.sourceRecipeId {
+                LabeledContent("Abgeleitet von", value: "Rezept #\(sourceRecipeID)")
+            }
+            if let source = provenance.sourceIngredient, let result = provenance.resultIngredient {
+                LabeledContent("Ersetzung", value: "\(source.displayText) → \(result.displayText)")
+            } else if let result = provenance.resultIngredient {
+                LabeledContent("Neue Zutat", value: result.displayText)
+            }
+            if let effect = provenance.functionalEffect?.nilIfEmpty {
+                Text(effect)
+                    .font(.caption)
+                    .foregroundStyle(theme.muted)
+            }
+            if let blockedTags = provenance.blockedAutoTags, !blockedTags.isEmpty {
+                LabeledContent(
+                    "Nicht automatisch freigegeben",
+                    value: blockedTags.map(variantTagLabel).joined(separator: ", ")
+                )
+            }
+            if let removedTags = provenance.removedManualSafetyTags, !removedTags.isEmpty {
+                LabeledContent(
+                    "Zur erneuten Prüfung entfernt",
+                    value: removedTags.map(variantTagLabel).joined(separator: ", ")
+                )
+            }
+            if let appliedAt = provenance.appliedAt {
+                LabeledContent(
+                    "Variante erstellt",
+                    value: Date(timeIntervalSince1970: appliedAt).formatted(
+                        date: .abbreviated,
+                        time: .shortened
+                    )
+                )
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func variantTagLabel(_ value: String) -> String {
+        AllergenInfo(rawValue: value)?.title ?? value
     }
 
     @ViewBuilder

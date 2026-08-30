@@ -628,6 +628,51 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/source-integrity/check")
     }
 
+    func testSourceIntegrityAcceptSendsReviewedSnapshotCAS() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "api-token")
+        MockURLProtocol.respond(json: """
+        {"recipe_id":42,"recipe_name":"Pasta","source_url":"https://example.de/pasta","platform":"Webseite","status":"current","quality":{"status":"review","score":84,"issues":[],"checked_rules":8},"verified":false,"automatic_overwrite":false}
+        """)
+
+        _ = try await client.acceptRecipeSourceIntegrity(
+            id: 42,
+            expectedSnapshotID: 17,
+            expectedContentSHA256: String(repeating: "a", count: 64)
+        )
+
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/source-integrity/accept")
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any]
+        )
+        XCTAssertEqual(payload["expected_snapshot_id"] as? Int, 17)
+        XCTAssertEqual(payload["expected_content_sha256"] as? String, String(repeating: "a", count: 64))
+    }
+
+    func testSourceIntegrityAcceptPreservesConflictStatus() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "api-token")
+        MockURLProtocol.respond(body: #"{"detail":"Quellenstand ist veraltet"}"#, statusCode: 409)
+
+        do {
+            _ = try await client.acceptRecipeSourceIntegrity(
+                id: 42,
+                expectedSnapshotID: 17,
+                expectedContentSHA256: nil
+            )
+            XCTFail("Ein veralteter Quellenstand darf nicht bestätigt werden")
+        } catch let error as APIError {
+            guard case let .server(status, detail) = error else {
+                return XCTFail("Erwartet server(409), war \(error)")
+            }
+            XCTAssertEqual(status, 409)
+            XCTAssertEqual(detail, "Quellenstand ist veraltet")
+        }
+    }
+
     func testShoppingOptimizationPreviewDecodesServerContract() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
@@ -648,24 +693,80 @@ final class APIClientTests: XCTestCase {
         let client = APIClient(session: session)
         try await client.configure(server: "https://example.de", token: "api-token")
         MockURLProtocol.respond(json: """
-        {"planned_for":"2026-07-27","serve_at":"2026-07-27T19:00","serve_time":"19:00","start_at":"2026-07-27T18:30","events":[{"id":"42-1","recipe_id":42,"recipe_name":"Pasta","planned_servings":2,"step_number":1,"instruction":"Kochen","resource":"burner","duration_minutes":30,"estimated":false,"resource_adjusted":false,"start_at":"2026-07-27T18:30","end_at":"2026-07-27T19:00","start_time":"18:30","end_time":"19:00"}],"warnings":[],"summary":{"recipes":1,"steps":1,"estimated_steps":0,"resource_adjustments":0,"burners":2,"oven_slots":1}}
+        {"planned_for":"2026-07-27","serve_at":"2026-07-27T19:00","serve_time":"19:00","start_at":"2026-07-27T18:30","events":[{"id":"42-1","recipe_id":42,"recipe_name":"Pasta","planned_servings":2,"step_number":1,"instruction":"Kochen","resource":"burner","duration_minutes":30,"estimated":false,"resource_adjusted":false,"start_at":"2026-07-27T18:30","end_at":"2026-07-27T19:00","start_time":"18:30","end_time":"19:00"}],"warnings":[],"summary":{"recipes":1,"steps":1,"estimated_steps":0,"resource_adjustments":1,"counter_adjustments":1,"device_adjustments":0,"active_cooks":2,"burners":2,"oven_slots":1,"duration_minutes":30,"starts_previous_day":false}}
         """)
 
         let plan = try await client.mealConductorPreview(
             date: "2026-07-27",
             serveAt: "19:00",
+            activeCooks: 2,
             burners: 2,
-            ovenSlots: 1
+            ovenSlots: 1,
+            readOnly: false
         )
 
         XCTAssertEqual(plan.events.first?.resource, "burner")
+        XCTAssertEqual(plan.summary.activeCooks, 2)
+        XCTAssertEqual(plan.summary.counterAdjustments, 1)
+        XCTAssertEqual(plan.summary.durationMinutes, 30)
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/meal-plan/conductor/preview")
         XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
         let payload = try XCTUnwrap(
             JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any]
         )
         XCTAssertEqual(payload["serve_at"] as? String, "19:00")
+        XCTAssertEqual(payload["active_cooks"] as? Int, 2)
         XCTAssertEqual(payload["burners"] as? Int, 2)
+    }
+
+    func testMealConductorReadOnlyUsesGuestSafeGETAndDecodesLegacySummary() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "guest-token")
+        MockURLProtocol.respond(json: """
+        {"planned_for":"2026-07-27","serve_at":"2026-07-27T19:00","serve_time":"19:00","start_at":"2026-07-27T18:30","events":[],"warnings":[],"summary":{"recipes":1,"steps":0,"estimated_steps":0,"resource_adjustments":0,"burners":2,"oven_slots":1}}
+        """)
+
+        let plan = try await client.mealConductorPreview(
+            date: "2026-07-27",
+            serveAt: "19:00",
+            activeCooks: 1,
+            burners: 2,
+            ovenSlots: 1,
+            readOnly: true
+        )
+
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "GET")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/meal-plan/conductor/preview")
+        let query = MockURLProtocol.lastQueryItems()
+        XCTAssertEqual(query["planned_for"], "2026-07-27")
+        XCTAssertEqual(query["serve_at"], "19:00")
+        XCTAssertEqual(query["active_cooks"], "1")
+        XCTAssertEqual(query["burners"], "2")
+        XCTAssertEqual(query["oven_slots"], "1")
+        XCTAssertNil(plan.summary.activeCooks)
+        XCTAssertNil(plan.summary.counterAdjustments)
+        XCTAssertNil(plan.summary.durationMinutes)
+        XCTAssertNil(plan.summary.startsPreviousDay)
+    }
+
+    func testSubstitutionLabDecodesConcreteResultAndBlockedTags() async throws {
+        let session = MockURLProtocol.makeSession()
+        let client = APIClient(session: session)
+        try await client.configure(server: "https://example.de", token: "api-token")
+        MockURLProtocol.respond(json: """
+        {"recipe_id":42,"recipe_name":"Pasta","automatic_apply":false,"medical_safety_claim":false,"items":[{"ingredient_id":9,"name":"Milch","canonical_name":"milch","amount":250,"unit":"ml","candidates":[{"id":"milk-oat-drink","replacement_name":"Haferdrink","replacement_canonical":"haferdrink","ratio":1.0,"unit_override":null,"confidence":"high","functional_effect":"Ähnliche Flüssigkeitsmenge","allergen_notes":["Etikett prüfen"],"nutrition_notes":["Werte neu berechnen"],"blocked_auto_tags":["glutenfrei"],"result_ingredient":{"name":"Haferdrink","canonical_name":"haferdrink","amount":250,"unit":"ml","raw":"250 ml Haferdrink"},"requires_review":true}]}]}
+        """)
+
+        let lab = try await client.recipeSubstitutions(id: 42)
+
+        let candidate = try XCTUnwrap(lab.items.first?.candidates.first)
+        XCTAssertEqual(candidate.resultIngredient?.amount, 250)
+        XCTAssertEqual(candidate.resultIngredient?.unit, "ml")
+        XCTAssertEqual(candidate.resultIngredient?.raw, "250 ml Haferdrink")
+        XCTAssertEqual(candidate.blockedAutoTags, ["glutenfrei"])
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "GET")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/substitutions")
     }
 
     func testSubstitutionApplyCreatesNamedVariantThroughDedicatedEndpoint() async throws {
@@ -673,7 +774,7 @@ final class APIClientTests: XCTestCase {
         let client = APIClient(session: session)
         try await client.configure(server: "https://example.de", token: "api-token")
         MockURLProtocol.respond(json: """
-        {"ok":true,"recipe_id":84,"name":"Pasta mit Haferdrink","substitution":{"ingredient_id":9,"from_name":"Milch","to_name":"Haferdrink","ratio":1.0,"review_required":true,"nutrition_invalidated":true}}
+        {"ok":true,"recipe_id":84,"name":"Pasta mit Haferdrink","substitution":{"ingredient_id":9,"from_name":"Milch","to_name":"Haferdrink","ratio":1.0,"result_ingredient":{"name":"Haferdrink","canonical_name":"haferdrink","amount":250,"unit":"ml","raw":"250 ml Haferdrink"},"blocked_auto_tags":["glutenfrei"],"removed_manual_safety_tags":["laktosefrei"],"review_notice":"Produktetikett und Zubereitung prüfen.","provenance":{"kind":"ingredient_substitution","source_recipe_id":42,"candidate_id":"milk-oat-drink","source_ingredient":{"name":"Milch","canonical_name":"milch","amount":250,"unit":"ml","raw":"250 ml Milch"},"result_ingredient":{"name":"Haferdrink","canonical_name":"haferdrink","amount":250,"unit":"ml","raw":"250 ml Haferdrink"},"blocked_auto_tags":["glutenfrei"],"removed_manual_safety_tags":["laktosefrei"],"confidence":"high","functional_effect":"Ähnliche Flüssigkeitsmenge","allergen_notes":["Etikett prüfen"],"nutrition_notes":["Werte neu berechnen"],"applied_at":1785171600,"review_required":true,"medical_safety_claim":false},"review_required":true,"nutrition_invalidated":true}}
         """)
 
         let result = try await client.applyRecipeSubstitution(
@@ -685,6 +786,9 @@ final class APIClientTests: XCTestCase {
 
         XCTAssertEqual(result.recipeId, 84)
         XCTAssertTrue(result.substitution.reviewRequired)
+        XCTAssertEqual(result.substitution.resultIngredient?.raw, "250 ml Haferdrink")
+        XCTAssertEqual(result.substitution.blockedAutoTags, ["glutenfrei"])
+        XCTAssertEqual(result.substitution.provenance?.sourceRecipeId, 42)
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/substitutions/apply")
         let payload = try XCTUnwrap(
             JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any]

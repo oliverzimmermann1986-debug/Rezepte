@@ -271,11 +271,18 @@ actor APIClient {
         )
     }
 
-    func acceptRecipeSourceIntegrity(id: Int) async throws -> RecipeSourceIntegrity {
+    func acceptRecipeSourceIntegrity(
+        id: Int,
+        expectedSnapshotID: Int,
+        expectedContentSHA256: String?
+    ) async throws -> RecipeSourceIntegrity {
         try await send(
             "/api/recipes/\(id)/source-integrity/accept",
             method: "POST",
-            body: EmptyBody()
+            body: SourceIntegrityAcceptRequest(
+                expectedSnapshotId: expectedSnapshotID,
+                expectedContentSha256: expectedContentSHA256
+            )
         )
     }
 
@@ -602,15 +609,30 @@ actor APIClient {
     func mealConductorPreview(
         date: String,
         serveAt: String,
+        activeCooks: Int = 1,
         burners: Int,
-        ovenSlots: Int
+        ovenSlots: Int,
+        readOnly: Bool = false
     ) async throws -> MealConductorPlan {
-        try await send(
+        if readOnly {
+            return try await send(
+                "/api/meal-plan/conductor/preview",
+                query: [
+                    URLQueryItem(name: "planned_for", value: date),
+                    URLQueryItem(name: "serve_at", value: serveAt),
+                    URLQueryItem(name: "active_cooks", value: String(activeCooks)),
+                    URLQueryItem(name: "burners", value: String(burners)),
+                    URLQueryItem(name: "oven_slots", value: String(ovenSlots)),
+                ]
+            )
+        }
+        return try await send(
             "/api/meal-plan/conductor/preview",
             method: "POST",
             body: MealConductorPayload(
                 plannedFor: date,
                 serveAt: serveAt,
+                activeCooks: activeCooks,
                 burners: burners,
                 ovenSlots: ovenSlots
             )
@@ -1177,6 +1199,7 @@ private struct WeekCartPayload: Codable { let weekStart: String }
 private struct MealConductorPayload: Codable {
     let plannedFor: String
     let serveAt: String
+    let activeCooks: Int
     let burners: Int
     let ovenSlots: Int
 }
