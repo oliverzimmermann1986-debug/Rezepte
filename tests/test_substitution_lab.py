@@ -1,8 +1,12 @@
 """Substitutionslabor: Vorschau und sichere, eigenständige Rezeptvariante."""
+from concurrent.futures import ThreadPoolExecutor
 import json
+import threading
 
 import pytest
+from fastapi import HTTPException
 
+from app.core.safety import verify_manifest
 from app.recipes import manage
 from app.routes import api_recipes
 
@@ -154,6 +158,20 @@ def test_substitution_creates_reviewable_variant_and_preserves_original(
     assert detail.status_code == 200, detail.text
     assert detail.json()["variant_review_notice"] == result["substitution"]["review_notice"]
     assert detail.json()["variant_provenance"]["candidate_id"] == "milk-oat-drink"
+
+    duplicate = manage.safe_duplicate_recipe(
+        test_db,
+        variant_id,
+        new_name="Unabhängige Kopie",
+    )
+    duplicate_info = json.loads(
+        (root / "Hauptgericht" / "Test" / "Unabhängige_Kopie" / "info.json")
+        .read_text(encoding="utf-8")
+    )
+    assert duplicate["finalized"] is True
+    assert duplicate_info["variant_state"] == "finalized"
+    assert "variant_provenance" not in duplicate_info
+    assert "variant_review_notice" not in duplicate_info
 
 
 def test_substitution_rejects_candidate_from_another_ingredient(
@@ -355,3 +373,190 @@ def test_product_dependent_risks_remove_manual_claims_and_block_auto_tags(
         for tag in test_db.recipe_tags_get(recipe_id)
     }
     assert original_tags[blocked_tag] == 0
+
+
+def test_substitution_replaces_exact_ingredient_when_sort_order_is_duplicated(
+    client, test_db, tmp_path, monkeypatch
+):
+    root = tmp_path / "recipes"
+    recipe_id, _folder = _recipe_with_files(
+        test_db,
+        root,
+        name="Doppelte Sortierung",
+        ingredients=[
+            {
+                "name": "Milch A",
+                "canonical_name": "milch",
+                "amount": 100,
+                "unit": "ml",
+                "raw": "100 ml Milch A",
+            },
+            {
+                "name": "Milch B",
+                "canonical_name": "milch",
+                "amount": 200,
+                "unit": "ml",
+                "raw": "200 ml Milch B",
+            },
+        ],
+    )
+    with test_db.conn() as connection:
+        connection.execute(
+            "UPDATE recipe_ingredients SET sort_order=0 WHERE recipe_id=?",
+            (recipe_id,),
+        )
+    monkeypatch.setattr(manage, "_recipe_root", lambda: root.resolve())
+    source = test_db.recipe_ingredients_get(recipe_id)[1]
+
+    response = client.post(
+        f"/api/recipes/{recipe_id}/substitutions/apply",
+        json={
+            "ingredient_id": source["id"],
+            "candidate_id": "milk-oat-drink",
+            "variant_name": "Exakte zweite Milch",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    stored = test_db.recipe_ingredients_get(response.json()["recipe_id"])
+    assert [item["raw"] for item in stored] == [
+        "100 ml Milch A",
+        "200 ml Haferdrink",
+    ]
+
+
+def test_parallel_same_name_creates_at_most_one_variant(
+    test_db, tmp_path, monkeypatch
+):
+    root = tmp_path / "recipes"
+    recipe_id, _folder = _recipe_with_files(test_db, root, name="Parallel")
+    monkeypatch.setattr(manage, "_recipe_root", lambda: root.resolve())
+    ingredient = test_db.recipe_ingredients_get(recipe_id)[0]
+    payload = api_recipes.SubstitutionApply(
+        ingredient_id=ingredient["id"],
+        candidate_id="milk-oat-drink",
+        variant_name="Gleicher Name",
+    )
+    barrier = threading.Barrier(2)
+
+    def apply_once():
+        barrier.wait(timeout=5)
+        try:
+            return "ok", api_recipes.apply_recipe_substitution(recipe_id, payload)
+        except HTTPException as exc:
+            return exc.status_code, exc.detail
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _value: apply_once(), range(2)))
+
+    statuses = [result[0] for result in results]
+    assert statuses.count("ok") == 1
+    assert statuses.count(409) == 1
+    with test_db.conn() as connection:
+        variants = connection.execute(
+            "SELECT name FROM recipes WHERE id<>?",
+            (recipe_id,),
+        ).fetchall()
+    assert [row["name"] for row in variants] == ["Gleicher Name"]
+    target_parent = root / "Hauptgericht" / "Test"
+    assert [path.name for path in target_parent.glob("Gleicher_Name*")] == [
+        "Gleicher_Name"
+    ]
+
+
+def test_interrupted_substitution_is_hidden_and_recovered(
+    client, test_db, tmp_path, monkeypatch
+):
+    root = tmp_path / "recipes"
+    recipe_id, _folder = _recipe_with_files(test_db, root, name="Crash")
+    monkeypatch.setattr(manage, "_recipe_root", lambda: root.resolve())
+    ingredient = test_db.recipe_ingredients_get(recipe_id)[0]
+    payload = api_recipes.SubstitutionApply(
+        ingredient_id=ingredient["id"],
+        candidate_id="milk-oat-drink",
+        variant_name="Crash Variante",
+    )
+    original_replace = api_recipes._replace_ingredients_and_reset_verification
+    monkeypatch.setattr(
+        api_recipes,
+        "_replace_ingredients_and_reset_verification",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SystemExit("crash")),
+    )
+
+    with pytest.raises(SystemExit, match="crash"):
+        api_recipes.apply_recipe_substitution(recipe_id, payload)
+
+    with test_db.conn() as connection:
+        pending = dict(connection.execute(
+            "SELECT * FROM recipes WHERE ingredients_status=?",
+            ("variant_pending",),
+        ).fetchone())
+    target = root / "Hauptgericht" / "Test" / "Crash_Variante"
+    assert json.loads((target / "info.json").read_text(encoding="utf-8"))[
+        "variant_state"
+    ] == "pending"
+    assert verify_manifest(target)["ok"] is True
+    assert client.get("/api/recipes").json()["total"] == 1
+    assert client.get(f"/api/recipes/{pending['id']}").status_code == 404
+
+    monkeypatch.setattr(
+        api_recipes,
+        "_replace_ingredients_and_reset_verification",
+        original_replace,
+    )
+    recovered = client.post(
+        f"/api/recipes/{recipe_id}/substitutions/apply",
+        json=payload.model_dump(),
+    )
+
+    assert recovered.status_code == 200, recovered.text
+    with test_db.conn() as connection:
+        rows = connection.execute(
+            "SELECT id, ingredients_status FROM recipes ORDER BY id"
+        ).fetchall()
+    assert len(rows) == 2
+    assert all(row["ingredients_status"] != "variant_pending" for row in rows)
+    assert verify_manifest(target)["ok"] is True
+    assert not list(target.parent.glob("Crash_Variante_*"))
+
+
+def test_source_snapshot_change_rolls_back_variant_db_and_files(
+    client, test_db, tmp_path, monkeypatch
+):
+    root = tmp_path / "recipes"
+    recipe_id, _folder = _recipe_with_files(test_db, root, name="Snapshot")
+    monkeypatch.setattr(manage, "_recipe_root", lambda: root.resolve())
+    ingredient = test_db.recipe_ingredients_get(recipe_id)[0]
+    original_clone = test_db.recipe_clone_content
+
+    def mutate_before_clone(source_id, target_id, **kwargs):
+        test_db.recipe_set_extraction_result(
+            source_id,
+            "ok",
+            [{
+                "name": "Tomate",
+                "canonical_name": "tomate",
+                "amount": 3,
+                "unit": "Stück",
+                "raw": "3 Tomaten",
+            }],
+        )
+        return original_clone(source_id, target_id, **kwargs)
+
+    monkeypatch.setattr(test_db, "recipe_clone_content", mutate_before_clone)
+    response = client.post(
+        f"/api/recipes/{recipe_id}/substitutions/apply",
+        json={
+            "ingredient_id": ingredient["id"],
+            "candidate_id": "milk-oat-drink",
+            "variant_name": "Veralteter Snapshot",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "parallel geändert" in response.json()["detail"]
+    with test_db.conn() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM recipes").fetchone()[0] == 1
+    assert not (root / "Hauptgericht" / "Test" / "Veralteter_Snapshot").exists()
+    incoming = root / "Hauptgericht" / "Test" / ".incoming"
+    assert not incoming.exists() or not any(incoming.iterdir())

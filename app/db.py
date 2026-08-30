@@ -22,6 +22,34 @@ from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
 CURRENT_SCHEMA_VERSION = 260
+RECIPE_VARIANT_PENDING_STATUS = "variant_pending"
+
+
+def _invalidate_recipe_nutrition(connection: Any, recipe_id: int) -> None:
+    """Invalidate values and the publishing lease in the caller's transaction."""
+    connection.execute(
+        "UPDATE recipes SET calories_per_serving=NULL, protein_g=NULL, "
+        "carbs_g=NULL, fat_g=NULL, nutrition_computed_at=NULL, "
+        "nutrition_claimed_at=NULL, nutrition_claim_owner=NULL WHERE id=?",
+        (int(recipe_id),),
+    )
+    connection.execute(
+        "UPDATE recipe_ingredients SET calories=NULL WHERE recipe_id=?",
+        (int(recipe_id),),
+    )
+
+
+def _exclude_pending_variants(
+    where_sql: str, params: List[Any]
+) -> tuple[str, List[Any]]:
+    """Keep crash-recoverable variants out of ordinary recipe queries."""
+    predicate = "COALESCE(r.ingredients_status, '')<>?"
+    where_sql = (
+        f"{where_sql} AND {predicate}"
+        if where_sql
+        else f" WHERE {predicate}"
+    )
+    return where_sql, [*params, RECIPE_VARIANT_PENDING_STATUS]
 _MIGRATION_THREAD_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -2150,12 +2178,19 @@ class Database:
         video_filename: Optional[str],
         source_added_at: Optional[float],
         preserve_existing: Iterable[str] = (),
+        initial_ingredients_status: str = "pending",
     ) -> int:
         """Legt einen Recipe-Eintrag an oder aktualisiert ihn (Key: folder_path).
         Zutaten-Status wird NICHT überschrieben — ein bereits extrahiertes
         Rezept bleibt ohne erneuten KI-Lauf bestehen, auch wenn der Indexer
         es nochmal sieht (z.B. nach FS-Resync)."""
         name = normalize_recipe_name(name) or "Unbekannt"
+        initial_ingredients_status = str(initial_ingredients_status or "pending").strip()
+        if initial_ingredients_status not in {
+            "pending", "running", "ok", "error", "skipped",
+            RECIPE_VARIANT_PENDING_STATUS,
+        }:
+            raise ValueError("Ungültiger initialer Zutatenstatus")
         now = time.time()
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
@@ -2202,9 +2237,10 @@ class Database:
                 "INSERT INTO recipes (url, name, type, category, folder_path, "
                 "description, thumb_filename, video_filename, source_added_at, "
                 "indexed_at, ingredients_extracted_at, ingredients_status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending')",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
                 (url, name, type, category, folder_path, description,
-                 thumb_filename, video_filename, source_added_at, now),
+                 thumb_filename, video_filename, source_added_at, now,
+                 initial_ingredients_status),
             )
             return int(cur.lastrowid)
 
@@ -2480,7 +2516,14 @@ class Database:
             row = c.execute("SELECT * FROM recipes WHERE folder_path=?", (folder_path,)).fetchone()
             return dict(row) if row else None
 
-    def recipe_clone_content(self, source_id: int, target_id: int) -> None:
+    def recipe_clone_content(
+        self,
+        source_id: int,
+        target_id: int,
+        *,
+        expected_ingredients: Optional[List[Dict[str, Any]]] = None,
+        preserve_target_status: bool = False,
+    ) -> None:
         """Kopiert alle logischen Rezeptinhalte atomar in eine neue Rezeptzeile.
 
         Favorit, Bewertung und User-Verifikation bleiben absichtlich beim
@@ -2494,11 +2537,30 @@ class Database:
                 (source_id,),
             ).fetchone()
             target = c.execute(
-                "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL",
+                "SELECT id, ingredients_status FROM recipes "
+                "WHERE id=? AND deleted_at IS NULL",
                 (target_id,),
             ).fetchone()
             if not source or not target:
                 raise ValueError("Original oder Variante nicht gefunden")
+            if expected_ingredients is not None:
+                snapshot_fields = (
+                    "id", "name", "canonical_name", "amount", "unit", "raw",
+                    "sort_order",
+                )
+                current_ingredients = [dict(row) for row in c.execute(
+                    "SELECT id, name, canonical_name, amount, unit, raw, sort_order "
+                    "FROM recipe_ingredients WHERE recipe_id=? ORDER BY sort_order, id",
+                    (source_id,),
+                ).fetchall()]
+                expected_snapshot = [
+                    {field: ingredient.get(field) for field in snapshot_fields}
+                    for ingredient in expected_ingredients
+                ]
+                if current_ingredients != expected_snapshot:
+                    raise RuntimeError(
+                        "Die Zutaten wurden parallel geändert; Variante nicht erstellt"
+                    )
             c.execute(
                 "INSERT INTO recipe_ingredients "
                 "(recipe_id, name, canonical_name, amount, unit, raw, sort_order, calories) "
@@ -2518,6 +2580,11 @@ class Database:
                 "SELECT ?, tag_id, auto FROM recipe_tags WHERE recipe_id=?",
                 (target_id, source_id),
             )
+            cloned_status = (
+                target["ingredients_status"]
+                if preserve_target_status
+                else source["ingredients_status"]
+            )
             c.execute(
                 "UPDATE recipes SET servings=?, ingredients_extracted_at=?, "
                 "ingredients_status=?, calories_per_serving=?, protein_g=?, "
@@ -2525,12 +2592,37 @@ class Database:
                 "extraction_claimed_at=NULL, extraction_claim_owner=NULL "
                 "WHERE id=?",
                 (
-                    source["servings"], source["ingredients_extracted_at"],
-                    source["ingredients_status"], source["calories_per_serving"],
+                    source["servings"], source["ingredients_extracted_at"], cloned_status,
+                    source["calories_per_serving"],
                     source["protein_g"], source["carbs_g"], source["fat_g"],
                     source["nutrition_computed_at"], target_id,
                 ),
             )
+
+    def recipe_variant_finalize(self, recipe_id: int, *, status: str = "ok") -> bool:
+        """Expose a fully prepared variant; idempotent for crash recovery."""
+        status = str(status or "ok").strip()
+        if status not in {"pending", "running", "ok", "error", "skipped"}:
+            raise ValueError("Ungültiger finaler Zutatenstatus")
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            updated = c.execute(
+                "UPDATE recipes SET ingredients_status=? "
+                "WHERE id=? AND ingredients_status=? AND deleted_at IS NULL",
+                (status, int(recipe_id), RECIPE_VARIANT_PENDING_STATUS),
+            ).rowcount
+            if updated:
+                return True
+            current = c.execute(
+                "SELECT ingredients_status FROM recipes "
+                "WHERE id=? AND deleted_at IS NULL",
+                (int(recipe_id),),
+            ).fetchone()
+            if not current:
+                raise ValueError("Rezeptvariante nicht gefunden")
+            if current["ingredients_status"] != status:
+                raise RuntimeError("Rezeptvariante ist nicht finalisierbar")
+            return False
 
     def recipe_delete(self, recipe_id: int) -> None:
         """Endgültig aus DB löschen (HARD-DELETE). Nur für Cleanup-Job
@@ -2812,6 +2904,7 @@ class Database:
             include_deleted=include_deleted,
             only_deleted=only_deleted,
         )
+        where_sql, where_params = _exclude_pending_variants(where_sql, where_params)
         select_sql = (
             "SELECT r.*, "
             "(SELECT COUNT(*) FROM recipe_ingredients ri "
@@ -2879,6 +2972,7 @@ class Database:
             include_deleted=include_deleted,
             only_deleted=only_deleted,
         )
+        where_sql, params = _exclude_pending_variants(where_sql, params)
         with self.conn() as c:
             row = c.execute(f"SELECT COUNT(*) AS n FROM recipes r{where_sql}", params).fetchone()
         return int(row["n"])
@@ -3012,6 +3106,7 @@ class Database:
                         default_unit=ing.get("unit"),
                         increment_usage=False,
                     )
+                _invalidate_recipe_nutrition(c, recipe_id)
             c.execute(
                 "UPDATE recipes SET ingredients_status=?, ingredients_extracted_at=?, "
                 "extraction_claimed_at=NULL, extraction_claim_owner=NULL WHERE id=?",
@@ -3085,6 +3180,7 @@ class Database:
                         default_unit=ing.get("unit"),
                         increment_usage=False,
                     )
+                _invalidate_recipe_nutrition(c, recipe_id)
 
             if replace_steps:
                 c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
@@ -5020,6 +5116,7 @@ class Database:
         params.append(recipe_id)
         try:
             with self.conn() as c:
+                c.execute("BEGIN IMMEDIATE")
                 if sets:
                     c.execute(f"UPDATE recipes SET {', '.join(sets)} WHERE id=?", params)
                 c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
@@ -5031,6 +5128,7 @@ class Database:
                          ing.get("amount"), ing.get("unit"), ing.get("raw"),
                          ing.get("sort_order", idx), ing.get("calories")),
                     )
+                _invalidate_recipe_nutrition(c, recipe_id)
                 c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
                 for idx, step in enumerate(snap.get("steps") or [], start=1):
                     c.execute(

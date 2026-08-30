@@ -632,17 +632,24 @@ def _extract_for_recipe(
     # KI-Halbextrakt). +1 KI-Call, ~$0.0005. Skip wenn schon berechnet
     # (force-recompute geht über den dedicated Endpoint).
     nutrition_msg = ""
+    nutrition_owner = f"nutrition-extract:{rid}:{time.time_ns()}"
     try:
         if len(prepared) >= 3 and not recipe.get("calories_per_serving"):
-            nutr = analyzer.compute_nutrition(prepared, servings)
+            if not db.recipe_claim_nutrition(rid, nutrition_owner):
+                raise RuntimeError("Nährwert-Claim konnte nicht übernommen werden")
+            nutrition_ingredients = db.recipe_ingredients_get(rid)
+            nutr = analyzer.compute_nutrition(nutrition_ingredients, servings)
             if nutr:
                 db.recipe_set_nutrition(
                     rid, nutr["calories"], nutr["protein_g"],
                     nutr["carbs_g"], nutr["fat_g"],
+                    claim_owner=nutrition_owner,
                 )
                 nutrition_msg = f", ~{nutr['calories']} kcal/Portion"
     except Exception as e:
         logger.warning(f"Rezept #{rid}: compute_nutrition failed: {e}")
+    finally:
+        db.recipe_release_nutrition_claim(rid, nutrition_owner)
 
     logger.info(
         f"Rezept #{rid} '{recipe.get('name')}': "

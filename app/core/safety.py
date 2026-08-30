@@ -193,9 +193,14 @@ class AtomicDirectoryCommit:
     Filesystem atomar ist.
     """
 
-    def __init__(self, target_dir: Path):
+    def __init__(self, target_dir: Path, *, allow_unique_suffix: bool = True):
         self.requested_target = target_dir
-        self.target_dir = safe_unique_path(target_dir)
+        self.allow_unique_suffix = bool(allow_unique_suffix)
+        self.target_dir = (
+            safe_unique_path(target_dir)
+            if self.allow_unique_suffix
+            else target_dir
+        )
         self.stage_root = self.target_dir.parent / ".incoming"
         self.stage_dir = self.stage_root / f"{self.target_dir.name}.{os.getpid()}.{uuid.uuid4().hex[:10]}"
         self._committed = False
@@ -209,6 +214,8 @@ class AtomicDirectoryCommit:
         return self.stage_dir.joinpath(*parts)
 
     def commit(self, *, manifest_source: Dict[str, Any] | None = None) -> Path:
+        if not self.allow_unique_suffix and self.target_dir.exists():
+            raise FileExistsError(f"Ziel-Verzeichnis existiert bereits: {self.target_dir}")
         write_manifest(self.stage_dir, source=manifest_source)
         # Saubere Durability für alle Dateien im Staging-Verzeichnis.
         for child in self.stage_dir.rglob("*"):

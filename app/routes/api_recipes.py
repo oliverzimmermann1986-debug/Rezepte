@@ -51,7 +51,11 @@ from ..core.recipe_web import (
 from ..core.safety import resolve_directory_under, resolve_regular_file_under
 from ..core.ttl_cache import TTLCache
 from ..config_store import get_config
-from ..db import CookingCompletionConflictError, get_db
+from ..db import (
+    CookingCompletionConflictError,
+    RECIPE_VARIANT_PENDING_STATUS,
+    get_db,
+)
 from pathlib import Path
 from ..recipes.canonical import canonical_name as _canonical
 from ..recipes.search import suggest_query
@@ -554,7 +558,11 @@ def queue_recipe_image(recipe_id: int):
 def get_recipe(recipe_id: int):
     db = get_db()
     r = db.recipe_get(recipe_id)
-    if not r:
+    if (
+        not r
+        or r.get("deleted_at") is not None
+        or r.get("ingredients_status") == RECIPE_VARIANT_PENDING_STATUS
+    ):
         raise HTTPException(404, "Rezept nicht gefunden")
     r["ingredients"] = db.recipe_ingredients_get(recipe_id)
     r["steps"] = db.recipe_steps_get(recipe_id)
@@ -864,107 +872,143 @@ def apply_recipe_substitution(
         refresh_diet_auto_tags,
         remove_manual_safety_claim_tags,
     )
-    from ..recipes.manage import safe_delete_recipe, safe_duplicate_recipe
+    from ..recipes.manage import (
+        _recipe_mutation_lock,
+        _safe_duplicate_recipe_serialized,
+        _variant_creation_lock,
+        finalize_recipe_variant,
+        safe_delete_recipe,
+    )
 
     db = get_db()
-    recipe = db.recipe_get(recipe_id)
-    if not recipe or recipe.get("deleted_at") is not None:
-        raise HTTPException(404, "Rezept nicht gefunden")
-    ingredients = db.recipe_ingredients_get(recipe_id)
-    original = next(
-        (item for item in ingredients if int(item["id"]) == payload.ingredient_id),
-        None,
-    )
-    if original is None:
-        raise HTTPException(404, "Zutat nicht gefunden")
     try:
-        candidate = resolve_candidate(original, payload.candidate_id)
-        result_ingredient = dict(candidate["result_ingredient"])
-        inherited_manual_safety_tags = sorted({
-            str(tag["name"]).strip().casefold()
-            for tag in db.recipe_tags_get(recipe_id)
-            if tag.get("auto") == 0
-            and str(tag["name"]).strip().casefold() in SAFETY_CLAIM_TAGS
-        })
-        source_label = str(original.get("raw") or original.get("name") or "Zutat").strip()
-        result_label = str(result_ingredient.get("raw") or candidate["replacement_name"])
-        review_notice = (
-            f"Substitutionsvariante: {source_label} wurde durch {result_label} ersetzt. "
-            "Zubereitungsschritte und Produktetiketten vor dem Kochen prüfen; "
-            "keine medizinische Sicherheitsfreigabe."
-        )
-        provenance = {
-            "kind": "ingredient_substitution",
-            "source_recipe_id": recipe_id,
-            "candidate_id": candidate["id"],
-            "source_ingredient": {
-                "name": original.get("name"),
-                "canonical_name": original.get("canonical_name"),
-                "amount": original.get("amount"),
-                "unit": original.get("unit"),
-                "raw": original.get("raw"),
-            },
-            "result_ingredient": result_ingredient,
-            "blocked_auto_tags": list(candidate.get("blocked_auto_tags") or []),
-            "removed_manual_safety_tags": inherited_manual_safety_tags,
-            "confidence": candidate["confidence"],
-            "functional_effect": candidate["functional_effect"],
-            "allergen_notes": list(candidate["allergen_notes"]),
-            "nutrition_notes": list(candidate["nutrition_notes"]),
-            "applied_at": time.time(),
-            "review_required": True,
-            "medical_safety_claim": False,
-        }
-        clone = safe_duplicate_recipe(
-            db,
-            recipe_id,
-            new_name=payload.variant_name,
-            variant_provenance=provenance,
-            review_notice=review_notice,
-        )
+        with _recipe_mutation_lock(db, recipe_id), _variant_creation_lock(db):
+            recipe = db.recipe_get(recipe_id)
+            if not recipe or recipe.get("deleted_at") is not None:
+                raise HTTPException(404, "Rezept nicht gefunden")
+            ingredients = db.recipe_ingredients_get(recipe_id)
+            source_index = next(
+                (
+                    index
+                    for index, item in enumerate(ingredients)
+                    if int(item["id"]) == payload.ingredient_id
+                ),
+                None,
+            )
+            if source_index is None:
+                raise HTTPException(404, "Zutat nicht gefunden")
+            original = ingredients[source_index]
+            candidate = resolve_candidate(original, payload.candidate_id)
+            result_ingredient = dict(candidate["result_ingredient"])
+            inherited_manual_safety_tags = sorted({
+                str(tag["name"]).strip().casefold()
+                for tag in db.recipe_tags_get(recipe_id)
+                if tag.get("auto") == 0
+                and str(tag["name"]).strip().casefold() in SAFETY_CLAIM_TAGS
+            })
+            source_label = str(
+                original.get("raw") or original.get("name") or "Zutat"
+            ).strip()
+            result_label = str(
+                result_ingredient.get("raw") or candidate["replacement_name"]
+            )
+            review_notice = (
+                f"Substitutionsvariante: {source_label} wurde durch {result_label} ersetzt. "
+                "Zubereitungsschritte und Produktetiketten vor dem Kochen prüfen; "
+                "keine medizinische Sicherheitsfreigabe."
+            )
+            provenance = {
+                "kind": "ingredient_substitution",
+                "source_recipe_id": recipe_id,
+                "candidate_id": candidate["id"],
+                "source_ingredient": {
+                    "name": original.get("name"),
+                    "canonical_name": original.get("canonical_name"),
+                    "amount": original.get("amount"),
+                    "unit": original.get("unit"),
+                    "raw": original.get("raw"),
+                },
+                "result_ingredient": result_ingredient,
+                "blocked_auto_tags": list(candidate.get("blocked_auto_tags") or []),
+                "removed_manual_safety_tags": inherited_manual_safety_tags,
+                "confidence": candidate["confidence"],
+                "functional_effect": candidate["functional_effect"],
+                "allergen_notes": list(candidate["allergen_notes"]),
+                "nutrition_notes": list(candidate["nutrition_notes"]),
+                "applied_at": time.time(),
+                "review_required": True,
+                "medical_safety_claim": False,
+            }
+            clone = _safe_duplicate_recipe_serialized(
+                db,
+                recipe_id,
+                new_name=payload.variant_name,
+                variant_provenance=provenance,
+                review_notice=review_notice,
+                expected_ingredients=ingredients,
+                defer_finalization=True,
+                final_status="ok",
+            )
+
+            variant_id = int(clone["recipe_id"])
+            try:
+                cloned_ingredients = db.recipe_ingredients_get(variant_id)
+                if len(cloned_ingredients) != len(ingredients):
+                    raise RuntimeError(
+                        "Die geklonte Zutatenliste ist nicht vollständig"
+                    )
+                prepared = [
+                    {
+                        "name": item.get("name"),
+                        "canonical_name": item.get("canonical_name"),
+                        "amount": item.get("amount"),
+                        "unit": item.get("unit"),
+                        "raw": item.get("raw"),
+                    }
+                    for item in cloned_ingredients
+                ]
+                prepared[source_index] = result_ingredient
+                _replace_ingredients_and_reset_verification(
+                    db,
+                    variant_id,
+                    prepared,
+                    ingredients_status=RECIPE_VARIANT_PENDING_STATUS,
+                )
+                removed_manual_safety_tags = remove_manual_safety_claim_tags(
+                    db, variant_id
+                )
+                refresh_diet_auto_tags(
+                    db,
+                    variant_id,
+                    [str(item.get("canonical_name") or "") for item in prepared],
+                    blocked_tags=candidate.get("blocked_auto_tags"),
+                )
+                db.shopping_catalog_rebuild()
+                finalize_recipe_variant(db, variant_id, final_status="ok")
+                clone["finalized"] = True
+            except Exception as exc:
+                logger.exception(
+                    "Substitutionsvariante #%s wird nach Fehler zurueckgerollt",
+                    variant_id,
+                )
+                try:
+                    safe_delete_recipe(
+                        db, variant_id, delete_files=True, hard=True
+                    )
+                except Exception:
+                    logger.exception(
+                        "Rollback der Substitutionsvariante #%s fehlgeschlagen",
+                        variant_id,
+                    )
+                if isinstance(exc, (ValueError, RuntimeError)):
+                    raise
+                raise RuntimeError(
+                    "Substitutionsvariante konnte nicht erstellt werden"
+                ) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
-
-    variant_id = int(clone["recipe_id"])
-    try:
-        cloned_ingredients = db.recipe_ingredients_get(variant_id)
-        target_sort_order = int(original.get("sort_order") or 0)
-        prepared: List[Dict[str, Any]] = []
-        applied = False
-        for item in cloned_ingredients:
-            if not applied and int(item.get("sort_order") or 0) == target_sort_order:
-                prepared.append(dict(result_ingredient))
-                applied = True
-            else:
-                prepared.append({
-                    "name": item.get("name"),
-                    "canonical_name": item.get("canonical_name"),
-                    "amount": item.get("amount"),
-                    "unit": item.get("unit"),
-                    "raw": item.get("raw"),
-                })
-        if not applied:
-            raise RuntimeError("Die Zutat konnte in der neuen Variante nicht zugeordnet werden")
-        _replace_ingredients_and_reset_verification(db, variant_id, prepared)
-        removed_manual_safety_tags = remove_manual_safety_claim_tags(db, variant_id)
-        refresh_diet_auto_tags(
-            db,
-            variant_id,
-            [str(item.get("canonical_name") or "") for item in prepared],
-            blocked_tags=candidate.get("blocked_auto_tags"),
-        )
-        db.shopping_catalog_rebuild()
-    except Exception as exc:
-        logger.exception("Substitutionsvariante #%s wird nach Fehler zurueckgerollt", variant_id)
-        try:
-            safe_delete_recipe(db, variant_id, delete_files=True, hard=True)
-        except Exception:
-            logger.exception("Rollback der Substitutionsvariante #%s fehlgeschlagen", variant_id)
-        if isinstance(exc, (ValueError, RuntimeError)):
-            raise HTTPException(409, str(exc)) from exc
-        raise HTTPException(500, "Substitutionsvariante konnte nicht erstellt werden") from exc
 
     return {
         **clone,
@@ -1369,7 +1413,11 @@ class IngredientsUpdate(BaseModel):
 
 
 def _replace_ingredients_and_reset_verification(
-    db: Any, recipe_id: int, ingredients: List[Dict[str, Any]]
+    db: Any,
+    recipe_id: int,
+    ingredients: List[Dict[str, Any]],
+    *,
+    ingredients_status: str = "ok",
 ) -> None:
     """Ersetzt Zutaten und widerruft die darauf bezogene Prüfung atomar.
 
@@ -1400,12 +1448,13 @@ def _replace_ingredients_and_reset_verification(
                 ),
             )
         connection.execute(
-            "UPDATE recipes SET ingredients_status='ok', ingredients_extracted_at=?, "
+            "UPDATE recipes SET ingredients_status=?, ingredients_extracted_at=?, "
             "extraction_claimed_at=NULL, extraction_claim_owner=NULL, "
             "user_verified=0, verified_at=NULL, verified_by=NULL, "
             "calories_per_serving=NULL, protein_g=NULL, carbs_g=NULL, fat_g=NULL, "
-            "nutrition_computed_at=NULL WHERE id=?",
-            (now, recipe_id),
+            "nutrition_computed_at=NULL, nutrition_claimed_at=NULL, "
+            "nutrition_claim_owner=NULL WHERE id=?",
+            (ingredients_status, now, recipe_id),
         )
 
 
@@ -1420,10 +1469,8 @@ def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Requ
     pasta) bleiben unangetastet weil die aus der Description kommen, die
     sich nicht geändert hat."""
     from ..recipes.auto_tags import refresh_diet_auto_tags
+    from ..recipes.manage import _recipe_mutation_lock
     db = get_db()
-    if not db.recipe_get(recipe_id):
-        raise HTTPException(404, "Rezept nicht gefunden")
-    _version_before(recipe_id, request, "Zutaten manuell geändert")
     prepared = []
     for ing in payload.ingredients:
         clean_name = " ".join(ing.name.split())
@@ -1436,24 +1483,32 @@ def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Requ
             "unit": normalize_unit(ing.unit),
             "raw": ing.raw,
         })
-    _replace_ingredients_and_reset_verification(db, recipe_id, prepared)
-    # Manuell gepflegte Zutaten gehören genauso in die große lokale
-    # Einkaufsvorschlagsliste wie KI-extrahierte Zutaten.
-    db.shopping_catalog_rebuild()
-
-    # Diät-Tags recompute: nimm existierende auto-Tags die NICHT in DIET_TAGS
-    # sind (das sind die KI-Stil-Tags wie 'pasta', 'schnell') und merge sie
-    # mit den frisch berechneten Diät-Tags aus der neuen Zutatenliste.
     try:
-        refresh_diet_auto_tags(
-            db,
-            recipe_id,
-            [p["canonical_name"] for p in prepared],
-        )
-    except Exception as e:
-        # Diät-Tag-Recompute ist nice-to-have — bei Fehler nur loggen,
-        # Save selbst ist erfolgreich.
-        logger.warning(f"Rezept #{recipe_id}: diet-tag-recompute failed: {e}")
+        with _recipe_mutation_lock(db, recipe_id):
+            recipe = db.recipe_get(recipe_id)
+            if not recipe or recipe.get("deleted_at") is not None:
+                raise HTTPException(404, "Rezept nicht gefunden")
+            _version_before(recipe_id, request, "Zutaten manuell geändert")
+            _replace_ingredients_and_reset_verification(db, recipe_id, prepared)
+            # Manuell gepflegte Zutaten gehören genauso in die große lokale
+            # Einkaufsvorschlagsliste wie KI-extrahierte Zutaten.
+            db.shopping_catalog_rebuild()
+
+            # Diät-Tags recompute: nimm existierende auto-Tags die NICHT in DIET_TAGS
+            # sind (das sind die KI-Stil-Tags wie 'pasta', 'schnell') und merge sie
+            # mit den frisch berechneten Diät-Tags aus der neuen Zutatenliste.
+            try:
+                refresh_diet_auto_tags(
+                    db,
+                    recipe_id,
+                    [p["canonical_name"] for p in prepared],
+                )
+            except Exception as e:
+                # Diät-Tag-Recompute ist nice-to-have — bei Fehler nur loggen,
+                # Save selbst ist erfolgreich.
+                logger.warning(f"Rezept #{recipe_id}: diet-tag-recompute failed: {e}")
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
     return {"ok": True, "ingredients": db.recipe_ingredients_get(recipe_id)}
 
@@ -2015,14 +2070,18 @@ def compute_nutrition_for(recipe_id: int, request: Request) -> Dict[str, Any]:
             409,
             "Für dieses Rezept läuft bereits eine Extraktion",
         )
-    ings = db.recipe_ingredients_get(recipe_id)
-    if len(ings) < 3:
-        raise HTTPException(400, f"Zu wenig Zutaten ({len(ings)}) für sinnvolle Schätzung")
     claim_owner = f"nutrition-one:{time.time_ns()}"
     if not db.recipe_claim_nutrition(recipe_id, claim_owner):
         raise HTTPException(409, "Für dieses Rezept läuft bereits eine Nährwertberechnung")
     cfg = get_config()
     try:
+        recipe = db.recipe_get(recipe_id)
+        ings = db.recipe_ingredients_get(recipe_id)
+        if len(ings) < 3:
+            raise HTTPException(
+                400,
+                f"Zu wenig Zutaten ({len(ings)}) für sinnvolle Schätzung",
+            )
         try:
             analyzer = build_analyzer(cfg.get("ai", default={}) or {})
         except Exception as e:
