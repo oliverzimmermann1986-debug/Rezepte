@@ -12,6 +12,14 @@ BACKUP_ROOT="${BACKUP_ROOT:-/opt/scrapper-code-backups}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_FILE="$BACKUP_ROOT/code-$STAMP.tar.gz"
 
+# Die App-Review-Instanz (review-demo/DEPLOYMENT.md) betreibt bewusst keinen
+# Import-Job; ein Update darf scrapper-job.timer dort nicht reaktivieren.
+REVIEW_MARKER="/etc/scrapper/review-instance"
+IS_REVIEW_INSTANCE=0
+if [[ -f "$REVIEW_MARKER" || "$(hostname)" == "rezepte-review" ]]; then
+  IS_REVIEW_INSTANCE=1
+fi
+
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo "Fehler: Bitte als root ausführen." >&2
   exit 1
@@ -83,7 +91,10 @@ restore_on_error() {
       fi
       systemctl daemon-reload || true
       systemctl restart scrapper-web.service || true
-      systemctl restart scrapper-job.timer scrapper-db-backup.timer || true
+      if [[ "$IS_REVIEW_INSTANCE" != "1" ]]; then
+        systemctl restart scrapper-job.timer || true
+      fi
+      systemctl restart scrapper-db-backup.timer || true
     fi
   fi
   exit "$rc"
@@ -160,9 +171,16 @@ find "$APP_DIR" -path "$APP_DIR/data" -prune -o -path "$APP_DIR/logs" -prune \
   -o -exec chown root:root {} +
 
 systemctl daemon-reload
-systemctl enable scrapper-web.service scrapper-job.timer scrapper-db-backup.timer >/dev/null
+systemctl enable scrapper-web.service scrapper-db-backup.timer >/dev/null
+if [[ "$IS_REVIEW_INSTANCE" == "1" ]]; then
+  systemctl disable --now scrapper-job.timer >/dev/null 2>&1 || true
+else
+  systemctl enable scrapper-job.timer >/dev/null
+fi
 systemctl restart scrapper-web.service
-systemctl restart scrapper-job.timer
+if [[ "$IS_REVIEW_INSTANCE" != "1" ]]; then
+  systemctl restart scrapper-job.timer
+fi
 systemctl restart scrapper-db-backup.timer
 
 for _ in {1..30}; do
@@ -180,7 +198,12 @@ if [[ -z "$EXPECTED_VERSION" || "$HEALTH_VERSION" != "$EXPECTED_VERSION" ]]; the
   false
 fi
 
-for REQUIRED_CAPABILITY in ai-shopping-optimization shopping-categories native-admin-roles; do
+for REQUIRED_CAPABILITY in \
+  ai-shopping-optimization \
+  shopping-categories \
+  native-admin-roles \
+  native-admin-config-v1 \
+  recurring-shopping; do
   if ! python3 -c 'import json,sys; raise SystemExit(0 if sys.argv[2] in json.load(open(sys.argv[1])).get("capabilities", []) else 1)' \
       /tmp/rezepte-health.json "$REQUIRED_CAPABILITY"; then
     echo "Fehler: Backend-Faehigkeit '$REQUIRED_CAPABILITY' fehlt nach dem Update." >&2

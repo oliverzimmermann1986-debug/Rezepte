@@ -18,9 +18,11 @@ on:
         required: false
         default: ""
         type: string
+# Ausschließlich workflow_dispatch-Läufe (Release/Verify): ein laufender
+# TestFlight-Upload darf nie durch einen neuen Lauf abgebrochen werden.
 concurrency:
   group: native-ios-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   verify:

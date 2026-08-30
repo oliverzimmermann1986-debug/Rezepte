@@ -32,6 +32,11 @@ printf 'SCRAPPER_BIND_HOST=0.0.0.0\nSCRAPPER_FORWARDED_ALLOW_IPS=%s\n' \
 chown root:root /etc/scrapper/web.env
 chmod 0600 /etc/scrapper/web.env
 
+# Marker für proxmox/update-local.sh: der Import-Timer bleibt auf dieser
+# Instanz auch über spätere Updates hinweg deaktiviert.
+: > /etc/scrapper/review-instance
+chmod 0644 /etc/scrapper/review-instance
+
 chown -R "$APP_USER:$APP_USER" \
   "$APP_DIR/data" "$APP_DIR/files/rezepte" "$APP_DIR/logs" "$APP_DIR/temp"
 chmod 0600 "$APP_DIR/data/config.yaml"
