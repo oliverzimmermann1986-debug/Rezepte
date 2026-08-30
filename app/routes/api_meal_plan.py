@@ -136,13 +136,13 @@ def get_week_pdf(week_start: Optional[str] = Query(None)):
 class MealConductorPreview(BaseModel):
     planned_for: str
     serve_at: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    active_cooks: int = Field(default=1, ge=1, le=8)
     burners: int = Field(default=4, ge=1, le=8)
     oven_slots: int = Field(default=1, ge=1, le=4)
 
 
-@router.post("/conductor/preview")
-def conductor_preview(payload: MealConductorPreview):
-    """Erzeugt einen gemeinsamen, nicht-persistierenden Tages-Zeitplan."""
+def _conductor_preview(payload: MealConductorPreview):
+    """Fuehrt die gemeinsame Validierung und reine Preview-Planung aus."""
     planned_for = _parse_date(payload.planned_for, field="planned_for")
     hour, minute = (int(part) for part in payload.serve_at.split(":"))
     db = get_db()
@@ -163,9 +163,22 @@ def conductor_preview(payload: MealConductorPreview):
             serve_minute=minute,
             burners=payload.burners,
             oven_slots=payload.oven_slots,
+            active_cooks=payload.active_cooks,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/conductor/preview")
+def conductor_preview_get(payload: MealConductorPreview = Depends()):
+    """Gastfaehige GET-Vorschau; liest nur den bestehenden Tagesplan."""
+    return _conductor_preview(payload)
+
+
+@router.post("/conductor/preview")
+def conductor_preview(payload: MealConductorPreview):
+    """Kompatible POST-Vorschau fuer bestehende authentifizierte Clients."""
+    return _conductor_preview(payload)
 
 
 class MealPlanCreate(BaseModel):
