@@ -2478,22 +2478,67 @@ class Database:
         }
 
     def recipe_source_snapshot_accept_latest(
-        self, recipe_id: int, source_url: str, *, accepted_by: str
+        self,
+        recipe_id: int,
+        source_url: str,
+        *,
+        accepted_by: str,
+        expected_snapshot_id: Optional[int] = None,
+        expected_content_sha256: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Bestätigt die letzte erreichbare Beobachtung als Vergleichsbasis.
+        """Bestätigt exakt die zuletzt vom Aufrufer geprüfte Beobachtung.
 
-        Rezeptinhalte bleiben davon vollständig unberührt.
+        Auswahl, CAS-Vergleich und Baseline-Wechsel liegen unter demselben
+        Writer-Lock. Ein zwischen Anzeige und Bestätigung hinzugekommener
+        Snapshot kann dadurch niemals ungesehen akzeptiert werden.
         """
+        expected_hash = str(expected_content_sha256 or "").strip().casefold() or None
+        if expected_snapshot_id is None and expected_hash is None:
+            raise ValueError("Erwarteter Quellenstand fehlt")
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
             latest = c.execute(
                 "SELECT * FROM recipe_source_snapshots "
-                "WHERE recipe_id=? AND source_url=? AND content_sha256 IS NOT NULL "
+                "WHERE recipe_id=? AND source_url=? "
                 "ORDER BY checked_at DESC, id DESC LIMIT 1",
                 (int(recipe_id), source_url),
             ).fetchone()
             if not latest:
-                raise ValueError("Es gibt noch keinen erreichbaren Quellstand")
+                raise ValueError("Es gibt noch keinen Quellstand")
+            latest_id = int(latest["id"])
+            latest_hash = str(latest["content_sha256"] or "").strip().casefold() or None
+            if (
+                expected_snapshot_id is not None
+                and latest_id != int(expected_snapshot_id)
+            ) or (expected_hash is not None and latest_hash != expected_hash):
+                raise ValueError(
+                    "Der Quellenstand wurde zwischenzeitlich aktualisiert; bitte erneut prüfen"
+                )
+            if expected_snapshot_id is None and expected_hash is not None:
+                matching_hashes = int(c.execute(
+                    "SELECT COUNT(*) FROM recipe_source_snapshots "
+                    "WHERE recipe_id=? AND source_url=? AND LOWER(content_sha256)=?",
+                    (int(recipe_id), source_url, expected_hash),
+                ).fetchone()[0])
+                if matching_hashes != 1:
+                    raise ValueError(
+                        "Der Quellen-Fingerprint ist nicht mehr eindeutig; "
+                        "bitte den neuesten Snapshot erneut prüfen"
+                    )
+            if latest_hash is None:
+                raise ValueError("Der neueste Quellstand ist nicht erreichbar")
+            baseline = c.execute(
+                "SELECT * FROM recipe_source_snapshots "
+                "WHERE recipe_id=? AND source_url=? AND is_baseline=1 "
+                "ORDER BY checked_at DESC, id DESC LIMIT 1",
+                (int(recipe_id), source_url),
+            ).fetchone()
+            if (
+                not baseline
+                or int(baseline["id"]) == latest_id
+                or str(baseline["content_sha256"] or "").strip().casefold() == latest_hash
+            ):
+                raise ValueError("Es gibt keine neue Quelländerung zu bestätigen")
             now = time.time()
             c.execute(
                 "UPDATE recipe_source_snapshots SET is_baseline=0 "
@@ -2503,11 +2548,11 @@ class Database:
             c.execute(
                 "UPDATE recipe_source_snapshots SET is_baseline=1, state='baseline', "
                 "accepted_at=?, accepted_by=? WHERE id=?",
-                (now, accepted_by, int(latest["id"])),
+                (now, accepted_by, latest_id),
             )
             accepted = c.execute(
                 "SELECT * FROM recipe_source_snapshots WHERE id=?",
-                (int(latest["id"]),),
+                (latest_id,),
             ).fetchone()
         return dict(accepted)
 

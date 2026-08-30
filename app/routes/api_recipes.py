@@ -697,7 +697,12 @@ def _source_integrity_report(recipe_id: int) -> Dict[str, Any]:
     comparison = None
     if baseline and latest and baseline.get("content_text") and latest.get("content_text"):
         comparison = source_diff(baseline["content_text"], latest["content_text"])
-    impact = source_change_impact(comparison, ingredients)
+    impact = source_change_impact(
+        comparison,
+        ingredients,
+        baseline_text=baseline.get("content_text") if baseline else None,
+        current_text=latest.get("content_text") if latest else None,
+    )
     quality = recipe_quality_report(
         recipe, ingredients, steps, source_status=status
     )
@@ -814,11 +819,25 @@ def check_source_integrity(recipe_id: int, request: Request) -> Dict[str, Any]:
     return _source_integrity_report(recipe_id)
 
 
+class SourceIntegrityAccept(BaseModel):
+    expected_snapshot_id: Optional[int] = Field(default=None, gt=0)
+    expected_content_sha256: Optional[str] = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
+
+
 @router.post(
     "/{recipe_id}/source-integrity/accept",
     dependencies=[Depends(require_admin)],
 )
-def accept_source_integrity(recipe_id: int, request: Request) -> Dict[str, Any]:
+def accept_source_integrity(
+    recipe_id: int,
+    payload: SourceIntegrityAccept,
+    request: Request,
+) -> Dict[str, Any]:
     """Bestätigt nur den Vergleichsanker; Rezeptinhalte bleiben unverändert."""
     db = get_db()
     recipe = db.recipe_get(recipe_id)
@@ -827,11 +846,18 @@ def accept_source_integrity(recipe_id: int, request: Request) -> Dict[str, Any]:
     source_url = str(recipe.get("url") or "").strip()
     if not normalize_recipe_url(source_url):
         raise HTTPException(409, "Für diese Quelle gibt es keinen Online-Vergleich")
-    if _source_integrity_report(recipe_id)["status"] != "changed":
-        raise HTTPException(409, "Es gibt keine neue Quelländerung zu bestätigen")
+    if (
+        payload.expected_snapshot_id is None
+        and payload.expected_content_sha256 is None
+    ):
+        raise HTTPException(422, "Erwarteter Quellenstand fehlt")
     try:
         db.recipe_source_snapshot_accept_latest(
-            recipe_id, source_url, accepted_by=_actor(request)
+            recipe_id,
+            source_url,
+            accepted_by=_actor(request),
+            expected_snapshot_id=payload.expected_snapshot_id,
+            expected_content_sha256=payload.expected_content_sha256,
         )
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc

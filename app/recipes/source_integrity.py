@@ -47,16 +47,12 @@ def source_fingerprint(value: Optional[str]) -> Optional[str]:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def source_diff(
+def _source_diff_lines(
     baseline_text: Optional[str],
     current_text: Optional[str],
-    *,
-    max_lines: int = 80,
-) -> Dict[str, Any]:
-    """Erzeugt eine kompakte, UI-freundliche Änderungsvorschau."""
+) -> tuple[List[str], List[str], List[str]]:
     baseline = normalize_source_text(baseline_text).splitlines()
     current = normalize_source_text(current_text).splitlines()
-    changed = baseline != current
     diff_lines = list(
         difflib.unified_diff(
             baseline,
@@ -67,6 +63,18 @@ def source_diff(
             n=2,
         )
     )
+    return baseline, current, diff_lines
+
+
+def source_diff(
+    baseline_text: Optional[str],
+    current_text: Optional[str],
+    *,
+    max_lines: int = 80,
+) -> Dict[str, Any]:
+    """Erzeugt eine kompakte, UI-freundliche Änderungsvorschau."""
+    baseline, current, diff_lines = _source_diff_lines(baseline_text, current_text)
+    changed = baseline != current
     added = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))
     removed = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))
     truncated = len(diff_lines) > max_lines
@@ -99,6 +107,19 @@ _ALLERGEN_LABELS = {
     "egg": "Ei",
     "nuts": "Nüsse",
 }
+_MATCH_TOKEN_RE = re.compile(r"[\wäöüÄÖÜß-]+")
+# Nur fachlich eindeutige Wortanfänge dürfen Komposita öffnen. Ein beliebiges
+# ``term in text`` würde dagegen z.B. Milch in Mandelmilch oder Mehl in
+# Mandelmehl finden. Nusswurzeln sind absichtlich enthalten, weil Mandelmus,
+# Haselnusscreme und Cashewmus gerade die sicherheitsrelevanten Komposita sind.
+_ALLERGEN_COMPOUND_ROOTS = {
+    "gluten": ("weizen", "roggen", "gerst", "dinkel", "hafer"),
+    "nuts": (
+        "mandel", "haselnuss", "walnuss", "cashew", "pistaz",
+        "macadamia", "pinienkern", "erdnuss", "pekan", "paranuss", "nuss",
+    ),
+}
+_COMPOUND_EXCLUDED_SUFFIXES = ("frei", "ersatz", "alternative")
 
 
 def _changed_content_lines(comparison: Dict[str, Any], prefix: str) -> List[str]:
@@ -111,25 +132,58 @@ def _changed_content_lines(comparison: Dict[str, Any], prefix: str) -> List[str]
     ]
 
 
+def _fold_match_value(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", str(value).casefold())
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
+def _match_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for raw_token in _MATCH_TOKEN_RE.findall(str(text)):
+        folded = _fold_match_value(raw_token).replace("-", "")
+        if folded:
+            tokens.add(folded)
+        canonical = canonical_name(raw_token)
+        if canonical:
+            tokens.add(_fold_match_value(canonical).replace("-", ""))
+    return tokens
+
+
 def _term_in_text(term: str, text: str) -> bool:
-    normalized_term = term.casefold().strip()
-    normalized_text = text.casefold()
+    normalized_term = " ".join(_fold_match_value(term).split())
     if not normalized_term:
         return False
-    canonical_tokens = {
-        str(canonical_name(token) or "").casefold()
-        for token in re.findall(r"[\wäöüÄÖÜß-]+", normalized_text)
-    }
-    if normalized_term in canonical_tokens:
-        return True
-    if len(normalized_term) < 4:
-        return bool(re.search(rf"\b{re.escape(normalized_term)}\b", normalized_text))
-    return normalized_term in normalized_text
+    if " " in normalized_term:
+        normalized_text = " ".join(_fold_match_value(text).split())
+        phrase = re.escape(normalized_term).replace(r"\ ", r"\s+")
+        return bool(re.search(rf"(?<!\w){phrase}(?!\w)", normalized_text))
+    return normalized_term.replace("-", "") in _match_tokens(text)
+
+
+def _allergen_matches(
+    allergen_key: str,
+    sources: Iterable[str],
+    text: str,
+) -> List[str]:
+    matches = {term for term in sources if _term_in_text(term, text)}
+    roots = _ALLERGEN_COMPOUND_ROOTS.get(allergen_key, ())
+    for token in _match_tokens(text):
+        for root in roots:
+            if not token.startswith(root):
+                continue
+            suffix = token[len(root):]
+            if suffix.startswith(_COMPOUND_EXCLUDED_SUFFIXES):
+                continue
+            matches.add(root)
+    return sorted(matches)
 
 
 def source_change_impact(
     comparison: Optional[Dict[str, Any]],
     ingredients: Iterable[Dict[str, Any]],
+    *,
+    baseline_text: Optional[str] = None,
+    current_text: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Ordnet Quell-Diffs vorsichtig Zutaten, Schritten und Allergenen zu.
 
@@ -139,8 +193,20 @@ def source_change_impact(
     """
     if not comparison or not comparison.get("changed"):
         return None
-    added = _changed_content_lines(comparison, "+")
-    removed = _changed_content_lines(comparison, "-")
+    if comparison.get("truncated") and (
+        baseline_text is None or current_text is None
+    ):
+        raise ValueError(
+            "Ein gekürzter Vergleich benötigt beide vollständigen Quelltexte"
+        )
+    analysis_comparison = comparison
+    if baseline_text is not None and current_text is not None:
+        _baseline, _current, full_diff_lines = _source_diff_lines(
+            baseline_text, current_text
+        )
+        analysis_comparison = {"lines": full_diff_lines}
+    added = _changed_content_lines(analysis_comparison, "+")
+    removed = _changed_content_lines(analysis_comparison, "-")
     known_ingredients = {
         str(item.get(key) or "").casefold().strip()
         for item in ingredients
@@ -173,7 +239,7 @@ def source_change_impact(
             evidence: List[str] = []
             matched_terms: set[str] = set()
             for line in lines:
-                matches = sorted(term for term in sources if _term_in_text(term, line))
+                matches = _allergen_matches(allergen_key, sources, line)
                 if matches:
                     evidence.append(line)
                     matched_terms.update(matches)
@@ -229,6 +295,14 @@ def recipe_quality_report(
     ingredient_list = list(ingredients)
     step_list = list(steps)
     issues: List[Dict[str, str]] = []
+
+    if not recipe.get("user_verified"):
+        issues.append(_issue(
+            "manual-verification-required", "Manuelle Prüfung ausstehend",
+            "Die Strukturprüfung ist keine Lebensmittel- oder Allergensicherheitsfreigabe. "
+            "Das Rezept wurde noch nicht ausdrücklich als geprüft bestätigt.",
+            "warning", "verification",
+        ))
 
     if not recipe.get("url"):
         issues.append(_issue(
@@ -320,9 +394,14 @@ def recipe_quality_report(
 
     penalty = {"critical": 30, "warning": 12, "info": 4}
     score = max(0, 100 - sum(penalty[issue["severity"]] for issue in issues))
+    if status != "verified":
+        # Der native Client stellt Werte ab 85 grün dar. Ein offener Review-
+        # Status darf daher unabhängig von sonstigen Strukturpunkten niemals
+        # wie eine bestandene Verifikation wirken.
+        score = min(score, 84)
     return {
         "status": status,
         "score": score,
         "issues": issues,
-        "checked_rules": 8,
+        "checked_rules": 9,
     }
