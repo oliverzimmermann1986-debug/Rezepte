@@ -32,12 +32,6 @@ from ..core.analyzer import RecipeAnalysis, WeddingAnalysis, build_analyzer
 from ..core.downloader import VideoDownloader
 from ..core.email_processor import MailAccount, EmailRouter
 from ..core.pdf_processing import process_pdf_bytes
-from ..core.recipe_web import (
-    extract_recipe_web_metadata,
-    is_video_recipe_source,
-    normalize_recipe_url,
-    recipe_source_platform,
-)
 from ..recipes.pdf_recipe_extract import (
     ExtractedRecipeData, apply_extracted_recipe_data, existing_hints,
     extract_recipe_data, prepare_recipe_ingredients,
@@ -370,15 +364,17 @@ class ScraperJob:
         entsteht ein Rezept; fehlende Zutaten oder Schritte bleiben dort als
         sichtbare manuelle Pflegeaufgabe erhalten.
         """
+        from ..core.email_processor import normalize_content_url
+
         raw_url = str(item.get("url") or "")
-        url = normalize_recipe_url(raw_url)
+        url = normalize_content_url(raw_url)
         content_type = str(item.get("type") or "recipe")
         if not url:
             return {
                 "url": raw_url,
                 "type": content_type,
                 "status": "error",
-                "error": "ungültige oder nicht unterstützte Rezept-URL",
+                "error": "ungültiger TikTok-/Instagram-Post",
             }
         source_url = url
         result: Dict = {"url": url, "type": content_type, "status": "error"}
@@ -414,7 +410,7 @@ class ScraperJob:
             return {**result, "status": "pending", "name": "Unvollständiger Link-Import"}
 
         metadata = self._fetch_external_link_metadata(url) or {}
-        canonical_url = normalize_recipe_url(
+        canonical_url = normalize_content_url(
             str(metadata.get("canonical_url") or "")
         )
         if canonical_url:
@@ -479,7 +475,7 @@ class ScraperJob:
                     # kanonische URL.
                     pass
 
-        platform = recipe_source_platform(url)
+        platform = "TikTok" if "tiktok.com" in url else "Instagram"
         description = metadata.get("description_text")
         thumbnail_bytes = metadata.get("thumbnail_bytes")
         thumbnail_suffix = metadata.get("thumbnail_suffix")
@@ -546,10 +542,7 @@ class ScraperJob:
             # Caption und Cover reichen nicht: Video nur temporär laden. Erst
             # wenige Frames auf eingeblendete Mengen prüfen, dann die Audiospur
             # transkribieren. Das Video wird danach wieder aus temp entfernt.
-            if (
-                not self._recipe_data_complete(analysis, structured_recipe)
-                and is_video_recipe_source(url)
-            ):
+            if not self._recipe_data_complete(analysis, structured_recipe):
                 video_result = self._analyze_social_video(url, working_description)
                 if video_result and video_result.content is not None:
                     if video_result.evidence_text:
@@ -686,9 +679,7 @@ class ScraperJob:
         name = " ".join(str(analysis.name or "").split()).casefold()
         placeholders = {
             "", "unbekannt", "rezept", "tiktok-rezept", "instagram-rezept",
-            "youtube-rezept", "pinterest-rezept", "webseite-rezept",
-            "tiktok-rezept prüfen", "instagram-rezept prüfen", "youtube-rezept prüfen",
-            "pinterest-rezept prüfen", "webseite-rezept prüfen", "rezept prüfen",
+            "tiktok-rezept prüfen", "instagram-rezept prüfen", "rezept prüfen",
         }
         return len(name) >= 3 and name not in placeholders and not name.endswith("rezept prüfen")
 
@@ -1589,9 +1580,8 @@ class ScraperJob:
         Caption bereits beim Erstimport bevorzugt, nicht erst beim Re-Scrape.
         """
         metadata: Dict = {}
-        platform = recipe_source_platform(url)
         refresh = getattr(self.downloader, "refresh_metadata", None)
-        if platform in {"TikTok", "Instagram", "YouTube"} and callable(refresh):
+        if callable(refresh):
             try:
                 metadata = dict(refresh(url) or {})
             except Exception as exc:
@@ -1651,19 +1641,10 @@ class ScraperJob:
                     if expanded:
                         metadata["description_text"] = expanded
                         metadata["description_source"] = "tiktok-browser"
-        if (
-            platform in {"TikTok", "Instagram", "YouTube"}
-            and not metadata.get("description_text")
-        ):
+        if not metadata.get("description_text"):
             description = self._fetch_description_via_ytdlp(url)
             if description:
                 metadata["description_text"] = description
-        if platform in {"Pinterest", "Webseite"} and not metadata.get("description_text"):
-            try:
-                web_metadata = extract_recipe_web_metadata(url)
-                metadata = {**web_metadata, **metadata}
-            except Exception as exc:
-                logger.warning("Webseiten-Metadaten konnten nicht gelesen werden: %s", exc)
         return metadata
 
     def reanalyze_history_one(self, url: str, *, dry_run: bool = False,
@@ -2469,7 +2450,7 @@ class ScraperJob:
                 suggestion = {
                     **suggestion,
                     "source": "external-link",
-                    "platform": recipe_source_platform(url),
+                    "platform": "TikTok" if "tiktok.com" in url.lower() else "Instagram",
                 }
                 self.db.pending_update_suggestion(url, suggestion)
             refreshed = self.process_url({
