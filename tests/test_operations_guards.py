@@ -146,6 +146,33 @@ def test_update_requires_current_native_client_capabilities():
     assert "substitution-lab-v1" in update
 
 
+def test_update_health_poll_cannot_reuse_a_stale_payload():
+    update = _read("proxmox/update-local.sh")
+    poll_helper = update[
+        update.index("poll_local_health()") : update.index(
+            "trap cleanup_health_files EXIT"
+        )
+    ]
+
+    assert "--connect-timeout 1 --max-time 2" in poll_helper
+    assert '--output "$output_file" http://127.0.0.1:8000/healthz' in poll_helper
+    assert "return 1" in poll_helper
+    assert 'HEALTH_FILE="$(mktemp /tmp/rezepte-health.XXXXXX)"' in update
+    assert (
+        'REVIEW_HEALTH_FILE="$(mktemp '
+        '/tmp/rezepte-health-after-review-refresh.XXXXXX)"'
+    ) in update
+    assert 'chmod 0600 "$HEALTH_FILE"' in update
+    assert 'chmod 0600 "$REVIEW_HEALTH_FILE"' in update
+    assert update.count('if ! poll_local_health "$') == 2
+    assert "trap cleanup_health_files EXIT" in update
+    assert 'rm -f -- "$HEALTH_FILE"' in update
+    assert 'rm -f -- "$REVIEW_HEALTH_FILE"' in update
+    assert "/tmp/rezepte-health.json" not in update
+    assert "Der Dienst hat innerhalb des Health-Timeouts nicht geantwortet." in update
+    assert "Der Review-Dienst hat nach der Demo-Migration nicht geantwortet." in update
+
+
 def test_review_update_runs_guarded_atomic_demo_refresh_after_contract_gate():
     update = _read("proxmox/update-local.sh")
     refresh = "tools.refresh_app_review_demo"

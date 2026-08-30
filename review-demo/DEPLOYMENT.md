@@ -44,10 +44,13 @@ bereinigte Konfiguration und die künstliche Provenienz jedes aktiven Rezepts.
 Dann erstellt es als Benutzer `scrapper` ein per `integrity_check` geprüftes
 SQLite-Backup unter `data/backups/review-refresh/` und hebt Quell-URL,
 Quell-Snapshots sowie drei Gerichte pro Woche für die aktuelle und elf folgende
-Wochen atomar auf den Sollstand an. So bleibt der Menü-Dirigent auch nach dem
-Sonntag-/Montag-Wechsel sichtbar. Ein zweiter Lauf ändert keine Demodaten;
-Benutzer, Passwort-Hashes, Rollen, Sitzungsversionen und zusätzliche künstliche
-Varianten bleiben erhalten.
+Wochen atomar auf den Sollstand an. Zusätzlich stellt sie den dokumentierten
+Warenkorb mit drei künstlichen Artikeln und die wöchentliche Hafermilch-Regel
+wieder her. Mengen werden intern in Basiseinheiten gespeichert, damit `1 l`
+auch als `1 l` angezeigt wird. So bleiben Menü-Dirigent und wiederkehrende
+Einkäufe auch nach einem Wochenwechsel sofort prüfbar. Ein zweiter Lauf ändert
+keine Demodaten; Produkt-Nutzungsstatistiken, Benutzer, Passwort-Hashes, Rollen,
+Sitzungsversionen und zusätzliche künstliche Varianten bleiben erhalten.
 
 Der Produktionscontainer `200` ist keine Clone-Quelle: er bindet echte Hostdaten
 unter `/mnt/media-nas` und `/srv/video-archive` ein. Ein frischer Container ist

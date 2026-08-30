@@ -2,7 +2,7 @@ import json
 import os
 import shutil
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -11,14 +11,17 @@ import yaml
 import tools.refresh_app_review_demo as refresh_module
 from app.core import recipe_web
 from app.db import Database
+from app.recipes.cart_logic import cart_for_display, prepare_for_cart
 from app.recipes.meal_conductor import build_conductor_plan
 from app.recipes.source_integrity import normalize_source_text, source_fingerprint
 from app.recipes.substitution_lab import substitution_lab_payload
 from tools.refresh_app_review_demo import LEGACY_SOURCE_URL, refresh_app_review_demo
 from tools.setup_app_review_demo import RECIPES, seed_review_demo
 from tools.setup_app_review_demo import (
+    REVIEW_CART_ITEMS,
     REVIEW_PLAN_RECIPES,
     REVIEW_PLAN_WEEKS,
+    REVIEW_RECURRING_ITEM,
     REVIEW_SOURCE_CURRENT_TEXT,
     review_source_url,
 )
@@ -110,10 +113,37 @@ def test_review_demo_is_artificial_complete_and_sanitized(tmp_path: Path, monkey
         for candidate in item["candidates"]
     }
     assert {"egg-applesauce", "milk-oat-drink"} <= candidate_ids
-    assert len(db.cart_list()) == 3
+    cart = {item["canonical_name"]: item for item in cart_for_display(db)}
+    assert len(cart) == len(REVIEW_CART_ITEMS)
+    for name, canonical, amount, unit, category, checked in REVIEW_CART_ITEMS:
+        assert cart[canonical]["name"] == name
+        assert cart[canonical]["amount"] == amount
+        assert cart[canonical]["unit"] == unit
+        assert cart[canonical]["category"] == category
+        assert cart[canonical]["checked"] == int(checked)
+        assert cart[canonical]["icon"]
     assert result["recurring_items"] == 1
-    assert len(db.recurring_list()) == 1
-    hafermilch = next(item for item in db.cart_list() if item["canonical_name"] == "hafermilch")
+    recurring = db.recurring_list()
+    assert len(recurring) == 1
+    (
+        recurring_name,
+        recurring_canonical,
+        recurring_amount,
+        recurring_unit,
+        recurring_category,
+        recurring_interval,
+    ) = REVIEW_RECURRING_ITEM
+    assert recurring[0]["name"] == recurring_name
+    assert recurring[0]["canonical_name"] == recurring_canonical
+    assert recurring[0]["amount"] == recurring_amount
+    assert recurring[0]["unit"] == recurring_unit
+    assert recurring[0]["category"] == recurring_category
+    assert recurring[0]["interval_days"] == recurring_interval
+    assert recurring[0]["next_due_on"] == (
+        date.today() + timedelta(days=7)
+    ).isoformat()
+    assert recurring[0]["last_added_at"] is not None
+    hafermilch = cart["hafermilch"]
     assert hafermilch["amount"] == 2
     source_url = review_source_url()
     source_recipe = db.recipe_get_by_url(source_url)
@@ -245,6 +275,13 @@ def _prepare_legacy_review_state(inputs: dict) -> tuple[Database, int, int]:
             (int(source_recipe["id"]),),
         )
         connection.execute("DELETE FROM meal_plan_entries")
+        connection.execute("DELETE FROM shopping_cart")
+        connection.execute("DELETE FROM shopping_recurring")
+        connection.execute(
+            "UPDATE shopping_products SET display_name='Alter Haferdrink', "
+            "category='Sonstiges', icon='🛒', default_unit='l' "
+            "WHERE canonical_name='hafermilch'"
+        )
         connection.executemany(
             "INSERT INTO meal_plan_entries (planned_for, recipe_id, "
             "planned_servings, sort_order, created_at, updated_at) "
@@ -263,11 +300,32 @@ def _user_security_state(db: Database) -> tuple:
     return tuple(row)
 
 
+def _shopping_product_stats(db: Database) -> dict[str, tuple]:
+    canonicals = tuple(item[1] for item in REVIEW_CART_ITEMS)
+    with db.conn() as connection:
+        rows = connection.execute(
+            "SELECT canonical_name, usage_count, recipe_count, last_used_at "
+            "FROM shopping_products WHERE canonical_name IN ("
+            + ",".join("?" for _item in canonicals)
+            + ")",
+            canonicals,
+        ).fetchall()
+    return {
+        str(row["canonical_name"]): (
+            int(row["usage_count"]),
+            int(row["recipe_count"]),
+            row["last_used_at"],
+        )
+        for row in rows
+    }
+
+
 def test_review_refresh_upgrades_existing_instance_and_is_idempotent(tmp_path: Path):
     inputs = _review_inputs(tmp_path)
     db, source_recipe_id, variant_id = _prepare_legacy_review_state(inputs)
     backup_dir = tmp_path / "refresh-backups"
     security_before = _user_security_state(db)
+    product_stats_before = _shopping_product_stats(db)
     recipe_ids_before = {
         int(recipe["id"])
         for recipe in db.recipe_list(include_deleted=False, limit=100)
@@ -280,7 +338,7 @@ def test_review_refresh_upgrades_existing_instance_and_is_idempotent(tmp_path: P
         backup_dir=backup_dir,
         public_url=inputs["public_url"],
         hostname=inputs["hostname"],
-        today=date(2026, 8, 30),
+        today=date(2026, 8, 28),
     )
     second = refresh_app_review_demo(
         db_path=inputs["db_path"],
@@ -289,14 +347,18 @@ def test_review_refresh_upgrades_existing_instance_and_is_idempotent(tmp_path: P
         backup_dir=backup_dir,
         public_url=inputs["public_url"],
         hostname=inputs["hostname"],
-        today=date(2026, 8, 30),
+        today=date(2026, 8, 29),
     )
 
     assert first["changed"] is True
     assert first["url_changed"] is True
     assert first["snapshots_changed"] is True
     assert first["meal_plan_changed"] is True
+    assert first["shopping_changed"] is True
+    assert first["shopping_cart_items"] == len(REVIEW_CART_ITEMS)
+    assert first["shopping_recurring_items"] == 1
     assert second["changed"] is False
+    assert second["shopping_changed"] is False
     assert first["backup"]["verified"] is True
     assert second["backup"]["verified"] is True
     backups = sorted(backup_dir.glob("app-review-refresh-*.db"))
@@ -320,8 +382,15 @@ def test_review_refresh_upgrades_existing_instance_and_is_idempotent(tmp_path: P
         assert legacy_backup.execute(
             "SELECT COUNT(*) FROM meal_plan_entries"
         ).fetchone()[0] == 4
+        assert legacy_backup.execute(
+            "SELECT COUNT(*) FROM shopping_cart"
+        ).fetchone()[0] == 0
+        assert legacy_backup.execute(
+            "SELECT COUNT(*) FROM shopping_recurring"
+        ).fetchone()[0] == 0
 
     assert _user_security_state(db) == security_before
+    assert _shopping_product_stats(db) == product_stats_before
     recipe_ids_after = {
         int(recipe["id"])
         for recipe in db.recipe_list(include_deleted=False, limit=100)
@@ -342,6 +411,65 @@ def test_review_refresh_upgrades_existing_instance_and_is_idempotent(tmp_path: P
         == len(REVIEW_PLAN_RECIPES)
         for planned_date in planned_dates
     )
+    with db.conn() as connection:
+        cart_rows = connection.execute(
+            "SELECT name, canonical_name, amount, unit, category, checked, "
+            "source_recipe_ids, sort_order FROM shopping_cart "
+            "ORDER BY canonical_name"
+        ).fetchall()
+        recurring_row = connection.execute(
+            "SELECT name, canonical_name, amount, unit, category, interval_days, "
+            "next_due_on, active, last_added_at FROM shopping_recurring"
+        ).fetchone()
+    expected_cart = sorted(REVIEW_CART_ITEMS, key=lambda item: item[1])
+    assert len(cart_rows) == len(expected_cart)
+    for row, expected in zip(cart_rows, expected_cart):
+        name, canonical, amount, unit, category, checked = expected
+        prepared = prepare_for_cart(name, amount, unit)
+        assert tuple(row[:6]) == (
+            name,
+            canonical,
+            prepared["amount"],
+            prepared["unit"],
+            category,
+            int(checked),
+        )
+        assert json.loads(row["source_recipe_ids"]) == []
+        assert row["sort_order"] is None
+    (
+        recurring_name,
+        recurring_canonical,
+        recurring_amount,
+        recurring_unit,
+        recurring_category,
+        recurring_interval,
+    ) = REVIEW_RECURRING_ITEM
+    prepared_recurring = prepare_for_cart(
+        recurring_name,
+        recurring_amount,
+        recurring_unit,
+    )
+    assert tuple(recurring_row[:8]) == (
+        recurring_name,
+        recurring_canonical,
+        prepared_recurring["amount"],
+        prepared_recurring["unit"],
+        recurring_category,
+        recurring_interval,
+        "2026-09-04",
+        1,
+    )
+    assert recurring_row["last_added_at"] is not None
+    display_cart = {
+        item["canonical_name"]: item for item in cart_for_display(db)
+    }
+    assert display_cart["hafermilch"]["amount"] == 2
+    assert display_cart["hafermilch"]["unit"] == "l"
+    assert display_cart["hafermilch"]["category"] == "Kühlregal"
+    assert display_cart["hafermilch"]["icon"] == "🥛"
+    display_recurring = db.recurring_list()
+    assert display_recurring[0]["amount"] == 1
+    assert display_recurring[0]["unit"] == "l"
 
 
 def test_review_refresh_rolls_back_mutation_and_keeps_verified_backup(

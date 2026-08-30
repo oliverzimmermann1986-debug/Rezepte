@@ -24,6 +24,7 @@ import yaml
 
 from app.db import Database
 from app.recipes.canonical import canonical_name
+from app.recipes.cart_logic import prepare_for_cart
 from app.recipes.source_integrity import normalize_source_text, source_fingerprint
 
 
@@ -78,6 +79,19 @@ REVIEW_PLAN_RECIPES: tuple[tuple[str, int], ...] = (
     ("zitronen-ricotta-pasta", 2),
     ("ofengemuese-feta", 4),
     ("lachs-kraeuterkruste", 2),
+)
+REVIEW_CART_ITEMS: tuple[tuple[str, str, float, str, str, bool], ...] = (
+    ("Zitronen", "zitrone", 2.0, "Stück", "Obst & Gemüse", False),
+    ("Hafermilch", "hafermilch", 2.0, "l", "Kühlregal", False),
+    ("Küchenpapier", "küchenpapier", 1.0, "Stück", "Sonstiges", True),
+)
+REVIEW_RECURRING_ITEM: tuple[str, str, float, str, str, int] = (
+    "Hafermilch",
+    "hafermilch",
+    1.0,
+    "l",
+    "Kühlregal",
+    7,
 )
 
 RECIPES: list[dict[str, Any]] = [
@@ -407,24 +421,49 @@ def seed_review_demo(
                 recipe_id=created_by_slug[slug],
                 planned_servings=servings,
             )
-    cart_ids = [
-        db.cart_add_or_merge(name="Zitronen", canonical_name="zitrone", amount=2, unit="Stück", source_recipe_id=None),
-        db.cart_add_or_merge(name="Hafermilch", canonical_name="hafermilch", amount=1, unit="l", source_recipe_id=None),
-        db.cart_add_or_merge(name="Küchenpapier", canonical_name="küchenpapier", amount=1, unit="Stück", source_recipe_id=None),
-    ]
-    with db.conn() as connection:
-        connection.execute("UPDATE shopping_cart SET checked=1 WHERE id=?", (cart_ids[-1],))
+    (
+        recurring_name,
+        recurring_canonical,
+        recurring_amount,
+        recurring_unit,
+        recurring_category,
+        recurring_interval,
+    ) = REVIEW_RECURRING_ITEM
+    for name, canonical, final_amount, unit, category, checked in REVIEW_CART_ITEMS:
+        initial_amount = final_amount
+        if canonical == recurring_canonical and unit == recurring_unit:
+            initial_amount -= recurring_amount
+        prepared = prepare_for_cart(name, initial_amount, unit)
+        cart_id = db.cart_add_or_merge(
+            name=name,
+            canonical_name=canonical,
+            amount=prepared["amount"],
+            unit=prepared["unit"],
+            source_recipe_id=None,
+            category=category,
+        )
+        if checked:
+            with db.conn() as connection:
+                connection.execute(
+                    "UPDATE shopping_cart SET checked=1 WHERE id=?",
+                    (cart_id,),
+                )
+    prepared_recurring = prepare_for_cart(
+        recurring_name,
+        recurring_amount,
+        recurring_unit,
+    )
     db.recurring_create(
-        name="Hafermilch",
-        canonical_name="hafermilch",
-        amount=1,
-        unit="l",
-        category="Kühlregal",
-        interval_days=7,
-        next_due_on=date.today().isoformat(),
+        name=recurring_name,
+        canonical_name=recurring_canonical,
+        amount=prepared_recurring["amount"],
+        unit=prepared_recurring["unit"],
+        category=recurring_category,
+        interval_days=recurring_interval,
+        next_due_on=today.isoformat(),
         active=True,
     )
-    db.recurring_run_due(due_on=date.today())
+    db.recurring_run_due(due_on=today)
 
     credential_output.parent.mkdir(parents=True, exist_ok=True)
     credential_output.write_text(
