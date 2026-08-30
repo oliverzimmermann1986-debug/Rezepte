@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.core.safety import verify_manifest
+from app.jobs.locks import file_lock_path_or_none
 from app.recipes import manage
 from app.routes import api_recipes
 
@@ -72,6 +73,22 @@ def _recipe_with_files(
             (recipe_id,),
         )
     return recipe_id, folder
+
+
+def test_cold_lock_file_initialization_is_thread_safe(tmp_path):
+    lock_path = tmp_path / "cold-start.lock"
+    barrier = threading.Barrier(8)
+
+    def acquire_once(_index):
+        barrier.wait(timeout=5)
+        with file_lock_path_or_none(lock_path, wait_seconds=3) as handle:
+            return handle is not None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        acquired = list(pool.map(acquire_once, range(8)))
+
+    assert acquired == [True] * 8
+    assert lock_path.read_text(encoding="utf-8").strip()
 
 
 def test_substitution_creates_reviewable_variant_and_preserves_original(
@@ -470,6 +487,7 @@ def test_interrupted_substitution_is_hidden_and_recovered(
     root = tmp_path / "recipes"
     recipe_id, _folder = _recipe_with_files(test_db, root, name="Crash")
     monkeypatch.setattr(manage, "_recipe_root", lambda: root.resolve())
+    test_db.recipe_tags_set(recipe_id, ["CrashTag"])
     ingredient = test_db.recipe_ingredients_get(recipe_id)[0]
     payload = api_recipes.SubstitutionApply(
         ingredient_id=ingredient["id"],
@@ -496,8 +514,50 @@ def test_interrupted_substitution_is_hidden_and_recovered(
         "variant_state"
     ] == "pending"
     assert verify_manifest(target)["ok"] is True
+    assert test_db.recipe_get(pending["id"]) is None
+    assert test_db.recipe_get(pending["id"], include_pending=True)[
+        "ingredients_status"
+    ] == "variant_pending"
     assert client.get("/api/recipes").json()["total"] == 1
     assert client.get(f"/api/recipes/{pending['id']}").status_code == 404
+    assert client.get(
+        f"/api/recipes/{pending['id']}/substitutions"
+    ).status_code == 404
+    assert client.get(
+        f"/api/recipes/{pending['id']}/source-integrity"
+    ).status_code == 404
+    assert client.post(
+        f"/api/recipes/{pending['id']}/favorite"
+    ).status_code == 404
+    assert client.post(
+        "/api/meal-plan/items",
+        json={
+            "planned_for": "2026-08-30",
+            "recipe_id": pending["id"],
+            "planned_servings": 2,
+        },
+    ).status_code == 404
+    assert all(
+        int(item["id"]) != int(pending["id"])
+        for item in test_db.recipes_for_image_backfill()
+    )
+
+    ingredient_counts = {
+        item["canonical_name"]: item["n"] for item in test_db.ingredients_known()
+    }
+    assert ingredient_counts["milch"] == 1
+    tag_counts = {item["name"]: item["n"] for item in test_db.tag_list()}
+    assert tag_counts["CrashTag"] == 1
+    facets = client.get("/api/recipes/facets").json()
+    assert {item["name"]: item["n"] for item in facets["tags"]}[
+        "CrashTag"
+    ] == 1
+    test_db.shopping_catalog_rebuild()
+    with test_db.conn() as connection:
+        milk_count = connection.execute(
+            "SELECT recipe_count FROM shopping_products WHERE canonical_name='milch'"
+        ).fetchone()[0]
+    assert milk_count == 1
 
     monkeypatch.setattr(
         api_recipes,
@@ -518,6 +578,11 @@ def test_interrupted_substitution_is_hidden_and_recovered(
     assert all(row["ingredients_status"] != "variant_pending" for row in rows)
     assert verify_manifest(target)["ok"] is True
     assert not list(target.parent.glob("Crash_Variante_*"))
+    with test_db.conn() as connection:
+        butter_count = connection.execute(
+            "SELECT recipe_count FROM shopping_products WHERE canonical_name='butter'"
+        ).fetchone()[0]
+    assert butter_count == 2
 
 
 def test_source_snapshot_change_rolls_back_variant_db_and_files(

@@ -572,7 +572,10 @@ def _rebuild_shopping_catalog_from_recipes(c) -> Dict[str, int]:
     rows = c.execute(
         "SELECT ri.name, ri.canonical_name, ri.unit, ri.recipe_id "
         "FROM recipe_ingredients ri JOIN recipes r ON r.id=ri.recipe_id "
-        "WHERE r.deleted_at IS NULL AND TRIM(COALESCE(ri.name, ''))<>''"
+        "WHERE r.deleted_at IS NULL "
+        "AND COALESCE(r.ingredients_status, '')<>? "
+        "AND TRIM(COALESCE(ri.name, ''))<>''",
+        (RECIPE_VARIANT_PENDING_STATUS,),
     ).fetchall()
     catalog: Dict[str, Dict[str, Any]] = {}
     for name, stored_canonical, unit, recipe_id in rows:
@@ -2244,15 +2247,28 @@ class Database:
             )
             return int(cur.lastrowid)
 
-    def recipe_get(self, recipe_id: int) -> Optional[Dict[str, Any]]:
+    def recipe_get(
+        self,
+        recipe_id: int,
+        *,
+        include_pending: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a recipe row; crash-recoverable variants stay private by default."""
         with self.conn() as c:
-            row = c.execute("SELECT * FROM recipes WHERE id=?", (recipe_id,)).fetchone()
+            sql = "SELECT * FROM recipes WHERE id=?"
+            params: tuple[Any, ...] = (recipe_id,)
+            if not include_pending:
+                sql += " AND COALESCE(ingredients_status, '')<>?"
+                params = (*params, RECIPE_VARIANT_PENDING_STATUS)
+            row = c.execute(sql, params).fetchone()
             return dict(row) if row else None
 
     def recipes_for_image_backfill(self) -> List[Dict[str, Any]]:
         with self.conn() as c:
             rows = c.execute(
-                "SELECT * FROM recipes WHERE deleted_at IS NULL ORDER BY id"
+                "SELECT * FROM recipes WHERE deleted_at IS NULL "
+                "AND COALESCE(ingredients_status, '')<>? ORDER BY id",
+                (RECIPE_VARIANT_PENDING_STATUS,),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -2657,6 +2673,7 @@ class Database:
                 (status, int(recipe_id), RECIPE_VARIANT_PENDING_STATUS),
             ).rowcount
             if updated:
+                _rebuild_shopping_catalog_from_recipes(c)
                 return True
             current = c.execute(
                 "SELECT ingredients_status FROM recipes "
@@ -2667,6 +2684,9 @@ class Database:
                 raise ValueError("Rezeptvariante nicht gefunden")
             if current["ingredients_status"] != status:
                 raise RuntimeError("Rezeptvariante ist nicht finalisierbar")
+            # Idempotent recovery also repairs a catalog left stale by an older
+            # interrupted deployment.
+            _rebuild_shopping_catalog_from_recipes(c)
             return False
 
     def recipe_delete(self, recipe_id: int) -> None:
@@ -3327,9 +3347,10 @@ class Database:
                 JOIN recipes r ON r.id=mp.recipe_id
                 WHERE mp.planned_for BETWEEN ? AND ?
                   AND r.deleted_at IS NULL
+                  AND COALESCE(r.ingredients_status, '')<>?
                 ORDER BY mp.planned_for, mp.sort_order, mp.id
                 """,
-                (start_date, end_date),
+                (start_date, end_date, RECIPE_VARIANT_PENDING_STATUS),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -3343,8 +3364,9 @@ class Database:
         now = time.time()
         with self.conn() as c:
             recipe = c.execute(
-                "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL",
-                (recipe_id,),
+                "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL "
+                "AND COALESCE(ingredients_status, '')<>?",
+                (recipe_id, RECIPE_VARIANT_PENDING_STATUS),
             ).fetchone()
             if not recipe:
                 raise ValueError("Rezept nicht gefunden")
@@ -3685,6 +3707,7 @@ class Database:
             include_deleted=include_deleted,
             only_deleted=only_deleted,
         )
+        where_sql, params = _exclude_pending_variants(where_sql, params)
         return ([where_sql.removeprefix(" WHERE ")] if where_sql else []), params
 
     def tag_facets(
@@ -3761,10 +3784,14 @@ class Database:
         Für die Filter-UI: "Tomate (12 Rezepte)", "Knoblauch (8)"."""
         with self.conn() as c:
             rows = c.execute(
-                "SELECT canonical_name, MIN(name) AS display_name, COUNT(DISTINCT recipe_id) AS n "
-                "FROM recipe_ingredients "
-                "WHERE canonical_name IS NOT NULL AND canonical_name != '' "
-                "GROUP BY canonical_name ORDER BY n DESC, canonical_name"
+                "SELECT ri.canonical_name, MIN(ri.name) AS display_name, "
+                "COUNT(DISTINCT ri.recipe_id) AS n "
+                "FROM recipe_ingredients ri JOIN recipes r ON r.id=ri.recipe_id "
+                "WHERE r.deleted_at IS NULL "
+                "AND COALESCE(r.ingredients_status, '')<>? "
+                "AND ri.canonical_name IS NOT NULL AND ri.canonical_name != '' "
+                "GROUP BY ri.canonical_name ORDER BY n DESC, ri.canonical_name",
+                (RECIPE_VARIANT_PENDING_STATUS,),
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -3782,10 +3809,11 @@ class Database:
                 "COUNT(DISTINCT ri.recipe_id) AS uses "
                 "FROM recipe_ingredients ri JOIN recipes r ON r.id=ri.recipe_id "
                 "WHERE r.deleted_at IS NULL AND TRIM(COALESCE(ri.name, ''))<>'' "
+                "AND COALESCE(r.ingredients_status, '')<>? "
                 "GROUP BY LOWER(TRIM(ri.name)) "
                 "ORDER BY uses DESC, LENGTH(display_name), "
                 "display_name COLLATE NOCASE LIMIT ?",
-                (safe_limit,),
+                (RECIPE_VARIANT_PENDING_STATUS, safe_limit),
             ).fetchall()
             return [str(row[0]) for row in rows if row[0]]
 
@@ -3805,9 +3833,12 @@ class Database:
         """Alle Tags mit Recipe-Count."""
         with self.conn() as c:
             rows = c.execute(
-                "SELECT t.id, t.name, COUNT(rt.recipe_id) AS n "
-                "FROM tags t LEFT JOIN recipe_tags rt ON rt.tag_id = t.id "
-                "GROUP BY t.id ORDER BY n DESC, t.name"
+                "SELECT t.id, t.name, ("
+                "SELECT COUNT(*) FROM recipe_tags rt JOIN recipes r ON r.id=rt.recipe_id "
+                "WHERE rt.tag_id=t.id AND r.deleted_at IS NULL "
+                "AND COALESCE(r.ingredients_status, '')<>?"
+                ") AS n FROM tags t ORDER BY n DESC, t.name",
+                (RECIPE_VARIANT_PENDING_STATUS,),
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -4258,8 +4289,9 @@ class Database:
         sql = ("SELECT f.*, r.name as recipe_name, r.folder_path "
                "FROM audit_ai_findings f "
                "JOIN recipes r ON r.id = f.recipe_id "
-               "WHERE r.deleted_at IS NULL")
-        params: list = []
+               "WHERE r.deleted_at IS NULL "
+               "AND COALESCE(r.ingredients_status, '')<>?")
+        params: list = [RECIPE_VARIANT_PENDING_STATUS]
         if finding_type:
             sql += " AND f.finding_type=?"; params.append(finding_type)
         if only_open:
@@ -4280,12 +4312,14 @@ class Database:
         with self.conn() as c:
             sql = (
                 "SELECT f.finding_type, COUNT(*) FROM audit_ai_findings f "
-                "JOIN recipes r ON r.id=f.recipe_id WHERE r.deleted_at IS NULL"
+                "JOIN recipes r ON r.id=f.recipe_id WHERE r.deleted_at IS NULL "
+                "AND COALESCE(r.ingredients_status, '')<>?"
             )
+            params: list[Any] = [RECIPE_VARIANT_PENDING_STATUS]
             if only_open:
                 sql += " AND f.resolved=0"
             sql += " GROUP BY f.finding_type"
-            return {r[0]: int(r[1]) for r in c.execute(sql).fetchall()}
+            return {r[0]: int(r[1]) for r in c.execute(sql, params).fetchall()}
 
     # ─── Shopping Cart ────────────────────────────────────────────────────
     def shopping_catalog_rebuild(self) -> Dict[str, int]:

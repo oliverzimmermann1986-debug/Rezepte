@@ -1009,7 +1009,6 @@ def apply_recipe_substitution(
                     [str(item.get("canonical_name") or "") for item in prepared],
                     blocked_tags=candidate.get("blocked_auto_tags"),
                 )
-                db.shopping_catalog_rebuild()
                 finalize_recipe_variant(db, variant_id, final_status="ok")
                 clone["finalized"] = True
             except Exception as exc:
@@ -1019,7 +1018,11 @@ def apply_recipe_substitution(
                 )
                 try:
                     safe_delete_recipe(
-                        db, variant_id, delete_files=True, hard=True
+                        db,
+                        variant_id,
+                        delete_files=True,
+                        hard=True,
+                        include_pending=True,
                     )
                 except Exception:
                     logger.exception(

@@ -466,7 +466,7 @@ def finalize_recipe_variant(
     final_status: str = "ok",
 ) -> None:
     """Publish the filesystem finalization marker before exposing the DB row."""
-    recipe = db.recipe_get(recipe_id)
+    recipe = db.recipe_get(recipe_id, include_pending=True)
     if not recipe or recipe.get("deleted_at") is not None:
         raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
     if recipe.get("ingredients_status") != RECIPE_VARIANT_PENDING_STATUS:
@@ -700,6 +700,7 @@ def safe_delete_recipe(
     *,
     delete_files: bool = False,
     hard: bool = False,
+    include_pending: bool = False,
 ) -> Dict[str, Any]:
     with _recipe_mutation_lock(db, recipe_id):
         return _safe_delete_recipe_locked(
@@ -707,6 +708,7 @@ def safe_delete_recipe(
             recipe_id,
             delete_files=delete_files,
             hard=hard,
+            include_pending=include_pending,
         )
 
 
@@ -716,6 +718,7 @@ def _safe_delete_recipe_locked(
     *,
     delete_files: bool = False,
     hard: bool = False,
+    include_pending: bool = False,
 ) -> Dict[str, Any]:
     """Löscht ein Rezept. Standardmäßig SOFT-DELETE (→ Papierkorb).
 
@@ -737,7 +740,7 @@ def _safe_delete_recipe_locked(
 
     Returns: {ok, deleted_id, name, folder_deleted, cart_entries_updated, soft}
     """
-    recipe = db.recipe_get(recipe_id)
+    recipe = db.recipe_get(recipe_id, include_pending=include_pending)
     if not recipe:
         raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
     if not hard and recipe.get("deleted_at") is not None:
