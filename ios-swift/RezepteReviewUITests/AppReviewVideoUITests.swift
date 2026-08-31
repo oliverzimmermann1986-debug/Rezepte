@@ -16,16 +16,21 @@ final class AppReviewVideoUITests: XCTestCase {
         }
 
         app.launchArguments += ["-AppleLanguages", "(de)", "-AppleLocale", "de_DE"]
+        app.launchEnvironment["APP_REVIEW_SERVER"] = server
+        app.launchEnvironment["APP_REVIEW_USERNAME"] = username
+        app.launchEnvironment["APP_REVIEW_PASSWORD"] = password
         app.launch()
 
         let serverField = app.textFields["review.server"]
         XCTAssertTrue(serverField.waitForExistence(timeout: 20), "The review login screen did not appear.")
-        enter(server, into: serverField)
-        enter(username, into: app.textFields["review.username"])
-        enter(password, into: app.secureTextFields["review.password"])
+        XCTAssertTrue(app.textFields["review.username"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.secureTextFields["review.password"].waitForExistence(timeout: 10))
         pause(2)
 
-        app.buttons["Anmelden"].tap()
+        let loginButton = app.buttons["Anmelden"]
+        XCTAssertTrue(loginButton.waitForExistence(timeout: 10))
+        XCTAssertTrue(loginButton.isEnabled, "The prefilled review login is incomplete.")
+        loginButton.tap()
         let archiveTab = app.tabBars.buttons["Archiv"]
         XCTAssertTrue(archiveTab.waitForExistence(timeout: 35), "Login to the isolated review server failed.")
         pause(4)
@@ -78,12 +83,6 @@ final class AppReviewVideoUITests: XCTestCase {
         pause(5)
         app.swipeUp()
         pause(5)
-    }
-
-    private func enter(_ value: String, into element: XCUIElement) {
-        XCTAssertTrue(element.waitForExistence(timeout: 10))
-        element.tap()
-        element.typeText(value)
     }
 
     private func reveal(_ element: XCUIElement, maximumSwipes: Int = 6) {

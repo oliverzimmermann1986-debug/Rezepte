@@ -126,13 +126,19 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert "xcodebuild build-for-testing" in script
     assert "xcodebuild test-without-building" in script
     assert "-parallel-testing-enabled NO" in script
+    assert "CODE_SIGNING_ALLOWED=NO" not in script
     assert "with 0 tests skipped and 0 failures" in script
     assert "RezepteReviewVideo" in project
     assert "bundle.ui-testing" in project
     assert "PRODUCT_NAME: RezepteReviewUITests" in project
     assert 'APP_REVIEW_PASSWORD: "${APP_REVIEW_PASSWORD}"' in project
     assert 'environment["APP_REVIEW_PASSWORD"]' in ui_test
-    assert 'secureTextFields["review.password"]' in ui_test
+    assert 'app.launchEnvironment["APP_REVIEW_PASSWORD"] = password' in ui_test
+    assert "typeText(password)" not in ui_test
+    assert 'reviewEnvironment["APP_REVIEW_PASSWORD"]' in _read(
+        "ios-swift/Rezepte/Views/LoginView.swift"
+    )
+    assert "ReviewVideoResults.xcresult" not in config
 
 
 def test_signing_secrets_are_checked_via_env_not_shell_interpolation():
