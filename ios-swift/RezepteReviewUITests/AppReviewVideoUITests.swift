@@ -41,12 +41,13 @@ final class AppReviewVideoUITests: XCTestCase {
         let recipe = app.staticTexts["Zitronen-Ricotta-Pasta"].firstMatch
         reveal(recipe, maximumSwipes: 4)
         recipe.tap()
-        XCTAssertTrue(app.staticTexts["Rezeptpass"].waitForExistence(timeout: 20))
+        let passportTitle = app.staticTexts["Rezeptpass"]
+        XCTAssertTrue(passportTitle.waitForExistence(timeout: 20))
         pause(4)
 
-        reveal(app.otherElements["recipe.passport"])
+        reveal(passportTitle)
         pause(4)
-        reveal(app.otherElements["recipe.original-source"])
+        reveal(app.staticTexts["Originalquelle"])
         pause(5)
 
         app.navigationBars.buttons["Archiv"].tap()
