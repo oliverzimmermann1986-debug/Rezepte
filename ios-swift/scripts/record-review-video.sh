@@ -84,9 +84,15 @@ if [[ "$test_status" -ne 0 ]]; then
     exit "$test_status"
 fi
 
-if ! grep -Fq "Executed 1 test, with 0 tests skipped and 0 failures" \
+if ! grep -Eq "Executed 1 test, with (0 tests skipped and )?0 failures" \
     "$ARTIFACT_DIR/xcodebuild-review-video.log"; then
     echo "The recorded review tour did not execute successfully." >&2
+    exit 1
+fi
+
+if grep -Eq "Executed .* with [1-9][0-9]* tests? skipped" \
+    "$ARTIFACT_DIR/xcodebuild-review-video.log"; then
+    echo "The recorded review tour skipped at least one test." >&2
     exit 1
 fi
 
