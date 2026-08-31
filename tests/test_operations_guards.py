@@ -138,6 +138,8 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert 'archiveTab.tap()' in ui_test
     assert 'app.navigationBars["Archiv"].waitForExistence' in ui_test
     assert 'reveal(recipe, maximumSwipes: 4)' in ui_test
+    assert 'reveal(app.staticTexts["Originalquelle"])' in ui_test
+    assert 'app.otherElements["recipe.passport"]' not in ui_test
     assert "typeText(password)" not in ui_test
     login_view = _read("ios-swift/Rezepte/Views/LoginView.swift")
     assert 'reviewEnvironment["APP_REVIEW_AUTOMATION"] == "1"' in login_view
