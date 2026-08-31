@@ -16,11 +16,13 @@ workflows:
       - name: Install pinned XcodeGen
         script: |
           set -euo pipefail
-          curl -fsSL -o "$CM_TEMP_DIR/xcodegen.zip" \
+          xcodegen_tmp="$(mktemp -d)"
+          trap 'rm -rf "$xcodegen_tmp"' EXIT
+          curl -fsSL -o "$xcodegen_tmp/xcodegen.zip" \
             "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-          echo "${XCODEGEN_SHA256}  $CM_TEMP_DIR/xcodegen.zip" | shasum -a 256 -c -
-          unzip -q "$CM_TEMP_DIR/xcodegen.zip" -d "$CM_TEMP_DIR/xcodegen-dist"
-          xcodegen_bin="$(find "$CM_TEMP_DIR/xcodegen-dist" -type f -name xcodegen -path '*/bin/*' -print -quit)"
+          echo "${XCODEGEN_SHA256}  $xcodegen_tmp/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$xcodegen_tmp/xcodegen.zip" -d "$xcodegen_tmp/xcodegen-dist"
+          xcodegen_bin="$(find "$xcodegen_tmp/xcodegen-dist" -type f -name xcodegen -path '*/bin/*' -print -quit)"
           test -n "$xcodegen_bin"
           chmod +x "$xcodegen_bin"
           mkdir -p "$HOME/.local/bin"
