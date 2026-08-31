@@ -39,7 +39,7 @@ final class AppReviewVideoUITests: XCTestCase {
         pause(4)
 
         let recipe = app.staticTexts["Zitronen-Ricotta-Pasta"].firstMatch
-        XCTAssertTrue(recipe.waitForExistence(timeout: 20), "The seeded review recipe is missing.")
+        reveal(recipe, maximumSwipes: 4)
         recipe.tap()
         XCTAssertTrue(app.staticTexts["Rezeptpass"].waitForExistence(timeout: 20))
         pause(4)
