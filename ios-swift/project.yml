@@ -76,6 +76,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: de.mausbaeren.rezepte.review-uitests
+        PRODUCT_NAME: RezepteReviewUITests
         GENERATE_INFOPLIST_FILE: true
         TEST_TARGET_NAME: Rezepte
 
