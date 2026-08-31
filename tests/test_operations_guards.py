@@ -127,7 +127,8 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert "xcodebuild test-without-building" in script
     assert "-parallel-testing-enabled NO" in script
     assert "CODE_SIGNING_ALLOWED=NO" not in script
-    assert "with 0 tests skipped and 0 failures" in script
+    assert "with (0 tests skipped and )?0 failures" in script
+    assert "with [1-9][0-9]* tests? skipped" in script
     assert "RezepteReviewVideo" in project
     assert "bundle.ui-testing" in project
     assert "PRODUCT_NAME: RezepteReviewUITests" in project
