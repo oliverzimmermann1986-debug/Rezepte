@@ -51,14 +51,17 @@ struct LoginView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .submitLabel(.next)
+                            .accessibilityIdentifier("review.server")
                         TextField("Benutzername", text: $username)
                             .textContentType(.username)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .accessibilityIdentifier("review.username")
                         SecureField("Passwort", text: $password)
                             .textContentType(.password)
                             .submitLabel(.go)
                             .onSubmit { Task { await signIn() } }
+                            .accessibilityIdentifier("review.password")
                     }
                     .textFieldStyle(.roundedBorder)
 

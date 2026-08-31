@@ -110,6 +110,25 @@ def test_release_versions_are_explicit_and_coherent():
     assert "rezepte-static-v1.7.0-native-contracts" in service_worker
 
 
+def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
+    config = _read("codemagic.yaml")
+    script = _read("ios-swift/scripts/record-review-video.sh")
+    project = _read("ios-swift/project.yml")
+    ui_test = _read("ios-swift/RezepteReviewUITests/AppReviewVideoUITests.swift")
+
+    assert "ios-review-video:" in config
+    assert "app_review" in config
+    assert "APP_REVIEW_PASSWORD" not in config
+    assert "Rezepte.app" in config
+    assert "Rezeptregal-App-Review-1.2.0.mp4" in config
+    assert "recordVideo" in script
+    assert '${APP_REVIEW_PASSWORD:?' in script
+    assert "RezepteReviewVideo" in project
+    assert "bundle.ui-testing" in project
+    assert 'environment["APP_REVIEW_PASSWORD"]' in ui_test
+    assert 'secureTextFields["review.password"]' in ui_test
+
+
 def test_signing_secrets_are_checked_via_env_not_shell_interpolation():
     swiftui = _read(".github/workflows/ios-swift.yml")
     # Secret-Werte gehören nicht in interpolierten Shell-Quelltext von Bedingungen:

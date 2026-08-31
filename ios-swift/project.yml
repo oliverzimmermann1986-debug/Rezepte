@@ -66,3 +66,26 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: de.mausbaeren.rezepte.tests
         GENERATE_INFOPLIST_FILE: true
+  RezepteReviewUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: RezepteReviewUITests
+    dependencies:
+      - target: Rezepte
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.mausbaeren.rezepte.review-uitests
+        GENERATE_INFOPLIST_FILE: true
+        TEST_TARGET_NAME: Rezepte
+
+schemes:
+  RezepteReviewVideo:
+    build:
+      targets:
+        Rezepte: all
+        RezepteReviewUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - RezepteReviewUITests
