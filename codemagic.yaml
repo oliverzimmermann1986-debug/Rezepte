@@ -43,7 +43,6 @@ workflows:
       - ios-swift/artifacts/Rezeptregal-App-Review-1.2.0.mp4
       - ios-swift/artifacts/*.log
       - ios-swift/build/DerivedData/Build/Products/Debug-iphonesimulator/Rezepte.app
-      - ios-swift/ReviewVideoResults.xcresult
     triggering:
       events:
         - tag
