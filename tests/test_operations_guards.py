@@ -123,9 +123,14 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert "Rezeptregal-App-Review-1.2.0.mp4" in config
     assert "recordVideo" in script
     assert '${APP_REVIEW_PASSWORD:?' in script
+    assert "xcodebuild build-for-testing" in script
+    assert "xcodebuild test-without-building" in script
+    assert "-parallel-testing-enabled NO" in script
+    assert "with 0 tests skipped and 0 failures" in script
     assert "RezepteReviewVideo" in project
     assert "bundle.ui-testing" in project
     assert "PRODUCT_NAME: RezepteReviewUITests" in project
+    assert 'APP_REVIEW_PASSWORD: "${APP_REVIEW_PASSWORD}"' in project
     assert 'environment["APP_REVIEW_PASSWORD"]' in ui_test
     assert 'secureTextFields["review.password"]' in ui_test
 

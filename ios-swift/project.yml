@@ -90,3 +90,7 @@ schemes:
       config: Debug
       targets:
         - RezepteReviewUITests
+      environmentVariables:
+        APP_REVIEW_SERVER: "${APP_REVIEW_SERVER}"
+        APP_REVIEW_USERNAME: "${APP_REVIEW_USERNAME}"
+        APP_REVIEW_PASSWORD: "${APP_REVIEW_PASSWORD}"
