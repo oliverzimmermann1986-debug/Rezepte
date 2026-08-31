@@ -31,6 +31,22 @@ xcrun simctl erase "$simulator_id"
 xcrun simctl boot "$simulator_id"
 xcrun simctl bootstatus "$simulator_id" -b
 
+build_status=0
+xcodebuild build-for-testing \
+    -project Rezepte.xcodeproj \
+    -scheme RezepteReviewVideo \
+    -destination "platform=iOS Simulator,id=$simulator_id" \
+    -derivedDataPath "$DERIVED_DATA" \
+    -only-testing:RezepteReviewUITests/AppReviewVideoUITests/testReviewTour \
+    -parallel-testing-enabled NO \
+    -maximum-parallel-testing-workers 1 \
+    CODE_SIGNING_ALLOWED=NO \
+    | tee "$ARTIFACT_DIR/xcodebuild-review-video-build.log" || build_status="$?"
+
+if [[ "$build_status" -ne 0 ]]; then
+    exit "$build_status"
+fi
+
 recorder_pid=""
 stop_recorder() {
     if [[ -n "$recorder_pid" ]] && kill -0 "$recorder_pid" >/dev/null 2>&1; then
@@ -50,16 +66,15 @@ recorder_pid="$!"
 sleep 2
 
 test_status=0
-APP_REVIEW_SERVER="$APP_REVIEW_SERVER" \
-APP_REVIEW_USERNAME="$APP_REVIEW_USERNAME" \
-APP_REVIEW_PASSWORD="$APP_REVIEW_PASSWORD" \
-xcodebuild test \
+xcodebuild test-without-building \
     -project Rezepte.xcodeproj \
     -scheme RezepteReviewVideo \
     -destination "platform=iOS Simulator,id=$simulator_id" \
     -derivedDataPath "$DERIVED_DATA" \
     -resultBundlePath "$RESULT_BUNDLE" \
     -only-testing:RezepteReviewUITests/AppReviewVideoUITests/testReviewTour \
+    -parallel-testing-enabled NO \
+    -maximum-parallel-testing-workers 1 \
     CODE_SIGNING_ALLOWED=NO \
     | tee "$ARTIFACT_DIR/xcodebuild-review-video.log" || test_status="$?"
 
@@ -69,6 +84,12 @@ trap - EXIT
 
 if [[ "$test_status" -ne 0 ]]; then
     exit "$test_status"
+fi
+
+if ! grep -Fq "Executed 1 test, with 0 tests skipped and 0 failures" \
+    "$ARTIFACT_DIR/xcodebuild-review-video.log"; then
+    echo "The recorded review tour did not execute successfully." >&2
+    exit 1
 fi
 
 if [[ ! -s "$VIDEO_PATH" ]]; then
