@@ -74,16 +74,16 @@ final class AppReviewVideoUITests: XCTestCase {
         pause(4)
 
         let administration = app.buttons["Administration öffnen"]
-        XCTAssertTrue(administration.waitForExistence(timeout: 15))
+        reveal(administration, maximumSwipes: 6)
         administration.tap()
         XCTAssertTrue(app.navigationBars["Administration"].waitForExistence(timeout: 20))
         pause(4)
 
         let adminSettings = app.staticTexts["Admin-Einstellungen"].firstMatch
-        XCTAssertTrue(adminSettings.waitForExistence(timeout: 20))
+        reveal(adminSettings, maximumSwipes: 6)
         adminSettings.tap()
         XCTAssertTrue(app.navigationBars["Admin-Einstellungen"].waitForExistence(timeout: 20))
-        XCTAssertTrue(app.staticTexts["Sicherheitsgrenzen"].waitForExistence(timeout: 20))
+        reveal(app.staticTexts["Sicherheitsgrenzen"], maximumSwipes: 4)
         pause(5)
         app.swipeUp()
         pause(5)
