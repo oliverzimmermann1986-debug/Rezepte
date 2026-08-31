@@ -34,6 +34,8 @@ final class AppReviewVideoUITests: XCTestCase {
         loginButton.tap()
         let archiveTab = app.tabBars.buttons["Archiv"]
         XCTAssertTrue(archiveTab.waitForExistence(timeout: 35), "Login to the isolated review server failed.")
+        archiveTab.tap()
+        XCTAssertTrue(app.navigationBars["Archiv"].waitForExistence(timeout: 20))
         pause(4)
 
         let recipe = app.staticTexts["Zitronen-Ricotta-Pasta"].firstMatch
