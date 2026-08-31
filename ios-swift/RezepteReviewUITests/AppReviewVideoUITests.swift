@@ -16,6 +16,7 @@ final class AppReviewVideoUITests: XCTestCase {
         }
 
         app.launchArguments += ["-AppleLanguages", "(de)", "-AppleLocale", "de_DE"]
+        app.launchEnvironment["APP_REVIEW_AUTOMATION"] = "1"
         app.launchEnvironment["APP_REVIEW_SERVER"] = server
         app.launchEnvironment["APP_REVIEW_USERNAME"] = username
         app.launchEnvironment["APP_REVIEW_PASSWORD"] = password

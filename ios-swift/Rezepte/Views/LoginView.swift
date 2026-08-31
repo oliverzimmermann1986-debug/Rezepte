@@ -147,20 +147,20 @@ struct LoginView: View {
             }
             .background(theme.background)
             .onAppear {
-                #if DEBUG
                 let reviewEnvironment = ProcessInfo.processInfo.environment
-                if server.isEmpty {
-                    server = reviewEnvironment["APP_REVIEW_SERVER"] ?? session.savedServer
+                if reviewEnvironment["APP_REVIEW_AUTOMATION"] == "1" {
+                    if server.isEmpty {
+                        server = reviewEnvironment["APP_REVIEW_SERVER"] ?? session.savedServer
+                    }
+                    if username.isEmpty {
+                        username = reviewEnvironment["APP_REVIEW_USERNAME"] ?? ""
+                    }
+                    if password.isEmpty {
+                        password = reviewEnvironment["APP_REVIEW_PASSWORD"] ?? ""
+                    }
+                } else if server.isEmpty {
+                    server = session.savedServer
                 }
-                if username.isEmpty {
-                    username = reviewEnvironment["APP_REVIEW_USERNAME"] ?? ""
-                }
-                if password.isEmpty {
-                    password = reviewEnvironment["APP_REVIEW_PASSWORD"] ?? ""
-                }
-                #else
-                if server.isEmpty { server = session.savedServer }
-                #endif
                 if cloudflareClientID.isEmpty {
                     cloudflareClientID = session.savedCloudflareClientID
                 }

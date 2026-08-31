@@ -134,10 +134,11 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert 'APP_REVIEW_PASSWORD: "${APP_REVIEW_PASSWORD}"' in project
     assert 'environment["APP_REVIEW_PASSWORD"]' in ui_test
     assert 'app.launchEnvironment["APP_REVIEW_PASSWORD"] = password' in ui_test
+    assert 'app.launchEnvironment["APP_REVIEW_AUTOMATION"] = "1"' in ui_test
     assert "typeText(password)" not in ui_test
-    assert 'reviewEnvironment["APP_REVIEW_PASSWORD"]' in _read(
-        "ios-swift/Rezepte/Views/LoginView.swift"
-    )
+    login_view = _read("ios-swift/Rezepte/Views/LoginView.swift")
+    assert 'reviewEnvironment["APP_REVIEW_AUTOMATION"] == "1"' in login_view
+    assert 'reviewEnvironment["APP_REVIEW_PASSWORD"]' in login_view
     assert "ReviewVideoResults.xcresult" not in config
 
 
