@@ -434,6 +434,7 @@ struct RecipeDetailView: View {
             }
         }
         .cardSurface()
+        .accessibilityIdentifier("recipe.passport")
     }
 
     private func variantProvenanceSection(_ provenance: RecipeVariantProvenance) -> some View {
@@ -540,6 +541,7 @@ struct RecipeDetailView: View {
         }
         .cardSurface()
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("recipe.original-source")
     }
 
     private func ratingAndNutritionSection(_ recipe: Recipe) -> some View {

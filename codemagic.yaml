@@ -1,0 +1,51 @@
+workflows:
+  ios-review-video:
+    name: Rezeptregal App Review Video
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      groups:
+        - app_review
+      vars:
+        APP_REVIEW_SERVER: https://rezepte-review.mausbaeren.me
+        APP_REVIEW_USERNAME: app-review
+        XCODEGEN_VERSION: 2.46.0
+        XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+      xcode: latest
+    scripts:
+      - name: Install pinned XcodeGen
+        script: |
+          set -euo pipefail
+          curl -fsSL -o "$CM_TEMP_DIR/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $CM_TEMP_DIR/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$CM_TEMP_DIR/xcodegen.zip" -d "$CM_TEMP_DIR/xcodegen-dist"
+          xcodegen_bin="$(find "$CM_TEMP_DIR/xcodegen-dist" -type f -name xcodegen -path '*/bin/*' -print -quit)"
+          test -n "$xcodegen_bin"
+          chmod +x "$xcodegen_bin"
+          mkdir -p "$HOME/.local/bin"
+          cp "$xcodegen_bin" "$HOME/.local/bin/xcodegen"
+          echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$CM_ENV"
+          "$HOME/.local/bin/xcodegen" --version | grep -F "$XCODEGEN_VERSION"
+      - name: Generate Xcode project
+        script: |
+          set -euo pipefail
+          cd ios-swift
+          xcodegen generate
+      - name: Record automated App Review tour
+        script: |
+          set -euo pipefail
+          cd ios-swift
+          bash scripts/record-review-video.sh
+    artifacts:
+      - ios-swift/artifacts/Rezeptregal-App-Review-1.2.0.mp4
+      - ios-swift/artifacts/*.log
+      - ios-swift/build/DerivedData/Build/Products/Debug-iphonesimulator/Rezepte.app
+      - ios-swift/ReviewVideoResults.xcresult
+    triggering:
+      events:
+        - tag
+      tag_patterns:
+        - pattern: review-video-*
+          include: true
+      cancel_previous_builds: true

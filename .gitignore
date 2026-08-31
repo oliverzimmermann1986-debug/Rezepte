@@ -23,6 +23,9 @@ video-archive/
 .codex-release-assets/pytest/
 .impeccable/questions/
 native-ios/dist*/
+ios-swift/artifacts/
+ios-swift/build/
+ios-swift/*.xcresult
 
 # IDE
 .vscode/
