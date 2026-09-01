@@ -148,13 +148,14 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer api-token")
     }
 
-    func testImageRefreshTokenBustsTheCachedThumbnailURL() async throws {
+    func testImageCacheVersionBustsTheThumbnailURLAndCanForceRefresh() async throws {
         let client = APIClient()
         try await client.configure(server: "https://example.de", token: "api-token")
 
         let request = try await client.imageRequest(
             recipeID: 42,
-            refreshToken: "generation-2"
+            cacheVersion: "generation-2",
+            forceRefresh: true
         )
         let components = try XCTUnwrap(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false))
 
@@ -308,7 +309,8 @@ final class APIClientTests: XCTestCase {
           "types": ["Hauptgericht"],
           "categories": ["Pasta"],
           "tags": [{"id": 8, "name": "nussfrei", "n": 12}],
-          "ingredients": [{"canonical_name": "salz", "display_name": "Salz", "n": 9}]
+          "ingredients": [{"canonical_name": "salz", "display_name": "Salz", "n": 9}],
+          "total": 17
         }
         """
         let decoder = JSONDecoder()
@@ -318,6 +320,7 @@ final class APIClientTests: XCTestCase {
 
         XCTAssertEqual(facets.tags.first?.name, "nussfrei")
         XCTAssertEqual(facets.ingredients.first?.canonicalName, "salz")
+        XCTAssertEqual(facets.total, 17)
     }
 
     func testRecipeDeleteMovesRecipeToTrashWithFiles() async throws {

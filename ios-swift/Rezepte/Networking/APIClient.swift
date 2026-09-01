@@ -117,17 +117,18 @@ actor APIClient {
     func imageRequest(
         recipeID: Int,
         width: Int = 900,
-        refreshToken: String? = nil
+        cacheVersion: String? = nil,
+        forceRefresh: Bool = false
     ) throws -> URLRequest {
         var query = [URLQueryItem(name: "w", value: String(width))]
-        if let refreshToken, !refreshToken.isEmpty {
-            query.append(URLQueryItem(name: "v", value: refreshToken))
+        if let cacheVersion, !cacheVersion.isEmpty {
+            query.append(URLQueryItem(name: "v", value: cacheVersion))
         }
         var request = URLRequest(url: try endpoint(
             "/api/recipes/\(recipeID)/thumb",
             query: query
         ))
-        if refreshToken != nil {
+        if forceRefresh {
             request.cachePolicy = .reloadIgnoringLocalCacheData
         }
         authorize(&request, includeBearer: true)

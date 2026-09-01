@@ -1,6 +1,7 @@
 """Regressionstests für Performance-, Queue- und UI-Optimierungen."""
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
@@ -122,6 +123,28 @@ def test_thumbnail_cache_is_atomic_and_reused(tmp_path: Path):
     with Image.open(second) as image:
         assert image.width == 400
         assert image.mode == "RGB"
+
+
+def test_thumbnail_cache_rebuilds_when_active_source_file_changes(tmp_path: Path):
+    generated = tmp_path / "thumb-generated.jpg"
+    original = tmp_path / "thumb.jpg"
+    Image.new("RGB", (1200, 800), (220, 30, 30)).save(original)
+    Image.new("RGB", (1200, 800), (30, 80, 220)).save(generated)
+    old_time = original.stat().st_mtime_ns - 5_000_000_000
+    os.utime(generated, ns=(old_time, old_time))
+
+    cache = ensure_thumbnail(original, 400)
+    first_mtime = cache.stat().st_mtime_ns
+    rebuilt = ensure_thumbnail(generated, 400)
+
+    assert rebuilt == cache
+    assert rebuilt.stat().st_mtime_ns >= first_mtime
+    assert (tmp_path / ".thumb-w400.jpg.source").read_text(encoding="utf-8").startswith(
+        "thumb-generated.jpg\n"
+    )
+    with Image.open(rebuilt) as image:
+        red, green, blue = image.getpixel((image.width // 2, image.height // 2))
+        assert blue > red
 
 
 def test_image_dimension_guard_rejects_dimensions_and_pixel_bombs():

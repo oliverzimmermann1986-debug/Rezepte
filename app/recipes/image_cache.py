@@ -60,19 +60,48 @@ def cached_thumbnail_path(source: Path, width: int) -> Path:
     return source.parent / f"thumb-w{int(width)}.jpg"
 
 
+def _thumbnail_source_marker(target: Path) -> Path:
+    return target.with_name(f".{target.name}.source")
+
+
+def _thumbnail_source_signature(source: Path) -> str:
+    stat = source.stat()
+    return f"{source.name}\n{stat.st_size}\n{stat.st_mtime_ns}\n"
+
+
+def _thumbnail_cache_is_current(source: Path, target: Path, marker: Path) -> bool:
+    if not target.is_file() or not marker.is_file():
+        return False
+    try:
+        return (
+            marker.read_text(encoding="utf-8") == _thumbnail_source_signature(source)
+            and target.stat().st_mtime_ns >= source.stat().st_mtime_ns
+        )
+    except OSError:
+        return False
+
+
 def ensure_thumbnail(source: Path, width: int, *, quality: int = 84) -> Path:
     """Erzeugt/aktualisiert ``thumb-w<width>.jpg`` atomar und gibt den Pfad zurück."""
     source = Path(source)
     width = max(64, min(2048, int(width)))
     target = cached_thumbnail_path(source, width)
-    if target.exists() and target.stat().st_mtime >= source.stat().st_mtime:
+    marker = _thumbnail_source_marker(target)
+    if _thumbnail_cache_is_current(source, target, marker):
         return target
 
-    key = f"{source.resolve()}::{width}"
+    # Der Zielname ist absichtlich quellenunabhängig. Deshalb muss auch der
+    # Lock den gemeinsamen Zielpfad schützen, wenn das aktive Rezeptbild
+    # zwischen Original und generierter Fassung wechselt.
+    key = str(target.resolve())
     with _keyed_lock(key):
-        if target.exists() and target.stat().st_mtime >= source.stat().st_mtime:
+        if _thumbnail_cache_is_current(source, target, marker):
             return target
+        source_signature = _thumbnail_source_signature(source)
         tmp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        marker_tmp = marker.with_name(
+            f".{marker.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
         try:
             with Image.open(source) as image:
                 _prepare_image_decode(image, (width, width * 8))
@@ -89,10 +118,13 @@ def ensure_thumbnail(source: Path, width: int, *, quality: int = 84) -> Path:
                     image = image.convert("RGB")
                 image.save(tmp, format="JPEG", quality=quality, optimize=True, progressive=True)
             os.replace(tmp, target)
+            marker_tmp.write_text(source_signature, encoding="utf-8")
+            os.replace(marker_tmp, marker)
             return target
         finally:
             try:
                 tmp.unlink(missing_ok=True)
+                marker_tmp.unlink(missing_ok=True)
             except OSError:
                 pass
 
@@ -169,5 +201,10 @@ def invalidate_thumbnail_cache(folder: Path) -> None:
     for cached in Path(folder).glob("thumb-w*.jpg"):
         try:
             cached.unlink()
+        except OSError:
+            pass
+    for marker in Path(folder).glob(".thumb-w*.jpg.source"):
+        try:
+            marker.unlink()
         except OSError:
             pass

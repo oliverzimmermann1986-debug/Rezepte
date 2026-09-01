@@ -16,11 +16,12 @@ struct RecipeFiltersView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.recipeTheme) private var theme
 
-    let facets: RecipeFacets
     let loadMatchCount: (RecipeFilters) async throws -> Int
+    let loadFacets: (RecipeFilters) async throws -> RecipeFacets
     let onApply: (RecipeFilters) -> Void
 
     @State private var draft: RecipeFilters
+    @State private var liveFacets: RecipeFacets
     @State private var ingredientSearch = ""
     @State private var showPantryBasics = false
     @State private var expandedIngredientGroups: Set<String>
@@ -33,12 +34,14 @@ struct RecipeFiltersView: View {
         facets: RecipeFacets,
         initialMatchCount: Int,
         loadMatchCount: @escaping (RecipeFilters) async throws -> Int,
+        loadFacets: @escaping (RecipeFilters) async throws -> RecipeFacets,
         onApply: @escaping (RecipeFilters) -> Void
     ) {
-        self.facets = facets
         self.loadMatchCount = loadMatchCount
+        self.loadFacets = loadFacets
         self.onApply = onApply
         _draft = State(initialValue: filters)
+        _liveFacets = State(initialValue: facets)
         _matchCount = State(initialValue: initialMatchCount)
         let selectedNames = filters.includedIngredients.union(filters.excludedIngredients)
         let selectedGroups = Set(
@@ -97,7 +100,7 @@ struct RecipeFiltersView: View {
                 applyBar
             }
             .task(id: draft) {
-                await refreshMatchCount()
+                await refreshLiveFacets()
             }
         }
     }
@@ -136,7 +139,7 @@ struct RecipeFiltersView: View {
                 Spacer()
                 Picker("Typ", selection: $draft.type) {
                     Text("Alle Typen").tag("")
-                    ForEach(facets.types, id: \.self) { value in
+                    ForEach(liveFacets.types, id: \.self) { value in
                         Text(value).tag(value)
                     }
                 }
@@ -149,7 +152,7 @@ struct RecipeFiltersView: View {
                 Spacer()
                 Picker("Kategorie", selection: $draft.category) {
                     Text("Alle Kategorien").tag("")
-                    ForEach(facets.categories, id: \.self) { value in
+                    ForEach(liveFacets.categories, id: \.self) { value in
                         Text(value).tag(value)
                     }
                 }
@@ -401,7 +404,11 @@ struct RecipeFiltersView: View {
 
     private var visibleIngredients: [IngredientFacet] {
         let query = ingredientSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        return facets.ingredients.filter { ingredient in
+        return liveFacets.ingredients.filter { ingredient in
+            if ingredient.n <= 0,
+               !selectedIngredientNames.contains(ingredient.canonicalName) {
+                return false
+            }
             if !query.isEmpty {
                 return ingredient.displayName.localizedCaseInsensitiveContains(query)
                     || ingredient.canonicalName.localizedCaseInsensitiveContains(query)
@@ -438,7 +445,8 @@ struct RecipeFiltersView: View {
     }
 
     private var allergenTags: [TagFacet] {
-        facets.tags
+        liveFacets.tags
+            .filter { $0.n > 0 || selectedTagIDs.contains($0.id) }
             .filter { $0.allergenInfo != nil }
             .sorted {
                 ($0.allergenInfo?.sortIndex ?? .max) < ($1.allergenInfo?.sortIndex ?? .max)
@@ -446,18 +454,30 @@ struct RecipeFiltersView: View {
     }
 
     private var generalTags: [TagFacet] {
-        facets.tags.filter { $0.allergenInfo == nil }
+        liveFacets.tags.filter {
+            ($0.n > 0 || selectedTagIDs.contains($0.id)) && $0.allergenInfo == nil
+        }
     }
 
-    private func refreshMatchCount() async {
+    private var selectedTagIDs: Set<Int> {
+        draft.tagIDs.union(draft.allergenTagIDs)
+    }
+
+    private func refreshLiveFacets() async {
         isRefreshingCount = true
         countFailed = false
         do {
             try await Task.sleep(for: .milliseconds(180))
             try Task.checkCancellation()
-            let updatedCount = try await loadMatchCount(draft)
+            let refreshed = try await loadFacets(draft)
             try Task.checkCancellation()
-            matchCount = updatedCount
+            liveFacets = mergingSelectedOptions(into: refreshed)
+            if let total = refreshed.total {
+                matchCount = total
+            } else {
+                matchCount = try await loadMatchCount(draft)
+            }
+            try Task.checkCancellation()
             isRefreshingCount = false
         } catch is CancellationError {
             // Eine neuere Auswahl startet sofort die nächste Zählung.
@@ -465,6 +485,37 @@ struct RecipeFiltersView: View {
             isRefreshingCount = false
             countFailed = true
         }
+    }
+
+    private func mergingSelectedOptions(into refreshed: RecipeFacets) -> RecipeFacets {
+        var tags = refreshed.tags.filter { $0.n > 0 }
+        let refreshedTagIDs = Set(tags.map(\.id))
+        tags.append(contentsOf: liveFacets.tags.filter {
+            selectedTagIDs.contains($0.id) && !refreshedTagIDs.contains($0.id)
+        }.map { TagFacet(id: $0.id, name: $0.name, n: 0) })
+
+        var ingredients = refreshed.ingredients.filter { $0.n > 0 }
+        let refreshedIngredientNames = Set(ingredients.map(\.canonicalName))
+        ingredients.append(contentsOf: liveFacets.ingredients.filter {
+            selectedIngredientNames.contains($0.canonicalName)
+                && !refreshedIngredientNames.contains($0.canonicalName)
+        }.map {
+            IngredientFacet(
+                canonicalName: $0.canonicalName,
+                displayName: $0.displayName,
+                n: 0,
+                group: $0.group,
+                isBasic: $0.isBasic
+            )
+        })
+
+        return RecipeFacets(
+            types: refreshed.types,
+            categories: refreshed.categories,
+            tags: tags,
+            ingredients: ingredients,
+            total: refreshed.total
+        )
     }
 
     private func tagBinding(_ id: Int) -> Binding<Bool> {
