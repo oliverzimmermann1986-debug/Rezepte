@@ -18,6 +18,7 @@ def test_list_returns_inserted_recipes(client, test_db):
     _create_recipe(test_db, name="Spargel", folder_path="/tmp/sp")
     _create_recipe(test_db, name="Tomate", folder_path="/tmp/to")
     r = client.get("/api/recipes")
+    assert all(item["thumbnail_version"] for item in r.json()["items"])
     assert r.status_code == 200
     body = r.json()
     assert body["total"] == 2
@@ -361,6 +362,57 @@ def test_ingredient_facets_include_groups_and_pantry_basic_marker(client, test_d
     assert ingredients["tomate"]["is_basic"] is False
     assert ingredients["tomate"]["group"] == "Obst & Gemüse"
     assert ingredients["lachs"]["group"] == "Fleisch & Fisch"
+
+
+def test_ingredient_facets_recalculate_for_current_selection_and_hide_zeroes(
+    client, test_db
+):
+    recipes = [
+        ("Tomate mit Zwiebel", ["tomate", "zwiebel", "knoblauch"]),
+        ("Tomate ohne Zwiebel", ["tomate", "knoblauch"]),
+        ("Brokkoli", ["brokkoli", "knoblauch"]),
+    ]
+    for index, (name, ingredients) in enumerate(recipes):
+        recipe = _create_recipe(
+            test_db,
+            name=name,
+            folder_path=f"/tmp/live-ingredient-facets-{index}",
+        )
+        test_db.recipe_set_extraction_result(
+            recipe["id"],
+            "ok",
+            [
+                {
+                    "name": ingredient.title(),
+                    "canonical_name": ingredient,
+                    "amount": 1,
+                    "unit": "Stück",
+                }
+                for ingredient in ingredients
+            ],
+        )
+
+    included = client.get(
+        "/api/recipes/facets",
+        params={"ingredient": "tomate"},
+    ).json()
+    included_counts = {
+        item["canonical_name"]: item["n"] for item in included["ingredients"]
+    }
+    assert included["total"] == 2
+    assert included_counts == {"knoblauch": 2, "tomate": 2, "zwiebel": 1}
+    assert "brokkoli" not in included_counts
+
+    combined = client.get(
+        "/api/recipes/facets",
+        params=[("ingredient", "tomate"), ("exclude_ingredient", "zwiebel")],
+    ).json()
+    combined_counts = {
+        item["canonical_name"]: item["n"] for item in combined["ingredients"]
+    }
+    assert combined["total"] == 1
+    assert combined_counts == {"knoblauch": 1, "tomate": 1}
+    assert "zwiebel" not in combined_counts
 
 
 def test_list_search_in_name(client, test_db):

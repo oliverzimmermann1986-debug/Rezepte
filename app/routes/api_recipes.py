@@ -305,9 +305,20 @@ def list_recipes(
             "url": r.get("url"),
             "folder_path": r.get("folder_path"),
             "thumb_filename": r.get("thumb_filename"),
+            "thumbnail_version": ":".join((
+                str(r.get("thumb_filename") or "none"),
+                str(r.get("image_generation_status") or "none"),
+                str(int(float(
+                    r.get("image_generated_at")
+                    or r.get("indexed_at")
+                    or r.get("source_added_at")
+                    or 0
+                ) * 1000)),
+            )),
             "video_filename": r.get("video_filename"),
             "source_added_at": r.get("source_added_at"),
             "ingredients_status": r.get("ingredients_status"),
+            "image_generation_status": r.get("image_generation_status"),
             "is_favorite": bool(r.get("is_favorite")),
             "rating": r.get("rating") or 0,
             "user_verified": bool(r.get("user_verified")),
@@ -338,6 +349,7 @@ def facets(
     favorite_only: bool = Query(False),
     min_rating: int = Query(0, ge=0, le=5),
     rating: Optional[List[int]] = Query(None),
+    needs_manual_care: Optional[bool] = Query(None),
 ):
     """Filter-Optionen für die Sidebar. Tag-/Zutaten-Counts sind cross-gefiltert:
        jede Option zeigt die Treffer unter den übrigen aktiven Filtern, sodass
@@ -350,6 +362,7 @@ def facets(
         tuple(sorted(ingredient or [])), tuple(sorted(exclude_ingredient or [])),
         search or "", ingredients_status or "",
         verified, bool(favorite_only), int(min_rating), tuple(sorted(rating or [])),
+        needs_manual_care,
     )
     cached = _FACET_CACHE.get(cache_key)
     if cached is not None:
@@ -370,6 +383,7 @@ def facets(
         ingredient_excluded=exclude_ingredient,
         search=search, ingredients_status=ingredients_status, verified=verified,
         favorite_only=favorite_only, min_rating=min_rating, ratings=rating,
+        needs_manual_care=needs_manual_care,
     )
     ingredient_facets = []
     for facet in db.ingredient_facets(**flt)[:120]:
@@ -385,6 +399,7 @@ def facets(
         "categories": cats,
         "tags": db.tag_facets(**flt),
         "ingredients": ingredient_facets,
+        "total": db.recipe_count(**flt),
     }
     _FACET_CACHE.set(cache_key, result)
     return result

@@ -3681,6 +3681,7 @@ class Database:
         favorite_only: bool = False,
         min_rating: int = 0,
         ratings: Optional[List[int]] = None,
+        needs_manual_care: Optional[bool] = None,
         include_deleted: bool = False,
         only_deleted: bool = False,
     ):
@@ -3704,6 +3705,7 @@ class Database:
             favorite_only=favorite_only,
             min_rating=min_rating,
             ratings=ratings,
+            needs_manual_care=needs_manual_care,
             include_deleted=include_deleted,
             only_deleted=only_deleted,
         )
@@ -3716,6 +3718,7 @@ class Database:
         type: Optional[str] = None,
         category: Optional[str] = None,
         categories: Optional[List[str]] = None,
+        tag_ids: Optional[List[int]] = None,
         ingredient_canonical: Optional[List[str]] = None,
         ingredient_excluded: Optional[List[str]] = None,
         search: Optional[str] = None,
@@ -3724,17 +3727,22 @@ class Database:
         favorite_only: bool = False,
         min_rating: int = 0,
         ratings: Optional[List[int]] = None,
+        needs_manual_care: Optional[bool] = None,
         **_ignore,
     ) -> List[Dict[str, Any]]:
-        """Tags mit Recipe-Count unter den aktiven Filtern — der Tag-Filter selbst
-        wird ausgeklammert (Standard-Facetten-Drilldown). Tags ohne Treffer
-        fallen raus, die Liste schrumpft also passend mit."""
+        """Tags mit Recipe-Count unter allen aktiven Filtern.
+
+        Die übrigen Optionen schrumpfen nach jeder Auswahl; Tags ohne Treffer
+        fallen aus der Antwort.
+        """
         where, params = self._recipe_where(
             type=type, category=category, categories=categories,
+            tag_ids=tag_ids,
             ingredient_canonical=ingredient_canonical,
             ingredient_excluded=ingredient_excluded,
             search=search, ingredients_status=ingredients_status, verified=verified,
             favorite_only=favorite_only, min_rating=min_rating, ratings=ratings,
+            needs_manual_care=needs_manual_care,
         )
         sql = (
             "SELECT t.id, t.name, COUNT(DISTINCT r.id) AS n "
@@ -3753,20 +3761,29 @@ class Database:
         category: Optional[str] = None,
         categories: Optional[List[str]] = None,
         tag_ids: Optional[List[int]] = None,
+        ingredient_canonical: Optional[List[str]] = None,
+        ingredient_excluded: Optional[List[str]] = None,
         search: Optional[str] = None,
         ingredients_status: Optional[str] = None,
         verified: Optional[bool] = None,
         favorite_only: bool = False,
         min_rating: int = 0,
         ratings: Optional[List[int]] = None,
+        needs_manual_care: Optional[bool] = None,
         **_ignore,
     ) -> List[Dict[str, Any]]:
-        """Zutaten mit Recipe-Count unter den aktiven Filtern — der Zutaten-Filter
-        selbst wird ausgeklammert. Zutaten ohne Treffer fallen raus."""
+        """Zutaten mit Recipe-Count unter allen aktiven Filtern.
+
+        Die übrigen Zutaten werden nach jedem Mit-/Ohne-Haken neu berechnet;
+        Zutaten ohne Treffer fallen aus der Antwort.
+        """
         where, params = self._recipe_where(
             type=type, category=category, categories=categories, tag_ids=tag_ids,
+            ingredient_canonical=ingredient_canonical,
+            ingredient_excluded=ingredient_excluded,
             search=search, ingredients_status=ingredients_status, verified=verified,
             favorite_only=favorite_only, min_rating=min_rating, ratings=ratings,
+            needs_manual_care=needs_manual_care,
         )
         sql = (
             "SELECT ing.canonical_name, MIN(ing.name) AS display_name, "

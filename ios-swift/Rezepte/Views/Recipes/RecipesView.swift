@@ -93,6 +93,9 @@ struct RecipesView: View {
                     initialMatchCount: total,
                     loadMatchCount: { candidate in
                         try await session.api.recipeCount(search: search, filters: candidate)
+                    },
+                    loadFacets: { candidate in
+                        try await session.api.recipeFacets(search: search, filters: candidate)
                     }
                 ) { updated in
                     filters = updated
@@ -179,7 +182,11 @@ private struct RecipeRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            AuthenticatedImage(recipeID: recipe.id, height: 92)
+            AuthenticatedImage(
+                recipeID: recipe.id,
+                height: 92,
+                cacheVersion: recipe.thumbnailVersion
+            )
                 .frame(width: 104)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
 

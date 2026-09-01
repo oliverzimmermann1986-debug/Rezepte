@@ -115,8 +115,11 @@ struct RecipeFacets: Codable, Sendable {
     let categories: [String]
     let tags: [TagFacet]
     let ingredients: [IngredientFacet]
+    let total: Int?
 
-    static let empty = RecipeFacets(types: [], categories: [], tags: [], ingredients: [])
+    static let empty = RecipeFacets(
+        types: [], categories: [], tags: [], ingredients: [], total: 0
+    )
 }
 
 struct TagFacet: Codable, Identifiable, Hashable, Sendable {
@@ -192,6 +195,7 @@ struct RecipeSummary: Codable, Identifiable, Hashable {
     let verifiedBy: String?
     let ingredientsStatus: String?
     let imageGenerationStatus: String?
+    let thumbnailVersion: String?
 }
 
 struct Recipe: Codable, Identifiable {
