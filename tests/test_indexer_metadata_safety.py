@@ -97,6 +97,33 @@ def test_indexer_prefers_generated_image_over_resized_http_caches(test_db, tmp_p
     assert test_db.recipe_get(recipe_id)["thumb_filename"] == "thumb-generated.jpg"
 
 
+def test_indexer_reactivates_generated_image_after_successful_generation(test_db, tmp_path):
+    folder = tmp_path / "Hauptgericht" / "Pasta" / "ErfolgreichGeneriert"
+    folder.mkdir(parents=True)
+    (folder / "info.json").write_text(
+        json.dumps({"name": "Erfolgreich generiert", "url": "https://example.test/ok"}),
+        encoding="utf-8",
+    )
+    (folder / "thumb.jpg").write_bytes(b"source")
+    (folder / "thumb-generated.jpg").write_bytes(b"generated")
+    recipe_id = test_db.recipe_upsert(
+        url="https://example.test/ok",
+        name="Erfolgreich generiert",
+        type="Hauptgericht",
+        category="Pasta",
+        folder_path=str(folder),
+        description=None,
+        thumb_filename="thumb.jpg",
+        video_filename=None,
+        source_added_at=1,
+    )
+    test_db.recipe_image_generation_status(recipe_id, status="ok")
+
+    indexer._index_one(test_db, folder, "Hauptgericht", "Pasta")
+
+    assert test_db.recipe_get(recipe_id)["thumb_filename"] == "thumb-generated.jpg"
+
+
 def test_indexer_preserves_intentionally_restored_active_image(test_db, tmp_path):
     folder = tmp_path / "Hauptgericht" / "Pasta" / "Wiederhergestellt"
     folder.mkdir(parents=True)
@@ -117,6 +144,7 @@ def test_indexer_preserves_intentionally_restored_active_image(test_db, tmp_path
         video_filename=None,
         source_added_at=1,
     )
+    test_db.recipe_image_generation_status(recipe_id, status="restored")
 
     indexer._index_one(test_db, folder, "Hauptgericht", "Pasta")
 
