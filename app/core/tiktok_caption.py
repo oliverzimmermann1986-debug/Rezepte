@@ -31,6 +31,7 @@ _TIKTOK_CDN_DOMAINS = (
 )
 _MAX_PLAYER_JSON_BYTES = 2 * 1024 * 1024
 _MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024
+_MAX_SUBTITLE_BYTES = 512 * 1024
 _BROWSER_USER_AGENT = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
@@ -112,7 +113,7 @@ def _caption_from_player_payload(payload: Any) -> str:
 
 
 def _metadata_from_player_payload(payload: Any) -> Dict[str, str]:
-    """Liest Caption und erstes Foto aus der strukturierten Player-Antwort."""
+    """Liest Caption, Untertitel und erstes Foto aus der Player-Antwort."""
     result: Dict[str, str] = {}
     if not isinstance(payload, dict):
         return result
@@ -125,6 +126,32 @@ def _metadata_from_player_payload(payload: Any) -> Dict[str, str]:
         caption = _caption_from_player_payload({"items": [item]})
         if caption:
             result["description_text"] = caption
+
+        video_info = item.get("video_info")
+        if isinstance(video_info, dict):
+            cla_info = video_info.get("cla_info")
+            caption_infos = (
+                cla_info.get("caption_infos")
+                if isinstance(cla_info, dict)
+                else None
+            )
+            if isinstance(caption_infos, list):
+                ranked_captions = sorted(
+                    (entry for entry in caption_infos if isinstance(entry, dict)),
+                    key=_subtitle_preference,
+                )
+                for entry in ranked_captions:
+                    urls = entry.get("url_list")
+                    if not isinstance(urls, list):
+                        urls = [entry.get("url")]
+                    subtitle_url = next((
+                        str(value).strip()
+                        for value in urls
+                        if isinstance(value, str) and value.strip()
+                    ), "")
+                    if subtitle_url:
+                        result["subtitle_url"] = subtitle_url
+                        break
 
         image_info = item.get("image_post_info")
         if isinstance(image_info, dict):
@@ -156,6 +183,47 @@ def _metadata_from_player_payload(payload: Any) -> Dict[str, str]:
     return result
 
 
+def _subtitle_preference(entry: Dict[str, Any]) -> tuple[int, int, str]:
+    """Bevorzugt deutsche und danach originale TikTok-Untertitel."""
+    language = " ".join((
+        str(entry.get("language_code") or ""),
+        str(entry.get("lang") or ""),
+        str(entry.get("language_name") or ""),
+    )).casefold()
+    is_german = language.startswith("de ") or any(
+        marker in language for marker in (" deu", "deu-", "german", "deutsch")
+    )
+    is_original = bool(
+        entry.get("is_original_caption")
+        or entry.get("is_original")
+        or entry.get("source") == "original"
+    )
+    return (0 if is_german else 1, 0 if is_original else 1, language)
+
+
+def clean_webvtt_subtitles(text: str) -> str:
+    """Wandelt WebVTT in kompakten Rezept-Evidenztext ohne Zeitmarken um."""
+    lines: List[str] = []
+    previous = ""
+    for raw_line in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if (
+            not line
+            or line.upper().startswith("WEBVTT")
+            or line.startswith(("Kind:", "Language:", "NOTE "))
+            or "-->" in line
+            or line.isdigit()
+        ):
+            continue
+        line = re.sub(r"<[^>]+>", "", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if not line or line == previous:
+            continue
+        lines.append(line)
+        previous = line
+    return "\n".join(lines).strip()
+
+
 def _is_allowed_tiktok_cdn_url(url: str) -> bool:
     """Begrenzt den serverseitigen Bildabruf auf TikToks HTTPS-CDNs."""
     try:
@@ -168,6 +236,73 @@ def _is_allowed_tiktok_cdn_url(url: str) -> bool:
         return False
     host = parsed.hostname.lower().rstrip(".")
     return any(host == domain or host.endswith(f".{domain}") for domain in _TIKTOK_CDN_DOMAINS)
+
+
+def _fetch_tiktok_subtitle_text(
+    requests_module: Any,
+    subtitle_url: str,
+    *,
+    headers: Dict[str, str],
+    timeout: int,
+) -> str:
+    """Lädt begrenzte WebVTT-Evidenz, ohne andere Metadaten zu blockieren."""
+    if not subtitle_url or not _is_allowed_tiktok_cdn_url(subtitle_url):
+        return ""
+    subtitle_headers = dict(headers)
+    subtitle_headers["Referer"] = "https://www.tiktok.com/"
+    try:
+        with requests_module.get(
+            subtitle_url,
+            headers=subtitle_headers,
+            timeout=timeout,
+            allow_redirects=True,
+            stream=True,
+        ) as subtitle:
+            subtitle.raise_for_status()
+            final_url = str(subtitle.url or subtitle_url)
+            if not _is_allowed_tiktok_cdn_url(final_url):
+                return ""
+            content_type = str(
+                subtitle.headers.get("content-type") or ""
+            ).split(";", 1)[0].lower()
+            if content_type not in {
+                "text/vtt",
+                "text/plain",
+                "application/octet-stream",
+            }:
+                logger.warning(
+                    "TikTok-Untertitel mit unerwartetem MIME-Typ: %s",
+                    content_type,
+                )
+                return ""
+            try:
+                declared_size = int(subtitle.headers.get("content-length") or 0)
+            except (TypeError, ValueError):
+                declared_size = 0
+            if declared_size > _MAX_SUBTITLE_BYTES:
+                logger.warning("TikTok-Untertitel zu groß: %s Bytes", declared_size)
+                return ""
+            chunks: List[bytes] = []
+            total = 0
+            for chunk in subtitle.iter_content(32 * 1024):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > _MAX_SUBTITLE_BYTES:
+                    logger.warning("TikTok-Untertitel überschreiten Größenlimit")
+                    return ""
+                chunks.append(chunk)
+            raw_subtitles = b"".join(chunks)
+            try:
+                decoded_subtitles = raw_subtitles.decode("utf-8")
+            except UnicodeDecodeError:
+                # TikTok liefert manche deutschen Auto-Captions trotz
+                # text/plain ohne Charset als Windows-1252 aus.
+                decoded_subtitles = raw_subtitles.decode("cp1252", errors="replace")
+            return clean_webvtt_subtitles(decoded_subtitles)
+    except Exception as exc:
+        logger.warning("TikTok-Untertitel konnten nicht geladen werden: %s", exc)
+        return ""
 
 
 def fetch_tiktok_player_metadata(
@@ -190,7 +325,10 @@ def fetch_tiktok_player_metadata(
         return {}
 
     timeout = max(5, min(int(timeout_seconds), 60))
-    headers = {"User-Agent": _BROWSER_USER_AGENT, "Accept": "application/json,image/*;q=0.9,*/*;q=0.5"}
+    headers = {
+        "User-Agent": _BROWSER_USER_AGENT,
+        "Accept": "application/json,text/vtt;q=0.9,image/*;q=0.8,*/*;q=0.5",
+    }
     post_id = _tiktok_post_id(url)
     resolved_url = url
     try:
@@ -222,6 +360,16 @@ def fetch_tiktok_player_metadata(
         metadata: Dict[str, Any] = _metadata_from_player_payload(response.json())
         if _tiktok_post_id(resolved_url) == post_id:
             metadata["canonical_url"] = resolved_url
+
+        subtitle_url = str(metadata.pop("subtitle_url", "") or "")
+        subtitle_text = _fetch_tiktok_subtitle_text(
+            requests,
+            subtitle_url,
+            headers=headers,
+            timeout=timeout,
+        )
+        if subtitle_text:
+            metadata["subtitle_text"] = subtitle_text
 
         thumbnail_url = str(metadata.pop("thumbnail_url", "") or "")
         if not thumbnail_url or not _is_allowed_tiktok_cdn_url(thumbnail_url):

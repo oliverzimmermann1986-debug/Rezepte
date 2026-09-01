@@ -15,6 +15,13 @@ struct RecipeDetailView: View {
     @State private var showStepsEditor = false
     @State private var showShoppingServings = false
     @State private var shoppingServings = 1
+    @State private var showCookActions = false
+    @State private var showCookingMode = false
+    @State private var showMealPlanSheet = false
+    @State private var plannedDate = Date()
+    @State private var plannedServings = 2
+    @State private var isPlanningMeal = false
+    @State private var mealPlanConfirmation: String?
     @State private var isAddingToCart = false
     @State private var cartConfirmation = false
     @State private var showOriginalText = false
@@ -43,7 +50,11 @@ struct RecipeDetailView: View {
             } else if let recipe {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
-                        AuthenticatedImage(recipeID: recipe.id, height: 270)
+                        AuthenticatedImage(
+                            recipeID: recipe.id,
+                            height: 270,
+                            refreshToken: imageRefreshToken
+                        )
                             .id(imageRefreshToken)
                             .clipShape(RoundedRectangle(cornerRadius: 24))
 
@@ -127,6 +138,14 @@ struct RecipeDetailView: View {
                             Button("Nährwerte neu berechnen", systemImage: "bolt.heart") {
                                 Task { await computeNutrition() }
                             }
+                            if session.fullAccess {
+                                Button(
+                                    "Quelle mit Bild und Audio neu auswerten",
+                                    systemImage: "waveform.and.magnifyingglass"
+                                ) {
+                                    Task { await reextractSource() }
+                                }
+                            }
                             if recipe.pdfFilename != nil {
                                 Button("Original-PDF öffnen", systemImage: "doc.richtext") {
                                     showPDF = true
@@ -140,7 +159,14 @@ struct RecipeDetailView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if cartConfirmation {
+            if let mealPlanConfirmation {
+                Label(mealPlanConfirmation, systemImage: "calendar.badge.checkmark")
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(.thinMaterial, in: Capsule())
+                    .padding(.bottom, 12)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if cartConfirmation {
                 Label(
                     "Für \(shoppingServings) \(shoppingServings == 1 ? "Portion" : "Portionen") hinzugefügt",
                     systemImage: "checkmark.circle.fill"
@@ -206,6 +232,21 @@ struct RecipeDetailView: View {
                 .interactiveDismissDisabled(isAddingToCart)
             }
         }
+        .sheet(isPresented: $showMealPlanSheet) {
+            if let recipe {
+                PlanRecipeSheet(
+                    recipeName: recipe.name,
+                    date: $plannedDate,
+                    servings: $plannedServings,
+                    isSaving: isPlanningMeal
+                ) {
+                    Task { await planMeal(recipe, date: plannedDate) }
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .interactiveDismissDisabled(isPlanningMeal)
+            }
+        }
         .confirmationDialog(
             "Rezept löschen?",
             isPresented: $showDeleteConfirmation,
@@ -217,6 +258,33 @@ struct RecipeDetailView: View {
             Button("Abbrechen", role: .cancel) {}
         } message: {
             Text("Das Rezept kann 30 Tage lang im Admin-Bereich wiederhergestellt werden.")
+        }
+        .confirmationDialog(
+            "Wie möchtest du fortfahren?",
+            isPresented: $showCookActions,
+            titleVisibility: .visible
+        ) {
+            Button("Jetzt kochen", systemImage: "fork.knife") {
+                showCookingMode = true
+            }
+            Button("Für heute einplanen", systemImage: "calendar.badge.plus") {
+                guard let recipe else { return }
+                Task { await planMeal(recipe, date: Date()) }
+            }
+            Button("Anderen Tag wählen", systemImage: "calendar") {
+                guard let recipe else { return }
+                plannedDate = Date()
+                plannedServings = recipe.servings ?? 2
+                showMealPlanSheet = true
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Du kannst direkt starten oder das Rezept für heute beziehungsweise einen anderen Tag vormerken.")
+        }
+        .navigationDestination(isPresented: $showCookingMode) {
+            if let recipe {
+                CookingModeView(recipe: recipe)
+            }
         }
         .alert("Variante erstellen", isPresented: $showDuplicatePrompt) {
             TextField("Name der Variante", text: $duplicateName)
@@ -243,8 +311,9 @@ struct RecipeDetailView: View {
                     .cardSurface()
             } else {
                 HStack(spacing: 12) {
-                    NavigationLink {
-                        CookingModeView(recipe: recipe)
+                    Button {
+                        plannedServings = recipe.servings ?? 2
+                        showCookActions = true
                     } label: {
                         Label("Kochen", systemImage: "fork.knife")
                             .frame(maxWidth: .infinity, minHeight: 44)
@@ -252,7 +321,7 @@ struct RecipeDetailView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(theme.accent)
                     .foregroundStyle(theme.ink)
-                    .disabled(recipe.steps.isEmpty || recipe.servings == nil)
+                    .disabled(recipe.steps.isEmpty)
 
                     Button {
                         shoppingServings = recipe.servings ?? 1
@@ -269,7 +338,7 @@ struct RecipeDetailView: View {
                     Label(
                         recipe.steps.isEmpty
                             ? "Zum Kochen fehlen Zubereitungsschritte."
-                            : "Zum Skalieren fehlt die Portionszahl.",
+                            : "Kochen ist möglich; ohne Portionszahl bleiben die Zutaten unskaliert.",
                         systemImage: "info.circle"
                     )
                     .font(.caption)
@@ -685,6 +754,39 @@ struct RecipeDetailView: View {
         }
     }
 
+    private func planMeal(_ recipe: Recipe, date: Date) async {
+        guard !isPlanningMeal else { return }
+        isPlanningMeal = true
+        defer { isPlanningMeal = false }
+        do {
+            let servings = plannedServings
+            _ = try await session.api.addMeal(
+                date: Self.mealPlanDateFormatter.string(from: date),
+                recipeID: recipe.id,
+                servings: max(1, servings)
+            )
+            showMealPlanSheet = false
+            let isToday = Calendar.current.isDateInToday(date)
+            withAnimation(.snappy) {
+                mealPlanConfirmation = isToday
+                    ? "Für heute eingeplant"
+                    : "Für \(date.formatted(date: .abbreviated, time: .omitted)) eingeplant"
+            }
+            try? await Task.sleep(for: .seconds(2))
+            withAnimation(.snappy) { mealPlanConfirmation = nil }
+        } catch {
+            session.handle(error)
+        }
+    }
+
+    private static let mealPlanDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .iso8601)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
     private func toggleFavorite() async {
         do {
             _ = try await session.api.toggleFavorite(id: recipeID)
@@ -713,6 +815,17 @@ struct RecipeDetailView: View {
         defer { isManaging = false }
         do { _ = try await session.api.computeRecipeNutrition(id: recipeID); await load() }
         catch { session.handle(error) }
+    }
+
+    private func reextractSource() async {
+        isManaging = true
+        defer { isManaging = false }
+        do {
+            _ = try await session.api.reextractRecipeSource(id: recipeID)
+            await load()
+        } catch {
+            session.handle(error)
+        }
     }
 
     private func duplicateRecipe() async {
@@ -767,6 +880,67 @@ struct RecipeDetailView: View {
         }
     }
 
+}
+
+private struct PlanRecipeSheet: View {
+    let recipeName: String
+    @Binding var date: Date
+    @Binding var servings: Int
+    let isSaving: Bool
+    let onSave: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.recipeTheme) private var theme
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 22) {
+                VStack(spacing: 6) {
+                    Text("Wann möchtest du kochen?")
+                        .font(.title2.bold())
+                    Text(recipeName)
+                        .font(.callout)
+                        .foregroundStyle(theme.muted)
+                }
+
+                DatePicker(
+                    "Tag",
+                    selection: $date,
+                    in: Calendar.current.startOfDay(for: Date())...,
+                    displayedComponents: .date
+                )
+                .datePickerStyle(.graphical)
+
+                Stepper(
+                    "\(servings) \(servings == 1 ? "Portion" : "Portionen")",
+                    value: $servings,
+                    in: 1...24
+                )
+
+                Button(action: onSave) {
+                    Label(
+                        isSaving ? "Wird eingeplant …" : "Für diesen Tag einplanen",
+                        systemImage: "calendar.badge.plus"
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 50)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(theme.accent)
+                .foregroundStyle(theme.ink)
+                .disabled(isSaving)
+            }
+            .padding()
+            .background(theme.background)
+            .navigationTitle("Kochtag wählen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Abbrechen") { dismiss() }
+                        .disabled(isSaving)
+                }
+            }
+        }
+    }
 }
 
 private struct ShoppingServingsSheet: View {

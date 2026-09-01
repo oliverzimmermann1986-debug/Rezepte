@@ -1,6 +1,18 @@
 import SwiftUI
 
 struct RecipeFiltersView: View {
+    private static let ingredientGroupOrder = [
+        "Obst & Gemüse",
+        "Fleisch & Fisch",
+        "Kühlregal",
+        "Vorrat & Konserven",
+        "Bäckerei",
+        "Getränke",
+        "Tiefkühl",
+        "Drogerie & Haushalt",
+        "Sonstiges",
+    ]
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.recipeTheme) private var theme
 
@@ -10,6 +22,8 @@ struct RecipeFiltersView: View {
 
     @State private var draft: RecipeFilters
     @State private var ingredientSearch = ""
+    @State private var showPantryBasics = false
+    @State private var expandedIngredientGroups: Set<String>
     @State private var matchCount: Int?
     @State private var isRefreshingCount = false
     @State private var countFailed = false
@@ -26,6 +40,15 @@ struct RecipeFiltersView: View {
         self.onApply = onApply
         _draft = State(initialValue: filters)
         _matchCount = State(initialValue: initialMatchCount)
+        let selectedNames = filters.includedIngredients.union(filters.excludedIngredients)
+        let selectedGroups = Set(
+            facets.ingredients
+                .filter { selectedNames.contains($0.canonicalName) }
+                .map(\.groupName)
+        )
+        _expandedIngredientGroups = State(
+            initialValue: selectedGroups.union(["Obst & Gemüse"])
+        )
     }
 
     var body: some View {
@@ -65,6 +88,7 @@ struct RecipeFiltersView: View {
                         Button("Zurücksetzen") {
                             draft = RecipeFilters()
                             ingredientSearch = ""
+                            showPantryBasics = false
                         }
                     }
                 }
@@ -213,18 +237,50 @@ struct RecipeFiltersView: View {
             .padding(.vertical, 10)
             .background(theme.background, in: RoundedRectangle(cornerRadius: 12))
 
-            if filteredIngredients.isEmpty {
+            Toggle("Küchengrundlagen anzeigen", isOn: $showPantryBasics)
+                .font(.subheadline)
+
+            if ingredientGroups.isEmpty {
                 Text("Keine passende Zutat gefunden.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 12)
             } else {
-                ForEach(Array(filteredIngredients.enumerated()), id: \.element.id) { index, ingredient in
-                    ingredientRow(ingredient)
-                    if index < filteredIngredients.count - 1 { Divider() }
+                ForEach(Array(ingredientGroups.enumerated()), id: \.element.id) { groupIndex, group in
+                    DisclosureGroup(
+                        isExpanded: ingredientGroupBinding(group.name)
+                    ) {
+                        VStack(spacing: 10) {
+                            ForEach(Array(group.ingredients.enumerated()), id: \.element.id) { index, ingredient in
+                                ingredientRow(ingredient)
+                                if index < group.ingredients.count - 1 { Divider() }
+                            }
+                        }
+                        .padding(.top, 10)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Label(group.name, systemImage: ingredientGroupIcon(group.name))
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            if group.selectedCount > 0 {
+                                Text("\(group.selectedCount) gewählt")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(theme.accent)
+                            } else {
+                                Text("\(group.ingredients.count)")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    if groupIndex < ingredientGroups.count - 1 { Divider() }
                 }
             }
+
+            Text("Salz, Pfeffer, Wasser und gängige Öle sind standardmäßig ausgeblendet. Über die Suche oder den Schalter bleiben sie erreichbar.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .cardSurface()
     }
@@ -339,11 +395,45 @@ struct RecipeFiltersView: View {
         draft.includedIngredients.count + draft.excludedIngredients.count
     }
 
-    private var filteredIngredients: [IngredientFacet] {
+    private var selectedIngredientNames: Set<String> {
+        draft.includedIngredients.union(draft.excludedIngredients)
+    }
+
+    private var visibleIngredients: [IngredientFacet] {
         let query = ingredientSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        return query.isEmpty ? facets.ingredients : facets.ingredients.filter {
-            $0.displayName.localizedCaseInsensitiveContains(query)
-                || $0.canonicalName.localizedCaseInsensitiveContains(query)
+        return facets.ingredients.filter { ingredient in
+            if !query.isEmpty {
+                return ingredient.displayName.localizedCaseInsensitiveContains(query)
+                    || ingredient.canonicalName.localizedCaseInsensitiveContains(query)
+            }
+            if ingredient.isPantryBasic,
+               !showPantryBasics,
+               !selectedIngredientNames.contains(ingredient.canonicalName) {
+                return false
+            }
+            return true
+        }
+    }
+
+    private var ingredientGroups: [IngredientGroup] {
+        let grouped = Dictionary(grouping: visibleIngredients, by: \.groupName)
+        return grouped.map { name, ingredients in
+            IngredientGroup(
+                name: name,
+                ingredients: ingredients.sorted {
+                    if $0.n != $1.n { return $0.n > $1.n }
+                    return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+                },
+                selectedCount: ingredients.filter {
+                    selectedIngredientNames.contains($0.canonicalName)
+                }.count
+            )
+        }
+        .sorted { lhs, rhs in
+            let left = Self.ingredientGroupOrder.firstIndex(of: lhs.name) ?? .max
+            let right = Self.ingredientGroupOrder.firstIndex(of: rhs.name) ?? .max
+            if left != right { return left < right }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
     }
 
@@ -422,6 +512,47 @@ struct RecipeFiltersView: View {
             }
         )
     }
+
+    private func ingredientGroupBinding(_ name: String) -> Binding<Bool> {
+        Binding(
+            get: {
+                !ingredientSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || expandedIngredientGroups.contains(name)
+            },
+            set: { expanded in
+                guard ingredientSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return
+                }
+                if expanded {
+                    expandedIngredientGroups.insert(name)
+                } else {
+                    expandedIngredientGroups.remove(name)
+                }
+            }
+        )
+    }
+
+    private func ingredientGroupIcon(_ name: String) -> String {
+        switch name {
+        case "Obst & Gemüse": "leaf"
+        case "Fleisch & Fisch": "fish"
+        case "Kühlregal": "drop"
+        case "Vorrat & Konserven": "shippingbox"
+        case "Bäckerei": "birthday.cake"
+        case "Getränke": "cup.and.saucer"
+        case "Tiefkühl": "snowflake"
+        case "Drogerie & Haushalt": "house"
+        default: "basket"
+        }
+    }
+}
+
+private struct IngredientGroup: Identifiable {
+    let name: String
+    let ingredients: [IngredientFacet]
+    let selectedCount: Int
+
+    var id: String { name }
 }
 
 private enum IngredientChoice: String, Hashable {

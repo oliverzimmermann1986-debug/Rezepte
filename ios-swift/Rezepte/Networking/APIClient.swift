@@ -114,11 +114,22 @@ actor APIClient {
         return url
     }
 
-    func imageRequest(recipeID: Int, width: Int = 900) throws -> URLRequest {
+    func imageRequest(
+        recipeID: Int,
+        width: Int = 900,
+        refreshToken: String? = nil
+    ) throws -> URLRequest {
+        var query = [URLQueryItem(name: "w", value: String(width))]
+        if let refreshToken, !refreshToken.isEmpty {
+            query.append(URLQueryItem(name: "v", value: refreshToken))
+        }
         var request = URLRequest(url: try endpoint(
             "/api/recipes/\(recipeID)/thumb",
-            query: [URLQueryItem(name: "w", value: String(width))]
+            query: query
         ))
+        if refreshToken != nil {
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
         authorize(&request, includeBearer: true)
         return request
     }
@@ -321,6 +332,21 @@ actor APIClient {
             method: "POST",
             body: EmptyBody(),
             timeout: 120
+        )
+    }
+
+    func reextractRecipeSource(id: Int, refreshMedia: Bool = true) async throws -> APIResult {
+        try await send(
+            "/api/recipes/\(id)/extract",
+            method: "POST",
+            query: [
+                URLQueryItem(
+                    name: "refresh_media",
+                    value: refreshMedia ? "true" : "false"
+                )
+            ],
+            body: EmptyBody(),
+            timeout: 180
         )
     }
 

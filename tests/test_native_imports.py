@@ -653,6 +653,47 @@ def test_social_metadata_ai_saves_complete_recipe_without_video(test_db, tmp_pat
     assert (target / "description.txt").exists()
 
 
+def test_tiktok_subtitles_complete_recipe_before_video_fallback(test_db, tmp_path):
+    url = "https://www.tiktok.com/@koch/video/7622703784375897376"
+    job = object.__new__(ScraperJob)
+    job.db = test_db
+    job.recipe_dir = tmp_path / "recipes"
+    job.confidence_threshold = 0.75
+    job._fetch_external_link_metadata = lambda _url: {
+        "description_text": "Käse-Lauch-Pfannkuchen",
+        "subtitle_text": (
+            "Für den Teig brauchen wir 2 Eier, 150 g Mehl und 250 ml Milch.\n"
+            "Für die Füllung Hackfleisch anbraten, Lauch und Zwiebel zugeben."
+        ),
+    }
+    captured = []
+    job._analyze_recipe = lambda text: captured.append(text) or RecipeAnalysis(
+        "Käse-Lauch-Pfannkuchen", "Hauptgericht", "Pfannkuchen", 0.96,
+    )
+    job._extract_recipe_data = lambda text: ExtractedRecipeData(
+        text=text,
+        ingredients=[
+            {"name": "Eier", "amount": 2, "unit": "Stück"},
+            {"name": "Mehl", "amount": 150, "unit": "g"},
+            {"name": "Milch", "amount": 250, "unit": "ml"},
+        ],
+        steps=[{"instruction": "Teig rühren und die Füllung anbraten."}],
+        method="tiktok-subtitles",
+    )
+    job._analyze_social_video = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("Untertitel reichen aus; Video-Fallback darf nicht laufen")
+    )
+
+    result = job.process_url({"url": url, "type": "recipe"})
+
+    assert result["status"] == "auto"
+    assert result["needs_manual_care"] is False
+    assert "AUTOMATISCHES TRANSKRIPT DER QUELLE" in captured[0]
+    recipe = test_db.recipe_get(result["recipe_id"])
+    assert recipe["description"].startswith("Käse-Lauch-Pfannkuchen")
+    assert len(test_db.recipe_ingredients_get(recipe["id"])) == 3
+
+
 def test_tiktok_short_links_use_canonical_post_url_and_do_not_duplicate(test_db, tmp_path):
     canonical_url = "https://www.tiktok.com/@koch/video/7666167423783030049"
     original_folder = tmp_path / "recipes" / "Hauptgericht" / "Fleisch" / "Bowl"

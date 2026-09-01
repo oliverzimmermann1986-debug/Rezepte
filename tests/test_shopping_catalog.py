@@ -3,6 +3,7 @@ import pytest
 from app.db import Database
 from app.recipes.shopping_catalog import (
     infer_shopping_category,
+    is_recipe_filter_pantry_basic,
     is_shopping_catalog_candidate,
 )
 
@@ -39,6 +40,32 @@ def test_catalog_excludes_cooking_water_but_keeps_bottled_water():
     assert is_shopping_catalog_candidate("Pastawasser", "pastawasser") is False
     assert is_shopping_catalog_candidate("Wasser", "wasser") is False
     assert is_shopping_catalog_candidate("Mineralwasser", "mineralwasser") is True
+
+
+@pytest.mark.parametrize(
+    ("name", "canonical_name"),
+    [
+        ("Salz", "salz"),
+        ("Schwarzer Pfeffer", "schwarzer pfeffer"),
+        ("Wasser", "wasser"),
+        ("Olivenöl", "olivenöl"),
+    ],
+)
+def test_recipe_filter_marks_pantry_basics(name, canonical_name):
+    assert is_recipe_filter_pantry_basic(name, canonical_name) is True
+
+
+@pytest.mark.parametrize(
+    ("name", "canonical_name"),
+    [
+        ("Knoblauch", "knoblauch"),
+        ("Butter", "butter"),
+        ("Sesamöl", "sesamöl"),
+        ("Mineralwasser", "mineralwasser"),
+    ],
+)
+def test_recipe_filter_keeps_meaningful_ingredients(name, canonical_name):
+    assert is_recipe_filter_pantry_basic(name, canonical_name) is False
 
 
 def test_recipe_ingredients_feed_local_product_autocomplete(test_db):

@@ -226,6 +226,63 @@ def _pdf_thumb(folder: Path) -> Optional[str]:
     return None
 
 
+def _is_resized_thumbnail_cache(name: str) -> bool:
+    normalized = str(name or "").casefold()
+    return (
+        normalized.startswith("thumb-w")
+        and normalized.endswith(".jpg")
+        and normalized[len("thumb-w"):-len(".jpg")].isdigit()
+    )
+
+
+def _select_recipe_thumbnail(
+    folder_items: list[Path],
+    existing_filename: Optional[str],
+) -> Optional[str]:
+    """Wählt das aktive Bild deterministisch und ignoriert Resize-Caches.
+
+    Ein FS-Sync darf ``thumb-generated.jpg`` nicht durch ein zufällig zuletzt
+    gelistetes ``thumb-w400.jpg`` ersetzen. Ein bewusst wiederhergestelltes
+    oder hochgeladenes aktives Bild aus der DB bleibt dagegen vorrangig.
+    """
+    image_suffixes = {".jpg", ".jpeg", ".png", ".webp"}
+    candidates = {
+        item.name: item
+        for item in folder_items
+        if item.is_file()
+        and not item.name.startswith(".")
+        and item.suffix.casefold() in image_suffixes
+        and not _is_resized_thumbnail_cache(item.name)
+    }
+    existing_name = Path(str(existing_filename or "")).name
+    if existing_name and existing_name in candidates:
+        return existing_name
+
+    by_casefold = {name.casefold(): name for name in candidates}
+    for preferred in (
+        "thumb-generated.jpg",
+        "thumb.jpg",
+        "thumb.jpeg",
+        "thumb.png",
+        "thumb.webp",
+        "pdf-page1.jpg",
+    ):
+        if preferred in by_casefold:
+            return by_casefold[preferred]
+
+    folder_names = {
+        f"{item.parent.name}{suffix}".casefold()
+        for item in candidates.values()
+        for suffix in image_suffixes
+    }
+    named_like_folder = sorted(
+        name for name in candidates if name.casefold() in folder_names
+    )
+    if named_like_folder:
+        return named_like_folder[0]
+    return sorted(candidates, key=str.casefold)[0] if candidates else None
+
+
 def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str:
     """Legt EINEN Recipe-Ordner als DB-Zeile an oder aktualisiert ihn.
     Returns: 'added' | 'updated' | 'skipped'."""
@@ -307,17 +364,23 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
         except OSError:
             source_added_at = None
 
-    # Thumb + Video raussuchen — Pattern: gleicher Stamm wie folder.name
-    thumb = None
-    video = None
-    for f in folder_items:
-        if not f.is_file():
-            continue
-        suffix = f.suffix.lower()
-        if suffix in (".jpg", ".jpeg", ".png", ".webp"):
-            thumb = f.name
-        elif suffix in (".mp4", ".webm", ".mov", ".mkv"):
-            video = f.name
+    existed = db.recipe_get_by_folder(str(folder))
+
+    # Das aktive Original oder generierte Bild bleibt stabil; abgeleitete
+    # thumb-w*-Dateien sind reine HTTP-Caches und niemals eine Bildquelle.
+    thumb = _select_recipe_thumbnail(
+        folder_items,
+        existed.get("thumb_filename") if existed else None,
+    )
+    video_candidates = sorted(
+        item.name
+        for item in folder_items
+        if item.is_file() and item.suffix.casefold() in (".mp4", ".webm", ".mov", ".mkv")
+    )
+    existing_video = Path(str(existed.get("video_filename") or "")).name if existed else ""
+    video = existing_video if existing_video in video_candidates else (
+        video_candidates[0] if video_candidates else None
+    )
 
     # PDF-Rezepte ohne Bild: Seite 1 nach thumb.jpg rendern (einmalig).
     if thumb is None:
@@ -333,7 +396,6 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
         except Exception as e:
             logger.debug("Thumbnail-Prewarm für %s fehlgeschlagen: %s", folder.name, e)
 
-    existed = db.recipe_get_by_folder(str(folder))
     db.recipe_upsert(
         url=url,
         name=name,

@@ -134,6 +134,29 @@ _CATALOG_EXCLUDED_PRODUCTS = {
     "wasser",
 }
 
+# Kleine Küchengrundlagen erzeugen in einer Zutatenfacette viel Rauschen, weil
+# sie in sehr vielen Rezepten vorkommen. Sie bleiben filterbar, werden in der
+# App aber standardmäßig hinter einem Schalter verborgen. Spezifische Öle wie
+# Sesam- oder Trüffelöl sind bewusst nicht Teil dieser Liste.
+_RECIPE_FILTER_PANTRY_BASICS = {
+    "bratöl",
+    "leitungswasser",
+    "meersalz",
+    "neutrales öl",
+    "neutrales pflanzenöl",
+    "olivenöl",
+    "pfeffer",
+    "pflanzenöl",
+    "rapsöl",
+    "salz",
+    "schwarzer pfeffer",
+    "sonnenblumenöl",
+    "speiseöl",
+    "wasser",
+    "weißer pfeffer",
+    "öl",
+}
+
 _INFLECTION_SUFFIXES = ("", "e", "en", "er", "n", "s")
 
 
@@ -168,6 +191,19 @@ def is_shopping_catalog_candidate(
         if str(value or "").strip()
     }
     return bool(values) and not any(value in _CATALOG_EXCLUDED_PRODUCTS for value in values)
+
+
+def is_recipe_filter_pantry_basic(
+    name: str,
+    canonical_name: Optional[str] = None,
+) -> bool:
+    """Kennzeichnet häufige Grundzutaten für eine ruhigere Filterauswahl."""
+    values = {
+        " ".join(str(value or "").casefold().split())
+        for value in (name, canonical_name)
+        if str(value or "").strip()
+    }
+    return any(value in _RECIPE_FILTER_PANTRY_BASICS for value in values)
 
 
 def normalize_shopping_category(value: Optional[str]) -> str:

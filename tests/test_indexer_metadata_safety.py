@@ -68,6 +68,61 @@ def test_indexer_preserves_known_url_when_sidecar_omits_url(test_db, tmp_path, m
     assert test_db.recipe_get(recipe_id)["url"] == "https://www.tiktok.com/@koch/video/987"
 
 
+def test_indexer_prefers_generated_image_over_resized_http_caches(test_db, tmp_path):
+    folder = tmp_path / "Hauptgericht" / "Pasta" / "Generiert"
+    folder.mkdir(parents=True)
+    (folder / "info.json").write_text(
+        json.dumps({"name": "Generiert", "url": "https://example.test/generiert"}),
+        encoding="utf-8",
+    )
+    (folder / "description.txt").write_text("Eine vollständige Beschreibung", encoding="utf-8")
+    (folder / "thumb.jpg").write_bytes(b"source")
+    (folder / "thumb-generated.jpg").write_bytes(b"generated")
+    (folder / "thumb-w400.jpg").write_bytes(b"cache-400")
+    (folder / "thumb-w800.jpg").write_bytes(b"cache-800")
+    recipe_id = test_db.recipe_upsert(
+        url="https://example.test/generiert",
+        name="Generiert",
+        type="Hauptgericht",
+        category="Pasta",
+        folder_path=str(folder),
+        description="Eine vollständige Beschreibung",
+        thumb_filename="thumb-w400.jpg",
+        video_filename=None,
+        source_added_at=1,
+    )
+
+    indexer._index_one(test_db, folder, "Hauptgericht", "Pasta")
+
+    assert test_db.recipe_get(recipe_id)["thumb_filename"] == "thumb-generated.jpg"
+
+
+def test_indexer_preserves_intentionally_restored_active_image(test_db, tmp_path):
+    folder = tmp_path / "Hauptgericht" / "Pasta" / "Wiederhergestellt"
+    folder.mkdir(parents=True)
+    (folder / "info.json").write_text(
+        json.dumps({"name": "Wiederhergestellt", "url": "https://example.test/original"}),
+        encoding="utf-8",
+    )
+    (folder / "thumb.jpg").write_bytes(b"restored")
+    (folder / "thumb-generated.jpg").write_bytes(b"older-generated")
+    recipe_id = test_db.recipe_upsert(
+        url="https://example.test/original",
+        name="Wiederhergestellt",
+        type="Hauptgericht",
+        category="Pasta",
+        folder_path=str(folder),
+        description=None,
+        thumb_filename="thumb.jpg",
+        video_filename=None,
+        source_added_at=1,
+    )
+
+    indexer._index_one(test_db, folder, "Hauptgericht", "Pasta")
+
+    assert test_db.recipe_get(recipe_id)["thumb_filename"] == "thumb.jpg"
+
+
 def test_display_only_rename_is_persisted_in_atomic_sidecar(test_db, tmp_path, monkeypatch):
     folder = tmp_path / "Hauptgericht" / "Pasta" / "Alter_Ordner"
     folder.mkdir(parents=True)

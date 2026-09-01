@@ -497,6 +497,13 @@ class ScraperJob:
         structured_recipe = None
         if content_type == "recipe":
             working_description = str(description or "").strip()
+            subtitle_text = str(metadata.get("subtitle_text") or "").strip()
+            if subtitle_text:
+                working_description = self._combine_social_text(
+                    working_description,
+                    "AUTOMATISCHES TRANSKRIPT DER QUELLE",
+                    subtitle_text,
+                )
             if working_description:
                 analysis = self._analyze_recipe(working_description)
                 structured_recipe = self._extract_recipe_data(working_description)
@@ -571,6 +578,7 @@ class ScraperJob:
                 "extraction_method": structured_recipe.method,
                 "warnings": structured_recipe.warnings,
                 "thumbnail_vision_used": thumbnail_scanned,
+                "source_subtitles_used": bool(subtitle_text),
                 "video_frames_with_text": (
                     video_result.frame_text_count if video_result else 0
                 ),
@@ -1615,7 +1623,12 @@ class ScraperJob:
                 if player_description and len(player_description) >= len(current_description):
                     metadata["description_text"] = player_description
                     metadata["description_source"] = "tiktok-player"
-                for key in ("canonical_url", "thumbnail_bytes", "thumbnail_suffix"):
+                for key in (
+                    "canonical_url",
+                    "thumbnail_bytes",
+                    "thumbnail_suffix",
+                    "subtitle_text",
+                ):
                     if player_meta.get(key) and not metadata.get(key):
                         metadata[key] = player_meta[key]
 

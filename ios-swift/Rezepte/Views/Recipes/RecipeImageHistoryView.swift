@@ -103,7 +103,11 @@ struct RecipeImageHistoryView: View {
                     statusBadge(status)
                 }
             }
-            AuthenticatedImage(recipeID: recipeID, height: 240)
+            AuthenticatedImage(
+                recipeID: recipeID,
+                height: 240,
+                refreshToken: refreshToken
+            )
                 .id(refreshToken)
                 .clipShape(RoundedRectangle(cornerRadius: 18))
             if let model = recipe?.imageGenerationModel?.nilIfEmpty {

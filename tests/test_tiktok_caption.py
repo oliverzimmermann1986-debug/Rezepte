@@ -10,6 +10,7 @@ from app.core.tiktok_caption import (
     _tiktok_post_id,
     caption_from_article_text,
     clean_expanded_caption,
+    clean_webvtt_subtitles,
     fetch_tiktok_player_metadata,
     is_tiktok_url,
     parse_netscape_cookies,
@@ -164,6 +165,49 @@ def test_metadata_from_player_payload_extracts_first_photo():
     }
 
 
+def test_metadata_from_player_payload_prefers_german_subtitles():
+    metadata = _metadata_from_player_payload(
+        {
+            "items": [{
+                "desc": "Käse-Lauch-Pfannkuchen",
+                "video_info": {
+                    "cla_info": {
+                        "caption_infos": [
+                            {
+                                "language_code": "en",
+                                "url_list": [
+                                    "https://p16.tiktokcdn-eu.com/en.vtt"
+                                ],
+                            },
+                            {
+                                "language_code": "de",
+                                "lang": "deu-DE",
+                                "url_list": [
+                                    "https://p16.tiktokcdn-eu.com/de.vtt"
+                                ],
+                            },
+                        ]
+                    }
+                },
+            }]
+        }
+    )
+
+    assert metadata["subtitle_url"].endswith("/de.vtt")
+
+
+def test_clean_webvtt_subtitles_removes_timing_markup_and_duplicates():
+    cleaned = clean_webvtt_subtitles(
+        "WEBVTT\nLanguage: de\n\n1\n00:00:01.000 --> 00:00:03.000\n"
+        "<v Anton>2 Eier und eine Prise Salz</v>\n\n"
+        "00:00:03.000 --> 00:00:05.000\n"
+        "<v Anton>2 Eier und eine Prise Salz</v>\n"
+        "150 g Mehl und 250 ml Milch\n"
+    )
+
+    assert cleaned == "2 Eier und eine Prise Salz\n150 g Mehl und 250 ml Milch"
+
+
 def test_tiktok_cdn_validation_rejects_lookalikes_and_non_https():
     assert _is_allowed_tiktok_cdn_url("https://p16.tiktokcdn-eu.com/image.jpeg")
     assert not _is_allowed_tiktok_cdn_url("http://p16.tiktokcdn-eu.com/image.jpeg")
@@ -176,6 +220,7 @@ def test_fetch_tiktok_player_metadata_resolves_short_url_and_downloads_photo(mon
     post_id = "7675767326981016864"
     canonical = f"https://www.tiktok.com/@koch/photo/{post_id}"
     image_url = "https://p16-sign-va.tiktokcdn-eu.com/cover.jpeg"
+    subtitle_url = "https://p16-sign-va.tiktokcdn-eu.com/de.vtt"
     calls = []
 
     class Response:
@@ -216,10 +261,27 @@ def test_fetch_tiktok_player_metadata_resolves_short_url_and_downloads_photo(mon
                                     {"display_image": {"url_list": [image_url]}}
                                 ]
                             },
+                            "video_info": {
+                                "cla_info": {
+                                    "caption_infos": [{
+                                        "language_code": "de",
+                                        "url_list": [subtitle_url],
+                                    }]
+                                }
+                            },
                         }
                     ]
                 },
                 body=b"{}",
+            )
+        if url == subtitle_url:
+            return Response(
+                url=subtitle_url,
+                body=(
+                    b"WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n"
+                    b"200 g Halloumi und 250 g Nudeln\n"
+                ),
+                headers={"content-type": "text/vtt"},
             )
         assert url == image_url
         return Response(
@@ -234,9 +296,10 @@ def test_fetch_tiktok_player_metadata_resolves_short_url_and_downloads_photo(mon
 
     assert metadata["canonical_url"] == canonical
     assert metadata["description_text"] == "Nudelsalat mit Halloumi"
+    assert metadata["subtitle_text"] == "200 g Halloumi und 250 g Nudeln"
     assert metadata["thumbnail_bytes"] == b"jpeg-data"
     assert metadata["thumbnail_suffix"] == ".jpg"
-    assert len(calls) == 3
+    assert len(calls) == 4
 
 
 def test_fetch_tiktok_player_caption_captures_items_response():
