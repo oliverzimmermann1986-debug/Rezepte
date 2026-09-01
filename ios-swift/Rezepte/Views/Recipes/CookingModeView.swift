@@ -29,6 +29,7 @@ struct CookingModeView: View {
 
     private var originalServings: Int { recipe.servings ?? servings }
     private var multiplier: Double { Double(servings) / Double(max(1, originalServings)) }
+    private var canScale: Bool { recipe.servings != nil }
     private var currentStep: RecipeStep? {
         recipe.steps.indices.contains(activeStep) ? recipe.steps[activeStep] : nil
     }
@@ -42,10 +43,6 @@ struct CookingModeView: View {
                 ProgressView("Kochmodus wird vorbereitet …")
             } else if recipe.steps.isEmpty {
                 ErrorState(message: "Dieses Rezept hat noch keine Zubereitungsschritte.") {
-                    dismiss()
-                }
-            } else if recipe.servings == nil {
-                ErrorState(message: "Bitte ergänze zuerst die Portionszahl im Rezept, damit Zutaten zuverlässig skaliert werden können.") {
                     dismiss()
                 }
             } else if hasStartedCooking {
@@ -72,7 +69,11 @@ struct CookingModeView: View {
         .alert("Guten Appetit!", isPresented: $showCompletion) {
             Button("Fertig") { dismiss() }
         } message: {
-            Text("\(recipe.name) wurde für \(servings) Portionen als gekocht gespeichert.")
+            Text(
+                canScale
+                    ? "\(recipe.name) wurde für \(servings) Portionen als gekocht gespeichert."
+                    : "\(recipe.name) wurde als gekocht gespeichert."
+            )
         }
     }
 
@@ -85,20 +86,26 @@ struct CookingModeView: View {
                     .accessibilityHidden(true)
 
                 VStack(spacing: 8) {
-                    Text("Für wie viele Portionen kochst du?")
+                    Text(canScale ? "Für wie viele Portionen kochst du?" : "Bereit zum Kochen?")
                         .font(.title2.bold())
                         .multilineTextAlignment(.center)
-                    Text("Die Zutatenmengen werden vor dem Start automatisch angepasst.")
+                    Text(
+                        canScale
+                            ? "Die Zutatenmengen werden vor dem Start automatisch angepasst."
+                            : "Die Portionszahl fehlt. Du kannst trotzdem kochen; die Zutaten bleiben in Originalmenge."
+                    )
                         .font(.callout)
                         .foregroundStyle(theme.muted)
                         .multilineTextAlignment(.center)
                 }
 
-                ServingPicker(
-                    value: $servings,
-                    original: originalServings,
-                    disabled: isSaving
-                )
+                if canScale {
+                    ServingPicker(
+                        value: $servings,
+                        original: originalServings,
+                        disabled: isSaving
+                    )
+                }
 
                 if let warningMessage {
                     Label(warningMessage, systemImage: "exclamationmark.triangle")
@@ -147,7 +154,9 @@ struct CookingModeView: View {
                         .cardSurface()
                 }
 
-                servingSelector
+                if canScale {
+                    servingSelector
+                }
 
                 if let step = currentStep {
                     currentStepCard(step)
@@ -408,7 +417,7 @@ struct CookingModeView: View {
 
     private func loadProgress() async {
         defer { isLoading = false }
-        guard !recipe.steps.isEmpty, recipe.servings != nil else { return }
+        guard !recipe.steps.isEmpty else { return }
         do {
             let progress = try await session.api.cookingProgress(id: recipe.id)
             apply(progress)

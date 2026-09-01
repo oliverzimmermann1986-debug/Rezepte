@@ -162,8 +162,15 @@ struct IngredientFacet: Codable, Identifiable, Hashable, Sendable {
     let canonicalName: String
     let displayName: String
     let n: Int
+    let group: String?
+    let isBasic: Bool?
 
     var id: String { canonicalName }
+    var groupName: String {
+        let value = group?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? "Sonstiges" : value
+    }
+    var isPantryBasic: Bool { isBasic ?? false }
 }
 
 struct RecipeSummary: Codable, Identifiable, Hashable {

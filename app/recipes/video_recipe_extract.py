@@ -283,6 +283,7 @@ def analyze_recipe_video_file(
     existing_tags: Optional[list[str]] = None,
     existing_canonical: Optional[list[str]] = None,
     description: Optional[str] = None,
+    force_refresh: bool = False,
 ) -> VideoAnalysisResult:
     """Analysiert eine explizite Videodatei für den Erst- oder Nachimport.
 
@@ -319,7 +320,18 @@ def analyze_recipe_video_file(
             evidence_text=source_text,
         )
 
-    cache = _load_cache(video, settings)
+    cache = (
+        {
+            "version": CACHE_VERSION,
+            "video": _fingerprint(video),
+            "frame_texts": [],
+            "frames_attempted": False,
+            "transcript": None,
+            "transcription_attempted": False,
+        }
+        if force_refresh
+        else _load_cache(video, settings)
+    )
     frame_texts = [str(item).strip() for item in cache.get("frame_texts") or [] if str(item).strip()]
     if not frame_texts and not cache.get("frames_attempted"):
         frame_texts = _extract_frame_texts(analyzer, video, settings)
@@ -381,6 +393,7 @@ def analyze_recipe_with_video_fallback(
     existing_tags: Optional[list[str]] = None,
     existing_canonical: Optional[list[str]] = None,
     description: Optional[str] = None,
+    force_refresh: bool = False,
 ) -> VideoAnalysisResult:
     """Analysiert Caption, dann Frames und zuletzt bei Bedarf die Audiospur."""
     source_text = (
@@ -407,4 +420,5 @@ def analyze_recipe_with_video_fallback(
         existing_tags=existing_tags,
         existing_canonical=existing_canonical,
         description=source_text,
+        force_refresh=force_refresh,
     )

@@ -331,6 +331,38 @@ def test_list_can_include_and_exclude_ingredients(client, test_db):
     } == {"mit-zwiebel": 2, "ohne-zwiebel": 2}
 
 
+def test_ingredient_facets_include_groups_and_pantry_basic_marker(client, test_db):
+    recipe = _create_recipe(
+        test_db,
+        name="Gruppierte Zutaten",
+        folder_path="/tmp/grouped-ingredient-facets",
+    )
+    test_db.recipe_set_extraction_result(
+        recipe["id"],
+        "ok",
+        [
+            {"name": "Salz", "canonical_name": "salz", "amount": 1, "unit": "TL"},
+            {"name": "Tomate", "canonical_name": "tomate", "amount": 2, "unit": "Stück"},
+            {"name": "Lachs", "canonical_name": "lachs", "amount": 250, "unit": "g"},
+        ],
+    )
+
+    response = client.get(
+        "/api/recipes/facets",
+        params={"search": "Gruppierte Zutaten"},
+    )
+
+    assert response.status_code == 200
+    ingredients = {
+        item["canonical_name"]: item for item in response.json()["ingredients"]
+    }
+    assert ingredients["salz"]["is_basic"] is True
+    assert ingredients["salz"]["group"] == "Vorrat & Konserven"
+    assert ingredients["tomate"]["is_basic"] is False
+    assert ingredients["tomate"]["group"] == "Obst & Gemüse"
+    assert ingredients["lachs"]["group"] == "Fleisch & Fisch"
+
+
 def test_list_search_in_name(client, test_db):
     _create_recipe(test_db, name="Spargelsalat", folder_path="/tmp/x1")
     _create_recipe(test_db, name="Tomatenpasta", folder_path="/tmp/x2")

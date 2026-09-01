@@ -207,6 +207,15 @@ def test_empty_frame_and_audio_results_are_not_retried(tmp_path, monkeypatch):
 
     assert calls == {"frames": 1, "audio": 1}
 
+    analyze_recipe_with_video_fallback(
+        Analyzer(),
+        recipe,
+        recipe_root=root,
+        force_refresh=True,
+    )
+
+    assert calls == {"frames": 2, "audio": 2}
+
 
 def test_manual_extract_fills_missing_steps_without_replacing_ingredients(
     client,

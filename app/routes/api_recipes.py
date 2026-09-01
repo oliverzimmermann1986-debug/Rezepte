@@ -66,6 +66,10 @@ from ..recipes.source_integrity import (
     source_diff,
     source_fingerprint,
 )
+from ..recipes.shopping_catalog import (
+    infer_shopping_category,
+    is_recipe_filter_pantry_basic,
+)
 from ..recipes.substitution_lab import (
     resolve_candidate,
     substitution_lab_payload,
@@ -367,11 +371,20 @@ def facets(
         search=search, ingredients_status=ingredients_status, verified=verified,
         favorite_only=favorite_only, min_rating=min_rating, ratings=rating,
     )
+    ingredient_facets = []
+    for facet in db.ingredient_facets(**flt)[:120]:
+        display_name = facet.get("display_name") or ""
+        canonical_name = facet.get("canonical_name") or ""
+        ingredient_facets.append({
+            **facet,
+            "group": infer_shopping_category(display_name, canonical_name),
+            "is_basic": is_recipe_filter_pantry_basic(display_name, canonical_name),
+        })
     result = {
         "types": types,
         "categories": cats,
         "tags": db.tag_facets(**flt),
-        "ingredients": db.ingredient_facets(**flt)[:50],
+        "ingredients": ingredient_facets,
     }
     _FACET_CACHE.set(cache_key, result)
     return result
@@ -1798,6 +1811,16 @@ def rescrape_recipe(
             if expanded:
                 meta["description_text"] = expanded
                 description_source = "tiktok-browser"
+        subtitle_text = str(player_meta.get("subtitle_text") or "").strip()
+        if subtitle_text:
+            base_description = str(meta.get("description_text") or "").strip()
+            if subtitle_text not in base_description:
+                meta["description_text"] = (
+                    f"{base_description}\n\n"
+                    "AUTOMATISCHES TRANSKRIPT DER QUELLE:\n"
+                    f"{subtitle_text}"
+                ).strip()
+            description_source = "tiktok-subtitles"
     if not meta:
         return {"ok": False, "error": "yt-dlp lieferte nichts — URL down/geo-blocked/login nötig?"}
 
@@ -2193,7 +2216,15 @@ def compute_nutrition_bulk(request: Request, limit: int = Query(50, ge=1, le=200
 
 
 @router.post("/{recipe_id}/extract", dependencies=[Depends(require_admin)])
-def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Request):
+def extract_one(
+    recipe_id: int,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    refresh_media: bool = Query(
+        False,
+        description="Gespeicherte Frame-/Audio-Belege verwerfen und erneut auswerten",
+    ),
+):
     """Manueller Trigger: extrahiert (oder re-extrahiert) Zutaten + Schritte +
     Portionen für EIN Rezept synchron. Single KI-Call via analyze_recipe_content."""
     db = get_db()
@@ -2246,6 +2277,7 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
             existing_tags=existing_tags,
             existing_canonical=existing_canonical,
             description=desc,
+            force_refresh=refresh_media,
         )
         content = video_result.content
     except Exception as e:
@@ -2312,6 +2344,7 @@ def extract_one(recipe_id: int, background_tasks: BackgroundTasks, request: Requ
             "frames_with_text": video_result.frame_text_count,
             "audio_transcribed": video_result.transcribed,
             "reason": video_result.reason,
+            "refreshed": refresh_media,
         },
     }
 

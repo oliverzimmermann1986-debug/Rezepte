@@ -148,6 +148,23 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer api-token")
     }
 
+    func testImageRefreshTokenBustsTheCachedThumbnailURL() async throws {
+        let client = APIClient()
+        try await client.configure(server: "https://example.de", token: "api-token")
+
+        let request = try await client.imageRequest(
+            recipeID: 42,
+            refreshToken: "generation-2"
+        )
+        let components = try XCTUnwrap(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false))
+
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value) })["v"],
+            "generation-2"
+        )
+        XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
+    }
+
     func testCloudflareLoginPageGetsSpecificError() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)

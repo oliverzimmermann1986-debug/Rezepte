@@ -267,12 +267,16 @@ def test_swiftui_checks_capabilities_and_persists_content_language():
 
 def test_swiftui_image_generation_exposes_backup_compare_restore_flow():
     history = _read(SWIFT / "Views" / "Recipes" / "RecipeImageHistoryView.swift")
+    authenticated_image = _read(SWIFT / "Views" / "Common" / "AuthenticatedImage.swift")
     admin = _read(SWIFT / "Views" / "Admin" / "AdminView.swift")
     api = _read(SWIFT / "Networking" / "APIClient.swift")
 
     assert "Gesicherte Originale" in history
     assert "restoreImageBackup" in history
     assert "Original und generierte Fassung vergleichen" in history
+    assert "refreshToken: refreshToken" in history
+    assert "refreshToken?.uuidString" in authenticated_image
+    assert ".reloadIgnoringLocalCacheData" in api
     assert "Sicherungsbarriere" in admin
     assert "Altbilder sichern & neu generieren" in admin
     assert '"/api/recipes/images/backfill"' in api
@@ -304,7 +308,9 @@ def test_swiftui_cooking_mode_persists_progress_scales_and_completes_idempotentl
     assert "updateCookingProgress" in cooking
     assert "completedSteps" in cooking
     assert "multiplier" in cooking
-    assert 'Text("Für wie viele Portionen kochst du?")' in cooking
+    assert '"Für wie viele Portionen kochst du?"' in cooking
+    assert '"Die Portionszahl fehlt. Du kannst trotzdem kochen' in cooking
+    assert "private var canScale" in cooking
     assert '"Kochen starten"' in cooking
     assert "hasStartedCooking = progress.exists" in cooking
     assert "startCooking()" in cooking
@@ -312,6 +318,12 @@ def test_swiftui_cooking_mode_persists_progress_scales_and_completes_idempotentl
     assert "completionRequestID" in cooking
     assert '"Idempotency-Key": idempotencyKey' in api
     assert '"/api/recipes/\\(id)/cooking-complete"' in api
+    assert '"Für heute einplanen"' in detail
+    assert '"Anderen Tag wählen"' in detail
+    assert "PlanRecipeSheet" in detail
+    assert "session.api.addMeal" in detail
+    assert "reextractRecipeSource" in detail
+    assert 'name: "refresh_media"' in api
 
 
 def test_swiftui_shopping_asks_for_servings_and_sends_exact_selection():
@@ -354,6 +366,10 @@ def test_swiftui_recipe_filter_has_live_count_and_direct_ingredient_choices():
     assert "applyButtonTitle" in filters
     assert "checkmark.square.fill" in filters
     assert '"Mit"' in filters and '"Ohne"' in filters
+    assert '"Küchengrundlagen anzeigen"' in filters
+    assert "DisclosureGroup" in filters
+    assert "ingredientGroups" in filters
+    assert "ingredient.isPantryBasic" in filters
     assert ".cardSurface()" in filters
     assert "initialMatchCount: total" in recipes
     assert '"/api/recipes/count"' in api
