@@ -238,6 +238,8 @@ def _is_resized_thumbnail_cache(name: str) -> bool:
 def _select_recipe_thumbnail(
     folder_items: list[Path],
     existing_filename: Optional[str],
+    *,
+    prefer_generated: bool = False,
 ) -> Optional[str]:
     """Wählt das aktive Bild deterministisch und ignoriert Resize-Caches.
 
@@ -255,10 +257,13 @@ def _select_recipe_thumbnail(
         and not _is_resized_thumbnail_cache(item.name)
     }
     existing_name = Path(str(existing_filename or "")).name
+    by_casefold = {name.casefold(): name for name in candidates}
+    generated_name = by_casefold.get("thumb-generated.jpg")
+    if prefer_generated and generated_name:
+        return generated_name
     if existing_name and existing_name in candidates:
         return existing_name
 
-    by_casefold = {name.casefold(): name for name in candidates}
     for preferred in (
         "thumb-generated.jpg",
         "thumb.jpg",
@@ -371,6 +376,9 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
     thumb = _select_recipe_thumbnail(
         folder_items,
         existed.get("thumb_filename") if existed else None,
+        prefer_generated=bool(
+            existed and existed.get("image_generation_status") == "ok"
+        ),
     )
     video_candidates = sorted(
         item.name
