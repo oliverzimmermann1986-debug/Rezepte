@@ -138,6 +138,14 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert '-newer "$ARTIFACT_DIR/test-start.marker"' in script
     assert "-name 'Rezepte*.ips'" in script
     assert 'Devices/$simulator_id/data/Library/Logs/CrashReporter' in script
+    assert "sample_hung_simulator_app &" in script
+    assert "App event loop idle notification not received" in script
+    assert '-v device="/Devices/$simulator_id/"' in script
+    assert '"$app_command" == *"/Devices/$simulator_id/"*' in script
+    assert '/usr/bin/sample "$app_pid" 5 10' in script
+    assert "main-thread-hang.sample.txt" in script
+    assert script.index("sample_hung_simulator_app &") < script.index("xcodebuild test-without-building")
+    assert script.count("    stop_hang_monitor") >= 1
     assert "recordVideo" in script
     assert '${APP_REVIEW_PASSWORD:?' in script
     assert "xcodebuild build-for-testing" in script

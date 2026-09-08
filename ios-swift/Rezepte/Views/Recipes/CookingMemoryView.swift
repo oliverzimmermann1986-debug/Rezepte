@@ -1,4 +1,5 @@
 import SwiftUI
+import OSLog
 
 struct CookingMemorySection: View {
     let recipe: Recipe
@@ -206,6 +207,10 @@ struct CookingMemorySection: View {
 }
 
 struct CookingReflectionView: View {
+    private enum Field: String, Hashable {
+        case note, adjustments, nextTime
+    }
+
     let recipeID: Int
     let recipeName: String
     let servings: Int?
@@ -217,7 +222,8 @@ struct CookingReflectionView: View {
     @State private var draft = CookingMemoryRequest()
     @State private var didLoad = false
     @State private var errorMessage: String?
-    @FocusState private var isEditing: Bool
+    // Each editor needs its own focus value; sharing Bool.true is ambiguous.
+    @FocusState private var focusedField: Field?
 
     init(recipe: Recipe, stepNumber: Int?, cookedServings: Int? = nil, onSaved: @escaping () -> Void) {
         recipeID = recipe.id
@@ -250,15 +256,15 @@ struct CookingReflectionView: View {
                 }
                 Section("Wie ist es geworden?") {
                     TextField("Geschmack, Konsistenz, Ergebnis …", text: $draft.note, axis: .vertical)
-                        .lineLimit(3...6).focused($isEditing).accessibilityIdentifier("cookMemoryNote")
+                        .lineLimit(3...6).focused($focusedField, equals: .note).accessibilityIdentifier("cookMemoryNote")
                 }
                 Section("Das habe ich angepasst") {
                     TextField("Zum Beispiel weniger Salz oder länger gebacken", text: $draft.adjustments, axis: .vertical)
-                        .lineLimit(2...5).focused($isEditing).accessibilityIdentifier("cookMemoryAdjustments")
+                        .lineLimit(2...5).focused($focusedField, equals: .adjustments).accessibilityIdentifier("cookMemoryAdjustments")
                 }
                 Section("Beim nächsten Mal") {
                     TextField("Das möchte ich mir merken", text: $draft.nextTime, axis: .vertical)
-                        .lineLimit(2...5).focused($isEditing).accessibilityIdentifier("cookMemoryNextTime")
+                        .lineLimit(2...5).focused($focusedField, equals: .nextTime).accessibilityIdentifier("cookMemoryNextTime")
                 }
                 Section {
                     if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
@@ -277,11 +283,11 @@ struct CookingReflectionView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Schließen") { dismiss() }.accessibilityIdentifier("cookMemoryCancel")
+                    Button("Schließen") { close() }.accessibilityIdentifier("cookMemoryCancel")
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
-                    Button("Fertig") { isEditing = false }.accessibilityIdentifier("cookMemoryHideKeyboard")
+                    Button("Fertig") { focusedField = nil }.accessibilityIdentifier("cookMemoryHideKeyboard")
                 }
             }
             .task {
@@ -297,7 +303,24 @@ struct CookingReflectionView: View {
                 do { try CookingMemoryStorage.update(session: session) { $0.drafts[draftKey] = value } }
                 catch { errorMessage = "Entwurf nicht gesichert: \(error.localizedDescription)" }
             }
+            .onChange(of: focusedField) { _, value in
+                traceLifecycle("focus: \(value?.rawValue ?? "none")")
+            }
         }
+        .onDisappear { traceLifecycle("disappeared") }
+    }
+
+    private func close() {
+        traceLifecycle("dismiss requested; focus: \(focusedField?.rawValue ?? "none")")
+        dismiss()
+        traceLifecycle("dismiss returned")
+    }
+
+    private func traceLifecycle(_ event: String) {
+        #if DEBUG
+        // Lifecycle only: never include personal notes, account data or tokens.
+        Logger(subsystem: "Rezepte", category: "CookingReflection").notice("\(event, privacy: .public)")
+        #endif
     }
 
     private func save() {

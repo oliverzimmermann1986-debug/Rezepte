@@ -37,6 +37,48 @@ curl --fail --silent --show-error --max-time 30 "${curl_tls_options[@]}" \
 
 simulator_id=""
 recorder_pid=""
+hang_monitor_pid=""
+stop_hang_monitor() {
+    if [[ -n "$hang_monitor_pid" ]] && kill -0 "$hang_monitor_pid" >/dev/null 2>&1; then
+        kill -TERM "$hang_monitor_pid" >/dev/null 2>&1 || true
+        wait "$hang_monitor_pid" >/dev/null 2>&1 || true
+    fi
+    hang_monitor_pid=""
+}
+sample_hung_simulator_app() {
+    # XCTest's remote spindump is unsupported on some simulator runtimes.
+    # Sample only after an observed idle timeout, while the app is still alive;
+    # post-test sampling would merely see the teardown SIGTERM instead.
+    local tour_log="$ARTIFACT_DIR/xcodebuild-review-tour.log"
+    local app_pid=""
+    local app_command=""
+    local noticed_timeout=0
+    while true; do
+        if [[ -f "$tour_log" ]] && grep -Fq 'App event loop idle notification not received' "$tour_log"; then
+            if [[ "$noticed_timeout" == 0 ]]; then
+                mkdir -p "$ARTIFACT_DIR/diagnostics"
+                printf 'Observed XCTest idle timeout; locating this simulator app.\n' \
+                    >"$ARTIFACT_DIR/diagnostics/main-thread-hang.sample.log"
+                noticed_timeout=1
+            fi
+            app_pid="$(ps -axww -o pid=,command= | awk -v device="/Devices/$simulator_id/" \
+                'index($0, device) && index($0, "/Rezepte.app/Rezepte") {print $1; exit}')" || true
+            if [[ "$app_pid" =~ ^[0-9]+$ ]]; then
+                app_command="$(ps -p "$app_pid" -ww -o command=)" || true
+                # Never sample another simulator, the user's running app or a
+                # similarly named process. Do not persist process arguments.
+                if [[ "$app_command" == *"/Devices/$simulator_id/"* && "$app_command" == *"/Rezepte.app/Rezepte"* ]]; then
+                    mkdir -p "$ARTIFACT_DIR/diagnostics"
+                    /usr/bin/sample "$app_pid" 5 10 \
+                        -file "$ARTIFACT_DIR/diagnostics/main-thread-hang.sample.txt" \
+                        >>"$ARTIFACT_DIR/diagnostics/main-thread-hang.sample.log" 2>&1 || true
+                    return
+                fi
+            fi
+        fi
+        sleep 2
+    done
+}
 stop_recorder() {
     if [[ -n "$recorder_pid" ]] && kill -0 "$recorder_pid" >/dev/null 2>&1; then
         kill -INT "$recorder_pid" >/dev/null 2>&1 || true
@@ -45,6 +87,7 @@ stop_recorder() {
     recorder_pid=""
 }
 cleanup() {
+    stop_hang_monitor
     stop_recorder
     if [[ -n "$simulator_id" ]]; then
         xcrun simctl shutdown "$simulator_id" >/dev/null 2>&1 || true
@@ -98,6 +141,8 @@ recorder_pid="$!"
 sleep 2
 
 touch "$ARTIFACT_DIR/test-start.marker"
+sample_hung_simulator_app &
+hang_monitor_pid="$!"
 test_status=0
 xcodebuild test-without-building \
     -project "$IOS_ROOT/Rezepte.xcodeproj" \
@@ -111,6 +156,7 @@ xcodebuild test-without-building \
     "${simulator_signing[@]}" \
     | tee "$ARTIFACT_DIR/xcodebuild-review-tour.log" || test_status="$?"
 
+stop_hang_monitor
 sleep 2
 stop_recorder
 
