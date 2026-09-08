@@ -55,9 +55,14 @@ actor APIClient {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
+    private var offlineAccount: OfflineAccount?
+    private let offlineStore: OfflineStore
+    private var configurationID = UUID()
+    private var offlineRecipeIDs: Set<Int> = []
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = .shared, offlineStore: OfflineStore = .shared) {
         self.session = session
+        self.offlineStore = offlineStore
         decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         encoder = JSONEncoder()
@@ -83,7 +88,32 @@ actor APIClient {
         baseURL = url
         self.token = token
         self.cloudflareCredentials = cloudflareCredentials
+        offlineAccount = nil
+        offlineRecipeIDs = []
+        configurationID = UUID()
     }
+
+    func setOfflineAccount(_ account: OfflineAccount?) {
+        offlineAccount = account
+    }
+
+    /// Check on this actor immediately before constructing a scoped request.
+    /// A delayed outbox task must never borrow a newly signed-in account's token.
+    func requireOfflineAccount(_ expected: OfflineAccount) throws {
+        guard offlineAccount == expected, baseURL?.absoluteString == expected.server,
+              token?.isEmpty == false else { throw CancellationError() }
+    }
+
+    func clearCredentials() {
+        token = nil
+        cloudflareCredentials = nil
+        offlineAccount = nil
+        offlineRecipeIDs = []
+        configurationID = UUID()
+        session.configuration.urlCache?.removeAllCachedResponses()
+    }
+
+    func recipeWasLoadedOffline(id: Int) -> Bool { offlineRecipeIDs.contains(id) }
 
     static func normalizedServerURL(_ value: String) -> URL? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -94,6 +124,13 @@ actor APIClient {
             return nil
         }
         let cleanPath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components.scheme = scheme
+        components.host = components.host?.lowercased()
+        components.user = nil
+        components.password = nil
+        if (scheme == "https" && components.port == 443) || (scheme == "http" && components.port == 80) {
+            components.port = nil
+        }
         components.path = cleanPath.isEmpty ? "" : "/\(cleanPath)"
         components.query = nil
         components.fragment = nil
@@ -121,6 +158,10 @@ actor APIClient {
         forceRefresh: Bool = false
     ) throws -> URLRequest {
         var query = [URLQueryItem(name: "w", value: String(width))]
+        if let offlineAccount {
+            // URLCache keys must not share private thumbnails across accounts.
+            query.append(URLQueryItem(name: "client_cache_scope", value: offlineAccount.id))
+        }
         if let cacheVersion, !cacheVersion.isEmpty {
             query.append(URLQueryItem(name: "v", value: cacheVersion))
         }
@@ -218,7 +259,30 @@ actor APIClient {
     }
 
     func recipe(id: Int) async throws -> Recipe {
-        try await send("/api/recipes/\(id)")
+        let account = offlineAccount
+        let configuration = configurationID
+        do {
+            let recipe: Recipe = try await send("/api/recipes/\(id)")
+            guard configuration == configurationID else { throw CancellationError() }
+            offlineRecipeIDs.remove(id)
+            if let account, account == offlineAccount {
+                // A failed disk write must not hide the live recipe. The explicit
+                // offline library lists only data that was actually persisted.
+                try? offlineStore.saveRecipe(recipe, account: account)
+            }
+            return recipe
+        } catch {
+            guard configuration == configurationID else { throw CancellationError() }
+            if APIError.permitsOfflineFallback(error), let account, account == offlineAccount,
+               let cached = try? offlineStore.recipes(account: account).first(where: { $0.id == id }) {
+                offlineRecipeIDs.insert(id)
+                return cached.recipe
+            }
+            if let apiError = error as? APIError, case .server(404, _) = apiError, let account {
+                try? offlineStore.removeRecipe(id: id, account: account)
+            }
+            throw error
+        }
     }
 
     func updateRecipeMetadata(
@@ -392,17 +456,20 @@ actor APIClient {
         )
     }
 
-    func cookingProgress(id: Int) async throws -> CookingProgress {
-        try await send("/api/recipes/\(id)/cooking-progress")
+    func cookingProgress(id: Int, expectedAccount: OfflineAccount? = nil) async throws -> CookingProgress {
+        if let expectedAccount { try requireOfflineAccount(expectedAccount) }
+        return try await send("/api/recipes/\(id)/cooking-progress")
     }
 
     func updateCookingProgress(
         id: Int,
         completedSteps: [Int],
         activeStep: Int,
-        servings: Int
+        servings: Int,
+        expectedAccount: OfflineAccount? = nil
     ) async throws -> CookingProgress {
-        try await send(
+        if let expectedAccount { try requireOfflineAccount(expectedAccount) }
+        return try await send(
             "/api/recipes/\(id)/cooking-progress",
             method: "PUT",
             body: CookingProgressPayload(
@@ -413,16 +480,19 @@ actor APIClient {
         )
     }
 
-    func clearCookingProgress(id: Int) async throws -> APIResult {
-        try await send("/api/recipes/\(id)/cooking-progress", method: "DELETE")
+    func clearCookingProgress(id: Int, expectedAccount: OfflineAccount? = nil) async throws -> APIResult {
+        if let expectedAccount { try requireOfflineAccount(expectedAccount) }
+        return try await send("/api/recipes/\(id)/cooking-progress", method: "DELETE")
     }
 
     func completeCooking(
         id: Int,
         servings: Int,
-        idempotencyKey: String
+        idempotencyKey: String,
+        expectedAccount: OfflineAccount? = nil
     ) async throws -> CookingCompletionResult {
-        try await send(
+        if let expectedAccount { try requireOfflineAccount(expectedAccount) }
+        return try await send(
             "/api/recipes/\(id)/cooking-complete",
             method: "POST",
             body: CookingCompletePayload(servings: servings),
@@ -985,7 +1055,7 @@ actor APIClient {
         try await send("/api/recipes/images/backfill/\(runID)")
     }
 
-    private func send<Response: Decodable>(
+    func send<Response: Decodable>(
         _ path: String,
         method: String = "GET",
         query: [URLQueryItem] = [],
@@ -999,7 +1069,7 @@ actor APIClient {
         return try await execute(request)
     }
 
-    private func send<Body: Encodable, Response: Decodable>(
+    func send<Body: Encodable, Response: Decodable>(
         _ path: String,
         method: String,
         query: [URLQueryItem] = [],

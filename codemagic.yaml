@@ -40,9 +40,12 @@ workflows:
           cd ios-swift
           bash scripts/record-review-video.sh
     artifacts:
-      - ios-swift/artifacts/Rezeptregal-App-Review-1.2.0.mp4
-      - ios-swift/artifacts/*.log
-      - ios-swift/build/DerivedData/Build/Products/Debug-iphonesimulator/Rezepte.app
+      - ios-swift/artifacts/review-*/*.mp4
+      - ios-swift/artifacts/review-*/*.log
+      - ios-swift/artifacts/review-*/capture-source.txt
+      - ios-swift/artifacts/review-*/screenshots/**
+      - ios-swift/artifacts/review-*/ReviewResults.xcresult
+      - ios-swift/build/Review-*/DerivedData/Build/Products/Debug-iphonesimulator/Rezepte.app
     triggering:
       events:
         - tag

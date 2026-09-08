@@ -9,6 +9,24 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _swift_block(source: str, marker: str) -> str:
+    """Extract one named Swift source block for precise static wiring checks.
+
+    These assertions supplement native behavior tests; they are not a Swift
+    compiler or runtime permission check.
+    """
+    start = source.index("{", source.index(marker))
+    depth = 0
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start + 1:index]
+    raise AssertionError(f"Unclosed Swift block: {marker}")
+
+
 def test_swiftui_is_the_primary_native_path_with_source_first_navigation():
     tabs = _read(SWIFT / "Views" / "MainTabView.swift")
     readme = _read(ROOT / "README.md")
@@ -48,7 +66,8 @@ def test_swiftui_import_accepts_open_web_sources_and_share_extension_matches():
         assert source in inbox
     assert '.contains(url.scheme?.lowercased())' in inbox
     assert '["https", "http"].contains' in share
-    assert "Zu Quellenküche" in share
+    assert "Zu Rezeptregal" in share
+    assert "Quellenküche" not in share
 
 
 def test_swiftui_cart_uses_catalog_suggestions_icons_and_categories():
@@ -303,19 +322,45 @@ def test_swiftui_cooking_mode_persists_progress_scales_and_completes_idempotentl
     cooking = _read(SWIFT / "Views" / "Recipes" / "CookingModeView.swift")
     detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
     api = _read(SWIFT / "Networking" / "APIClient.swift")
+    session = _read(SWIFT / "Session" / "SessionStore.swift")
+    offline = _read(SWIFT / "Session" / "OfflineStore.swift")
 
     assert "CookingModeView(recipe: recipe)" in detail
-    assert "updateCookingProgress" in cooking
+    persist = _swift_block(cooking, "private func persist(")
+    assert "!session.readOnly" in persist
+    assert "try session.offlineStore.saveProgress(progress, account: account)" in persist
+    assert persist.index("saveProgress(") < persist.index("applyLocal(progress)")
+    assert persist.index("saveProgress(") < persist.index("Task { await session.syncCooking() }")
+    assert "await session.api.updateCookingProgress" not in persist
+    sync = _swift_block(session, "func syncCooking()")
+    assert "!readOnly" in sync and "!isOffline" in sync
+    assert "api.updateCookingProgress" in sync
+    assert "completedSteps: progress.completedSteps.sorted()" in sync
+    assert "servings: progress.servings, expectedAccount: account" in sync
+    assert "markProgressSynced(progress, account: account)" in sync
     assert "completedSteps" in cooking
     assert "multiplier" in cooking
     assert '"Für wie viele Portionen kochst du?"' in cooking
     assert '"Die Portionszahl fehlt. Du kannst trotzdem kochen' in cooking
     assert "private var canScale" in cooking
     assert '"Kochen starten"' in cooking
-    assert "hasStartedCooking = progress.exists" in cooking
+    load = _swift_block(cooking, "private func loadProgress()")
+    assert "hasResumableProgress = saved.started" in load
+    assert load.index("offlineStore.progress(") < load.index("api.cookingProgress(")
+    assert "localProgress.revision == initialRevision" in load
     assert "startCooking()" in cooking
     assert "CookingTimerView" in cooking
-    assert "completionRequestID" in cooking
+    finish = _swift_block(cooking, "private func finishCooking()")
+    assert "!session.readOnly" in finish and "!didFinishLocally" in finish
+    assert finish.index("offlineStore.finish(") < finish.index("showCompletion = true")
+    assert "Task { await session.syncCooking() }" in finish
+    assert "idempotencyKey: completion.id, expectedAccount: account" in sync
+    finish_store = _swift_block(offline, "func finish(")
+    assert "!pending.contains(where: { $0.id == progress.runID })" in finish_store
+    assert "PendingCookingCompletion(id: progress.runID" in finish_store
+    assert "PersistentCookingTimer" in cooking and "timer.remaining(at: context.date)" in cooking
+    assert "deadline.timeIntervalSince" not in cooking  # deadline math has one tested implementation
+    assert "Int(ceil($0.timeIntervalSince(date)))" in offline
     assert '"Idempotency-Key": idempotencyKey' in api
     assert '"/api/recipes/\\(id)/cooking-complete"' in api
     assert '"Für heute einplanen"' in detail
@@ -390,6 +435,30 @@ def test_swiftui_guest_login_is_read_only_across_navigation_and_recipe_actions()
     assert "case .signedIn = state, !readOnly" in session
     assert tabs.count("if !session.readOnly") >= 2
     assert "Gastzugang · Rezept nur ansehen" in detail
-    assert detail.count("if !session.readOnly") >= 4
+    can_edit = _swift_block(detail, "private var canEditOnline:")
+    assert "!session.readOnly && !isLocalSnapshot && !session.isOffline" in can_edit
+    # Check named actions, not the number of textual occurrences of a guard.
+    delete_guard = _swift_block(detail, "if canEditOnline")
+    assert "showDeleteConfirmation = true" in delete_guard
+    toolbar = _swift_block(detail, ".toolbar")
+    toolbar_edits = _swift_block(toolbar, "if canEditOnline")
+    for action in ("toggleFavorite()", "showMetadataEditor = true", "showDuplicatePrompt = true",
+                   "setVerified(", "computeNutrition()"):
+        assert action in toolbar_edits
+    assert "if session.readOnly || isLocalSnapshot || session.isOffline" in toolbar
+    ingredients = _swift_block(detail, "private func ingredientSection(")
+    assert "showIngredientsEditor = true" in _swift_block(ingredients, "if canEditOnline")
+    steps = _swift_block(detail, "private func stepsSection(")
+    assert "showStepsEditor = true" in _swift_block(steps, "if canEditOnline")
+    source = _swift_block(detail, "private func sourceSection(")
+    assert "showMetadataEditor = true" in _swift_block(source, "if canEditOnline")
+    ratings = _swift_block(detail, "private func ratingAndNutritionSection(")
+    assert ".disabled(!canEditOnline || isManaging)" in ratings
+    actions = _swift_block(detail, "private func actionBar(")
+    guest_actions = _swift_block(actions, "if session.readOnly")
+    assert "Gastzugang · Rezept nur ansehen" in guest_actions
+    assert "showCookingMode" not in guest_actions and "showShoppingServings" not in guest_actions
+    assert "} else {" in actions
+    assert ".disabled(recipe.ingredients.isEmpty || recipe.servings == nil || !canEditOnline)" in actions
     assert 'Section("Gastzugang")' in settings
     assert 'value: session.readOnly ? "Nur lesen" : "Bearbeiten"' in settings

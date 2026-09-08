@@ -3,6 +3,7 @@ import UIKit
 
 struct RecipeDetailView: View {
     let recipeID: Int
+    var offlineRecipe: Recipe? = nil
 
     @EnvironmentObject private var session: SessionStore
     @Environment(\.dismiss) private var dismiss
@@ -37,7 +38,13 @@ struct RecipeDetailView: View {
     @State private var isManaging = false
     @State private var translatedDescription: String?
     @State private var sourceCopied = false
+    @State private var showImportReview = false
+    @State private var isLocalSnapshot = false
+    @State private var useInitialOfflineRecipe = true
+    @State private var offlineSavedAt: Date?
     @AppStorage("content-language-v1") private var contentLanguage = ContentLanguage.de.rawValue
+
+    private var canEditOnline: Bool { !session.readOnly && !isLocalSnapshot && !session.isOffline }
 
     var body: some View {
         Group {
@@ -50,13 +57,15 @@ struct RecipeDetailView: View {
             } else if let recipe {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
-                        AuthenticatedImage(
+                        if !isLocalSnapshot && !session.isOffline {
+                            AuthenticatedImage(
                             recipeID: recipe.id,
                             height: 270,
                             refreshToken: imageRefreshToken
                         )
                             .id(imageRefreshToken)
                             .clipShape(RoundedRectangle(cornerRadius: 24))
+                        }
 
                         VStack(alignment: .leading, spacing: 8) {
                             Text(recipe.name)
@@ -64,12 +73,18 @@ struct RecipeDetailView: View {
                                 .foregroundStyle(theme.ink)
                         }
 
+                        offlineStatus
+
                         if recipe.needsManualCare {
                             ManualCareBanner(reasons: recipe.manualCareReasons)
                         }
 
                         actionBar(recipe)
                         recipePassportSection(recipe)
+
+                        if !session.readOnly, session.supports("cooking-memory-v1") {
+                            CookingMemorySection(recipe: recipe)
+                        }
 
                         ratingAndNutritionSection(recipe)
 
@@ -80,7 +95,7 @@ struct RecipeDetailView: View {
 
                         originalTextSection(recipe)
 
-                        if !session.readOnly {
+                        if canEditOnline {
                             Button(role: .destructive) {
                                 showDeleteConfirmation = true
                             } label: {
@@ -104,7 +119,7 @@ struct RecipeDetailView: View {
         .toolbar {
             if let recipe {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    if session.readOnly {
+                    if session.readOnly || isLocalSnapshot || session.isOffline {
                         ShareLink(item: [recipe.name, recipe.url].compactMap { $0 }.joined(separator: "\n")) {
                             Image(systemName: "square.and.arrow.up")
                         }
@@ -113,7 +128,7 @@ struct RecipeDetailView: View {
                             Image(systemName: "square.and.arrow.up")
                         }
                     }
-                    if !session.readOnly {
+                    if canEditOnline {
                         Button {
                             Task { await toggleFavorite() }
                         } label: {
@@ -183,6 +198,11 @@ struct RecipeDetailView: View {
                 IngredientEditorView(recipe: recipe) {
                     await load()
                 }
+            }
+        }
+        .sheet(isPresented: $showImportReview) {
+            if let recipe {
+                ImportReviewView(recipeID: recipe.id, recipeName: recipe.name) { await load(forceNetwork: true) }
             }
         }
         .sheet(isPresented: $showStepsEditor) {
@@ -313,7 +333,8 @@ struct RecipeDetailView: View {
                 HStack(spacing: 12) {
                     Button {
                         plannedServings = recipe.servings ?? 2
-                        showCookActions = true
+                        if isLocalSnapshot || session.isOffline { showCookingMode = true }
+                        else { showCookActions = true }
                     } label: {
                         Label("Kochen", systemImage: "fork.knife")
                             .frame(maxWidth: .infinity, minHeight: 44)
@@ -331,7 +352,7 @@ struct RecipeDetailView: View {
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(recipe.ingredients.isEmpty || recipe.servings == nil)
+                    .disabled(recipe.ingredients.isEmpty || recipe.servings == nil || !canEditOnline)
                 }
 
                 if recipe.steps.isEmpty || recipe.servings == nil {
@@ -365,7 +386,7 @@ struct RecipeDetailView: View {
                 Text("Zutaten")
                     .font(.title2.bold())
                 Spacer()
-                if !session.readOnly {
+                if canEditOnline {
                     HStack(spacing: 10) {
                         if session.fullAccess, session.supports("substitution-lab-v1") {
                             Button {
@@ -435,7 +456,20 @@ struct RecipeDetailView: View {
                 variantProvenanceSection(provenance)
             }
 
-            if session.supports("source-integrity-v2") {
+            if !session.readOnly, session.supports("import-review-v1") {
+                Button { showImportReview = true } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Import fertigstellen", systemImage: "checklist")
+                            .font(.headline)
+                        Text("Quelle vergleichen, Mengen ergänzen und Änderungen nachvollziehen")
+                            .font(.caption).foregroundStyle(theme.muted)
+                    }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
+                .accessibilityIdentifier("recipeImportReview")
+                .disabled(session.isOffline)
+            }
+
+            if session.supports("source-integrity-v2"), !isLocalSnapshot, !session.isOffline {
                 NavigationLink {
                     RecipeSourceIntegrityView(
                         recipeID: recipe.id,
@@ -493,7 +527,7 @@ struct RecipeDetailView: View {
                 }
             }
 
-            if session.fullAccess {
+            if session.fullAccess && canEditOnline {
                 Divider()
                 NavigationLink {
                     RecipeImageHistoryView(recipeID: recipe.id, recipeName: recipe.name)
@@ -600,7 +634,7 @@ struct RecipeDetailView: View {
                     .font(.footnote)
                     .foregroundStyle(theme.warning)
 
-                if !session.readOnly {
+                if canEditOnline {
                     Button("Originalquelle ergänzen") {
                         showMetadataEditor = true
                     }
@@ -628,7 +662,7 @@ struct RecipeDetailView: View {
                         Image(systemName: value <= (recipe.rating ?? 0) ? "star.fill" : "star")
                             .foregroundStyle(theme.accent)
                     }
-                    .disabled(session.readOnly || isManaging)
+                    .disabled(!canEditOnline || isManaging)
                     .accessibilityLabel("\(value) Sterne")
                 }
             }
@@ -662,7 +696,7 @@ struct RecipeDetailView: View {
                 Text("Zubereitung")
                     .font(.title2.bold())
                 Spacer()
-                if !session.readOnly {
+                if canEditOnline {
                     Button("Bearbeiten") { showStepsEditor = true }
                 }
             }
@@ -711,14 +745,47 @@ struct RecipeDetailView: View {
         }
     }
 
-    private func load() async {
+    private var offlineStatus: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if isLocalSnapshot || session.isOffline {
+                Label("Lokale Rezeptfassung", systemImage: "internaldrive")
+                    .font(.subheadline.bold()).foregroundStyle(theme.warning)
+                Text("Zutaten und Schritte sind verfügbar. Änderungen am gemeinsamen Rezept, Einkauf und Originalseiten benötigen eine Verbindung.")
+                    .font(.caption).foregroundStyle(theme.muted)
+                Button("Serverfassung neu laden") {
+                    Task { await session.refreshAccess(); await load(forceNetwork: true) }
+                }.frame(minHeight: 44)
+            } else if offlineSavedAt != nil {
+                Label("Zutaten und Schritte auf diesem iPhone gespeichert", systemImage: "checkmark.circle")
+                    .font(.caption).foregroundStyle(theme.muted)
+            }
+            if let offlineSavedAt {
+                Text("Stand: \(offlineSavedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption).foregroundStyle(theme.muted)
+            }
+            if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(theme.warning) }
+        }
+        .accessibilityIdentifier("recipeOfflineStatus")
+    }
+
+    private func load(forceNetwork: Bool = false) async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
-            recipe = try await session.api.recipe(id: recipeID)
+            if let offlineRecipe, useInitialOfflineRecipe, !forceNetwork {
+                recipe = offlineRecipe
+                isLocalSnapshot = true
+            } else {
+                useInitialOfflineRecipe = false
+                recipe = try await session.api.recipe(id: recipeID)
+                isLocalSnapshot = await session.api.recipeWasLoadedOffline(id: recipeID)
+            }
+            if let account = session.offlineAccount {
+                offlineSavedAt = try session.offlineStore.recipes(account: account).first { $0.id == recipeID }?.savedAt
+            }
             translatedDescription = nil
-            if contentLanguage != ContentLanguage.de.rawValue,
+            if !isLocalSnapshot, !session.isOffline, contentLanguage != ContentLanguage.de.rawValue,
                let source = recipe?.descriptionOriginal ?? recipe?.description,
                !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 do {

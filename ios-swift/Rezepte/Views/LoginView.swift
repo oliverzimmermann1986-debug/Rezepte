@@ -40,7 +40,7 @@ struct LoginView: View {
                         Text("Quellen rein.\nLieblingsessen raus.")
                             .font(.largeTitle.bold())
                             .foregroundStyle(theme.ink)
-                        Text("Melde dich bei deiner Quellenküche an.")
+                        Text("Verbinde Rezeptregal mit deinem HTTPS-Rezeptserver.")
                             .foregroundStyle(.secondary)
                     }
 

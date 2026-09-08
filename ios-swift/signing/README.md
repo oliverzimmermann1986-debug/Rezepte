@@ -36,7 +36,7 @@ Repository kopieren.
    herunterladen.
 4. Den Identifier `de.mausbaeren.rezepte.share` mit derselben App Group
    registrieren und dafür ein separates App-Store-Profil herunterladen.
-5. In App Store Connect die App **Quellenküche** mit dem bestehenden Bundle
+5. In App Store Connect die App **Rezeptregal** mit dem bestehenden Bundle
    Identifier anlegen beziehungsweise den Namen aktualisieren.
 6. Unter **Users and Access > Integrations > App Store Connect API** einen
    Schlüssel mit Zugriff auf die App erstellen. Die `.p8`-Datei kann nur

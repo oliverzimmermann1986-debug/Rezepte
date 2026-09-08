@@ -21,7 +21,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 260
+CURRENT_SCHEMA_VERSION = 270
 RECIPE_VARIANT_PENDING_STATUS = "variant_pending"
 
 
@@ -372,6 +372,48 @@ CREATE TABLE IF NOT EXISTS recipe_cooking_completion_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_cooking_completion_history
   ON recipe_cooking_completion_requests(history_id);
+
+-- Private Koch-Erfahrungen sind bewusst NICHT Teil der Haushalts-Kochhistorie.
+CREATE TABLE IF NOT EXISTS recipe_cooking_memory (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  username TEXT NOT NULL,
+  client_entry_id TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  adjustments TEXT NOT NULL DEFAULT '',
+  next_time TEXT NOT NULL DEFAULT '',
+  servings INTEGER,
+  step_number INTEGER,
+  step_instruction TEXT,
+  deleted_at REAL,
+  UNIQUE(recipe_id, username, client_entry_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cooking_memory_owner
+  ON recipe_cooking_memory(recipe_id, username, created_at DESC);
+
+-- Vorschläge verändern gemeinsame Rezepte erst nach einer Admin-Freigabe.
+-- Vorher/Nachher bleiben unabhängig von späterer Versionsbereinigung erhalten.
+CREATE TABLE IF NOT EXISTS recipe_import_corrections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  username TEXT NOT NULL,
+  client_request_id TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  expected_revision TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'applied', 'withdrawn')),
+  before_json TEXT NOT NULL,
+  proposed_json TEXT NOT NULL,
+  applied_at REAL,
+  applied_by TEXT,
+  version_id INTEGER,
+  UNIQUE(recipe_id, username, client_request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_import_corrections_recipe
+  ON recipe_import_corrections(recipe_id, created_at DESC);
 
 -- users: Multi-User-Auth. Bcrypt-Hashes in password_hash. role ist entweder
 -- 'user' oder 'admin'; administrative APIs prüfen diese Rolle serverseitig.
@@ -1356,6 +1398,11 @@ class Database:
                 "VALUES (?, ?, ?)",
                 (260, "clean_recipe_ingredients_and_rebuild_catalog", now),
             )
+
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (270, "private_cooking_memory_and_reviewed_import_corrections", time.time()),
+        )
 
         if int(c.execute("SELECT COUNT(*) FROM search_synonyms").fetchone()[0]) == 0:
             defaults = {
@@ -4166,7 +4213,7 @@ class Database:
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
             current = c.execute(
-                "SELECT role, disabled FROM users WHERE id=?",
+                "SELECT role, disabled, username FROM users WHERE id=?",
                 (user_id,),
             ).fetchone()
             if current is None:
@@ -4176,6 +4223,19 @@ class Database:
                 current,
                 role="user",
                 disabled=True,
+            )
+            # A newly created account may reuse the name, never its private notes.
+            c.execute("DELETE FROM recipe_cooking_memory WHERE username=? COLLATE NOCASE", (current["username"],))
+            # Preserve shared before/after audit without attaching it to a future
+            # account. Empty usernames cannot authenticate; IDs remain unique.
+            c.execute(
+                "UPDATE recipe_import_corrections SET username='', client_request_id='deleted-' || id, "
+                "status=CASE WHEN status='pending' THEN 'withdrawn' ELSE status END "
+                "WHERE username=? COLLATE NOCASE", (current["username"],),
+            )
+            c.execute(
+                "UPDATE recipe_import_corrections SET applied_by=NULL WHERE applied_by=? COLLATE NOCASE",
+                (current["username"],),
             )
             c.execute("DELETE FROM users WHERE id=?", (user_id,))
             return True

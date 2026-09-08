@@ -1,23 +1,26 @@
-# Rezepte — App-Review-Video (ca. 85 Sekunden)
+# Rezeptregal 1.3 – realer Review-Rundgang
 
-Vor der Aufnahme: TestFlight-Build frisch installieren, AutoFill/Passwortmanager
-für die Aufnahme deaktivieren, Review-Zugang bereithalten und einmal prüfen,
-dass der öffentliche Server erreichbar ist. Keine Benachrichtigungen, privaten
-Konten oder Zugangsdaten im Bild zeigen.
+Der nächste Kandidat wird auf einem iPhone-Simulator mit künstlichen Daten
+aufgenommen. Die Ausgabe ist ein separates Erklärvideo für App Review, keine
+fertige App-Store-Vorschau. Die tatsächliche Laufzeit ergibt sich aus dem
+erfolgreichen UI-Test; sie wird nicht vorab behauptet.
 
-| Zeit | Aufnahme |
+| Szene | Sichtbarer Produktnutzen |
 |---|---|
-| 0–5 s | App starten. Review-Server und Benutzer sind eingetragen; Passwort verdeckt eingeben und **Anmelden** tippen. |
-| 5–13 s | Die gefüllte Rezeptübersicht mit künstlichen Food-Fotos kurz zeigen. Nach „Zitrone“ suchen. |
-| 13–27 s | **Zitronen-Ricotta-Pasta** öffnen: Rezeptpass mit Rezept-ID und Originalquelle, danach **Quellenwächter & Rezept-TÜV** mit vorbereitetem Diff zeigen. |
-| 27–36 s | Zutaten zur Einkaufsliste hinzufügen. Zum Tab **Einkauf** wechseln und den wiederkehrenden Artikel zeigen. |
-| 36–52 s | **Wochenplan** öffnen. Drei geplante Gerichte zeigen, dann **Menü-Dirigent** öffnen und die Vorschau für eine gemeinsame Servierzeit berechnen. |
-| 52–65 s | **Beeren-Pancakes** öffnen und im **Substitutionslabor** eine konkrete Vorher-/Nachher-Menge samt Sicherheitshinweis zeigen; keine Variante anlegen. |
-| 65–74 s | Filter **Manuelle Pflege** wählen. Die **Sommerliche Tomaten-Galette** mit Hinweis auf fehlende Zutaten zeigen. |
-| 74–81 s | Den Tab **Admin** öffnen und die nativen Einstellungen kurz zeigen. Keine Lösch- oder Importaktion ausführen. |
-| 81–85 s | Zu **Rezepte** zurück. **Abmelden** oben rechts zeigen und auf der stabil gefüllten Übersicht enden. |
+| Anmeldung | Rezeptregal mit dem isolierten HTTPS-Review-Server verbinden; Passwort maskiert. |
+| Eingang und Archiv | Aktuelle native Tabs und der Weg von Quellen in die eigene Sammlung. |
+| Pasta öffnen | Originalquelle und importierte Rezeptdaten gemeinsam zeigen. |
+| Import nacharbeiten | Quellenbezug, strukturelle Hinweise und konkrete editierbare Zutaten/Schritte. Die Aufnahme speichert keine Korrektur. |
+| Kochgedächtnis | Persönliche Notiz, Anpassung und Tipp fürs nächste Mal erfassen; Aufnahme zeigt den lokalen Entwurf und schließt ohne Serverübertragung. |
+| Offline-Regal | Das bereits geöffnete Rezept aus der lokalen Bibliothek wieder öffnen. |
+| Heute und Einkauf | Bestehende Wochenplanung und wiederkehrender Bedarf als ergänzende Abläufe. |
 
-Akzeptanzkriterien: vollständiger erfolgreicher Ablauf, keine Fehlermeldung,
-keine Systemdialoge, keine leeren Bilder, kein Produktionskonto und ein ruhiges
-Endbild. Das Video ergänzt die Review Notes; es ersetzt nicht den funktionierenden
-Review-Zugang.
+Die Aufnahme erzeugt benannte XCTest-Screenshot-Anhänge. Ein macOS-Lauf
+exportiert diese aus dem Result Bundle. Es werden weder Mockups noch alte
+Screenaufnahmen in die neuen Nachweise gemischt. Ein Netzwerk-Ausfall wird in
+dieser Tour nicht simuliert; Offline- und Wiederaufnahmetests sind zusätzliche
+Freigabegates in `ios-swift/APP_STORE_RELEASE_CHECKLIST.md`.
+
+Voraussetzungen: passend aktualisierter Review-Server, beide neuen Capabilities,
+der künstliche Datensatz aus `DEPLOYMENT.md` und genau der Kandidaten-Commit.
+Keine Produktionseingriffe oder Zugangsdaten in Repository und Ausgabe.

@@ -8,6 +8,11 @@ on:
         required: false
         default: false
         type: boolean
+      capture_visuals:
+        description: "Echte Simulator-Screenshots mit isoliertem lokalem HTTPS-Testserver aufnehmen"
+        required: false
+        default: true
+        type: boolean
       build_number:
         description: "CFBundleVersion für diesen Upload (leer = automatisch aus Laufnummer und Versuch)"
         required: false
@@ -107,6 +112,55 @@ jobs:
           name: swiftui-xcresult-${{ github.sha }}
           path: ios-swift/TestResults.xcresult
           if-no-files-found: ignore
+          retention-days: 7
+
+  visual-review:
+    name: Native screenshots with isolated local HTTPS fixtures
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_visuals }}
+    needs: test
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Install Python for the isolated fixture server
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install fixture backend dependencies
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Install pinned XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen-visual.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen-visual.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen-visual.zip" -d "$RUNNER_TEMP/xcodegen-visual"
+          xcodegen_bin="$(find "$RUNNER_TEMP/xcodegen-visual" -type f -name xcodegen -path '*/bin/*' -print -quit)"
+          test -n "$xcodegen_bin"
+          chmod +x "$xcodegen_bin"
+          "$xcodegen_bin" --version | grep -F "$XCODEGEN_VERSION"
+          dirname "$xcodegen_bin" >> "$GITHUB_PATH"
+
+      - name: Capture actual native review scenes
+        run: bash ios-swift/scripts/record-local-review.sh
+
+      - name: Upload native visual evidence and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftui-visual-review-${{ github.sha }}
+          path: |
+            ios-swift/artifacts/review-*
+            ios-swift/artifacts/local-fixture/server.log
+          if-no-files-found: error
           retention-days: 7
 
   testflight:
@@ -260,7 +314,7 @@ jobs:
       - name: Validate archive metadata
         shell: bash
         env:
-          EXPECTED_MARKETING_VERSION: "1.2.0"
+          EXPECTED_MARKETING_VERSION: "1.3.0"
           EXPECTED_BUILD_NUMBER: ${{ steps.buildnum.outputs.value }}
         run: |
           set -euo pipefail
@@ -357,7 +411,7 @@ jobs:
           ASC_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_BUILD_NUMBER: ${{ steps.buildnum.outputs.value }}
-          ASC_MARKETING_VERSION: "1.2.0"
+          ASC_MARKETING_VERSION: "1.3.0"
           ASC_UPLOAD_STARTED_AT: ${{ steps.upload.outputs.started_at }}
           ASC_ASSIGN_INTERNAL_GROUP: "false"
         run: |

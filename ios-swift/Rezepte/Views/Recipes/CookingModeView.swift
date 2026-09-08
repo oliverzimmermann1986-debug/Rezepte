@@ -17,7 +17,11 @@ struct CookingModeView: View {
     @State private var showIngredients = true
     @State private var showResetConfirmation = false
     @State private var showCompletion = false
+    @State private var showReflection = false
     @State private var hasStartedCooking = false
+    @State private var hasResumableProgress = false
+    @State private var didFinishLocally = false
+    @State private var localProgress: LocalCookingProgress
     @State private var saveState: CookingSaveState = .idle
     @State private var warningMessage: String?
     @State private var errorMessage: String?
@@ -25,6 +29,7 @@ struct CookingModeView: View {
     init(recipe: Recipe) {
         self.recipe = recipe
         _servings = State(initialValue: recipe.servings ?? 1)
+        _localProgress = State(initialValue: LocalCookingProgress(recipe: recipe, servings: recipe.servings ?? 1))
     }
 
     private var originalServings: Int { recipe.servings ?? servings }
@@ -67,13 +72,15 @@ struct CookingModeView: View {
             Text("Abgehakte Schritte werden gelöscht. Die Kochhistorie bleibt erhalten.")
         }
         .alert("Guten Appetit!", isPresented: $showCompletion) {
+            if session.supports("cooking-memory-v1") {
+                Button("Kochgedächtnis ergänzen") { showReflection = true }
+            }
             Button("Fertig") { dismiss() }
         } message: {
-            Text(
-                canScale
-                    ? "\(recipe.name) wurde für \(servings) Portionen als gekocht gespeichert."
-                    : "\(recipe.name) wurde als gekocht gespeichert."
-            )
+            Text("Der Kochabschluss ist auf diesem iPhone gespeichert und wird bei Verbindung einmalig in die Historie übertragen.")
+        }
+        .sheet(isPresented: $showReflection, onDismiss: { dismiss() }) {
+            CookingReflectionView(recipe: recipe, stepNumber: nil, cookedServings: servings, onSaved: {})
         }
     }
 
@@ -86,7 +93,7 @@ struct CookingModeView: View {
                     .accessibilityHidden(true)
 
                 VStack(spacing: 8) {
-                    Text(canScale ? "Für wie viele Portionen kochst du?" : "Bereit zum Kochen?")
+                    Text(hasResumableProgress ? "Dein Kochen wartet auf dich" : canScale ? "Für wie viele Portionen kochst du?" : "Bereit zum Kochen?")
                         .font(.title2.bold())
                         .multilineTextAlignment(.center)
                     Text(
@@ -125,7 +132,7 @@ struct CookingModeView: View {
                     Task { await startCooking() }
                 } label: {
                     Label(
-                        isSaving ? "Wird vorbereitet …" : "Kochen starten",
+                        isSaving ? "Wird vorbereitet …" : hasResumableProgress ? "Kochen fortsetzen" : "Kochen starten",
                         systemImage: "play.fill"
                     )
                     .frame(maxWidth: .infinity, minHeight: 50)
@@ -133,7 +140,8 @@ struct CookingModeView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(theme.accent)
                 .foregroundStyle(theme.ink)
-                .disabled(isSaving)
+                .disabled(isSaving || session.readOnly)
+                .accessibilityIdentifier(hasResumableProgress ? "cookingResume" : "cookingStart")
             }
             .frame(maxWidth: 520)
             .padding(24)
@@ -251,12 +259,17 @@ struct CookingModeView: View {
                 .font(.title3.weight(.semibold))
                 .lineSpacing(4)
 
+            if !session.readOnly && session.supports("cooking-memory-v1") {
+                CookingMemoryStepTips(recipeID: recipe.id, stepNumber: activeStep + 1, instruction: step.instruction)
+            }
+
             if let seconds = step.timerSeconds, seconds > 0 {
                 CookingTimerView(
-                    identity: "\(recipe.id)-\(step.id ?? activeStep)",
+                    identity: timerIdentity(stepIndex: activeStep),
                     seconds: seconds,
                     label: "\(recipe.name), Schritt \(activeStep + 1)"
                 )
+                .id(timerIdentity(stepIndex: activeStep))
             }
 
             Button {
@@ -274,6 +287,7 @@ struct CookingModeView: View {
             .tint(completedSteps.contains(activeStep) ? theme.success : theme.accent)
             .foregroundStyle(completedSteps.contains(activeStep) ? Color.white : theme.ink)
             .disabled(isSaving || isFinishing)
+            .accessibilityIdentifier("cookingStepNext")
         }
         .padding(20)
         .background(theme.accentSoft, in: RoundedRectangle(cornerRadius: 24))
@@ -395,7 +409,8 @@ struct CookingModeView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(theme.success)
-                .disabled(isSaving || isFinishing)
+                .disabled(isSaving || isFinishing || didFinishLocally)
+                .accessibilityIdentifier("cookingComplete")
             }
             .cardSurface()
         } else {
@@ -410,24 +425,57 @@ struct CookingModeView: View {
         switch saveState {
         case .idle: "\(completedSteps.count) erledigt"
         case .saving: "\(completedSteps.count) erledigt · wird gespeichert …"
-        case .saved: "\(completedSteps.count) erledigt · gespeichert"
+        case .saved: "\(completedSteps.count) erledigt · auf diesem iPhone gespeichert"
         case .error: "\(completedSteps.count) erledigt · nicht gespeichert"
         }
     }
 
     private func loadProgress() async {
-        defer { isLoading = false }
-        guard !recipe.steps.isEmpty else { return }
+        guard !recipe.steps.isEmpty, !session.readOnly,
+              let account = session.offlineAccount else { isLoading = false; return }
         do {
-            let progress = try await session.api.cookingProgress(id: recipe.id)
+            if let saved = try session.offlineStore.progress(account: account).first(where: { $0.recipeID == recipe.id }) {
+                if saved.stepFingerprint == LocalCookingProgress.fingerprint(recipe) {
+                    localProgress = saved
+                    applyLocal(saved)
+                    hasResumableProgress = saved.started
+                    saveState = .saved
+                    isLoading = false
+                    return
+                }
+                warningMessage = "Die Rezeptschritte haben sich geändert. Dein alter Fortschritt wird nicht auf andere Schritte übertragen."
+                isLoading = false
+                return
+            }
+            // The first screen is usable immediately, including when a connection
+            // disappears just before the request. Never overwrite new local taps.
+            isLoading = false
+            guard !session.isOffline else { return }
+            let initialRevision = localProgress.revision
+            let progress = try await session.api.cookingProgress(id: recipe.id, expectedAccount: account)
+            guard account == session.offlineAccount, localProgress.revision == initialRevision,
+                  !hasStartedCooking, progress.exists else { return }
             apply(progress)
-            hasStartedCooking = progress.exists
+            localProgress.completedSteps = completedSteps
+            localProgress.activeStep = activeStep
+            localProgress.servings = servings
+            localProgress.started = true
+            try session.offlineStore.saveProgress(localProgress, account: account)
+            hasResumableProgress = true
         } catch {
-            warningMessage = "Der bisherige Fortschritt ist gerade nicht erreichbar. Du kannst neu beginnen."
+            isLoading = false
+            if APIError.permitsOfflineFallback(error) {
+                warningMessage = "Der Serverfortschritt ist nicht erreichbar. Schritte und Timer werden auf diesem iPhone gespeichert."
+            } else { errorMessage = error.localizedDescription }
         }
     }
 
     private func startCooking() async {
+        if let account = session.offlineAccount,
+           let old = try? session.offlineStore.progress(account: account).first(where: { $0.recipeID == recipe.id }),
+           old.stepFingerprint != localProgress.stepFingerprint {
+            CookingTimerNotifications.cancel(account: account, runID: old.runID)
+        }
         let didStart = await persist(
             completed: completedSteps,
             active: activeStep,
@@ -461,69 +509,77 @@ struct CookingModeView: View {
 
     @discardableResult
     private func persist(completed: Set<Int>, active: Int, servings: Int) async -> Bool {
-        guard !isSaving && !isFinishing else { return false }
+        guard !isSaving, !isFinishing, !didFinishLocally, !session.readOnly,
+              let account = session.offlineAccount else { return false }
         isSaving = true
         saveState = .saving
         errorMessage = nil
         defer { isSaving = false }
         do {
-            let progress = try await session.api.updateCookingProgress(
-                id: recipe.id,
-                completedSteps: completed.sorted(),
-                activeStep: active,
-                servings: servings
-            )
-            animate { apply(progress) }
+            var progress = localProgress
+            progress.completedSteps = completed
+            progress.activeStep = active
+            progress.servings = servings
+            progress.started = true
+            progress.changed()
+            try session.offlineStore.saveRecipe(recipe, account: account)
+            try session.offlineStore.saveProgress(progress, account: account)
+            localProgress = progress
+            animate { applyLocal(progress) }
             saveState = .saved
+            Task { await session.syncCooking() }
             return true
         } catch {
             saveState = .error
             errorMessage = error.localizedDescription
-            session.handle(error)
             return false
         }
     }
 
     private func resetProgress() async {
-        guard !isSaving && !isFinishing else { return }
+        guard !isSaving, !isFinishing, !session.readOnly,
+              let account = session.offlineAccount else { return }
         isSaving = true
         saveState = .saving
         errorMessage = nil
         defer { isSaving = false }
         do {
-            _ = try await session.api.clearCookingProgress(id: recipe.id)
+            var reset = LocalCookingProgress(recipe: recipe, servings: originalServings)
+            reset.changed()
+            try session.offlineStore.saveProgress(reset, account: account)
+            cancelTimers(account: account)
+            localProgress = reset
             animate {
                 completedSteps = []
                 activeStep = 0
                 servings = originalServings
                 hasStartedCooking = false
+                hasResumableProgress = false
+                didFinishLocally = false
             }
-            UserDefaults.standard.removeObject(forKey: completionStorageKey)
             saveState = .saved
+            Task { await session.syncCooking() }
         } catch {
             saveState = .error
             errorMessage = error.localizedDescription
-            session.handle(error)
         }
     }
 
     private func finishCooking() async {
-        guard allDone, !isSaving && !isFinishing else { return }
+        guard allDone, !isSaving, !isFinishing, !didFinishLocally, !session.readOnly,
+              let account = session.offlineAccount else { return }
         isFinishing = true
         errorMessage = nil
         defer { isFinishing = false }
-        let key = completionRequestID()
         do {
-            _ = try await session.api.completeCooking(
-                id: recipe.id,
-                servings: servings,
-                idempotencyKey: key
-            )
-            UserDefaults.standard.removeObject(forKey: completionStorageKey)
+            try session.offlineStore.finish(localProgress, account: account)
+            didFinishLocally = true
+            cancelTimers(account: account)
+            session.refreshPendingCookingCount()
             showCompletion = true
+            Task { await session.syncCooking() }
         } catch {
             errorMessage = error.localizedDescription
-            session.handle(error)
         }
     }
 
@@ -533,19 +589,23 @@ struct CookingModeView: View {
         servings = min(50, max(1, progress.servings ?? originalServings))
     }
 
-    private var completionStorageKey: String {
-        "cooking-completion-v1-\(session.username)-\(recipe.id)"
+    private func applyLocal(_ progress: LocalCookingProgress) {
+        completedSteps = Set(progress.completedSteps.filter { recipe.steps.indices.contains($0) })
+        activeStep = min(max(0, progress.activeStep), max(0, recipe.steps.count - 1))
+        servings = min(50, max(1, progress.servings))
     }
 
-    private func completionRequestID() -> String {
-        if let existing = UserDefaults.standard.string(forKey: completionStorageKey),
-           !existing.isEmpty,
-           existing.count <= 200 {
-            return existing
+    private func timerIdentity(stepIndex: Int) -> String {
+        "\(localProgress.runID)-\(recipe.steps[stepIndex].stableID)"
+    }
+
+    private func cancelTimers(account: OfflineAccount) {
+        CookingTimerNotifications.cancel(account: account, runID: localProgress.runID)
+        for index in recipe.steps.indices {
+            let identity = timerIdentity(stepIndex: index)
+            CookingTimerNotifications.cancel(account: account, identity: identity)
+            try? session.offlineStore.remove(key: "timer-\(identity)", account: account)
         }
-        let created = UUID().uuidString
-        UserDefaults.standard.set(created, forKey: completionStorageKey)
-        return created
     }
 
     private func scaledAmount(_ ingredient: Ingredient) -> String {
@@ -585,66 +645,82 @@ private struct CookingTimerView: View {
     let label: String
 
     @Environment(\.recipeTheme) private var theme
-    @State private var remaining: Int
-    @State private var isRunning = false
-    @State private var timerTask: Task<Void, Never>?
+    @EnvironmentObject private var session: SessionStore
+    @State private var timer: PersistentCookingTimer
+    @State private var errorMessage: String?
+    @State private var notificationUnavailable = false
 
     init(identity: String, seconds: Int, label: String) {
         self.identity = identity
         self.seconds = seconds
         self.label = label
-        _remaining = State(initialValue: seconds)
+        _timer = State(initialValue: PersistentCookingTimer(deadline: nil, pausedSeconds: seconds))
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: remaining == 0 ? "bell.fill" : "timer")
-                .font(.title2)
-                .foregroundStyle(remaining == 0 ? theme.success : theme.ink)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(remaining == 0 ? "Timer fertig" : formattedTime)
-                    .font(.title3.bold().monospacedDigit())
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(theme.muted)
-                    .lineLimit(1)
+        VStack(alignment: .leading, spacing: 8) {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let remaining = timer.remaining(at: context.date)
+                let running = timer.deadline != nil && remaining > 0
+                HStack(spacing: 12) {
+                    Image(systemName: remaining == 0 ? "bell.fill" : "timer")
+                        .font(.title2)
+                        .foregroundStyle(remaining == 0 ? theme.success : theme.ink)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(remaining == 0 ? "Timer fertig" : String(format: "%d:%02d", remaining / 60, remaining % 60))
+                            .font(.title3.bold().monospacedDigit())
+                        Text(label)
+                            .font(.caption)
+                            .foregroundStyle(theme.muted)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Button(running ? "Pause" : remaining == 0 ? "Neu" : "Start") {
+                        updateTimer(pause: running)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("cookingTimerToggle")
+                }
             }
-            Spacer()
-            Button(isRunning ? "Pause" : remaining == 0 ? "Neu" : "Start") {
-                isRunning ? pause() : start()
+            Text("Die Endzeit bleibt auch beim Verlassen dieses Bildschirms erhalten.")
+                .font(.caption2).foregroundStyle(theme.muted)
+            if notificationUnavailable {
+                Text("Keine Timer-Mitteilung erlaubt. Die Endzeit bleibt gespeichert; prüfe sie in der App.")
+                    .font(.caption).foregroundStyle(theme.warning)
             }
-            .buttonStyle(.bordered)
+            if let errorMessage {
+                Text(errorMessage).font(.caption).foregroundStyle(theme.danger)
+            }
         }
         .padding(14)
         .background(theme.surface, in: RoundedRectangle(cornerRadius: 16))
-        .id(identity)
-        .onDisappear { timerTask?.cancel() }
-    }
-
-    private var formattedTime: String {
-        String(format: "%d:%02d", remaining / 60, remaining % 60)
-    }
-
-    private func start() {
-        if remaining == 0 { remaining = seconds }
-        isRunning = true
-        timerTask?.cancel()
-        timerTask = Task {
-            while remaining > 0 && !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { return }
-                remaining -= 1
-            }
-            if !Task.isCancelled && remaining == 0 {
-                isRunning = false
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
-            }
+        .task {
+            guard let account = session.offlineAccount else { return }
+            do {
+                if let saved = try session.offlineStore.read(PersistentCookingTimer.self, key: "timer-\(identity)", account: account) {
+                    timer = saved
+                }
+            } catch { errorMessage = error.localizedDescription }
         }
     }
 
-    private func pause() {
-        timerTask?.cancel()
-        timerTask = nil
-        isRunning = false
+    private func updateTimer(pause: Bool) {
+        guard let account = session.offlineAccount, !session.readOnly else { return }
+        var updated = timer
+        if pause { updated.pause() } else { updated.start(duration: seconds) }
+        do {
+            try session.offlineStore.write(updated, key: "timer-\(identity)", account: account)
+            timer = updated
+            errorMessage = nil
+            if let deadline = updated.deadline {
+                Task {
+                    let scheduled = await CookingTimerNotifications.schedule(account: account, identity: identity,
+                        label: label, deadline: deadline, store: session.offlineStore)
+                    if account == session.offlineAccount { notificationUnavailable = !scheduled }
+                }
+            } else {
+                CookingTimerNotifications.cancel(account: account, identity: identity)
+            }
+        } catch { errorMessage = "Timer konnte nicht gespeichert werden: \(error.localizedDescription)" }
     }
 }

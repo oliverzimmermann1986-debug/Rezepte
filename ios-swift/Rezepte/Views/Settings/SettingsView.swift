@@ -104,7 +104,7 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Quellenküche")
+                        Text("Rezeptregal")
                             .font(.headline)
                         Text("Rezepte aus Weblinks, Social Media, Fotos und PDFs – mit sichtbarer Quelle und manueller Prüfung.")
                             .font(.caption)

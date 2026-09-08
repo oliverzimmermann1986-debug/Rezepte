@@ -1,4 +1,4 @@
-# Isolierte Rezepte-App-Review-Umgebung
+# Isolierte Rezeptregal-App-Review-Umgebung
 
 Zielzustand:
 
@@ -55,3 +55,19 @@ Sitzungsversionen und zusätzliche künstliche Varianten bleiben erhalten.
 Der Produktionscontainer `200` ist keine Clone-Quelle: er bindet echte Hostdaten
 unter `/mnt/media-nas` und `/srv/video-archive` ein. Ein frischer Container ist
 die Sicherheitsgrenze zwischen App Review und Produktion.
+
+## Vorbereitung für den Kandidaten 1.3
+
+Die obige Instanzbeschreibung belegt nicht, dass die neuen Funktionen bereits
+auf dem Review-Server laufen. Vor einer neuen Aufnahme muss der freigegebene
+Backendstand `cooking-memory-v1` und `import-review-v1` unter
+`/api/system/info` melden. Erst danach die geführte Importkorrektur mit
+Quellenbezug und das persönliche Kochgedächtnis am künstlichen Pasta-Rezept
+prüfen. Die Aufnahmetour selbst zeigt Formularentwürfe ohne Speichern.
+
+Zusätzlich mit zwei isolierten künstlichen Konten prüfen: persönliche Notizen
+dürfen nicht zwischen Konten sichtbar sein; ein reguläres Konto reicht
+Importkorrekturen als Vorschlag ein und führt keine Admin-Freigabe aus. Die
+offline gespeicherten Rezepte und Kochfortschritte werden auf dem iPhone
+geprüft, nicht durch die Server-Healthchecks. Diese Dokumentation führt weder
+ein Serverupdate noch eine Veränderung der laufenden Apple-Prüfung aus.

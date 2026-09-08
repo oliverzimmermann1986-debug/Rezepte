@@ -24,6 +24,7 @@ from .config_store import get_config, migrate_pdf_quality_defaults
 from .db import get_db
 from .routes import (api_admin, api_audit, api_auth, api_browse, api_config, api_einkauf, api_events, api_hdd,
                      api_history, api_jobs, api_master, api_metrics, api_pending, api_recipes,
+                     api_personal_cooking,
                      api_meal_plan, api_schedule, api_share, api_shopping, api_stats, api_test,
                      api_users, sharing)
 from .security import (SameOriginMiddleware, SecurityHeadersMiddleware,
@@ -366,6 +367,8 @@ APP_CAPABILITIES = [
     "source-integrity-v1",
     "source-integrity-v2",
     "substitution-lab-v1",
+    "cooking-memory-v1",
+    "import-review-v1",
 ]
 
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).
@@ -451,6 +454,7 @@ app.include_router(api_stats.router)
 app.include_router(api_hdd.router)
 app.include_router(api_events.router)
 app.include_router(api_recipes.router)
+app.include_router(api_personal_cooking.router)
 app.include_router(api_einkauf.router)
 app.include_router(api_shopping.router)
 app.include_router(api_meal_plan.router)

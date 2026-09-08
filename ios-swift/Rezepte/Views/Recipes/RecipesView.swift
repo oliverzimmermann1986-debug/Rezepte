@@ -70,6 +70,14 @@ struct RecipesView: View {
             .searchable(text: $search, prompt: "Rezepte durchsuchen")
             .onSubmit(of: .search) { Task { await load() } }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    NavigationLink {
+                        OfflineRecipesView()
+                    } label: {
+                        Label("Offline-Regal", systemImage: "arrow.down.circle")
+                    }
+                    .accessibilityIdentifier("offlineLibraryButton")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showFilters = true
@@ -126,6 +134,10 @@ struct RecipesView: View {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+        if session.isOffline {
+            errorMessage = "Ohne Verbindung: Deine gespeicherten Rezepte findest du oben im Offline-Regal."
+            return
+        }
         do {
             let response = try await session.api.recipes(
                 search: search,
@@ -167,6 +179,7 @@ struct RecipesView: View {
     }
 
     private func loadFacets() async {
+        guard !session.isOffline else { return }
         do {
             facets = try await session.api.recipeFacets(search: search, filters: filters)
         } catch {

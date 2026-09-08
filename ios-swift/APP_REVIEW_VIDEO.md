@@ -1,29 +1,87 @@
-# App-Review-Video mit Codemagic
+# Rezeptregal 1.3 – echte Screenshots und Review-Video
 
-Der Workflow `ios-review-video` in `codemagic.yaml` erzeugt zwei Artefakte aus
-demselben SwiftUI-Stand:
+Die vorhandene `RezepteReviewVideo`-Scheme führt den nativen UI-Rundgang aus
+und hält elf benannte Screenshots als XCTest-Anhänge fest. Das Skript zeichnet
+gleichzeitig ein separates Review-MP4 auf und exportiert anschließend die
+tatsächlichen Anhänge samt Manifest aus dem Result Bundle. Es erzeugt keine
+Mockups und lädt nichts zu App Store Connect hoch.
 
-- `Rezepte.app` als unsignierte Simulator-App für Codemagic App Preview
-- `Rezeptregal-App-Review-1.2.0.mp4` als automatisierten Review-Rundgang
+## Voraussetzungen
 
-## Einmalige Codemagic-Konfiguration
+- macOS mit Xcode 16 oder neuer, XcodeGen und verfügbarem iPhone-Simulator.
+- Passender isolierter Review-Server mit künstlichen Daten; die öffentliche
+  `/api/system/info`-Antwort muss `cooking-memory-v1` und `import-review-v1`
+  enthalten. Das Skript bricht andernfalls vor Aufnahmebeginn ab.
+- `APP_REVIEW_PASSWORD` als geschützte Umgebungsvariable; niemals in Git.
+- Optional `APP_REVIEW_SERVER`, `APP_REVIEW_USERNAME`, `APP_REVIEW_VERSION`
+  und `APP_REVIEW_DEVICE_TYPE`. Standard ist iPhone 16 Pro Max; die beim
+  späteren Apple-Upload geforderte Auflösung muss separat geprüft werden.
 
-1. Das GitHub-Repository in Codemagic verbinden und die YAML-Konfiguration
-   aktivieren.
-2. Eine Environment-Variable `APP_REVIEW_PASSWORD` als **Secure** in der Gruppe
-   `app_review` anlegen. Das Passwort darf nicht in Git gespeichert werden.
-3. In Codemagic **App Preview** für das Team aktivieren. Die erzeugte
-   `Rezepte.app` ist danach über **Quick Launch** im Browser startbar.
+## Lokal auf macOS
 
-## Aufnahme starten
+Im Ordner `ios-swift` mit bereits gesetzter geschützter Passwortvariable:
 
-Der Workflow wird ausschließlich durch Tags mit dem Präfix `review-video-`
-gestartet. Beispiel: `review-video-1.2.0-2302`.
+```bash
+xcodegen generate
+bash scripts/record-review-video.sh
+```
 
-Die UI-Aufnahme verwendet den isolierten Review-Server und zeigt Anmeldung,
-Rezeptpass mit Rezept-ID, Originalquelle, Wochenplan, aktuelle und
-wiederkehrende Einkäufe sowie die Admin-Einstellungen. Das Passwort wird nur
-als geschützte Codemagic-Variable an den UI-Test übergeben und im Video maskiert.
+Jeder Lauf erstellt einen eigenen Simulator und eigene Ausgabeordner. Nur
+dieser Simulator wird am Ende entfernt; vorhandene Simulatoren, Daten und alte
+Aufnahmen bleiben erhalten.
 
-Vor jedem Lauf muss der Review-Datensatz über den dokumentierten
-`refresh_app_review_demo.py`-Ablauf geprüft beziehungsweise aufgefrischt werden.
+Ausgaben bei Erfolg:
+
+- `artifacts/review-<Lauf>/Rezeptregal-App-Review-1.3.0.mp4`
+- `artifacts/review-<Lauf>/screenshots/` mit exportierten Anhängen/Manifest
+- `artifacts/review-<Lauf>/ReviewResults.xcresult` mit vollständigem Testnachweis
+- `artifacts/review-<Lauf>/capture-source.txt` mit Commit, Version und Gerät
+- `build/Review-<Lauf>/DerivedData/Build/Products/Debug-iphonesimulator/Rezepte.app`
+
+Die im Manifest benannten Motive `04/05-import-*`,
+`06-persoenliches-kochgedaechtnis-entwurf` und `07-auf-diesem-iphone` zeigen die
+neuen Abläufe. Der persönliche Notizentwurf und die Importfelder werden in der
+Aufnahme nicht serverseitig gespeichert. Die Tour bestätigt deshalb keine
+Persistenz oder Offline-Synchronisierung; diese Nachweise werden separat in
+`APP_STORE_RELEASE_CHECKLIST.md` verlangt.
+
+## Isolierte lokale Aufnahme ohne Server-Deployment
+
+`bash ios-swift/scripts/record-local-review.sh` startet auf macOS einen
+temporären HTTPS-Server ausschließlich auf `127.0.0.1:18443`. Er verwendet
+sechs künstliche Rezepte aus dem vorhandenen Review-Datensatz, eine frische
+Datenbank und ein zufälliges lokales Passwort. Die normale App-Authentifizierung
+bleibt aktiv. Die Produktionswerkzeuge mit ihrem Hostschutz werden nicht
+aufgerufen oder verändert.
+
+Für TLS entsteht ein eintägiges localhost-Zertifikat. Nur der eigens erstellte
+Simulator vertraut diesem Zertifikat; ATS und der Client werden nicht umgangen.
+Nach der Aufnahme werden lokaler Server, temporäre Daten und dieser Simulator
+entfernt. Es gibt kein externes Review-Passwort und kein Deployment.
+
+Der GitHub-Workflow `ios-swift.yml` bietet bei manueller Ausführung
+`capture_visuals: true` (Standard). Der eigene Job `visual-review` läuft nach
+den nativen Tests, benötigt keine Release-Secrets und lädt nur reale
+Aufnahme-/Diagnoseartefakte hoch. `upload_testflight` bleibt separat und
+standardmäßig **false**. Lokal müssen die Python-Abhängigkeiten aus
+`requirements.txt` installiert sein. Dieser Fixture-Rundgang ersetzt weder die
+spätere Prüfung des tatsächlichen Review-Servers noch einen Offline-Gerätetest.
+
+## Codemagic
+
+Der Workflow `ios-review-video` verwendet die geschützte Gruppe `app_review`.
+Er wird wie bisher durch ausdrücklich veröffentlichte Tags mit Präfix
+`review-video-` gestartet; das Bearbeiten dieser Dateien startet keinen Build.
+Der Workflow sammelt MP4, PNG/Manifest, Result Bundle, Logs und Simulator-App
+aus den neuen laufbezogenen Ordnern.
+
+Vor einer späteren Release-Aufnahme den künstlichen Datensatz gemäß
+`review-demo/DEPLOYMENT.md` prüfen. Die Aufnahme zeigt die aktuellen Tabs
+**Eingang / Archiv / Heute / Einkauf / Einstellungen**. Administration und
+Rezept-ID sind keine zentrale Szene mehr. Menü-Dirigent ist keine Neuerung und
+kein Bestandteil dieses Rundgangs.
+
+Ein erfolgreicher Test ist noch keine visuelle Abnahme: alle Screenshots und
+das vollständige MP4 ansehen, Tastaturüberlagerungen/Fehler ausschließen und
+den Kandidaten abgleichen. Das Review-MP4 ist nicht automatisch eine zulässige
+App-Store-Vorschau; dafür wäre ein gesonderter passender Export erforderlich.

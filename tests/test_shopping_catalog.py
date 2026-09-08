@@ -1,6 +1,6 @@
 import pytest
 
-from app.db import Database
+from app.db import CURRENT_SCHEMA_VERSION, Database
 from app.recipes.shopping_catalog import (
     infer_shopping_category,
     is_recipe_filter_pantry_basic,
@@ -264,7 +264,7 @@ def test_ingredient_cleanup_migration_recanonicalizes_existing_rows(tmp_path):
         ],
     )
     with database.conn() as connection:
-        connection.execute("DELETE FROM schema_migrations WHERE version=260")
+        connection.execute("DELETE FROM schema_migrations WHERE version>=260")
 
     migrated = Database(path)
     ingredients = migrated.recipe_ingredients_get(recipe_id)
@@ -286,4 +286,4 @@ def test_ingredient_cleanup_migration_recanonicalizes_existing_rows(tmp_path):
             "SELECT name FROM schema_migrations WHERE version=260"
         ).fetchone()
     assert migration["name"] == "clean_recipe_ingredients_and_rebuild_catalog"
-    assert list((tmp_path / "backups").glob("pre-migration-v250-to-v260-*.db"))
+    assert list((tmp_path / "backups").glob(f"pre-migration-v250-to-v{CURRENT_SCHEMA_VERSION}-*.db"))

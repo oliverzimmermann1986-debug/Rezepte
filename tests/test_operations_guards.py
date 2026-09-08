@@ -36,11 +36,11 @@ def test_swiftui_build_number_is_unique_per_run_attempt():
     assert "build_number:" in swiftui
 
 
-def test_xcodegen_version_is_pinned_and_identical_in_both_jobs():
+def test_xcodegen_version_is_pinned_and_identical_in_all_native_jobs():
     swiftui = _read(".github/workflows/ios-swift.yml")
     assert 'XCODEGEN_VERSION: "2.46.0"' in swiftui
     assert 'XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"' in swiftui
-    assert swiftui.count("shasum -a 256 -c -") == 2
+    assert swiftui.count("shasum -a 256 -c -") == 3
     assert "brew install xcodegen" not in swiftui
 
 
@@ -72,7 +72,7 @@ def test_testflight_upload_waits_for_processing_without_assigning_a_group():
     assert "ASC_APP_ID: ${{ vars.ASC_APP_ID || '6803595058' }}" in swiftui
     assert "Wait for TestFlight processing" in swiftui
     assert "node ../native-ios/scripts/testflight-ensure.mjs" in swiftui
-    assert 'ASC_MARKETING_VERSION: "1.2.0"' in swiftui
+    assert 'ASC_MARKETING_VERSION: "1.3.0"' in swiftui
     assert "ASC_UPLOAD_STARTED_AT: ${{ steps.upload.outputs.started_at }}" in swiftui
     assert 'ASC_ASSIGN_INTERNAL_GROUP: "false"' in swiftui
     assert 'ASC_ASSIGN_INTERNAL_GROUP: "true"' not in swiftui
@@ -81,7 +81,7 @@ def test_testflight_upload_waits_for_processing_without_assigning_a_group():
 def test_signed_archive_metadata_is_verified_before_export():
     swiftui = _read(".github/workflows/ios-swift.yml")
     assert swiftui.index("Validate archive metadata") < swiftui.index("Export signed IPA")
-    assert 'EXPECTED_MARKETING_VERSION: "1.2.0"' in swiftui
+    assert 'EXPECTED_MARKETING_VERSION: "1.3.0"' in swiftui
     assert "EXPECTED_BUILD_NUMBER: ${{ steps.buildnum.outputs.value }}" in swiftui
     assert 'assert_bundle_metadata "Main app" "$app_path/Info.plist" "$IOS_BUNDLE_ID"' in swiftui
     assert (
@@ -105,7 +105,7 @@ def test_release_versions_are_explicit_and_coherent():
     service_worker = _read("app/static/sw.js")
 
     assert '__version__ = "1.7.0"' in package
-    assert 'MARKETING_VERSION: "1.2.0"' in project
+    assert 'MARKETING_VERSION: "1.3.0"' in project
     assert "systemInfo.version || '1.7.0'" in index
     assert "rezepte-static-v1.7.0-native-contracts" in service_worker
 
@@ -120,7 +120,11 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert "app_review" in config
     assert "APP_REVIEW_PASSWORD" not in config
     assert "Rezepte.app" in config
-    assert "Rezeptregal-App-Review-1.2.0.mp4" in config
+    assert "ios-swift/artifacts/review-*/*.mp4" in config
+    assert 'VERSION="${APP_REVIEW_VERSION:-1.3.0}"' in script
+    assert 'VIDEO_PATH="$ARTIFACT_DIR/Rezeptregal-App-Review-$VERSION.mp4"' in script
+    assert "ios-swift/artifacts/review-*/screenshots/**" in config
+    assert "xcrun xcresulttool export attachments" in script
     assert "recordVideo" in script
     assert '${APP_REVIEW_PASSWORD:?' in script
     assert "xcodebuild build-for-testing" in script
@@ -138,17 +142,42 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert 'app.launchEnvironment["APP_REVIEW_AUTOMATION"] = "1"' in ui_test
     assert 'archiveTab.tap()' in ui_test
     assert 'app.navigationBars["Archiv"].waitForExistence' in ui_test
-    assert 'reveal(recipe, maximumSwipes: 4)' in ui_test
-    assert 'reveal(app.staticTexts["Originalquelle"])' in ui_test
-    assert 'reveal(administration, maximumSwipes: 6)' in ui_test
-    assert 'reveal(adminSettings, maximumSwipes: 6)' in ui_test
-    assert 'reveal(app.staticTexts["Sicherheitsgrenzen"], maximumSwipes: 4)' in ui_test
+    assert 'reveal(recipe, maximumSwipes: 8)' in ui_test
+    for identifier in ("recipeImportReview", "importReviewSource", "importReviewIngredient-0",
+                       "cookMemoryAdd", "cookMemoryNote", "cookMemoryAdjustments",
+                       "cookMemoryNextTime", "cookMemoryHideKeyboard", "offlineLibraryButton"):
+        assert f'element("{identifier}")' in ui_test
+    assert 'app.segmentedControls.buttons["Zutaten"]' in ui_test
+    assert 'app.navigationBars["Offline-Regal"].waitForExistence' in ui_test
+    assert "XCTAttachment(screenshot: XCUIScreen.main.screenshot())" in ui_test
+    assert "screenshot.lifetime = .keepAlways" in ui_test
     assert 'app.otherElements["recipe.passport"]' not in ui_test
     assert "typeText(password)" not in ui_test
     login_view = _read("ios-swift/Rezepte/Views/LoginView.swift")
     assert 'reviewEnvironment["APP_REVIEW_AUTOMATION"] == "1"' in login_view
     assert 'reviewEnvironment["APP_REVIEW_PASSWORD"]' in login_view
     assert "ReviewVideoResults.xcresult" not in config
+
+
+def test_local_visual_review_uses_isolated_https_with_real_authentication():
+    workflow = _read(".github/workflows/ios-swift.yml")
+    visual_job = workflow.split("  visual-review:", 1)[1].split("  testflight:", 1)[0]
+    wrapper = _read("ios-swift/scripts/record-local-review.sh")
+    server = _read("ios-swift/scripts/local-review-server.py")
+    capture = _read("ios-swift/scripts/record-review-video.sh")
+    assert "inputs.capture_visuals" in visual_job
+    assert "secrets." not in visual_job
+    assert "environment: testflight" not in visual_job
+    assert "record-local-review.sh" in visual_job
+    assert 'host="127.0.0.1"' in server
+    assert '"auth_disabled": False' in server
+    assert "dependency_overrides" not in server
+    assert 'database_module._db = db' in server
+    assert "--cacert" in capture and "add-root-cert" in capture
+    assert "simctl create" in capture
+    assert "simctl erase" not in capture and "simctl shutdown all" not in capture
+    assert "openssl rand -hex 24" in wrapper
+    assert "localhost" in wrapper and "mktemp -d" in wrapper
 
 
 def test_signing_secrets_are_checked_via_env_not_shell_interpolation():

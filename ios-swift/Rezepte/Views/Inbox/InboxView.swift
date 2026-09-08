@@ -76,7 +76,7 @@ struct InboxView: View {
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
                 .tracking(-0.7)
                 .foregroundStyle(theme.ink)
-            Text("Webseite, Pinterest, YouTube, TikTok oder Instagram teilen – Quellenküche liest Rezept, Zutaten und Schritte und bewahrt die Herkunft.")
+            Text("Webseite, Pinterest, YouTube, TikTok oder Instagram teilen – Rezeptregal liest Rezept, Zutaten und Schritte und bewahrt die Herkunft.")
                 .font(.body)
                 .foregroundStyle(theme.muted)
                 .fixedSize(horizontal: false, vertical: true)

@@ -1,4 +1,4 @@
-# Quellenküche für iPhone
+# Rezeptregal für iPhone
 
 Primärer nativer iOS-Client in Swift und SwiftUI. Der Eingang übernimmt
 Rezeptlinks aus Webseiten, Pinterest, YouTube, TikTok und Instagram sowie
