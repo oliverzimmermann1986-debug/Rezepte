@@ -11,8 +11,11 @@ Mockups und lädt nichts zu App Store Connect hoch.
 
 - macOS mit Xcode 16 oder neuer, XcodeGen und verfügbarem iPhone-Simulator.
 - Passender isolierter Review-Server mit künstlichen Daten; die öffentliche
-  `/api/system/info`-Antwort muss `cooking-memory-v1` und `import-review-v1`
-  enthalten. Das Skript bricht andernfalls vor Aufnahmebeginn ab.
+  `/api/system/info`-Antwort muss `cooking-memory-v1`, `import-review-v1` und
+  `cooking-progress-revision-v1` enthalten. Das Skript bricht andernfalls vor
+  Aufnahmebeginn ab. Die dritte Capability ist für den Abgleich des lokalen
+  Kochfortschritts mit Prüfung der Rezeptschritte nötig. Auf älteren Servern
+  bleibt dieser Fortschritt lokal und die App zeigt einen Updatehinweis.
 - `APP_REVIEW_PASSWORD` als geschützte Umgebungsvariable; niemals in Git.
 - Optional `APP_REVIEW_SERVER`, `APP_REVIEW_USERNAME`, `APP_REVIEW_VERSION`
   und `APP_REVIEW_DEVICE_TYPE`. Standard ist iPhone 16 Pro Max; die beim

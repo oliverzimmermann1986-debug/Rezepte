@@ -21,6 +21,15 @@ Screenaufnahmen in die neuen Nachweise gemischt. Ein Netzwerk-Ausfall wird in
 dieser Tour nicht simuliert; Offline- und Wiederaufnahmetests sind zusätzliche
 Freigabegates in `ios-swift/APP_STORE_RELEASE_CHECKLIST.md`.
 
-Voraussetzungen: passend aktualisierter Review-Server, beide neuen Capabilities,
-der künstliche Datensatz aus `DEPLOYMENT.md` und genau der Kandidaten-Commit.
+Voraussetzungen: passend aktualisierter Review-Server mit den Capabilities
+`cooking-memory-v1`, `import-review-v1` und `cooking-progress-revision-v1`, der
+künstliche Datensatz aus `DEPLOYMENT.md` und genau der Kandidaten-Commit. Die
+dritte Capability ist für den Abgleich des lokalen Kochfortschritts mit Prüfung
+der Rezeptschritte erforderlich; ohne sie bleibt dieser Fortschritt lokal.
 Keine Produktionseingriffe oder Zugangsdaten in Repository und Ausgabe.
+
+Die Tabelle beschreibt die schreibfreie Tour auf dem externen Review-Server.
+Die separat aktivierte localhost-Wegwerf-Fixture ergänzt echte Speicher- und
+Neustartprüfungen sowie neun weitere Screenshots. Ablauf und Sicherheitsgrenze
+stehen in `ios-swift/APP_REVIEW_VIDEO.md`; der native 20-Szenenlauf und seine
+visuelle Abnahme sind noch ausstehende Nachweise.

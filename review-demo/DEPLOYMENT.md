@@ -60,10 +60,16 @@ die Sicherheitsgrenze zwischen App Review und Produktion.
 
 Die obige Instanzbeschreibung belegt nicht, dass die neuen Funktionen bereits
 auf dem Review-Server laufen. Vor einer neuen Aufnahme muss der freigegebene
-Backendstand `cooking-memory-v1` und `import-review-v1` unter
+Backendstand `cooking-memory-v1`, `import-review-v1` und
+`cooking-progress-revision-v1` unter
 `/api/system/info` melden. Erst danach die geführte Importkorrektur mit
 Quellenbezug und das persönliche Kochgedächtnis am künstlichen Pasta-Rezept
-prüfen. Die Aufnahmetour selbst zeigt Formularentwürfe ohne Speichern.
+prüfen. Die externe Aufnahmetour zeigt Formularentwürfe ohne Speichern; nur die
+separate localhost-Wegwerf-Fixture führt zusätzlich Speicherprüfungen aus.
+`cooking-progress-revision-v1` ist für den Abgleich des lokalen Kochfortschritts
+mit Prüfung der Rezeptschritte nötig. Ohne diese Capability bleibt ungesendeter
+Fortschritt auf dem iPhone, begleitet von einem Updatehinweis. Ein erfolgreicher
+Capability-Check allein beweist keinen bestandenen Offline-/Neustart-Gerätetest.
 
 Zusätzlich mit zwei isolierten künstlichen Konten prüfen: persönliche Notizen
 dürfen nicht zwischen Konten sichtbar sein; ein reguläres Konto reicht

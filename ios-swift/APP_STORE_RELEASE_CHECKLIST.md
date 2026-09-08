@@ -10,7 +10,9 @@ bleibt unberührt. Jedes Kästchen verlangt einen überprüften Nachweis.
 - [ ] Native Swift-/XCTest- und UI-Prüfungen auf macOS erfolgreich ausführen.
 - [ ] Isolierten Review-Server erst im freigegebenen Release-Ablauf auf den
   passenden Backendstand bringen; künstliche Daten und Zugang prüfen.
-- [ ] `/api/system/info` meldet `cooking-memory-v1` und `import-review-v1`.
+- [ ] `/api/system/info` meldet `cooking-memory-v1`, `import-review-v1` und
+  `cooking-progress-revision-v1`. Ohne die dritte Capability darf kein
+  serverseitiger Abgleich des lokalen Kochfortschritts zugesichert werden.
 - [ ] Erststart mit dem echten Review-Zugang gelingt; Gastzugang und Serverpflicht
   sind in den Store- und Review-Texten korrekt beschrieben.
 
@@ -28,6 +30,9 @@ bleibt unberührt. Jedes Kästchen verlangt einen überprüften Nachweis.
 - [ ] Netzwerkfehler meldet den Nutzer nicht ab. Nach Wiederverbindung wird
   vorgemerkter Fortschritt genau einmal beziehungsweise konfliktbewusst
   synchronisiert. Zwischenzeitliche Änderungen am Rezept prüfen.
+- [ ] Bei einem Server ohne `cooking-progress-revision-v1` bleibt ungesendeter
+  Kochfortschritt lokal erhalten und ein Updatehinweis erscheint. Nach einem
+  passenden Serverupdate den Abgleich und geänderte Rezeptschritte erneut prüfen.
 - [ ] Konto-/Serverwechsel zeigt keine fremden lokalen Rezepte oder Notizen.
 - [ ] Timer bei Bildschirmwechsel, App-Hintergrund und Gerätesperre prüfen;
   keine Hintergrundzuverlässigkeit bewerben, bevor sie belegt ist.

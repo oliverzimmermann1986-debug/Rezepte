@@ -143,7 +143,7 @@ jobs:
           name: swiftui-xcresult-${{ github.sha }}
           path: |
             ios-swift/TestResults.xcresult
-            ios-swift/build/XCTest/SimulatorEntitlements.plist
+            ios-swift/build/XCTest/SimulatorEntitlements*.plist
           if-no-files-found: ignore
           retention-days: 7
 

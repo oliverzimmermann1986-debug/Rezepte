@@ -35,7 +35,10 @@ und nicht als neue Kernfunktion beworben.
 ## Voraussetzungen für den Review-Zugang
 
 - Isolierter Review-Server mit künstlichen Rezeptdaten und passendem Backend.
-- `/api/system/info` muss `cooking-memory-v1` und `import-review-v1` melden.
+- `/api/system/info` muss `cooking-memory-v1`, `import-review-v1` und
+  `cooking-progress-revision-v1` melden. Die dritte Capability ermöglicht den
+  Abgleich des lokalen Kochfortschritts mit Prüfung der Rezeptschritte. Ohne
+  sie bleibt der Fortschritt auf dem iPhone; die App fordert ein Serverupdate an.
 - Das Review-Konto erhält nur Zugriff auf diese künstliche Instanz.
 - Zugangsdaten werden ausschließlich in den geschützten App-Review-Feldern
   hinterlegt. Das optionale Cloudflare-Feld bleibt für diese Instanz leer.

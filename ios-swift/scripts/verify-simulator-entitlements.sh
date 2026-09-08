@@ -26,7 +26,20 @@ fi
 
 codesign --verify --deep --strict "$app_path"
 mkdir -p "$(dirname "$diagnostic_path")"
-codesign --display --entitlements - "$app_path" > "$diagnostic_path"
+# New codesign versions default to a human-readable [Dict], not a plist.
+# The host signature can legitimately have an empty dictionary for Simulator:
+# Xcode links its effective simulated entitlements into the signed executable.
+# https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles
+host_diagnostic_path="${diagnostic_path%.plist}.host.plist"
+codesign --display --entitlements - --xml "$app_path" > "$host_diagnostic_path"
+plutil -lint "$host_diagnostic_path"
+executable="$("$plist_buddy" -c 'Print :CFBundleExecutable' "$app_path/Info.plist")"
+if [[ -z "$executable" || "$executable" == */* || "$executable" == *\\* ]]; then
+    echo "Invalid Simulator CFBundleExecutable." >&2
+    exit 1
+fi
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 "$script_dir/extract-simulator-entitlements.py" "$app_path/$executable" "$diagnostic_path"
 plutil -lint "$diagnostic_path"
 application_id="$("$plist_buddy" -c 'Print :application-identifier' "$diagnostic_path" 2>/dev/null || true)"
 keychain_group="$("$plist_buddy" -c 'Print :keychain-access-groups:0' "$diagnostic_path" 2>/dev/null || true)"
@@ -38,7 +51,7 @@ if [[ -z "$application_id" && -z "$keychain_group" && -z "$app_group" ]]; then
     echo "Simulator host has no effective Keychain entitlement (would fail with -34018)." >&2
     exit 1
 fi
-if [[ -n "$application_id" && "$application_id" != *"$bundle_id" ]]; then
+if [[ -z "$application_id" || "$application_id" != *".$bundle_id" ]]; then
     echo "Simulator application-identifier does not match $bundle_id." >&2
     exit 1
 fi

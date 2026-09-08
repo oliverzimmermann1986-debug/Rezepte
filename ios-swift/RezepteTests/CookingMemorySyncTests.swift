@@ -4,6 +4,59 @@ import XCTest
 
 final class CookingMemorySyncTests: XCTestCase {
     @MainActor
+    func testNoteEnqueuedDuringInflightPOSTSynchronizesWithoutAnotherRefresh() async throws {
+        let context = try await MemorySyncTestContext.make()
+        defer { context.cleanUp() }
+        let firstPostReachedServer = expectation(description: "First POST is held in flight")
+        let firstPostGate = MemorySyncResponseGate { firstPostReachedServer.fulfill() }
+        defer { firstPostGate.release() }
+        var first = CookingMemoryRequest(note: "Erste Erfahrung")
+        first.clientEntryId = "first-inflight"
+        var second = CookingMemoryRequest(note: "Währenddessen gespeicherte Erfahrung")
+        second.clientEntryId = "second-during-post"
+        context.transport.setHandler { request in
+            guard request.method == "POST", request.path == "/api/recipes/42/cooking-memory" else {
+                return .unexpected
+            }
+            switch request.clientEntryID ?? "" {
+            case "first-inflight":
+                return .saved(clientEntryID: "first-inflight", note: "Erste Erfahrung", gate: firstPostGate)
+            case "second-during-post":
+                return .saved(clientEntryID: "second-during-post", note: "Währenddessen gespeicherte Erfahrung",
+                              entryID: 102)
+            default:
+                return .unexpected
+            }
+        }
+        try CookingMemoryStorage.enqueue(recipeID: 42, request: first, session: context.session)
+        let syncTask = Task { await CookingMemoryStorage.sync(session: context.session) }
+        await fulfillment(of: [firstPostReachedServer], timeout: 3)
+
+        // Mirror CookingReflectionView.save(): durable enqueue, then another
+        // sync request while the first run owns the account's busy guard.
+        try CookingMemoryStorage.enqueue(recipeID: 42, request: second, session: context.session)
+        await CookingMemoryStorage.sync(session: context.session)
+        XCTAssertEqual(context.transport.memoryRequests.compactMap(\.clientEntryID), ["first-inflight"])
+        firstPostGate.release()
+        await syncTask.value
+
+        // No third sync, scene-phase event or explicit refresh is allowed here.
+        let archive = try CookingMemoryStorage.load(session: context.session)
+        XCTAssertTrue(archive.pending.isEmpty)
+        XCTAssertEqual(context.transport.memoryRequests.compactMap(\.clientEntryID),
+                       ["first-inflight", "second-during-post"])
+        XCTAssertEqual(Set(archive.entries["42"]?.map(\.clientEntryId) ?? []),
+                       Set(["first-inflight", "second-during-post"]))
+        XCTAssertEqual(Set(archive.entries["42"]?.map(\.id) ?? []), Set([101, 102]))
+        let reloaded = try XCTUnwrap(OfflineStore(directory: context.directory).read(
+            CookingMemoryArchive.self, key: CookingMemoryStorage.key, account: context.account
+        ))
+        XCTAssertTrue(reloaded.pending.isEmpty)
+        XCTAssertEqual(Set(reloaded.entries["42"]?.map(\.clientEntryId) ?? []),
+                       Set(["first-inflight", "second-during-post"]))
+    }
+
+    @MainActor
     func testRejectedStaleStepRemainsForReviewWhileFollowingNoteSynchronizes() async throws {
         let context = try await MemorySyncTestContext.make()
         defer { context.cleanUp() }
@@ -236,10 +289,11 @@ private struct MemorySyncReply {
 
     static let unexpected = MemorySyncReply(status: 500, json: "{\"detail\":\"Unexpected test request\"}")
 
-    static func saved(clientEntryID: String, note: String, gate: MemorySyncResponseGate? = nil) -> Self {
+    static func saved(clientEntryID: String, note: String, gate: MemorySyncResponseGate? = nil,
+                      entryID: Int = 101) -> Self {
         // The values are fixed test data, not user input.
         Self(status: 200, json: """
-        {"ok":true,"entry":{"id":101,"client_entry_id":"\(clientEntryID)","recipe_id":42,
+        {"ok":true,"entry":{"id":\(entryID),"client_entry_id":"\(clientEntryID)","recipe_id":42,
         "created_at":1725000000,"note":"\(note)","adjustments":"","next_time":"",
         "servings":3,"step_number":null,"step_instruction":null,"step_is_current":null}}
         """, gate: gate)

@@ -33,7 +33,7 @@ if [[ -n "${APP_REVIEW_CA_CERT:-}" ]]; then
 fi
 curl --fail --silent --show-error --max-time 30 "${curl_tls_options[@]}" \
     "${APP_REVIEW_SERVER%/}/api/system/info" \
-    | python3 -c 'import json,sys; data=json.load(sys.stdin); required={"cooking-memory-v1","import-review-v1"}; missing=required-set(data.get("capabilities",[])); print("Review server version:",data.get("version","unknown")); sys.exit("Missing review capabilities: " + ", ".join(sorted(missing)) if missing else 0)'
+    | python3 -c 'import json,sys; data=json.load(sys.stdin); required={"cooking-memory-v1","import-review-v1","cooking-progress-revision-v1"}; missing=required-set(data.get("capabilities",[])); print("Review server version:",data.get("version","unknown")); sys.exit("Missing review capabilities: " + ", ".join(sorted(missing)) if missing else 0)'
 
 simulator_id=""
 recorder_pid=""

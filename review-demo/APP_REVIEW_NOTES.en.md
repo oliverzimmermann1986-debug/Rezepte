@@ -19,7 +19,10 @@ provided below; a reviewer does not need to install or operate a server.
 
 The review account is an administrator of this isolated instance. It has no
 access to production household data. The current server must advertise
-`cooking-memory-v1` and `import-review-v1` before this build is reviewed.
+`cooking-memory-v1`, `import-review-v1` and `cooking-progress-revision-v1` before
+this build is reviewed. The third capability allows cooking progress to be
+synchronized with a check for changed recipe steps. Without it, pending progress
+stays on the iPhone and the app asks for a server update.
 
 ## Suggested review flow
 

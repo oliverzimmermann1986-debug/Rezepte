@@ -49,6 +49,8 @@ dessen Adresse und einen Zugang; für einen freigeschalteten Gastzugang reicht
 die Serveradresse. Die App bietet keinen öffentlichen Rezeptkatalog und legt
 kein Cloud-Konto an. Import, Anmeldung und Synchronisierung benötigen Internet.
 Verfügbare Funktionen richten sich nach Serverversion und Kontoberechtigung.
+Der Abgleich des lokalen Kochfortschritts erfordert einen passend aktualisierten
+Server. Bis dahin bleibt der Fortschritt auf dem iPhone gespeichert.
 
 Strukturprüfungen und Zutatenvorschläge ersetzen keine eigene Prüfung des
 Rezepts und der Produktetiketten. Sie garantieren weder Gelingen noch

@@ -29,6 +29,10 @@ struct CookingMemoryArchive: Codable {
 enum CookingMemoryStorage {
     static let key = "personal-cooking-memory-v1"
     private static var syncing: Set<String> = []
+    private struct SyncAttempt: Hashable {
+        let id: String
+        let cancelled: Bool
+    }
 
     static func load(session: SessionStore) throws -> CookingMemoryArchive {
         guard let account = session.offlineAccount else { throw APIError.unauthenticated }
@@ -89,10 +93,16 @@ enum CookingMemoryStorage {
         syncing.insert(account.id)
         defer { syncing.remove(account.id) }
         do {
-            let pending = try load(session: session).pending
-            for original in pending {
-                guard session.offlineAccount == account else { return }
-                guard let item = try load(session: session).pending.first(where: { $0.id == original.id }) else { continue }
+            var attempted: Set<SyncAttempt> = []
+            while session.offlineAccount == account, !session.readOnly, !session.isOffline {
+                // A second save may enqueue while URLSession is awaiting this
+                // loop's POST. Its own sync call returns busy, so drain the live
+                // queue here. A failed POST and a later cancellation are distinct
+                // attempts; permanent errors must not spin or block other notes.
+                guard let item = try load(session: session).pending.first(where: {
+                    !attempted.contains(SyncAttempt(id: $0.id, cancelled: $0.cancelled))
+                }) else { break }
+                attempted.insert(SyncAttempt(id: item.id, cancelled: item.cancelled))
                 do {
                     if item.cancelled {
                         try await cancelOnServer(item, account: account, session: session)
@@ -101,6 +111,7 @@ enum CookingMemoryStorage {
                     let response = try await session.api.saveCookingMemory(recipeID: item.recipeID, request: item.request, expectedAccount: account)
                     guard session.offlineAccount == account else { return }
                     if try load(session: session).pending.first(where: { $0.id == item.id })?.cancelled == true {
+                        attempted.insert(SyncAttempt(id: item.id, cancelled: true))
                         try await cancelOnServer(item, account: account, session: session)
                         continue
                     }

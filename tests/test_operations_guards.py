@@ -1,6 +1,9 @@
 """Statische Regressionen für Release-Pipeline und Review-Isolation (AUDIT B1–B3, D3, D6)."""
 
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 import yaml
 
@@ -196,6 +199,25 @@ def test_local_visual_review_uses_isolated_https_with_real_authentication():
     assert 'reopenRecipe(offline: true)' in ui_test
     assert 'resume.tap()' in ui_test and 'secondStep.waitForExistence' in ui_test
     assert 'capture("20-kochen-wiederaufgenommen")' in ui_test
+
+
+def test_review_capability_probe_requires_all_recipe_experience_contracts():
+    script = _read("ios-swift/scripts/record-review-video.sh")
+    probe_line = next(line for line in script.splitlines() if "| python3 -c '" in line)
+    probe = probe_line.split("| python3 -c '", 1)[1].removesuffix("'")
+    required = {"cooking-memory-v1", "import-review-v1", "cooking-progress-revision-v1"}
+    for missing in (None, *sorted(required)):
+        capabilities = sorted(required - {missing})
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            input=json.dumps({"version": "test-fixture", "capabilities": capabilities}),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == (0 if missing is None else 1)
+        if missing is not None:
+            assert f"Missing review capabilities: {missing}" in result.stderr
 
 
 def test_signing_secrets_are_checked_via_env_not_shell_interpolation():
