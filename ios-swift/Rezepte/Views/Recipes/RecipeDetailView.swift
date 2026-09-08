@@ -342,7 +342,7 @@ struct RecipeDetailView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(theme.accent)
-                    .foregroundStyle(theme.ink)
+                    .foregroundStyle(recipe.steps.isEmpty ? theme.ink : theme.accentForeground)
                     .disabled(recipe.steps.isEmpty)
                     .accessibilityIdentifier("recipeCookButton")
 
@@ -1000,7 +1000,7 @@ private struct PlanRecipeSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(theme.accent)
-                .foregroundStyle(theme.ink)
+                .foregroundStyle(isSaving ? theme.ink : theme.accentForeground)
                 .disabled(isSaving)
             }
             .padding()
@@ -1058,7 +1058,7 @@ private struct ShoppingServingsSheet: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(theme.accent)
-                    .foregroundStyle(theme.ink)
+                    .foregroundStyle(isAdding ? theme.ink : theme.accentForeground)
                     .disabled(isAdding)
                 }
                 .padding()

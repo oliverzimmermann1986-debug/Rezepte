@@ -32,6 +32,7 @@ enum ThemeChoice: String, CaseIterable, Codable, Identifiable {
         case .butter:
             RecipeTheme(
                 accent: Color(red: 0.96, green: 0.78, blue: 0.31),
+                accentForeground: Color(uiColor: UIColor(rgb: 0x433427)),
                 accentPressed: Color(red: 0.86, green: 0.65, blue: 0.16),
                 accentSoft: Color.dynamic(light: 0xFFF0B8, dark: 0x4A3C18),
                 background: Color.dynamic(light: 0xFFF9EE, dark: 0x17130E),
@@ -44,6 +45,7 @@ enum ThemeChoice: String, CaseIterable, Codable, Identifiable {
         case .sage:
             RecipeTheme(
                 accent: Color(red: 0.49, green: 0.64, blue: 0.46),
+                accentForeground: Color(uiColor: UIColor(rgb: 0x243024)),
                 accentPressed: Color(red: 0.34, green: 0.50, blue: 0.32),
                 accentSoft: Color.dynamic(light: 0xDCE9D8, dark: 0x263A26),
                 background: Color.dynamic(light: 0xF6F8F1, dark: 0x111711),
@@ -56,6 +58,7 @@ enum ThemeChoice: String, CaseIterable, Codable, Identifiable {
         case .tomato:
             RecipeTheme(
                 accent: Color(red: 0.82, green: 0.31, blue: 0.22),
+                accentForeground: .black,
                 accentPressed: Color(red: 0.68, green: 0.22, blue: 0.16),
                 accentSoft: Color.dynamic(light: 0xF6DDD6, dark: 0x4A2520),
                 background: Color.dynamic(light: 0xFFF7F2, dark: 0x1B1110),
@@ -68,6 +71,7 @@ enum ThemeChoice: String, CaseIterable, Codable, Identifiable {
         case .plum:
             RecipeTheme(
                 accent: Color(red: 0.54, green: 0.34, blue: 0.50),
+                accentForeground: .white,
                 accentPressed: Color(red: 0.42, green: 0.24, blue: 0.39),
                 accentSoft: Color.dynamic(light: 0xEBDDEA, dark: 0x402A3E),
                 background: Color.dynamic(light: 0xFFF9EE, dark: 0x181116),
@@ -107,6 +111,8 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 
 struct RecipeTheme: Equatable {
     let accent: Color
+    // Accent fills are static in both appearances; their text must be too.
+    let accentForeground: Color
     let accentPressed: Color
     let accentSoft: Color
     let background: Color

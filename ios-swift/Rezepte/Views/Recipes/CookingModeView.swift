@@ -139,7 +139,7 @@ struct CookingModeView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(theme.accent)
-                .foregroundStyle(theme.ink)
+                .foregroundStyle(isSaving || session.readOnly ? theme.ink : theme.accentForeground)
                 .disabled(isSaving || session.readOnly)
                 .accessibilityIdentifier(hasResumableProgress ? "cookingResume" : "cookingStart")
             }
@@ -285,7 +285,10 @@ struct CookingModeView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(completedSteps.contains(activeStep) ? theme.success : theme.accent)
-            .foregroundStyle(completedSteps.contains(activeStep) ? Color.white : theme.ink)
+            .foregroundStyle(
+                completedSteps.contains(activeStep) ? Color.white
+                    : isSaving || isFinishing ? theme.ink : theme.accentForeground
+            )
             .disabled(isSaving || isFinishing)
             .accessibilityIdentifier("cookingStepNext")
         }

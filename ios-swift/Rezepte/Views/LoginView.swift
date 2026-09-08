@@ -102,7 +102,7 @@ struct LoginView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(theme.accent)
-                    .foregroundStyle(theme.ink)
+                    .foregroundStyle(canSubmit ? theme.accentForeground : theme.ink)
                     .disabled(!canSubmit)
 
                     VStack(spacing: 10) {
