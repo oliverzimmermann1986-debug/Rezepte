@@ -150,7 +150,7 @@ final class OfflineStore: @unchecked Sendable {
         try folder.setResourceValues(values)
         try JSONEncoder().encode(value).write(
             to: fileURL(key: key, account: account),
-            options: [.atomic, .completeUntilFirstUserAuthentication]
+            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
         )
     }
 

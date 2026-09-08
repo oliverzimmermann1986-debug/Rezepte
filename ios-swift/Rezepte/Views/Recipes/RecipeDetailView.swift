@@ -912,6 +912,9 @@ struct RecipeDetailView: View {
         defer { isDeleting = false }
         do {
             _ = try await session.api.deleteRecipe(id: recipeID)
+            if let account = session.offlineAccount {
+                try session.offlineStore.removeRecipe(id: recipeID, account: account)
+            }
             NotificationCenter.default.post(name: .recipesChanged, object: recipeID)
             dismiss()
         } catch {

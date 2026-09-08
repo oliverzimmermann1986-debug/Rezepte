@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Environment(\.recipeTheme) private var theme
     @Environment(\.openURL) private var openURL
     @State private var showAdministration = false
+    @State private var showSignOutConfirmation = false
     @AppStorage("content-language-v1") private var contentLanguage = ContentLanguage.de.rawValue
 
     var body: some View {
@@ -99,7 +100,7 @@ struct SettingsView: View {
                     } label: {
                         Label("Datenschutz", systemImage: "hand.raised")
                     }
-                    Button("Abmelden", role: .destructive) { session.signOut() }
+                    Button("Abmelden", role: .destructive) { showSignOutConfirmation = true }
                 }
 
                 Section {
@@ -116,6 +117,12 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             .background(theme.background)
             .navigationTitle("Einstellungen")
+            .confirmationDialog("Abmelden und lokale Daten entfernen?", isPresented: $showSignOutConfirmation, titleVisibility: .visible) {
+                Button("Abmelden", role: .destructive) { session.signOut() }
+                Button("Abbrechen", role: .cancel) {}
+            } message: {
+                Text("Offline-Rezepte, Kochfortschritt, laufende Timer und lokale Entwürfe werden von diesem iPhone entfernt. Noch nicht synchronisierte Notizen und Kochabschlüsse gehen dabei verloren. Bei Bedarf zuerst im Offline-Regal die Verbindung prüfen und abgleichen.")
+            }
             .fullScreenCover(isPresented: $showAdministration) {
                 AdminView(presented: true)
                     .environmentObject(session)

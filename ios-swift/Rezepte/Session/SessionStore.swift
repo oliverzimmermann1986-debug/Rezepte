@@ -295,34 +295,50 @@ final class SessionStore: ObservableObject {
         isSyncingCooking = true
         defer { isSyncingCooking = false; refreshPendingCookingCount() }
         do {
+            var rejectedRecipes: Set<Int> = []
             while generation == sessionGeneration, account == offlineAccount, !readOnly {
-                let completions = try offlineStore.completions(account: account)
-                let pending = try offlineStore.progress(account: account).filter(\.needsSync)
+                let completions = try offlineStore.completions(account: account).filter { !rejectedRecipes.contains($0.recipeID) }
+                let pending = try offlineStore.progress(account: account).filter { $0.needsSync && !rejectedRecipes.contains($0.recipeID) }
                 guard !completions.isEmpty || !pending.isEmpty else { break }
                 // Completion clears server progress, so new-run progress follows it.
                 for completion in completions {
                     guard generation == sessionGeneration, account == offlineAccount, !readOnly else { return }
-                    _ = try await api.completeCooking(id: completion.recipeID, servings: completion.servings,
-                                                     idempotencyKey: completion.id, expectedAccount: account)
-                    guard generation == sessionGeneration, account == offlineAccount else { return }
-                    try offlineStore.removeCompletion(id: completion.id, account: account)
+                    do {
+                        _ = try await api.completeCooking(id: completion.recipeID, servings: completion.servings,
+                                                         idempotencyKey: completion.id, expectedAccount: account)
+                        guard generation == sessionGeneration, account == offlineAccount else { return }
+                        try offlineStore.removeCompletion(id: completion.id, account: account)
+                    } catch {
+                        guard generation == sessionGeneration, account == offlineAccount else { return }
+                        guard CookingMemoryStorage.canContinueSync(after: error) else { throw error }
+                        rejectedRecipes.insert(completion.recipeID)
+                        alertMessage = "Ein Kochabschluss konnte nicht zugeordnet werden und bleibt lokal erhalten: \(error.localizedDescription)"
+                    }
                 }
                 for progress in pending {
                     guard generation == sessionGeneration, account == offlineAccount, !readOnly else { return }
+                    if rejectedRecipes.contains(progress.recipeID) { continue }
                     // A tap or completion may have superseded this snapshot while
                     // another request was in flight. Only send the current run.
                     guard try offlineStore.progress(account: account).contains(where: {
                         $0.recipeID == progress.recipeID && $0.revision == progress.revision
                     }) else { continue }
-                    if progress.started {
-                        _ = try await api.updateCookingProgress(id: progress.recipeID,
-                            completedSteps: progress.completedSteps.sorted(), activeStep: progress.activeStep,
-                            servings: progress.servings, expectedAccount: account)
-                    } else {
-                        _ = try await api.clearCookingProgress(id: progress.recipeID, expectedAccount: account)
+                    do {
+                        if progress.started {
+                            _ = try await api.updateCookingProgress(id: progress.recipeID,
+                                completedSteps: progress.completedSteps.sorted(), activeStep: progress.activeStep,
+                                servings: progress.servings, expectedAccount: account)
+                        } else {
+                            _ = try await api.clearCookingProgress(id: progress.recipeID, expectedAccount: account)
+                        }
+                        guard generation == sessionGeneration, account == offlineAccount else { return }
+                        try offlineStore.markProgressSynced(progress, account: account)
+                    } catch {
+                        guard generation == sessionGeneration, account == offlineAccount else { return }
+                        guard CookingMemoryStorage.canContinueSync(after: error) else { throw error }
+                        rejectedRecipes.insert(progress.recipeID)
+                        alertMessage = "Ein Kochfortschritt konnte nicht abgeglichen werden und bleibt lokal erhalten: \(error.localizedDescription)"
                     }
-                    guard generation == sessionGeneration, account == offlineAccount else { return }
-                    try offlineStore.markProgressSynced(progress, account: account)
                 }
             }
         } catch {
@@ -346,7 +362,9 @@ final class SessionStore: ObservableObject {
             let required = Set([
                 "shopping-categories",
                 "recurring-shopping",
-                "weekly-meal-plan"
+                "weekly-meal-plan",
+                "cooking-memory-v1",
+                "import-review-v1"
             ])
             let missing = required.subtracting(serverCapabilities).sorted()
             compatibilityWarning = missing.isEmpty
