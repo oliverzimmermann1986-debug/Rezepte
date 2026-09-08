@@ -69,9 +69,7 @@ final class AppReviewVideoUITests: XCTestCase {
         ingredientsPage.tap()
         reveal(element("importReviewIngredient-0"))
         capture("05-import-zutaten-nacharbeiten")
-        let importClose = element("importReviewClose")
-        XCTAssertTrue(importClose.waitForExistence(timeout: 10))
-        importClose.tap()
+        closeSheet(identifier: "importReviewClose")
 
         let memoryAdd = element("cookMemoryAdd")
         reveal(memoryAdd)
@@ -83,9 +81,7 @@ final class AppReviewVideoUITests: XCTestCase {
         fill(element("cookMemoryNextTime"), with: "Nudelwasser vor dem Abgießen auffangen.")
         dismissKeyboard()
         capture("06-persoenliches-kochgedaechtnis-entwurf")
-        let memoryCancel = element("cookMemoryCancel")
-        XCTAssertTrue(memoryCancel.waitForExistence(timeout: 10))
-        memoryCancel.tap()
+        closeSheet(identifier: "cookMemoryCancel")
 
         let backToArchive = app.navigationBars.buttons["Archiv"]
         XCTAssertTrue(backToArchive.waitForExistence(timeout: 10))
@@ -176,7 +172,7 @@ final class AppReviewVideoUITests: XCTestCase {
         reveal(importSuccess, direction: .down)
         XCTAssertTrue(importSuccess.label.contains("Korrektur übernommen"))
         capture("15-import-korrektur-uebernommen")
-        element("importReviewClose").tap()
+        closeSheet(identifier: "importReviewClose")
         reopenRecipe()
         openImportReview()
         XCTAssertTrue(originalSource.waitForExistence(timeout: 15), "The original source was not retained.")
@@ -184,7 +180,7 @@ final class AppReviewVideoUITests: XCTestCase {
         reveal(ingredient)
         XCTAssertEqual(ingredient.value as? String, "Pasta nach Wahl", "The applied ingredient did not survive reload.")
         capture("16-import-korrektur-neu-geladen")
-        element("importReviewClose").tap()
+        closeSheet(identifier: "importReviewClose")
 
         reopenRecipe()
         let cookButton = element("recipeCookButton")
@@ -250,6 +246,15 @@ final class AppReviewVideoUITests: XCTestCase {
 
     private func element(_ identifier: String) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    private func closeSheet(identifier: String, file: StaticString = #filePath, line: UInt = #line) {
+        let close = app.buttons.matching(identifier: identifier).firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 10) && close.isHittable, file: file, line: line)
+        close.tap()
+        XCTAssertEqual(app.state, .runningForeground,
+                       "The app left the foreground while closing \(identifier). Inspect simulator crash diagnostics.",
+                       file: file, line: line)
     }
 
     private enum ScrollDirection { case up, down }

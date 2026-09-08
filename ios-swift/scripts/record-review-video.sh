@@ -97,6 +97,7 @@ xcrun simctl io "$simulator_id" recordVideo \
 recorder_pid="$!"
 sleep 2
 
+touch "$ARTIFACT_DIR/test-start.marker"
 test_status=0
 xcodebuild test-without-building \
     -project "$IOS_ROOT/Rezepte.xcodeproj" \
@@ -123,6 +124,35 @@ if [[ -d "$RESULT_BUNDLE" ]]; then
 else
     attachment_export_status=1
     echo "No XCTest result bundle was created for attachment export." >&2
+fi
+
+if [[ "$test_status" -ne 0 ]]; then
+    # Collect before deleting this run's simulator. This is diagnosis only;
+    # all failures below preserve XCTest's original nonzero result.
+    diagnostic_dir="$ARTIFACT_DIR/diagnostics"
+    mkdir -p "$diagnostic_dir/xcresult" "$diagnostic_dir/host-crashes" "$diagnostic_dir/simulator-crashes"
+    xcrun xcresulttool export diagnostics \
+        --path "$RESULT_BUNDLE" --output-path "$diagnostic_dir/xcresult" \
+        >"$diagnostic_dir/xcresult-export.log" 2>&1 || true
+    xcrun simctl io "$simulator_id" screenshot "$diagnostic_dir/failure-screen.png" \
+        >"$diagnostic_dir/failure-screen.log" 2>&1 || true
+    xcrun simctl spawn "$simulator_id" log show --style compact --last 20m \
+        --predicate 'process == "Rezepte" OR eventMessage CONTAINS "de.mausbaeren.rezepte"' \
+        >"$diagnostic_dir/app-system.log" 2>&1 || true
+    host_reports="$HOME/Library/Logs/DiagnosticReports"
+    if [[ -d "$host_reports" ]]; then
+        find "$host_reports" -maxdepth 2 -type f -newer "$ARTIFACT_DIR/test-start.marker" \
+            \( -name 'Rezepte*.ips' -o -name 'Rezepte*.crash' \) \
+            -exec cp -p {} "$diagnostic_dir/host-crashes/" \; \
+            >"$diagnostic_dir/host-crash-copy.log" 2>&1 || true
+    fi
+    simulator_reports="$HOME/Library/Developer/CoreSimulator/Devices/$simulator_id/data/Library/Logs/CrashReporter"
+    if [[ -d "$simulator_reports" ]]; then
+        find "$simulator_reports" -maxdepth 3 -type f -newer "$ARTIFACT_DIR/test-start.marker" \
+            \( -name '*.ips' -o -name '*.crash' \) \
+            -exec cp -p {} "$diagnostic_dir/simulator-crashes/" \; \
+            >"$diagnostic_dir/simulator-crash-copy.log" 2>&1 || true
+    fi
 fi
 
 {
