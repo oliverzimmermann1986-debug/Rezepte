@@ -198,8 +198,14 @@ jobs:
 
   testflight:
     name: Archive and upload SwiftUI app to TestFlight
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_testflight }}
-    needs: test
+    # A requested visual gate must finish successfully before an explicit upload.
+    # !cancelled() permits the intentionally skipped visual job only when the
+    # caller disabled capture; unit tests must always have succeeded.
+    if: >-
+      ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.upload_testflight &&
+          needs.test.result == 'success' &&
+          (!inputs.capture_visuals || needs['visual-review'].result == 'success') }}
+    needs: [test, visual-review]
     runs-on: macos-26
     timeout-minutes: 55
     environment: testflight

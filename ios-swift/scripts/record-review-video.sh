@@ -62,12 +62,12 @@ sample_hung_simulator_app() {
                 noticed_timeout=1
             fi
             app_pid="$(ps -axww -o pid=,command= | awk -v device="/Devices/$simulator_id/" \
-                'index($0, device) && index($0, "/Rezepte.app/Rezepte") {print $1; exit}')" || true
+                'index($2, device) && $2 ~ /\/Rezepte\.app\/Rezepte$/ {print $1; exit}')" || true
             if [[ "$app_pid" =~ ^[0-9]+$ ]]; then
-                app_command="$(ps -p "$app_pid" -ww -o command=)" || true
+                app_command="$(ps -p "$app_pid" -ww -o command= | awk '{print $1}')" || true
                 # Never sample another simulator, the user's running app or a
                 # similarly named process. Do not persist process arguments.
-                if [[ "$app_command" == *"/Devices/$simulator_id/"* && "$app_command" == *"/Rezepte.app/Rezepte"* ]]; then
+                if [[ "$app_command" == *"/Devices/$simulator_id/"* && "$app_command" == *"/Rezepte.app/Rezepte" ]]; then
                     mkdir -p "$ARTIFACT_DIR/diagnostics"
                     /usr/bin/sample "$app_pid" 5 10 \
                         -file "$ARTIFACT_DIR/diagnostics/main-thread-hang.sample.txt" \

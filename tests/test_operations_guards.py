@@ -2,9 +2,12 @@
 
 import json
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 
+import pytest
 import yaml
 
 
@@ -27,6 +30,17 @@ def test_release_upload_survives_parallel_pushes():
     expo = _read(".github/workflows/ios.yml")
     assert "cancel-in-progress: false" in expo
     assert "cancel-in-progress: true" not in expo
+
+
+def test_testflight_upload_waits_for_a_requested_visual_review():
+    workflow = yaml.safe_load(_read(".github/workflows/ios-swift.yml"))
+    upload = workflow["jobs"]["testflight"]
+    assert upload["needs"] == ["test", "visual-review"]
+    assert " ".join(upload["if"].split()) == (
+        "${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.upload_testflight && "
+        "needs.test.result == 'success' && "
+        "(!inputs.capture_visuals || needs['visual-review'].result == 'success') }}"
+    )
 
 
 def test_swiftui_build_number_is_unique_per_run_attempt():
@@ -189,6 +203,38 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert 'reviewEnvironment["APP_REVIEW_AUTOMATION"] == "1"' in login_view
     assert 'reviewEnvironment["APP_REVIEW_PASSWORD"]' in login_view
     assert "ReviewVideoResults.xcresult" not in config
+
+
+@pytest.mark.parametrize("with_app", [False, True])
+def test_review_hang_sampler_selects_only_the_simulator_app_executable(with_app):
+    awk = shutil.which("awk")
+    if not awk:
+        bundled_awk = Path("C:/Program Files/Git/usr/bin/awk.exe")
+        if bundled_awk.is_file():
+            awk = str(bundled_awk)
+    if not awk:
+        pytest.skip("AWK is required to exercise the macOS process selector")
+    script = _read("ios-swift/scripts/record-review-video.sh")
+    selector = re.search(r"'(index\(\$2, device\).*?)'", script)
+    assert selector, "Keep the process selection restricted to the executable field"
+    device = "/Devices/THIS-RUN/"
+    executable = f"/Users/runner/Library/CoreSimulator{device}data/Rezepte.app/Rezepte"
+    rows = [
+        "100 /usr/bin/awk -v device=/Devices/THIS-RUN/ /Rezepte.app/Rezepte",
+        f"101 /usr/bin/debugserver --launch {executable}",
+        "102 /Users/runner/Library/CoreSimulator/Devices/OTHER/data/Rezepte.app/Rezepte",
+        f"103 {executable}.helper",
+    ]
+    if with_app:
+        rows.append(f"104 {executable} -AppleLanguages (de)")
+    result = subprocess.run(
+        [awk, "-v", f"device={device}", selector.group(1)],
+        input="\n".join(rows) + "\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == ("104" if with_app else "")
 
 
 def test_local_visual_review_uses_isolated_https_with_real_authentication():

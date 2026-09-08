@@ -3,13 +3,13 @@ import OSLog
 
 struct CookingMemorySection: View {
     let recipe: Recipe
+    let onAddMemory: () -> Void
     @EnvironmentObject private var session: SessionStore
     @Environment(\.recipeTheme) private var theme
     @State private var entries: [CookingMemoryEntry] = []
     @State private var pending: [PendingCookingMemory] = []
     @State private var errorMessage: String?
     @State private var isLoading = false
-    @State private var showReflection = false
     @State private var deleteEntry: CookingMemoryEntry?
     @State private var showAllEntries = false
     @State private var totalEntries = 0
@@ -97,7 +97,7 @@ struct CookingMemorySection: View {
                 Button("Ältere Erfahrungen laden") { Task { await loadMore() } }
                     .frame(minHeight: 44).disabled(isLoading)
             }
-            Button { showReflection = true } label: {
+            Button(action: onAddMemory) {
                 Label("Erfahrung festhalten", systemImage: "square.and.pencil")
                     .frame(maxWidth: .infinity, minHeight: 44)
             }
@@ -118,9 +118,6 @@ struct CookingMemorySection: View {
         .cardSurface()
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("cookMemorySection")
-        .sheet(isPresented: $showReflection) {
-            CookingReflectionView(recipe: recipe, stepNumber: nil) { readLocal() }
-        }
         .confirmationDialog("Diese persönliche Kochnotiz löschen?", isPresented: Binding(
             get: { deleteEntry != nil }, set: { if !$0 { deleteEntry = nil } }
         ), titleVisibility: .visible) {

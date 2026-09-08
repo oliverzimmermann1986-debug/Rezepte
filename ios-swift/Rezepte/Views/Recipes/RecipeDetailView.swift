@@ -39,6 +39,7 @@ struct RecipeDetailView: View {
     @State private var translatedDescription: String?
     @State private var sourceCopied = false
     @State private var showImportReview = false
+    @State private var showCookingReflection = false
     @State private var isLocalSnapshot = false
     @State private var useInitialOfflineRecipe = true
     @State private var offlineSavedAt: Date?
@@ -83,7 +84,7 @@ struct RecipeDetailView: View {
                         recipePassportSection(recipe)
 
                         if !session.readOnly, session.supports("cooking-memory-v1") {
-                            CookingMemorySection(recipe: recipe)
+                            CookingMemorySection(recipe: recipe) { showCookingReflection = true }
                         }
 
                         ratingAndNutritionSection(recipe)
@@ -203,6 +204,13 @@ struct RecipeDetailView: View {
         .sheet(isPresented: $showImportReview) {
             if let recipe {
                 ImportReviewView(recipeID: recipe.id, recipeName: recipe.name) { await load(forceNetwork: true) }
+            }
+        }
+        // Keep presentation outside LazyVStack children during dismissal layout.
+        .sheet(isPresented: $showCookingReflection) {
+            if let recipe {
+                // Enqueue publishes cookingMemoryChanged; the section reloads itself.
+                CookingReflectionView(recipe: recipe, stepNumber: nil, onSaved: {})
             }
         }
         .sheet(isPresented: $showStepsEditor) {
