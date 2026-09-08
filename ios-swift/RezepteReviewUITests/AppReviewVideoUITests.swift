@@ -253,15 +253,27 @@ final class AppReviewVideoUITests: XCTestCase {
 
     private enum ScrollDirection { case up, down }
 
-    private func reveal(_ element: XCUIElement, maximumSwipes: Int = 10, direction: ScrollDirection = .up) {
+    private func reveal(_ element: XCUIElement, maximumSwipes: Int = 10,
+                        direction: ScrollDirection = .up, file: StaticString = #filePath, line: UInt = #line) {
         _ = element.waitForExistence(timeout: 10)
-        for _ in 0..<maximumSwipes where !element.isHittable {
+        for _ in 0..<maximumSwipes {
+            if element.exists && element.isHittable { return }
             switch direction {
             case .up: app.swipeUp()
             case .down: app.swipeDown()
             }
         }
-        XCTAssertTrue(element.exists && element.isHittable, "Expected review section is not visible: \(element.identifier)")
+        guard element.exists && element.isHittable else {
+            capture("failure-missing-review-control")
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "failure-accessibility-hierarchy"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+            // Reading identifier on a missing query throws a snapshot error and
+            // obscures the original assertion. Report the actual call site instead.
+            XCTFail("Expected review section is not visible after scrolling.", file: file, line: line)
+            return
+        }
     }
 
     private func fill(_ field: XCUIElement, with text: String) {

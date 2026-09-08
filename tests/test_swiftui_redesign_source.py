@@ -28,6 +28,22 @@ def _swift_block(source: str, marker: str) -> str:
     raise AssertionError(f"Unclosed Swift block: {marker}")
 
 
+def test_nested_recipe_controls_keep_separate_accessibility_containers():
+    # Prevent container IDs propagating into child controls. The actual native
+    # review tour verifies that the individual buttons are reachable at runtime.
+    detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
+    memory = _read(SWIFT / "Views" / "Recipes" / "CookingMemoryView.swift")
+    for source, identifier in (
+        (detail, '"recipe.passport"'),
+        (memory, '"cookMemorySection"'),
+        (memory, '"cookMemorySaved-\\(entry.id)"'),
+    ):
+        assert re.search(
+            r"\.accessibilityElement\(children: \.contain\)\s*"
+            + re.escape(f".accessibilityIdentifier({identifier})"), source
+        ), identifier
+
+
 def test_swiftui_is_the_primary_native_path_with_source_first_navigation():
     tabs = _read(SWIFT / "Views" / "MainTabView.swift")
     readme = _read(ROOT / "README.md")

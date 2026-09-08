@@ -467,6 +467,7 @@ struct RecipeDetailView: View {
                             .font(.caption).foregroundStyle(theme.muted)
                     }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 }
+                .multilineTextAlignment(.leading)
                 .accessibilityIdentifier("recipeImportReview")
                 .disabled(session.isOffline)
             }
@@ -539,6 +540,7 @@ struct RecipeDetailView: View {
             }
         }
         .cardSurface()
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("recipe.passport")
     }
 

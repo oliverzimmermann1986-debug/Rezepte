@@ -128,6 +128,9 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert 'VIDEO_PATH="$ARTIFACT_DIR/Rezeptregal-App-Review-$VERSION.mp4"' in script
     assert "ios-swift/artifacts/review-*/screenshots/**" in config
     assert "xcrun xcresulttool export attachments" in script
+    assert script.index("xcrun xcresulttool export attachments") < script.index('if [[ "$test_status" -ne 0 ]]')
+    assert script.index('>"$ARTIFACT_DIR/capture-source.txt"') < script.index('if [[ "$test_status" -ne 0 ]]')
+    assert 'printf \'test_exit_status=%s\\n\'' in script
     assert "recordVideo" in script
     assert '${APP_REVIEW_PASSWORD:?' in script
     assert "xcodebuild build-for-testing" in script
@@ -155,6 +158,9 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert 'app.navigationBars["Offline-Regal"].waitForExistence' in ui_test
     assert "XCTAttachment(screenshot: XCUIScreen.main.screenshot())" in ui_test
     assert "screenshot.lifetime = .keepAlways" in ui_test
+    assert 'capture("failure-missing-review-control")' in ui_test
+    assert 'XCTAttachment(string: app.debugDescription)' in ui_test
+    assert '\\(element.identifier)' not in ui_test
     assert 'app.otherElements["recipe.passport"]' not in ui_test
     assert "typeText(password)" not in ui_test
     login_view = _read("ios-swift/Rezepte/Views/LoginView.swift")
@@ -179,6 +185,7 @@ def test_local_visual_review_uses_isolated_https_with_real_authentication():
     assert '"auth_disabled": False' in server
     assert "dependency_overrides" not in server
     assert 'database_module._db = db' in server
+    assert 'job_locks.LOCK_DIR = directory / "locks"' in server
     assert "--cacert" in capture and "add-root-cert" in capture
     assert "simctl create" in capture
     assert "simctl erase" not in capture and "simctl shutdown all" not in capture

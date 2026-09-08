@@ -35,6 +35,7 @@ def prepare_fixture(directory: Path, *, port: int, password: str):
     import bcrypt
     import yaml
     import app.db as database_module
+    import app.jobs.locks as job_locks
     from app.db import Database
     from app.recipes.cart_logic import prepare_for_cart
     from tools.setup_app_review_demo import RECIPES, _ingredient_rows, REVIEW_CART_ITEMS, REVIEW_RECURRING_ITEM
@@ -63,6 +64,10 @@ def prepare_fixture(directory: Path, *, port: int, password: str):
     config_path.chmod(0o600)
     db = Database(directory / "fixture.db")
     database_module._db = db
+    # The normal application shutdown writes a scraper cancellation marker.
+    # Keep that process-local fixture state away from the deployment default.
+    job_locks.LOCK_DIR = directory / "locks"
+    job_locks.LOCK_DIR.mkdir()
     db.user_create("app-review", password_hash, role="admin")
     for item in RECIPES:
         folder = recipe_root / item["slug"]

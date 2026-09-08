@@ -85,6 +85,7 @@ struct CookingMemorySection: View {
                     memoryText(note: entry.note, adjustments: entry.adjustments, nextTime: entry.nextTime)
                     Divider()
                 }
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("cookMemorySaved-\(entry.id)")
             }
             if entries.count > 3 {
@@ -114,6 +115,7 @@ struct CookingMemorySection: View {
             }
         }
         .cardSurface()
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("cookMemorySection")
         .sheet(isPresented: $showReflection) {
             CookingReflectionView(recipe: recipe, stepNumber: nil) { readLocal() }

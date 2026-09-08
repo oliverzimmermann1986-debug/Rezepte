@@ -112,8 +112,36 @@ xcodebuild test-without-building \
 
 sleep 2
 stop_recorder
+
+# Preserve genuine screenshots and failure attachments even when XCTest fails.
+# Keep the original test exit status; an export failure must not hide it.
+attachment_export_status=0
+if [[ -d "$RESULT_BUNDLE" ]]; then
+    xcrun xcresulttool export attachments \
+        --path "$RESULT_BUNDLE" --output-path "$SCREENSHOT_DIR" \
+        >"$ARTIFACT_DIR/attachment-export.log" 2>&1 || attachment_export_status="$?"
+else
+    attachment_export_status=1
+    echo "No XCTest result bundle was created for attachment export." >&2
+fi
+
+{
+    printf 'version=%s\n' "$VERSION"
+    printf 'commit=%s\n' "$(git -C "$BUILD_ROOT" rev-parse HEAD)"
+    printf 'device_type=%s\n' "$DEVICE_TYPE"
+    printf 'capture_utc=%s\n' "$RUN_ID"
+    printf 'local_fixture=%s\n' "$APP_REVIEW_LOCAL_FIXTURE"
+    printf 'test_exit_status=%s\n' "$test_status"
+    printf 'attachment_export_exit_status=%s\n' "$attachment_export_status"
+    printf 'working_tree_changes=%s\n' "$(git -C "$BUILD_ROOT" status --porcelain | wc -l | tr -d ' ')"
+} >"$ARTIFACT_DIR/capture-source.txt"
+
 if [[ "$test_status" -ne 0 ]]; then
     exit "$test_status"
+fi
+if [[ "$attachment_export_status" -ne 0 ]]; then
+    echo "Native screenshot export failed. Inspect attachment-export.log." >&2
+    exit "$attachment_export_status"
 fi
 if ! grep -Eq "Executed 1 test, with (0 tests skipped and )?0 failures" \
     "$ARTIFACT_DIR/xcodebuild-review-tour.log"; then
@@ -130,10 +158,6 @@ if [[ ! -s "$VIDEO_PATH" ]]; then
     exit 1
 fi
 
-# Xcode 16+ exports the actual XCTest attachments and their manifest. These
-# are real screenshots; no rendered replacement assets are generated.
-xcrun xcresulttool export attachments \
-    --path "$RESULT_BUNDLE" --output-path "$SCREENSHOT_DIR"
 png_count="$(find "$SCREENSHOT_DIR" -type f -iname '*.png' | wc -l | tr -d ' ')"
 expected_screenshots=11
 if [[ "$APP_REVIEW_LOCAL_FIXTURE" == "1" ]]; then
@@ -143,15 +167,6 @@ if [[ "$png_count" -lt "$expected_screenshots" ]]; then
     echo "Expected all $expected_screenshots native capture scenes; found $png_count PNG files." >&2
     exit 1
 fi
-
-{
-    printf 'version=%s\n' "$VERSION"
-    printf 'commit=%s\n' "$(git -C "$BUILD_ROOT" rev-parse HEAD)"
-    printf 'device_type=%s\n' "$DEVICE_TYPE"
-    printf 'capture_utc=%s\n' "$RUN_ID"
-    printf 'local_fixture=%s\n' "$APP_REVIEW_LOCAL_FIXTURE"
-    printf 'working_tree_changes=%s\n' "$(git -C "$BUILD_ROOT" status --porcelain | wc -l | tr -d ' ')"
-} >"$ARTIFACT_DIR/capture-source.txt"
 
 echo "Review video: $VIDEO_PATH"
 echo "Native screenshots and attachment manifest: $SCREENSHOT_DIR"
