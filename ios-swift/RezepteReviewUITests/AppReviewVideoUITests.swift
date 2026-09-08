@@ -163,7 +163,8 @@ final class AppReviewVideoUITests: XCTestCase {
         reveal(comparison)
         capture("14-import-vergleich-vor-dem-speichern")
         let reason = element("importReviewReason")
-        fill(reason, with: "Zutatenbezeichnung mit dem gespeicherten Originaltext abgeglichen; Menge unverändert.")
+        fill(reason, with: "Zutatenbezeichnung mit dem gespeicherten Originaltext abgeglichen; Menge unverändert.",
+             keyboardIdentifier: "importReviewHideKeyboard")
         dismissKeyboard(identifier: "importReviewHideKeyboard")
         let saveImport = element("importReviewSave")
         reveal(saveImport)
@@ -276,10 +277,14 @@ final class AppReviewVideoUITests: XCTestCase {
         }
     }
 
-    private func fill(_ field: XCUIElement, with text: String) {
+    private func fill(_ field: XCUIElement, with text: String,
+                      keyboardIdentifier: String = "cookMemoryHideKeyboard") {
         reveal(field)
         field.tap()
         field.typeText(text)
+        // A global swipe while the software keyboard is visible can hit the
+        // keyboard instead of this form. End editing before revealing another row.
+        dismissKeyboard(identifier: keyboardIdentifier)
     }
 
     private func replace(_ field: XCUIElement, with text: String) {
@@ -293,12 +298,12 @@ final class AppReviewVideoUITests: XCTestCase {
     private func dismissKeyboard(identifier: String = "cookMemoryHideKeyboard") {
         // Prefer the app's explicit keyboard action before native form scrolling.
         if app.keyboards.count > 0 {
-            let done = element(identifier)
-            if done.exists && done.isHittable {
-                done.tap()
-            } else {
-                app.swipeDown()
-            }
+            // SwiftUI also exposes an enclosing Other with this identifier;
+            // select the actual button verified in the exported UI hierarchy.
+            let done = app.buttons.matching(identifier: identifier).firstMatch
+            XCTAssertTrue(done.waitForExistence(timeout: 10) && done.isHittable,
+                          "The form's keyboard dismissal button is not available.")
+            done.tap()
         }
         let keyboardGone = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"),

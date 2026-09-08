@@ -154,6 +154,10 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
                        "cookMemoryNextTime", "offlineLibraryButton"):
         assert f'element("{identifier}")' in ui_test
     assert 'identifier: String = "cookMemoryHideKeyboard"' in ui_test
+    fill_helper = ui_test.split("    private func fill(", 1)[1].split("    private func replace(", 1)[0]
+    assert "dismissKeyboard(identifier: keyboardIdentifier)" in fill_helper
+    assert 'keyboardIdentifier: "importReviewHideKeyboard"' in ui_test
+    assert "app.buttons.matching(identifier: identifier).firstMatch" in ui_test
     assert 'app.segmentedControls.buttons["Zutaten"]' in ui_test
     assert 'app.navigationBars["Offline-Regal"].waitForExistence' in ui_test
     assert "XCTAttachment(screenshot: XCUIScreen.main.screenshot())" in ui_test
