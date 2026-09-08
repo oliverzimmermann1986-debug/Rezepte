@@ -57,7 +57,7 @@ struct RecipeDetailView: View {
                 }
             } else if let recipe {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 22) {
                         if !isLocalSnapshot && !session.isOffline {
                             AuthenticatedImage(
                             recipeID: recipe.id,
