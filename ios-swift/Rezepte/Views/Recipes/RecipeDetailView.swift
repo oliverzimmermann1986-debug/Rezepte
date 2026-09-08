@@ -287,6 +287,7 @@ struct RecipeDetailView: View {
             Button("Jetzt kochen", systemImage: "fork.knife") {
                 showCookingMode = true
             }
+            .accessibilityIdentifier("recipeCookNow")
             Button("Für heute einplanen", systemImage: "calendar.badge.plus") {
                 guard let recipe else { return }
                 Task { await planMeal(recipe, date: Date()) }
@@ -343,6 +344,7 @@ struct RecipeDetailView: View {
                     .tint(theme.accent)
                     .foregroundStyle(theme.ink)
                     .disabled(recipe.steps.isEmpty)
+                    .accessibilityIdentifier("recipeCookButton")
 
                     Button {
                         shoppingServings = recipe.servings ?? 1

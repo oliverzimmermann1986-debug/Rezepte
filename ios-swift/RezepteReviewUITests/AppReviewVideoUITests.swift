@@ -11,6 +11,17 @@ final class AppReviewVideoUITests: XCTestCase {
         let environment = ProcessInfo.processInfo.environment
         let server = environment["APP_REVIEW_SERVER"] ?? "https://rezepte-review.mausbaeren.me"
         let username = environment["APP_REVIEW_USERNAME"] ?? "app-review"
+        let localFixture = environment["APP_REVIEW_LOCAL_FIXTURE"] == "1"
+        if localFixture {
+            // Mutations are permitted only in the disposable loopback fixture.
+            // Fail closed before login if the opt-in was copied to a remote run.
+            let url = URL(string: server)
+            guard url?.scheme == "https", url?.host == "localhost",
+                  url?.user == nil, url?.password == nil else {
+                XCTFail("Local persistence checks require exactly an HTTPS localhost server.")
+                return
+            }
+        }
         guard let password = environment["APP_REVIEW_PASSWORD"], !password.isEmpty else {
             throw XCTSkip("APP_REVIEW_PASSWORD is required for the recorded review tour.")
         }
@@ -101,16 +112,154 @@ final class AppReviewVideoUITests: XCTestCase {
         recurring.tap()
         XCTAssertTrue(app.staticTexts["Hafermilch"].waitForExistence(timeout: 20))
         capture("11-wiederkehrender-bedarf")
+
+        if localFixture {
+            exerciseLocalPersistence(server: server)
+        }
+    }
+
+    private func exerciseLocalPersistence(server: String) {
+        // This function is reached only after the strict opt-in/localhost guard.
+        // All edits use the public UI and normal authentication/authorization.
+        reopenRecipe()
+        let memoryAdd = element("cookMemoryAdd")
+        reveal(memoryAdd)
+        memoryAdd.tap()
+        let note = element("cookMemoryNote")
+        XCTAssertTrue(note.waitForExistence(timeout: 15))
+        XCTAssertEqual(note.value as? String, "Beim ersten Kochen war die Sauce etwas dick.",
+                       "The draft did not survive closing the sheet and restarting the app.")
+        let saveMemory = element("cookMemorySave")
+        reveal(saveMemory)
+        XCTAssertTrue(saveMemory.isEnabled)
+        saveMemory.tap()
+        let syncedMemory = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "cookMemorySaved-")
+        ).firstMatch
+        XCTAssertTrue(syncedMemory.waitForExistence(timeout: 30),
+                      "The note remained pending instead of being acknowledged by the local server.")
+        reopenRecipe()
+        let savedNote = app.staticTexts["Beim ersten Kochen war die Sauce etwas dick."].firstMatch
+        reveal(savedNote)
+        XCTAssertTrue(syncedMemory.exists, "The acknowledged note did not survive restart.")
+        capture("12-kochgedaechtnis-gespeichert-und-neu-geladen")
+
+        // Reload the detail at its beginning so all subsequent sections scroll forward.
+        reopenRecipe()
+        openImportReview()
+        let originalSource = app.staticTexts["\(server)/static/review-source-zitronen-ricotta-pasta.html"]
+        XCTAssertTrue(originalSource.waitForExistence(timeout: 15))
+        app.segmentedControls.buttons["Zutaten"].tap()
+        let ingredient = element("importReviewIngredient-0")
+        reveal(ingredient)
+        XCTAssertEqual(ingredient.value as? String, "Pasta")
+        capture("13-import-vorher")
+        replace(ingredient, with: "Pasta nach Wahl")
+        dismissKeyboard(identifier: "importReviewHideKeyboard")
+        let completionPage = app.segmentedControls.buttons["Abschluss"]
+        reveal(completionPage, direction: .down)
+        completionPage.tap()
+        let comparison = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "250 g Pasta nach Wahl")).firstMatch
+        reveal(comparison)
+        capture("14-import-vergleich-vor-dem-speichern")
+        let reason = element("importReviewReason")
+        fill(reason, with: "Zutatenbezeichnung mit dem gespeicherten Originaltext abgeglichen; Menge unverändert.")
+        dismissKeyboard(identifier: "importReviewHideKeyboard")
+        let saveImport = element("importReviewSave")
+        reveal(saveImport)
+        XCTAssertTrue(saveImport.isEnabled, "The isolated admin must be able to apply a valid correction.")
+        saveImport.tap()
+        let importSuccess = element("importReviewSuccess")
+        // Form may not expose its first section while the save button is scrolled
+        // into view. Return toward the header before asserting the server result.
+        reveal(importSuccess, direction: .down)
+        XCTAssertTrue(importSuccess.label.contains("Korrektur übernommen"))
+        capture("15-import-korrektur-uebernommen")
+        element("importReviewClose").tap()
+        reopenRecipe()
+        openImportReview()
+        XCTAssertTrue(originalSource.waitForExistence(timeout: 15), "The original source was not retained.")
+        app.segmentedControls.buttons["Zutaten"].tap()
+        reveal(ingredient)
+        XCTAssertEqual(ingredient.value as? String, "Pasta nach Wahl", "The applied ingredient did not survive reload.")
+        capture("16-import-korrektur-neu-geladen")
+        element("importReviewClose").tap()
+
+        reopenRecipe()
+        let cookButton = element("recipeCookButton")
+        reveal(cookButton)
+        cookButton.tap()
+        let cookNow = element("recipeCookNow")
+        XCTAssertTrue(cookNow.waitForExistence(timeout: 10))
+        cookNow.tap()
+        let start = element("cookingStart")
+        reveal(start)
+        start.tap()
+        let firstStep = app.staticTexts["Schritt 1 von 3"]
+        XCTAssertTrue(firstStep.waitForExistence(timeout: 15))
+        capture("17-kochen-erster-schritt")
+        let nextStep = element("cookingStepNext")
+        reveal(nextStep)
+        XCTAssertTrue(nextStep.isEnabled)
+        nextStep.tap()
+        let secondStep = app.staticTexts["Schritt 2 von 3"]
+        XCTAssertTrue(secondStep.waitForExistence(timeout: 15))
+        reveal(secondStep, direction: .down)
+        XCTAssertTrue(app.staticTexts["Speicherstatus: 1 erledigt · auf diesem iPhone gespeichert"].exists)
+        capture("18-kochen-fortschritt-gesichert")
+
+        // Recreate the app process, then explicitly use the cached library path.
+        reopenRecipe(offline: true)
+        reveal(cookButton)
+        cookButton.tap()
+        let resume = element("cookingResume")
+        reveal(resume)
+        capture("19-kochen-fortsetzen-nach-neustart")
+        resume.tap()
+        XCTAssertTrue(secondStep.waitForExistence(timeout: 15), "The active cooking step did not survive restart.")
+        XCTAssertTrue(app.staticTexts["Speicherstatus: 1 erledigt · auf diesem iPhone gespeichert"].exists)
+        capture("20-kochen-wiederaufgenommen")
+    }
+
+    private func reopenRecipe(offline: Bool = false) {
+        app.terminate()
+        app.launch()
+        let archive = app.tabBars.buttons["Archiv"]
+        XCTAssertTrue(archive.waitForExistence(timeout: 35), "The normal authenticated session did not restore.")
+        archive.tap()
+        XCTAssertTrue(app.navigationBars["Archiv"].waitForExistence(timeout: 15))
+        if offline {
+            let library = element("offlineLibraryButton")
+            XCTAssertTrue(library.waitForExistence(timeout: 10))
+            library.tap()
+            XCTAssertTrue(app.navigationBars["Offline-Regal"].waitForExistence(timeout: 15))
+        }
+        let recipe = app.staticTexts["Zitronen-Ricotta-Pasta"].firstMatch
+        reveal(recipe, maximumSwipes: 8)
+        recipe.tap()
+        XCTAssertTrue(app.staticTexts["Rezeptpass"].waitForExistence(timeout: 20))
+    }
+
+    private func openImportReview() {
+        let review = element("recipeImportReview")
+        reveal(review)
+        review.tap()
+        XCTAssertTrue(element("importReviewSource").waitForExistence(timeout: 20))
     }
 
     private func element(_ identifier: String) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
-    private func reveal(_ element: XCUIElement, maximumSwipes: Int = 10) {
+    private enum ScrollDirection { case up, down }
+
+    private func reveal(_ element: XCUIElement, maximumSwipes: Int = 10, direction: ScrollDirection = .up) {
         _ = element.waitForExistence(timeout: 10)
         for _ in 0..<maximumSwipes where !element.isHittable {
-            app.swipeUp()
+            switch direction {
+            case .up: app.swipeUp()
+            case .down: app.swipeDown()
+            }
         }
         XCTAssertTrue(element.exists && element.isHittable, "Expected review section is not visible: \(element.identifier)")
     }
@@ -121,10 +270,18 @@ final class AppReviewVideoUITests: XCTestCase {
         field.typeText(text)
     }
 
-    private func dismissKeyboard() {
+    private func replace(_ field: XCUIElement, with text: String) {
+        reveal(field)
+        let previous = field.value as? String ?? ""
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count) + text)
+        XCTAssertEqual(field.value as? String, text)
+    }
+
+    private func dismissKeyboard(identifier: String = "cookMemoryHideKeyboard") {
         // Prefer the app's explicit keyboard action before native form scrolling.
         if app.keyboards.count > 0 {
-            let done = element("cookMemoryHideKeyboard")
+            let done = element(identifier)
             if done.exists && done.isHittable {
                 done.tap()
             } else {
@@ -136,7 +293,7 @@ final class AppReviewVideoUITests: XCTestCase {
             object: app.keyboards.firstMatch
         )
         XCTAssertEqual(XCTWaiter.wait(for: [keyboardGone], timeout: 5), .completed,
-                       "The keyboard still covers the cooking-memory screenshot.")
+                       "The keyboard still covers the review screenshot.")
     }
 
     private func capture(_ name: String) {

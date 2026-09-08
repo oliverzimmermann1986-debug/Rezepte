@@ -1347,6 +1347,7 @@ class CookingProgressUpdate(BaseModel):
     completed_steps: List[int] = Field(default_factory=list, max_length=200)
     active_step: int = Field(default=0, ge=0)
     servings: Optional[int] = Field(None, ge=1, le=50)
+    expected_step_fingerprint: Optional[str] = Field(None, pattern=r"^[0-9a-f]{64}$")
 
 
 @router.get("/{recipe_id}/cooking-progress")
@@ -1392,6 +1393,7 @@ def update_cooking_progress(
             completed_steps=payload.completed_steps,
             active_step=payload.active_step,
             servings=payload.servings,
+            expected_step_fingerprint=payload.expected_step_fingerprint,
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc

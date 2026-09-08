@@ -296,9 +296,13 @@ final class SessionStore: ObservableObject {
         defer { isSyncingCooking = false; refreshPendingCookingCount() }
         do {
             var rejectedRecipes: Set<Int> = []
+            let canSyncProgress = supports("cooking-progress-revision-v1")
+            if !canSyncProgress, try offlineStore.progress(account: account).contains(where: \.needsSync) {
+                alertMessage = "Der Kochfortschritt bleibt auf diesem iPhone. Bitte den Server aktualisieren, damit er geänderte Rezeptschritte beim Abgleich sicher erkennt."
+            }
             while generation == sessionGeneration, account == offlineAccount, !readOnly {
                 let completions = try offlineStore.completions(account: account).filter { !rejectedRecipes.contains($0.recipeID) }
-                let pending = try offlineStore.progress(account: account).filter { $0.needsSync && !rejectedRecipes.contains($0.recipeID) }
+                let pending = try offlineStore.progress(account: account).filter { canSyncProgress && $0.needsSync && !rejectedRecipes.contains($0.recipeID) }
                 guard !completions.isEmpty || !pending.isEmpty else { break }
                 // Completion clears server progress, so new-run progress follows it.
                 for completion in completions {
@@ -327,7 +331,8 @@ final class SessionStore: ObservableObject {
                         if progress.started {
                             _ = try await api.updateCookingProgress(id: progress.recipeID,
                                 completedSteps: progress.completedSteps.sorted(), activeStep: progress.activeStep,
-                                servings: progress.servings, expectedAccount: account)
+                                servings: progress.servings, expectedStepFingerprint: progress.stepFingerprint,
+                                expectedAccount: account)
                         } else {
                             _ = try await api.clearCookingProgress(id: progress.recipeID, expectedAccount: account)
                         }
@@ -364,7 +369,8 @@ final class SessionStore: ObservableObject {
                 "recurring-shopping",
                 "weekly-meal-plan",
                 "cooking-memory-v1",
-                "import-review-v1"
+                "import-review-v1",
+                "cooking-progress-revision-v1"
             ])
             let missing = required.subtracting(serverCapabilities).sorted()
             compatibilityWarning = missing.isEmpty

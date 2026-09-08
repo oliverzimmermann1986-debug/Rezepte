@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -336,7 +337,11 @@ def test_swiftui_cooking_mode_persists_progress_scales_and_completes_idempotentl
     assert "!readOnly" in sync and "!isOffline" in sync
     assert "api.updateCookingProgress" in sync
     assert "completedSteps: progress.completedSteps.sorted()" in sync
-    assert "servings: progress.servings, expectedAccount: account" in sync
+    assert re.search(
+        r"api\.updateCookingProgress\([\s\S]*?servings:\s*progress\.servings,\s*"
+        r"expectedStepFingerprint:\s*progress\.stepFingerprint,\s*expectedAccount:\s*account\)", sync
+    )
+    assert 'supports("cooking-progress-revision-v1")' in sync
     assert "markProgressSynced(progress, account: account)" in sync
     assert "completedSteps" in cooking
     assert "multiplier" in cooking

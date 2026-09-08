@@ -145,8 +145,9 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert 'reveal(recipe, maximumSwipes: 8)' in ui_test
     for identifier in ("recipeImportReview", "importReviewSource", "importReviewIngredient-0",
                        "cookMemoryAdd", "cookMemoryNote", "cookMemoryAdjustments",
-                       "cookMemoryNextTime", "cookMemoryHideKeyboard", "offlineLibraryButton"):
+                       "cookMemoryNextTime", "offlineLibraryButton"):
         assert f'element("{identifier}")' in ui_test
+    assert 'identifier: String = "cookMemoryHideKeyboard"' in ui_test
     assert 'app.segmentedControls.buttons["Zutaten"]' in ui_test
     assert 'app.navigationBars["Offline-Regal"].waitForExistence' in ui_test
     assert "XCTAttachment(screenshot: XCUIScreen.main.screenshot())" in ui_test
@@ -165,6 +166,8 @@ def test_local_visual_review_uses_isolated_https_with_real_authentication():
     wrapper = _read("ios-swift/scripts/record-local-review.sh")
     server = _read("ios-swift/scripts/local-review-server.py")
     capture = _read("ios-swift/scripts/record-review-video.sh")
+    project = _read("ios-swift/project.yml")
+    ui_test = _read("ios-swift/RezepteReviewUITests/AppReviewVideoUITests.swift")
     assert "inputs.capture_visuals" in visual_job
     assert "secrets." not in visual_job
     assert "environment: testflight" not in visual_job
@@ -178,6 +181,21 @@ def test_local_visual_review_uses_isolated_https_with_real_authentication():
     assert "simctl erase" not in capture and "simctl shutdown all" not in capture
     assert "openssl rand -hex 24" in wrapper
     assert "localhost" in wrapper and "mktemp -d" in wrapper
+    assert 'export APP_REVIEW_LOCAL_FIXTURE="1"' in wrapper
+    assert 'APP_REVIEW_LOCAL_FIXTURE: "${APP_REVIEW_LOCAL_FIXTURE}"' in project
+    assert 'environment["APP_REVIEW_LOCAL_FIXTURE"] == "1"' in ui_test
+    assert 'url?.scheme == "https", url?.host == "localhost"' in ui_test
+    assert 'url?.user == nil, url?.password == nil' in ui_test
+    assert ui_test.index('guard url?.scheme == "https"') < ui_test.index('app.launch()')
+    assert 'if localFixture {\n            exerciseLocalPersistence(server: server)' in ui_test
+    assert 'u.hostname == "localhost"' in capture
+    assert 'expected_screenshots=20' in capture
+    assert '"cookMemorySaved-"' in ui_test
+    assert 'saveMemory.tap()' in ui_test and 'saveImport.tap()' in ui_test
+    assert 'XCTAssertEqual(ingredient.value as? String, "Pasta nach Wahl"' in ui_test
+    assert 'reopenRecipe(offline: true)' in ui_test
+    assert 'resume.tap()' in ui_test and 'secondStep.waitForExistence' in ui_test
+    assert 'capture("20-kochen-wiederaufgenommen")' in ui_test
 
 
 def test_signing_secrets_are_checked_via_env_not_shell_interpolation():

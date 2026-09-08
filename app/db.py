@@ -6,6 +6,7 @@ Persistente Speicherung für:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -3515,6 +3516,7 @@ class Database:
         completed_steps: List[int],
         active_step: int,
         servings: Optional[int],
+        expected_step_fingerprint: Optional[str] = None,
     ) -> Dict[str, Any]:
         now = time.time()
         completed = sorted(set(int(value) for value in completed_steps))
@@ -3532,10 +3534,21 @@ class Database:
             ).fetchone()
             if recipe is None:
                 raise LookupError("Rezept nicht gefunden")
-            step_count = int(c.execute(
-                "SELECT COUNT(*) FROM recipe_steps WHERE recipe_id=?",
+            steps = c.execute(
+                "SELECT id, instruction FROM recipe_steps WHERE recipe_id=? ORDER BY step_number, id",
                 (recipe_id,),
-            ).fetchone()[0])
+            ).fetchall()
+            # Same byte contract as Swift LocalCookingProgress.fingerprint:
+            # SHA256(UTF8("step-<id>:<instruction>" joined by LF)), no normalization.
+            # Length/range checks alone cannot detect reordered or rewritten steps.
+            if expected_step_fingerprint is not None:
+                material = "\n".join(f"step-{step['id']}:{step['instruction']}" for step in steps)
+                current_fingerprint = hashlib.sha256(material.encode("utf-8")).hexdigest()
+                if expected_step_fingerprint != current_fingerprint:
+                    raise RuntimeError(
+                        "Die Zubereitung wurde geändert. Rezept neu laden und den lokalen Kochfortschritt prüfen."
+                    )
+            step_count = len(steps)
             if step_count <= 0:
                 raise RuntimeError("Das Rezept hat keine Zubereitungsschritte")
             if any(step < 0 or step >= step_count for step in completed):

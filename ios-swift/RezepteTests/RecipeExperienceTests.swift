@@ -53,6 +53,26 @@ final class RecipeExperienceTests: XCTestCase {
         XCTAssertEqual(draft.clientEntryId, identity)
     }
 
+    func testCookingFingerprintMatchesBackendUnicodeContract() {
+        XCTAssertEqual(
+            OfflineAccount.digest("step-17:Öl erhitzen.\nstep-42:Mit 🍅 servieren."),
+            "f0c630c77a4be4892a41b3123ccfdfc73f55a99cc86a06c2e5a1c7d85d6a4a54"
+        )
+    }
+
+    func testCookingProgressSendsExpectedStepFingerprint() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: """
+        {"recipe_id":42,"username":"anna","completed_steps":[0],"active_step":1,"servings":2,"exists":true,"step_count":2}
+        """)
+        let fingerprint = String(repeating: "a", count: 64)
+        _ = try await client.updateCookingProgress(id: 42, completedSteps: [0], activeStep: 1, servings: 2,
+                                                   expectedStepFingerprint: fingerprint)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any])
+        XCTAssertEqual(body["expected_step_fingerprint"] as? String, fingerprint)
+    }
+
     func testAmountParsingNeverInventsUnknownQuantity() {
         XCTAssertNil(ImportReviewNumber.parse(""))
         XCTAssertNil(ImportReviewNumber.parse("nach Geschmack"))

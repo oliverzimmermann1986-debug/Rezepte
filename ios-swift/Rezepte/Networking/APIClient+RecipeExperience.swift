@@ -1,9 +1,11 @@
 import Foundation
 
 extension APIClient {
-    func cookingMemory(recipeID: Int, expectedAccount: OfflineAccount) async throws -> CookingMemoryResponse {
+    func cookingMemory(recipeID: Int, expectedAccount: OfflineAccount, offset: Int = 0) async throws -> CookingMemoryResponse {
         try requireOfflineAccount(expectedAccount)
-        return try await send("/api/recipes/\(recipeID)/cooking-memory")
+        return try await send("/api/recipes/\(recipeID)/cooking-memory", query: [
+            URLQueryItem(name: "limit", value: "100"), URLQueryItem(name: "offset", value: String(offset))
+        ])
     }
 
     func saveCookingMemory(recipeID: Int, request: CookingMemoryRequest, expectedAccount: OfflineAccount) async throws -> CookingMemorySavedResponse {

@@ -95,22 +95,55 @@ jobs:
           test -n "$simulator_id"
           echo "id=$simulator_id" >> "$GITHUB_OUTPUT"
 
-      - name: Build and run XCTest
+      # Simulator Security/Keychain APIs still require signed entitlements.
+      # Ad-hoc signing needs neither a developer certificate nor a device profile.
+      - name: Build XCTest with simulator ad-hoc signing
         run: >-
           xcodebuild
           -project Rezepte.xcodeproj
           -scheme Rezepte
           -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}"
+          -derivedDataPath build/XCTest
+          CODE_SIGNING_ALLOWED=YES
+          CODE_SIGN_IDENTITY=-
+          "CODE_SIGN_LOCAL_EXECUTION_IDENTITY=Ad Hoc"
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES
+          CODE_SIGN_STYLE=Manual
+          DEVELOPMENT_TEAM=
+          PROVISIONING_PROFILE_SPECIFIER=
+          build-for-testing
+
+      - name: Verify signed simulator keychain entitlements
+        run: >-
+          bash scripts/verify-simulator-entitlements.sh
+          build/XCTest/Build/Products/Debug-iphonesimulator/Rezepte.app
+          build/XCTest/SimulatorEntitlements.plist
+
+      - name: Run XCTest using the signed simulator host
+        run: >-
+          xcodebuild
+          -project Rezepte.xcodeproj
+          -scheme Rezepte
+          -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}"
+          -derivedDataPath build/XCTest
           -resultBundlePath TestResults.xcresult
-          CODE_SIGNING_ALLOWED=NO
-          test
+          CODE_SIGNING_ALLOWED=YES
+          CODE_SIGN_IDENTITY=-
+          "CODE_SIGN_LOCAL_EXECUTION_IDENTITY=Ad Hoc"
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES
+          CODE_SIGN_STYLE=Manual
+          DEVELOPMENT_TEAM=
+          PROVISIONING_PROFILE_SPECIFIER=
+          test-without-building
 
       - name: Upload XCTest diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: swiftui-xcresult-${{ github.sha }}
-          path: ios-swift/TestResults.xcresult
+          path: |
+            ios-swift/TestResults.xcresult
+            ios-swift/build/XCTest/SimulatorEntitlements.plist
           if-no-files-found: ignore
           retention-days: 7
 

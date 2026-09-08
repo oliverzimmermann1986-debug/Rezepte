@@ -1,7 +1,8 @@
 # Rezeptregal 1.3 – echte Screenshots und Review-Video
 
 Die vorhandene `RezepteReviewVideo`-Scheme führt den nativen UI-Rundgang aus
-und hält elf benannte Screenshots als XCTest-Anhänge fest. Das Skript zeichnet
+und hält elf benannte Screenshots als XCTest-Anhänge fest, mit der lokalen
+Wegwerf-Fixture zwanzig. Das Skript zeichnet
 gleichzeitig ein separates Review-MP4 auf und exportiert anschließend die
 tatsächlichen Anhänge samt Manifest aus dem Result Bundle. Es erzeugt keine
 Mockups und lädt nichts zu App Store Connect hoch.
@@ -40,9 +41,10 @@ Ausgaben bei Erfolg:
 
 Die im Manifest benannten Motive `04/05-import-*`,
 `06-persoenliches-kochgedaechtnis-entwurf` und `07-auf-diesem-iphone` zeigen die
-neuen Abläufe. Der persönliche Notizentwurf und die Importfelder werden in der
-Aufnahme nicht serverseitig gespeichert. Die Tour bestätigt deshalb keine
-Persistenz oder Offline-Synchronisierung; diese Nachweise werden separat in
+neuen Abläufe. Auf einem externen Review-Server werden der persönliche
+Notizentwurf und die Importfelder nicht serverseitig gespeichert. Dieser
+externe Rundgang bestätigt deshalb keine Persistenz oder Offline-Synchronisierung;
+diese Nachweise werden separat in
 `APP_STORE_RELEASE_CHECKLIST.md` verlangt.
 
 ## Isolierte lokale Aufnahme ohne Server-Deployment
@@ -58,6 +60,22 @@ Für TLS entsteht ein eintägiges localhost-Zertifikat. Nur der eigens erstellte
 Simulator vertraut diesem Zertifikat; ATS und der Client werden nicht umgangen.
 Nach der Aufnahme werden lokaler Server, temporäre Daten und dieser Simulator
 entfernt. Es gibt kein externes Review-Passwort und kein Deployment.
+
+Nur dieses Skript aktiviert `APP_REVIEW_LOCAL_FIXTURE=1`. Der UI-Test und das
+Aufnahmeskript verweigern diesen Modus, wenn die URL nicht HTTPS mit dem exakten
+Host `localhost` ist. Es gibt keine Test-Abkürzung in der Produktions-App: alle
+Schreibaktionen laufen durch die normalen Bedienelemente und die echte Anmeldung.
+
+Die zusätzliche lokale Sequenz speichert den vorher eingegebenen Notizentwurf,
+wartet auf eine bestätigte Servernotiz und öffnet sie nach einem App-Neustart.
+Danach wird die erste Zutat von „Pasta“ zu „Pasta nach Wahl“ mit einer Begründung
+umbenannt; der Vergleich, die Übernahme, der erneut geladene Wert und der Erhalt
+der Originalquelle werden geprüft. Schließlich hakt die Tour den ersten
+Kochschritt ab, startet die App neu, öffnet das Rezept aus dem Offline-Regal und
+setzt bei Schritt 2 mit einem erledigten Schritt fort. Die realen Anhänge 12–20
+zeigen die Vorher-/Nachherzustände. Das Netz wird dabei **nicht** getrennt:
+Offline-Fallback, spätere Synchronisierung und Konto-Isolation bleiben eigene
+Geräte-/Backendprüfungen. Ein vorbereiteter Test ist noch kein bestandener Lauf.
 
 Der GitHub-Workflow `ios-swift.yml` bietet bei manueller Ausführung
 `capture_visuals: true` (Standard). Der eigene Job `visual-review` läuft nach

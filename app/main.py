@@ -368,6 +368,7 @@ APP_CAPABILITIES = [
     "source-integrity-v2",
     "substitution-lab-v1",
     "cooking-memory-v1",
+    "cooking-progress-revision-v1",
     "import-review-v1",
 ]
 

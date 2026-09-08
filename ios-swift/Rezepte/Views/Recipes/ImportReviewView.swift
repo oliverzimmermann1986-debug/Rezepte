@@ -74,6 +74,7 @@ struct ImportReviewView: View {
     @State private var reloadConfirmation = false
     @State private var conflict = false
     @State private var confirmCorrection: ImportCorrection?
+    @FocusState private var isEditing: Bool
 
     private var key: String { "import-review-draft-\(recipeID)" }
 
@@ -96,7 +97,10 @@ struct ImportReviewView: View {
                                 Text("Abschluss").tag(3)
                             }.pickerStyle(.segmented)
                             if let errorMessage { Label(errorMessage, systemImage: "exclamationmark.triangle").foregroundStyle(theme.danger) }
-                            if let successMessage { Label(successMessage, systemImage: "checkmark.circle").foregroundStyle(theme.success) }
+                            if let successMessage {
+                                Label(successMessage, systemImage: "checkmark.circle").foregroundStyle(theme.success)
+                                    .accessibilityIdentifier("importReviewSuccess")
+                            }
                             if conflict {
                                 Text("Dein Entwurf bleibt erhalten. Prüfe die aktuelle Rezeptfassung, bevor du Änderungen erneut übernimmst.")
                                     .font(.caption)
@@ -115,6 +119,7 @@ struct ImportReviewView: View {
                         }
                     }
                     .disabled(isSaving)
+                    .scrollDismissesKeyboard(.interactively)
                 }
             }
             .navigationTitle("Import fertigstellen")
@@ -122,6 +127,10 @@ struct ImportReviewView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Schließen") { dismiss() }.disabled(isSaving).accessibilityIdentifier("importReviewClose")
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Fertig") { isEditing = false }.accessibilityIdentifier("importReviewHideKeyboard")
                 }
             }
             .interactiveDismissDisabled(isSaving)
@@ -177,16 +186,16 @@ struct ImportReviewView: View {
     private var ingredientEditor: some View {
         Group {
             Section("Portionen") {
-                TextField("Unbekannt", text: field(\.servings)).keyboardType(.numberPad)
+                TextField("Unbekannt", text: field(\.servings)).keyboardType(.numberPad).focused($isEditing)
                 Text("Ohne verlässliche Angabe leer lassen. Skalierung bleibt dann eingeschränkt.").font(.caption)
             }
             if let draft {
                 ForEach(Array(draft.ingredients.enumerated()), id: \.element.id) { index, ingredient in
                     Section("Zutat \(index + 1)") {
-                        TextField("Zutat", text: ingredientField(index, \.name)).accessibilityIdentifier("importReviewIngredient-\(index)")
+                        TextField("Zutat", text: ingredientField(index, \.name)).focused($isEditing).accessibilityIdentifier("importReviewIngredient-\(index)")
                         HStack {
-                            TextField("Menge unbekannt", text: ingredientField(index, \.amount)).keyboardType(.decimalPad)
-                            TextField("Einheit", text: ingredientField(index, \.unit))
+                            TextField("Menge unbekannt", text: ingredientField(index, \.amount)).keyboardType(.decimalPad).focused($isEditing)
+                            TextField("Einheit", text: ingredientField(index, \.unit)).focused($isEditing)
                         }
                         if let raw = ingredient.raw, !raw.isEmpty { Text("Importiert: \(raw)").font(.caption).foregroundStyle(theme.muted) }
                         if !ingredient.valid { Text("Name ergänzen; Menge leer lassen oder eine Zahl von 0 bis 1.000.000 eingeben.").font(.caption).foregroundStyle(theme.danger) }
@@ -208,9 +217,9 @@ struct ImportReviewView: View {
                 ForEach(Array(draft.steps.enumerated()), id: \.element.id) { index, step in
                     Section("Schritt \(index + 1)") {
                         TextField("Zubereitung", text: stepField(index, \.instruction), axis: .vertical)
-                            .lineLimit(3...10).accessibilityIdentifier("importReviewStep-\(index)")
+                            .lineLimit(3...10).focused($isEditing).accessibilityIdentifier("importReviewStep-\(index)")
                         LabeledContent("Timer in Sekunden") {
-                            TextField("Keiner", text: stepField(index, \.timerSeconds)).keyboardType(.numberPad).multilineTextAlignment(.trailing)
+                            TextField("Keiner", text: stepField(index, \.timerSeconds)).keyboardType(.numberPad).multilineTextAlignment(.trailing).focused($isEditing)
                         }
                         if !step.valid { Text("Anweisung ergänzen; Timer leer lassen oder 1–86.400 Sekunden angeben.").font(.caption).foregroundStyle(theme.danger) }
                         HStack {
@@ -249,6 +258,7 @@ struct ImportReviewView: View {
                 }
                 Section("Was wurde korrigiert?") {
                     TextField("Grund und verwendete Quelle", text: field(\.reason), axis: .vertical).lineLimit(2...6)
+                        .focused($isEditing).accessibilityIdentifier("importReviewReason")
                     Text(report.canApply ? "Du übernimmst diese Korrektur ins gemeinsame Rezept." : "Dein Vorschlag wird zur Freigabe gespeichert. Das gemeinsame Rezept bleibt bis dahin unverändert.")
                         .font(.caption)
                     Button(report.canApply ? "Korrektur übernehmen" : "Korrektur vorschlagen") { Task { await save() } }

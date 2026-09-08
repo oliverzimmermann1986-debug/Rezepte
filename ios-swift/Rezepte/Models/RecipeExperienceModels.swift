@@ -119,6 +119,7 @@ enum ImportReviewNumber {
 
     static func format(_ value: Double?) -> String {
         guard let value else { return "" }
+        if value.isFinite, (0...1_000_000).contains(value), value.rounded() == value { return String(Int(value)) }
         return String(value)
     }
 }

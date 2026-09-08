@@ -466,6 +466,7 @@ actor APIClient {
         completedSteps: [Int],
         activeStep: Int,
         servings: Int,
+        expectedStepFingerprint: String? = nil,
         expectedAccount: OfflineAccount? = nil
     ) async throws -> CookingProgress {
         if let expectedAccount { try requireOfflineAccount(expectedAccount) }
@@ -475,7 +476,8 @@ actor APIClient {
             body: CookingProgressPayload(
                 completedSteps: completedSteps,
                 activeStep: activeStep,
-                servings: servings
+                servings: servings,
+                expectedStepFingerprint: expectedStepFingerprint
             )
         )
     }
@@ -1269,6 +1271,7 @@ private struct CookingProgressPayload: Codable {
     let completedSteps: [Int]
     let activeStep: Int
     let servings: Int
+    let expectedStepFingerprint: String?
 }
 private struct CookingCompletePayload: Codable { let servings: Int }
 private struct CookPayload: Codable { let servings: Int }

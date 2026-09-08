@@ -4,7 +4,12 @@ set -euo pipefail
 : "${APP_REVIEW_PASSWORD:?Configure APP_REVIEW_PASSWORD as a protected variable}"
 export APP_REVIEW_SERVER="${APP_REVIEW_SERVER:-https://rezepte-review.mausbaeren.me}"
 export APP_REVIEW_USERNAME="${APP_REVIEW_USERNAME:-app-review}"
+export APP_REVIEW_LOCAL_FIXTURE="${APP_REVIEW_LOCAL_FIXTURE:-0}"
 export APP_REVIEW_PASSWORD
+
+if [[ "$APP_REVIEW_LOCAL_FIXTURE" == "1" ]]; then
+    python3 -c 'import os,sys,urllib.parse; u=urllib.parse.urlsplit(os.environ["APP_REVIEW_SERVER"]); sys.exit(0 if u.scheme == "https" and u.hostname == "localhost" and u.username is None and u.password is None else "Local mutation checks require an HTTPS localhost fixture.")'
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_ROOT="${CM_BUILD_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
@@ -59,6 +64,18 @@ fi
 xcrun simctl status_bar "$simulator_id" override \
     --time "9:41" --batteryState charged --batteryLevel 100
 
+# Keep the real Keychain and App Group APIs active in the Simulator. These
+# command-local settings never affect a distribution archive or its profiles.
+simulator_signing=(
+    CODE_SIGNING_ALLOWED=YES
+    CODE_SIGN_IDENTITY=-
+    "CODE_SIGN_LOCAL_EXECUTION_IDENTITY=Ad Hoc"
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES
+    CODE_SIGN_STYLE=Manual
+    DEVELOPMENT_TEAM=
+    PROVISIONING_PROFILE_SPECIFIER=
+)
+
 xcodebuild build-for-testing \
     -project "$IOS_ROOT/Rezepte.xcodeproj" \
     -scheme RezepteReviewVideo \
@@ -67,7 +84,12 @@ xcodebuild build-for-testing \
     -only-testing:RezepteReviewUITests/AppReviewVideoUITests/testReviewTour \
     -parallel-testing-enabled NO \
     -maximum-parallel-testing-workers 1 \
+    "${simulator_signing[@]}" \
     | tee "$ARTIFACT_DIR/xcodebuild-review-build.log"
+
+bash "$SCRIPT_DIR/verify-simulator-entitlements.sh" \
+    "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/Rezepte.app" \
+    "$ARTIFACT_DIR/SimulatorEntitlements.plist"
 
 xcrun simctl io "$simulator_id" recordVideo \
     --codec=h264 "$VIDEO_PATH" \
@@ -85,6 +107,7 @@ xcodebuild test-without-building \
     -only-testing:RezepteReviewUITests/AppReviewVideoUITests/testReviewTour \
     -parallel-testing-enabled NO \
     -maximum-parallel-testing-workers 1 \
+    "${simulator_signing[@]}" \
     | tee "$ARTIFACT_DIR/xcodebuild-review-tour.log" || test_status="$?"
 
 sleep 2
@@ -112,8 +135,12 @@ fi
 xcrun xcresulttool export attachments \
     --path "$RESULT_BUNDLE" --output-path "$SCREENSHOT_DIR"
 png_count="$(find "$SCREENSHOT_DIR" -type f -iname '*.png' | wc -l | tr -d ' ')"
-if [[ "$png_count" -lt 11 ]]; then
-    echo "Expected all 11 native capture scenes; found $png_count PNG files." >&2
+expected_screenshots=11
+if [[ "$APP_REVIEW_LOCAL_FIXTURE" == "1" ]]; then
+    expected_screenshots=20
+fi
+if [[ "$png_count" -lt "$expected_screenshots" ]]; then
+    echo "Expected all $expected_screenshots native capture scenes; found $png_count PNG files." >&2
     exit 1
 fi
 
@@ -122,10 +149,11 @@ fi
     printf 'commit=%s\n' "$(git -C "$BUILD_ROOT" rev-parse HEAD)"
     printf 'device_type=%s\n' "$DEVICE_TYPE"
     printf 'capture_utc=%s\n' "$RUN_ID"
+    printf 'local_fixture=%s\n' "$APP_REVIEW_LOCAL_FIXTURE"
     printf 'working_tree_changes=%s\n' "$(git -C "$BUILD_ROOT" status --porcelain | wc -l | tr -d ' ')"
 } >"$ARTIFACT_DIR/capture-source.txt"
 
 echo "Review video: $VIDEO_PATH"
 echo "Native screenshots and attachment manifest: $SCREENSHOT_DIR"
 echo "Preview app: $DERIVED_DATA/Build/Products/Debug-iphonesimulator/Rezepte.app"
-echo "Visual review and the separate offline/resume checks are still required."
+echo "Visual inspection and disconnected-device/sync checks are still required."

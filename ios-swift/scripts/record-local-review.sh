@@ -20,6 +20,7 @@ if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
 fi
 export APP_REVIEW_USERNAME="app-review"
 export APP_REVIEW_SERVER="https://localhost:18443"
+export APP_REVIEW_LOCAL_FIXTURE="1"
 export APP_REVIEW_CA_CERT="$fixture_root/localhost.crt"
 openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 \
     -config "$SCRIPT_DIR/localhost-review-openssl.cnf" \

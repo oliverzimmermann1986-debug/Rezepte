@@ -10,6 +10,8 @@ struct CookingMemorySection: View {
     @State private var isLoading = false
     @State private var showReflection = false
     @State private var deleteEntry: CookingMemoryEntry?
+    @State private var showAllEntries = false
+    @State private var totalEntries = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -57,7 +59,7 @@ struct CookingMemorySection: View {
                 }
             }
 
-            ForEach(entries) { entry in
+            ForEach(showAllEntries ? entries : Array(entries.prefix(3))) { entry in
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline) {
                         Text(Date(timeIntervalSince1970: entry.createdAt).formatted(date: .abbreviated, time: .omitted))
@@ -83,6 +85,15 @@ struct CookingMemorySection: View {
                     memoryText(note: entry.note, adjustments: entry.adjustments, nextTime: entry.nextTime)
                     Divider()
                 }
+                .accessibilityIdentifier("cookMemorySaved-\(entry.id)")
+            }
+            if entries.count > 3 {
+                Button(showAllEntries ? "Weniger anzeigen" : "Weitere \(entries.count - 3) Erfahrungen anzeigen") { showAllEntries.toggle() }
+                    .frame(minHeight: 44)
+            }
+            if showAllEntries && totalEntries > entries.count && !session.isOffline {
+                Button("Ältere Erfahrungen laden") { Task { await loadMore() } }
+                    .frame(minHeight: 44).disabled(isLoading)
             }
             Button { showReflection = true } label: {
                 Label("Erfahrung festhalten", systemImage: "square.and.pencil")
@@ -150,6 +161,7 @@ struct CookingMemorySection: View {
             let response = try await session.api.cookingMemory(recipeID: recipe.id, expectedAccount: account)
             guard session.offlineAccount == account else { return }
             try CookingMemoryStorage.update(session: session) { _ = $0.applySnapshot(response.items, recipeID: recipe.id, expectedGeneration: generation) }
+            totalEntries = response.total
             errorMessage = nil
             readLocal()
         } catch {
@@ -167,6 +179,26 @@ struct CookingMemorySection: View {
             deleteEntry = nil
             readLocal()
             NotificationCenter.default.post(name: .cookingMemoryChanged, object: recipe.id)
+        } catch { errorMessage = error.localizedDescription; session.handle(error) }
+    }
+
+    private func loadMore() async {
+        guard !isLoading, let account = session.offlineAccount else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let generation = try CookingMemoryStorage.load(session: session).generation
+            let response = try await session.api.cookingMemory(recipeID: recipe.id, expectedAccount: account, offset: entries.count)
+            guard session.offlineAccount == account else { return }
+            try CookingMemoryStorage.update(session: session) { archive in
+                guard archive.generation == generation else { return }
+                var combined = archive.entries[String(recipe.id)] ?? []
+                let existingIDs = Set(combined.map(\.id))
+                combined.append(contentsOf: response.items.filter { !existingIDs.contains($0.id) })
+                archive.entries[String(recipe.id)] = combined
+            }
+            totalEntries = response.total
+            readLocal()
         } catch { errorMessage = error.localizedDescription; session.handle(error) }
     }
 }
