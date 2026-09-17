@@ -291,6 +291,7 @@ def _render_print_html(
 
 {tag_html}
 {footer_html}
+<nav class="rfooter no-print" aria-label="Rechtliche Informationen"><a href="/impressum">Impressum</a> · <a href="/privacy">Datenschutz</a></nav>
 </body>
 </html>"""
 
@@ -428,6 +429,7 @@ def share_bootstrap():
         """<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Rezeptfreigabe</title></head><body><p id="status">Freigabe wird geprüft …</p>
+<nav aria-label="Rechtliche Informationen"><a href="/impressum">Impressum</a> · <a href="/privacy">Datenschutz</a></nav>
 <script src="/static/share-bootstrap.js"></script></body></html>""",
         headers={"Cache-Control": "private, no-store"},
     )

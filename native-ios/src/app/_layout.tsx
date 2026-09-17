@@ -47,7 +47,7 @@ function PrivacyShield({ children }: PropsWithChildren) {
       {children}
       {hidden && (
         <View accessibilityElementsHidden style={styles.privacyShield}>
-          <Text style={styles.privacyTitle}>Rezepte</Text>
+          <Text style={styles.privacyTitle}>Rezeptregal</Text>
           <Text style={styles.privacyText}>Private Inhalte sind geschützt.</Text>
         </View>
       )}

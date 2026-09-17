@@ -46,6 +46,12 @@ export function SharedLinkReceiver() {
     ) return;
 
     processing.current = true;
+    if (!isAdmin) {
+      resetShareIntent();
+      processing.current = false;
+      Alert.alert('Import nicht verfügbar', 'Rezeptimporte sind nur für die Administration verfügbar. Der geteilte Link wurde nicht übernommen.');
+      return;
+    }
     const source = socialLinkFromShareIntent(shareIntent);
     if (!source) {
       Alert.alert(
@@ -69,23 +75,17 @@ export function SharedLinkReceiver() {
       .then(async result => {
         await invalidateApiCacheByPrefix('recipes:');
         if (result.ok) {
-          router.replace(isAdmin
-            ? {
-                pathname: '/(tabs)/admin',
-                params: { importRefresh: String(Date.now()) },
-              }
-            : '/(tabs)');
+          router.replace({
+            pathname: '/(tabs)/admin',
+            params: { importRefresh: String(Date.now()) },
+          });
         }
         Alert.alert(
-          result.ok
-            ? isAdmin ? 'Link übernommen' : 'Zur Prüfung eingereicht'
-            : 'Import fehlgeschlagen',
-          result.ok && !isAdmin
-            ? 'Der Link wurde übernommen. Nach der Prüfung erscheint das Rezept in deiner Rezeptliste.'
-            : result.message
-              || (result.status === 'pending'
-                ? 'Der Beitrag wartet unter „Manuelle Prüfung“.'
-                : 'Der Beitrag wurde verarbeitet.'),
+          result.ok ? 'Link übernommen' : 'Import fehlgeschlagen',
+          result.message
+            || (result.status === 'pending'
+              ? 'Der Beitrag wartet unter „Manuelle Prüfung“.'
+              : 'Der Beitrag wurde verarbeitet.'),
         );
       })
       .catch(reason => {

@@ -30,7 +30,7 @@ from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
-from ..auth import require_admin, require_auth
+from ..auth import require_admin
 from ..config_store import get_config
 from ..db import get_db
 from ..jobs.scraper import get_scraper_job
@@ -43,7 +43,7 @@ from ..core.pdf_processing import (
 )
 from ..recipes.image_cache import assert_safe_image_dimensions
 
-router = APIRouter(prefix="/api/pending", tags=["pending"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/pending", tags=["pending"], dependencies=[Depends(require_admin)])
 
 
 def _is_under_temp(path_str: str) -> bool:

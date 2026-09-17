@@ -148,6 +148,15 @@ actor APIClient {
         try endpoint("/privacy")
     }
 
+    func supportURL() throws -> URL {
+        Self.publicSupportURL(server: "")
+    }
+
+    static func publicSupportURL(server _: String) -> URL {
+        // App support works without a configured server and receives no login data.
+        URL(string: "https://support.zimlab.org/?module=rezeptregal")!
+    }
+
     func login(username: String, password: String) async throws -> LoginResponse {
         try await send(
             "/api/auth/login",

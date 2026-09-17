@@ -48,6 +48,7 @@
       <span class="mobile-page-title" x-text="pageLabel()"></span>
     </div>
     <div class="mobile-appbar-actions">
+      <a href="/impressum" class="app-imprint-link">Impressum</a>
       <div class="mobile-runtime" :title="status.scraper ? 'Import läuft' : 'Bereit'">
         <span class="status-dot" :class="status.scraper ? 'busy' : 'online'"></span>
       </div>
@@ -95,6 +96,7 @@
             x-text="(admin.overview?.counts?.pending || 0) + (admin.overview?.counts?.failed_downloads || 0)"></span>
     </button>
     <div class="foot">
+      <a href="/impressum" class="app-imprint-link">Impressum</a>
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">

@@ -5693,3 +5693,31 @@ a { color: var(--accent-deep); }
   .step-edit-row input { grid-column: 2 / 4; font-size: 16px; }
   .step-edit-row textarea { font-size: 16px; }
 }
+
+/* Public support: isolated from authenticated application layout. */
+.app-imprint-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 .5rem; color: inherit; font-size: .8125rem; text-decoration: underline; text-underline-offset: .18em; }
+.app-imprint-link:focus-visible { outline: 3px solid currentColor; outline-offset: 2px; }
+html.support-document { color-scheme: light; font-size: 16px; }
+body.support-body { margin: 0; color: #433427; background: #fffaf0; font: 1.0625rem/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.support-page { max-width: 48rem; margin: auto; padding: 2rem 1.25rem 3rem; }
+.support-page header { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; padding-bottom: 1.75rem; border-bottom: 1px solid #eadbbd; }
+.support-page header img { border-radius: 1rem; }
+.support-page .brand { font-size: 1.375rem; font-weight: 700; margin: 0; }
+.support-page nav { display: flex; flex-wrap: wrap; gap: 1rem; margin-left: auto; }
+.support-page nav a, .support-page footer a { display: inline-block; padding: .5rem 0; }
+.support-page h1 { font-size: clamp(2rem, 6vw, 2.75rem); line-height: 1.15; letter-spacing: -.025em; margin: 2rem 0 1rem; }
+.support-page h2 { font-size: 1.375rem; line-height: 1.35; margin: 2rem 0 .75rem; }
+.support-page h2 span { font-size: 1rem; font-weight: 400; }
+.support-page p { margin: .75rem 0; }
+.support-page a { color: #6b3d63; text-decoration: underline; text-underline-offset: .18em; overflow-wrap: anywhere; }
+.support-page a:focus-visible { outline: 3px solid #6b3d63; outline-offset: 5px; border-radius: 2px; }
+.support-page .contact-box { border: 1px solid #b786aa; border-radius: 1rem; padding: 1.25rem; background: #f2e7ef; margin: 1.75rem 0; }
+.support-page .contact-box h2 { margin-top: 0; }
+.support-page .contact { display: inline-block; padding: .5rem 0; font-size: 1.125rem; font-weight: 650; }
+.support-page .contact-box p, .support-page .notice { font-size: 1rem; }
+.support-page li + li { margin-top: .5rem; }
+.support-page ul { padding-left: 1.5rem; }
+.support-page .notice { padding-left: 1rem; border-left: 3px solid #8a577f; }
+.support-page #english { border-top: 1px solid #eadbbd; margin-top: 2.5rem; }
+.support-page footer { border-top: 1px solid #eadbbd; margin-top: 2rem; padding-top: 1rem; }
+@media (max-width: 30rem) { .support-page nav { width: 100%; margin-left: 0; } }

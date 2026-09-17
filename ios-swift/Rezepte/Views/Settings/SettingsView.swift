@@ -99,12 +99,34 @@ struct SettingsView: View {
                     } label: {
                         Label("Datenschutz", systemImage: "hand.raised")
                     }
+                    Button {
+                        Task {
+                            do {
+                                let url = try await session.api.supportURL()
+                                openURL(url) { accepted in
+                                    if !accepted { session.alertMessage = "Support konnte nicht geöffnet werden." }
+                                }
+                            } catch {
+                                session.handle(error)
+                            }
+                        }
+                    } label: {
+                        Label("Hilfe & Support", systemImage: "questionmark.circle")
+                    }
+                    .accessibilityIdentifier("support.settings")
+                    .accessibilityHint("Öffnet das öffentliche Zimlab-Supportformular für Rezeptregal im Browser.")
+                    NavigationLink {
+                        ImpressumView()
+                    } label: {
+                        Label("Impressum", systemImage: "doc.text")
+                    }
+                    .accessibilityIdentifier("impressum.settings")
                     Button("Abmelden", role: .destructive) { session.signOut() }
                 }
 
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Quellenküche")
+                        Text("Rezeptregal")
                             .font(.headline)
                         Text("Rezepte aus Weblinks, Social Media, Fotos und PDFs – mit sichtbarer Quelle und manueller Prüfung.")
                             .font(.caption)

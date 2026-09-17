@@ -35,6 +35,26 @@ final class APIClientTests: XCTestCase {
         )
     }
 
+    func testSupportURLWorksWithoutServerOrLogin() async throws {
+        let client = APIClient()
+        let url = try await client.supportURL()
+        XCTAssertEqual(url.absoluteString, "https://support.zimlab.org/?module=rezeptregal")
+    }
+
+    func testPublicSupportFallsBackBeforeSetupAndRejectsURLCredentials() {
+        for server in ["", "  ", "not a URL", "https://", "http://example.de", "https://user:secret@example.de"] {
+            let url = APIClient.publicSupportURL(server: server)
+            XCTAssertEqual(url.absoluteString, "https://support.zimlab.org/?module=rezeptregal")
+            XCTAssertNil(URLComponents(url: url, resolvingAgainstBaseURL: false)?.user)
+            XCTAssertNil(URLComponents(url: url, resolvingAgainstBaseURL: false)?.password)
+        }
+    }
+
+    func testPublicSupportNeverForwardsConfiguredServerOrPrivateQuery() {
+        let url = APIClient.publicSupportURL(server: " https://example.de/rezepte/?token=secret#private ")
+        XCTAssertEqual(url.absoluteString, "https://support.zimlab.org/?module=rezeptregal")
+    }
+
     func testRecipeListDecodesManualCareState() throws {
         let json = """
         {

@@ -19,14 +19,13 @@ struct InboxView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 24) {
-                    hero
-                    importComposer
-
                     if session.fullAccess {
+                        hero
+                        importComposer
                         reviewQueue
                     } else {
                         Label(
-                            "Importe werden automatisch verarbeitet. Unsichere Inhalte prüft die Verwaltung.",
+                            "Rezeptimporte sind nur für die Administration verfügbar.",
                             systemImage: "checkmark.shield"
                         )
                         .font(.callout)
@@ -76,7 +75,7 @@ struct InboxView: View {
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
                 .tracking(-0.7)
                 .foregroundStyle(theme.ink)
-            Text("Webseite, Pinterest, YouTube, TikTok oder Instagram teilen – Quellenküche liest Rezept, Zutaten und Schritte und bewahrt die Herkunft.")
+            Text("Webseite, Pinterest, YouTube, TikTok oder Instagram teilen – Rezeptregal liest Rezept, Zutaten und Schritte und bewahrt die Herkunft.")
                 .font(.body)
                 .foregroundStyle(theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -255,6 +254,10 @@ struct InboxView: View {
     }
 
     private func importURL() async {
+        guard session.fullAccess else {
+            resultMessage = "Rezeptimporte sind nur für die Administration verfügbar."
+            return
+        }
         let link = importLink.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased()) else {
             resultMessage = "Bitte einen gültigen Weblink eingeben."
@@ -274,6 +277,11 @@ struct InboxView: View {
     }
 
     private func uploadPhoto(_ item: PhotosPickerItem) async {
+        guard session.fullAccess else {
+            selectedPhoto = nil
+            resultMessage = "Rezeptimporte sind nur für die Administration verfügbar."
+            return
+        }
         isWorking = true
         resultMessage = nil
         defer {
@@ -300,6 +308,10 @@ struct InboxView: View {
     }
 
     private func uploadFile(_ url: URL) async {
+        guard session.fullAccess else {
+            resultMessage = "Rezeptimporte sind nur für die Administration verfügbar."
+            return
+        }
         isWorking = true
         resultMessage = nil
         defer { isWorking = false }

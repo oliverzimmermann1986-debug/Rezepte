@@ -12,10 +12,12 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrimaryButton } from '@/components/ui';
+import { ImpressumButton } from '@/components/impressum';
 import { colors, radii, space } from '@/constants/design';
 import { ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { openExternalUrl } from '@/lib/external-links';
+import { publicSupportUrl } from '@/lib/support-url';
 
 export default function LoginScreen() {
   const {
@@ -60,6 +62,16 @@ export default function LoginScreen() {
     }
   }
 
+  async function openSupport() {
+    try {
+      await openExternalUrl(publicSupportUrl(server));
+    } catch (reason) {
+      setError(reason instanceof Error && reason.message
+        ? reason.message
+        : 'Support konnte nicht geöffnet werden.');
+    }
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       <KeyboardAvoidingView
@@ -70,7 +82,7 @@ export default function LoginScreen() {
           keyboardShouldPersistTaps="handled">
           <View style={styles.mark}><Text style={styles.markText}>R</Text></View>
           <View style={styles.intro}>
-            <Text style={styles.title}>Rezepte</Text>
+            <Text style={styles.title}>Rezeptregal</Text>
             <Text style={styles.subtitle}>Deine private Rezeptbibliothek – nativ auf dem iPhone.</Text>
           </View>
           <View style={styles.form}>
@@ -165,6 +177,10 @@ export default function LoginScreen() {
           <Pressable accessibilityRole="link" onPress={() => void openPrivacy()} style={styles.privacyLinkButton}>
             <Text style={styles.privacyLink}>Datenschutzhinweise ansehen</Text>
           </Pressable>
+          <Pressable accessibilityRole="link" accessibilityHint="Öffnet das öffentliche Zimlab-Supportformular für Rezeptregal ohne Anmeldung." onPress={() => void openSupport()} style={styles.privacyLinkButton}>
+            <Text style={styles.privacyLink}>Hilfe & Support</Text>
+          </Pressable>
+          <ImpressumButton />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

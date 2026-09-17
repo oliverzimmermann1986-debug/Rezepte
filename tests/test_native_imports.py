@@ -410,8 +410,8 @@ def test_pending_pdf_preview_remains_available(client, test_db, tmp_path, monkey
     assert response.content == source.read_bytes()
 
 
-def test_pending_routes_separate_submission_from_admin_management(client):
-    from app.auth import require_admin, require_auth
+def test_all_pending_routes_require_admin_including_submission(client):
+    from app.auth import require_admin
     from app.routes import api_pending
 
     routes = {
@@ -420,23 +420,13 @@ def test_pending_routes_separate_submission_from_admin_management(client):
         for method in getattr(route, "methods", set())
         if route.path.startswith("/api/pending")
     }
-    for path in ("/api/pending/import-url", "/api/pending/import-file"):
-        calls = {
-            dependency.call
-            for dependency in routes[(path, "POST")].dependant.dependencies
-        }
-        assert require_auth in calls
-        assert require_admin not in calls
-
-    submission_paths = {"/api/pending/import-url", "/api/pending/import-file"}
-    for (path, _method), route in routes.items():
-        if path in submission_paths:
-            continue
+    assert ("/api/pending/import-url", "POST") in routes
+    assert ("/api/pending/import-file", "POST") in routes
+    for route in routes.values():
         calls = {
             dependency.call
             for dependency in route.dependant.dependencies
         }
-        assert require_auth in calls
         assert require_admin in calls
 
 

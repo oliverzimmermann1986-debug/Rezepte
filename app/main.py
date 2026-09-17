@@ -28,6 +28,8 @@ from .routes import (api_admin, api_audit, api_auth, api_browse, api_config, api
                      api_users, sharing)
 from .security import (SameOriginMiddleware, SecurityHeadersMiddleware,
                        UploadSizeLimitMiddleware, client_ip, login_limiter)
+from .support import router as support_router
+from .imprint import router as imprint_router
 
 # -------- Logging --------
 # Strukturiertes Logging: rotation via RotatingFileHandler (10MB pro Datei,
@@ -463,6 +465,8 @@ app.include_router(api_share.info_router)
 app.include_router(sharing.print_router)
 app.include_router(sharing.share_api_router)
 app.include_router(sharing.public_router)
+app.include_router(support_router)
+app.include_router(imprint_router)
 
 
 # -------- Cookie-Helper --------
@@ -484,20 +488,21 @@ def _set_session_cookie(resp, token: str, request: Request) -> None:
 LOGIN_HTML = """\
 <!DOCTYPE html>
 <html lang="de"><head>
-<meta charset="UTF-8"><title>Login · Rezepte</title>
+<meta charset="UTF-8"><title>Login · Rezeptregal</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/static/rezepte.css">
 </head><body class="login-body">
 <form method="post" action="/login" class="login-card">
   <div class="login-brand">
     <div class="brand-mark"><svg class="brand-chef-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M15 37h18v5H15z"/><path d="M14 34V23.5c-4.1-.5-7-3.6-7-7.4 0-4.2 3.5-7.6 7.8-7.6 1.2 0 2.4.3 3.4.8C19.7 6.1 22.9 4 26.5 4c4.8 0 8.8 3.7 9.2 8.4h.8c4.1 0 7.5 3.3 7.5 7.4 0 3.9-3.1 7.1-7 7.4V34H14z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M19 21v10M29 21v10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></div>
-    <div><h1>Rezepte</h1><p class="muted">Deine persönliche Rezeptbibliothek</p></div>
+    <div><h1>Rezeptregal</h1><p class="muted">Deine persönliche Rezeptbibliothek</p></div>
   </div>
   {error}
   <input type="hidden" name="next" value="{next}">
   <label>Benutzer<input name="username" autocomplete="username" required></label>
   <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
   <button type="submit">Anmelden</button>
+  <p><a href="/support">Hilfe und Kontakt</a> · <a href="/privacy">Datenschutz</a> · <a href="/impressum">Impressum</a></p>
 </form>
 </body></html>
 """
@@ -531,14 +536,14 @@ def privacy_page():
         """<!doctype html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Datenschutz – Rezepte</title>
+<title>Datenschutz – Rezeptregal</title>
 <style>
 body{margin:0;background:#fffaf0;color:#433427;font:17px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:720px;margin:auto;padding:40px 20px 80px}h1{font-size:36px;line-height:1.1}
 h2{margin-top:32px;font-size:22px}a{color:#433427}small{color:#7b6a5c}
 </style></head><body><main>
 <h1>Datenschutz</h1>
-<p><strong>Rezepte</strong> ist eine private, selbst gehostete
+<p><strong>Rezeptregal</strong> ist eine private, selbst gehostete
 Rezeptverwaltung. Verantwortlich ist der Betreiber des Servers, dessen
 Adresse in der App eingetragen wurde.</p>
 <h2>Verarbeitete Daten</h2>
@@ -577,6 +582,7 @@ Anfragen zu Auskunft oder Löschung sind an diesen Betreiber zu richten. Durch
 Abmelden werden Sitzungstoken, Cloudflare-Zugangsdaten und private
 Bildcaches vom iPhone entfernt; die Serversitzung wird widerrufen.</p>
 <p><small>Stand: 24. August 2026</small></p>
+<p><a href="/support">Hilfe und Kontakt / Support</a> · <a href="/impressum">Impressum</a></p>
 </main></body></html>"""
     )
 

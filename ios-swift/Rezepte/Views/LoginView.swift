@@ -8,6 +8,7 @@ struct LoginView: View {
 
     @EnvironmentObject private var session: SessionStore
     @Environment(\.recipeTheme) private var theme
+    @Environment(\.openURL) private var openURL
     @State private var server = ""
     @State private var username = ""
     @State private var password = ""
@@ -40,7 +41,7 @@ struct LoginView: View {
                         Text("Quellen rein.\nLieblingsessen raus.")
                             .font(.largeTitle.bold())
                             .foregroundStyle(theme.ink)
-                        Text("Melde dich bei deiner Quellenküche an.")
+                        Text("Melde dich bei deinem Rezeptregal an.")
                             .foregroundStyle(.secondary)
                     }
 
@@ -142,6 +143,23 @@ struct LoginView: View {
                     )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                    Button {
+                        openSupport()
+                    } label: {
+                        Label("Hilfe & Support", systemImage: "questionmark.circle")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .accessibilityIdentifier("support.login")
+                    .accessibilityHint("Öffnet das öffentliche Zimlab-Supportformular für Rezeptregal ohne Anmeldung.")
+                    NavigationLink {
+                        ImpressumView()
+                    } label: {
+                        Label("Impressum", systemImage: "doc.text")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .accessibilityIdentifier("impressum.login")
+                    .accessibilityHint("Ohne Anmeldung und Internetverbindung lesbar.")
                 }
                 .padding(24)
             }
@@ -169,6 +187,13 @@ struct LoginView: View {
                 }
                 showsCloudflareAccess = !cloudflareClientID.isEmpty || !cloudflareClientSecret.isEmpty
             }
+        }
+    }
+
+    private func openSupport() {
+        let url = APIClient.publicSupportURL(server: server)
+        openURL(url) { accepted in
+            if !accepted { errorMessage = "Support konnte nicht geöffnet werden." }
         }
     }
 

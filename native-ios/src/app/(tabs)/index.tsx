@@ -17,6 +17,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { RecipeCard } from '@/components/recipe-card';
+import { ImpressumButton } from '@/components/impressum';
 import { StateView } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
@@ -335,6 +336,7 @@ export default function RecipesScreen() {
           <Text style={styles.title}>Rezepte</Text>
         </View>
         <View style={styles.headerActions}>
+          <ImpressumButton />
           <Text accessibilityLabel={`${total} Rezepte`} style={styles.count}>{total}</Text>
           <Pressable
             accessibilityRole="button"

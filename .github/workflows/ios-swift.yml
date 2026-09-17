@@ -23,6 +23,9 @@ on:
       - "app/routes/**"
       - "app/recipes/**"
       - "tests/test_swiftui_redesign_source.py"
+      - "tests/test_app_store_identity.py"
+      - "tools/check_app_store_identity.py"
+      - "tools/check_support_url.py"
       - ".github/workflows/ios-swift.yml"
   pull_request:
     paths:
@@ -34,6 +37,9 @@ on:
       - "app/routes/**"
       - "app/recipes/**"
       - "tests/test_swiftui_redesign_source.py"
+      - "tests/test_app_store_identity.py"
+      - "tools/check_app_store_identity.py"
+      - "tools/check_support_url.py"
       - ".github/workflows/ios-swift.yml"
 
 env:
@@ -97,8 +103,12 @@ jobs:
           -scheme Rezepte
           -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}"
           -resultBundlePath TestResults.xcresult
+          -derivedDataPath build/ci
           CODE_SIGNING_ALLOWED=NO
           test
+
+      - name: Validate built app identity including localized display names
+        run: python3 ../tools/check_app_store_identity.py --app build/ci/Build/Products/Debug-iphonesimulator/Rezepte.app
 
       - name: Upload XCTest diagnostics
         if: always()
@@ -125,12 +135,16 @@ jobs:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_APP_ID: ${{ vars.ASC_APP_ID || '6803595058' }}
+      REZEPTREGAL_SUPPORT_URL: ${{ vars.REZEPTREGAL_SUPPORT_URL }}
     defaults:
       run:
         working-directory: ios-swift
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Verify public support page before release
+        run: python3 ../tools/check_support_url.py "$REZEPTREGAL_SUPPORT_URL"
 
       - name: Install pinned XcodeGen
         shell: bash
@@ -312,6 +326,7 @@ jobs:
             exit 1
           fi
           assert_bundle_metadata "Share extension" "$share_path/Info.plist" "$IOS_SHARE_BUNDLE_ID"
+          python3 ../tools/check_app_store_identity.py --app "$app_path"
 
       - name: Export signed IPA
         shell: bash
@@ -344,6 +359,7 @@ jobs:
           chmod 600 "$key_directory/AuthKey_$ASC_KEY_ID.p8"
           ipa_path="$(find "$RUNNER_TEMP/Export" -maxdepth 1 -name '*.ipa' -print -quit)"
           test -n "$ipa_path"
+          python3 ../tools/check_app_store_identity.py --ipa "$ipa_path"
           echo "started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
           xcrun altool --upload-app \
             --type ios \

@@ -1,66 +1,58 @@
-# App-Review-Notizen – Quellenküche 1.2
+# App-Review-Notizen – Rezeptregal 1.2.0
 
-## Eigenständiges Produktkonzept
+Stand: 15. September 2026. Korrekturvorbereitung, noch kein Upload und keine
+erneute Einreichung.
 
-Quellenküche ist kein allgemeiner Rezept-Reader und keine umbenannte
-Template-App. Der zentrale Ablauf lautet:
+## Betroffene Einreichung
 
-1. Eine Rezeptquelle aus Website, Pinterest, YouTube, TikTok, Instagram, Foto
-   oder PDF in den Eingang legen.
-2. Zutaten und Schritte serverseitig erkennen, die Originalquelle aber sichtbar
-   am Rezept bewahren.
-3. Im Quellenwächter den gespeicherten Quellstand mit der aktuellen Seite
-   vergleichen. Änderungen erscheinen als Diff und überschreiben das Rezept
-   niemals automatisch.
-4. Unsichere Ergebnisse im Rezept-TÜV und in einer manuellen
-   Prüfwarteschlange bearbeiten.
-5. Aus Rezeptzutaten und wiederkehrendem Haushaltsbedarf eine nach
-   Supermarktbereichen sortierte
-   Einkaufsliste mit Autovervollständigung aufbauen.
-6. Mehrere geplante Gerichte im Menü-Dirigenten rückwärts zu einer gemeinsamen
-   Servierzeit koordinieren. Herd, Ofen und aktive Kochkapazität werden als
-   begrenzte Ressourcen behandelt.
-7. Eine fehlende Zutat im Substitutionslabor als nachvollziehbare Variante
-   ersetzen. Konkrete Vorher-/Nachher-Mengen und Einschränkungen bleiben
-   sichtbar; das Original wird nie überschrieben.
-8. Rezeptbilder generieren, nachdem vorhandene Bilder checksummiert gesichert
-   wurden; Original und Neufassung können verglichen und wiederhergestellt
-   werden.
+- Apple-ID: `6803595058`
+- Submission: `50e307f2-a8c1-4284-8136-c226d3f81867`
+- Geprüft: `1.2.0 (2307)` am 15. September 2026
+- Quellbasis: `c93567b5afb7645cc7331f9a4e8c2d66a80fdc6e`
+- Beanstandet: Namen, Support-URL und unklarer Geschäftsablauf.
+  Aus den Ausschnitten folgt keine Freigabe hinsichtlich Guideline 4.3.
 
-## Technische Eigenständigkeit
+## Korrekturen im Kandidaten
 
-- Der ausgelieferte Client unter `ios-swift/` ist nativ in Swift und SwiftUI.
-- Es gibt keine WebView und keine gekaufte oder fremde UI-Vorlage.
-- Es sind keine UI-Pakete oder Template-Abhängigkeiten eingebunden.
-- Farbwelten, Navigation, Share Extension, Einkaufskatalog und Bildverlauf sind
-  projektspezifischer Quellcode in diesem Repository.
-- Der Gastzugang kann das Rezeptarchiv ohne neues Konto rein lesend prüfen;
-  Schreibaktionen werden zusätzlich serverseitig abgewiesen.
-- `native-ios/` bleibt ausschließlich als alter Expo-Vergleichsstand im
-  Repository und gehört nicht zum neuen SwiftUI-Binary.
+- App: Rezeptregal; Share-Erweiterung: Rezeptregal teilen.
+- Bundle-IDs, App Groups und eingereichtes Icon bleiben unverändert.
+- Zentrales Supportformular mit ausdrücklich freizugebender Portal-URL.
+- Gastzugang bleibt lesend; normale Konten dürfen nicht importieren.
+- Ein vom Administrator separat ausgestelltes Share-Token ist eine eigene
+  Berechtigung für Kurzbefehle, kein normales Benutzerkonto und kein Kauf.
 
-## Vorschlag für das Feld „App Review Notes“
+## Support-Metadatenentwurf
 
-> Quellenküche 1.2 is a native SwiftUI app centered on source-aware recipe
-> capture. Reviewers can share or paste a recipe URL from a website, Pinterest,
-> YouTube, TikTok or Instagram, or upload a photo/PDF. The original source stays
-> visible. The in-app Source Watcher stores a text fingerprint, compares a
-> later source revision, and presents a structured diff without ever
-> overwriting the saved recipe. A deterministic Recipe Check highlights missing
-> servings, ingredients, steps and duplicate entries. The shopping list merges
-> planned recipe ingredients with recurring household purchases and uses an
-> account-local ingredient catalog with supermarket categories and icons.
-> Its Menu Conductor schedules several dishes backwards from one serving time
-> while respecting oven, burner and active-cook capacity. The Substitution Lab
-> previews exact before/after ingredients and creates a traceable recipe
-> variant without overwriting the original.
-> Administrators can generate recipe images only after
-> existing images are checksum-backed up, compare both versions and restore an
-> original. Reviewers may also choose "Als Gast ansehen" for a read-only archive
-> tour without creating an account. No purchased app template, WebView or
-> third-party UI kit is used.
+Ziel für das Feld „Support-URL“ in allen App-Store-Lokalisierungen:
+`https://support.zimlab.org/?module=rezeptregal`.
+Nur lokal vorbereitet. Erst nach verifiziert öffentlichem Formular und
+Owner-only-Verwaltung in App Store Connect speichern.
 
-Vor der Einreichung in App Store Connect zusätzlich ein funktionierendes,
-nicht ablaufendes Review-Konto und kurze Schritte für einen Beispielimport
-angeben. In den ersten drei Screenshots Menü-Dirigent, Quellenwächter und
-Substitutionslabor zeigen, nicht nur die Rezeptübersicht.
+## Technische Hinweise für App Review
+
+Rezeptregal is a native SwiftUI client for a recipe server. Enter the provided
+HTTPS server address. Guest access allows read-only browsing without creating
+an account; it does not bypass additional server access controls. Signed-in
+accounts can use the permitted recipe, meal-planning and shopping features.
+Accounts are managed by the server administrator; there is no self-registration
+in the app. Import and inbox management require administrator access.
+
+For support, open Help and Contact on the login screen or in Settings.
+The public support page does not require a Rezeptregal or GitHub account.
+
+Provide the actual review server and working review-account credentials in
+App Store Connect's designated fields. Test both a normal account and an
+administrator account against the exact submitted build and server.
+
+## Noch nicht als Tatsache an Apple senden
+
+- Kostenfreiheit: Betreiberbestätigung für App, Funktionen, Konto und Server
+  fehlt. Fehlender StoreKit-Code ist kein Nachweis des Geschäftsmodells.
+- Persönliche Bewertungen: derzeit gemeinsame Werte am Rezept, nicht je Nutzer.
+- Support bereits veröffentlicht / Metadaten bereits geändert / Build bereits
+  hochgeladen: erst nach tatsächlicher Durchführung behaupten.
+- Zusatzfunktionen aus `codex/appstore-improvements`: nicht in diesen Kandidaten
+  übernommen.
+
+Die fünf offenen Geschäftsmodellfragen und Freigabeschritte stehen in
+`docs/apple-review/2026-09-15-response-and-release.md`.

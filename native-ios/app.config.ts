@@ -12,7 +12,7 @@ export default ({ config: base }: ConfigContext): ExpoConfig => {
   const variant = appVariant();
   const suffix = variant === 'production' ? '' : `.${variant === 'development' ? 'dev' : 'preview'}`;
   const bundleIdentifier = `de.mausbaeren.rezepte${suffix}`;
-  const baseName = base.name || 'Rezepte';
+  const baseName = base.name || 'Rezeptregal';
 
   return {
     ...base,

@@ -6,7 +6,7 @@ final class ShareViewController: SLComposeServiceViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Zu Quellenküche"
+        title = "Zu Rezeptregal"
         placeholder = "Rezeptlink aus Website, Pinterest oder YouTube importieren"
         loadSharedURL()
     }

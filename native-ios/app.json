@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Rezepte",
+    "name": "Rezeptregal",
     "slug": "rezepte-ios",
     "version": "1.0.1",
     "platforms": [
@@ -47,7 +47,7 @@
         "expo-share-intent",
         {
           "disableAndroid": true,
-          "iosShareExtensionName": "Rezepte teilen",
+          "iosShareExtensionName": "Rezeptregal teilen",
           "iosActivationRules": {
             "NSExtensionActivationSupportsText": true,
             "NSExtensionActivationSupportsWebURLWithMaxCount": 1,

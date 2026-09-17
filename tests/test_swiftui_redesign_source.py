@@ -48,7 +48,7 @@ def test_swiftui_import_accepts_open_web_sources_and_share_extension_matches():
         assert source in inbox
     assert '.contains(url.scheme?.lowercased())' in inbox
     assert '["https", "http"].contains' in share
-    assert "Zu Quellenküche" in share
+    assert "Zu Rezeptregal" in share
 
 
 def test_swiftui_cart_uses_catalog_suggestions_icons_and_categories():
@@ -387,8 +387,10 @@ def test_swiftui_guest_login_is_read_only_across_navigation_and_recipe_actions()
     assert "signInAsGuest" in login and "signInAsGuest" in session
     assert '"/api/auth/guest"' in api
     assert "@Published private(set) var readOnly" in session
-    assert "case .signedIn = state, !readOnly" in session
-    assert tabs.count("if !session.readOnly") >= 2
+    assert "case .signedIn = state" in session
+    assert "guard fullAccess, !readOnly" in session
+    assert "if session.fullAccess" in tabs
+    assert "if !session.readOnly" in tabs
     assert "Gastzugang · Rezept nur ansehen" in detail
     assert detail.count("if !session.readOnly") >= 4
     assert 'Section("Gastzugang")' in settings

@@ -5,7 +5,7 @@ struct MainTabView: View {
 
     var body: some View {
         TabView {
-            if !session.readOnly {
+            if session.fullAccess {
                 InboxView()
                     .tabItem { Label("Eingang", systemImage: "tray.and.arrow.down.fill") }
             }

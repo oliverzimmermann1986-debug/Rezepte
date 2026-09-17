@@ -16,6 +16,7 @@ import { api, createClientRequestId, deleteCachedFile, uploadFile } from '@/lib/
 import { useAuth } from '@/lib/auth-context';
 import { invalidateApiCacheByPrefix } from '@/lib/cache';
 import { openExternalUrl } from '@/lib/external-links';
+import { publicSupportUrl } from '@/lib/support-url';
 import { pickEditedJpeg } from '@/lib/image-picker';
 import { FailedDownload, PendingItem } from '@/lib/types';
 
@@ -87,6 +88,14 @@ export default function AdminScreen() {
       await openExternalUrl(`${serverUrl}/privacy`);
     } catch (reason) {
       Alert.alert('Datenschutz nicht geöffnet', reason instanceof Error ? reason.message : 'Bitte erneut versuchen.');
+    }
+  }
+
+  async function openSupport() {
+    try {
+      await openExternalUrl(publicSupportUrl(serverUrl));
+    } catch (reason) {
+      Alert.alert('Support nicht geöffnet', reason instanceof Error ? reason.message : 'Bitte erneut versuchen.');
     }
   }
 
@@ -300,6 +309,7 @@ export default function AdminScreen() {
             <Text style={styles.account}>Angemeldet als {username || 'lokal'}</Text>
             <Text style={styles.server} numberOfLines={2}>{serverUrl}</Text>
             <PrimaryButton label="Datenschutz" onPress={() => void openPrivacy()} />
+            <PrimaryButton label="Hilfe & Support" onPress={() => void openSupport()} />
             <PrimaryButton label="Abmelden" onPress={signOut} destructive />
           </View>
         </>

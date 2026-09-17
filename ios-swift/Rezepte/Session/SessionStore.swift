@@ -56,7 +56,7 @@ final class SessionStore: ObservableObject {
             let session = try await api.sessionInfo()
             apply(session)
             await refreshSystemInfo()
-            if !readOnly { await drainSharedImports() }
+            await drainSharedImports()
         } catch {
             signOut()
         }
@@ -158,7 +158,7 @@ final class SessionStore: ObservableObject {
         )
         apply(activeSession)
         await refreshSystemInfo()
-        if !readOnly { await drainSharedImports() }
+        await drainSharedImports()
     }
 
     private func apply(_ session: SessionResponse) {
@@ -202,9 +202,14 @@ final class SessionStore: ObservableObject {
     }
 
     func drainSharedImports() async {
-        guard case .signedIn = state, !readOnly else { return }
+        guard case .signedIn = state else { return }
         let queued = SharedImportQueue.all()
         guard !queued.isEmpty else { return }
+        guard fullAccess, !readOnly else {
+            queued.forEach { SharedImportQueue.remove($0) }
+            alertMessage = "Rezeptimporte sind nur für die Administration verfügbar. Die geteilten Links wurden nicht importiert und aus der Warteschlange entfernt."
+            return
+        }
         var imported = 0
         for url in queued {
             do {
@@ -212,6 +217,12 @@ final class SessionStore: ObservableObject {
                 SharedImportQueue.remove(url)
                 imported += 1
             } catch {
+                if let apiError = error as? APIError,
+                   case .server(403, _) = apiError {
+                    queued.forEach { SharedImportQueue.remove($0) }
+                    alertMessage = "Der Server hat den Import nicht erlaubt. Die geteilten Links wurden aus der Warteschlange entfernt."
+                    return
+                }
                 alertMessage = "Ein geteilter Link konnte noch nicht importiert werden: \(error.localizedDescription)"
                 break
             }
