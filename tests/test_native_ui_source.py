@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from tests.web_source import read_web_scripts
+
 
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "native-ios" / "src"
@@ -224,7 +226,7 @@ def test_manual_review_offers_photo_scan_in_both_native_clients_and_web():
     swift_editor = (SWIFT / "Views" / "Admin" / "PendingEditorView.swift").read_text(encoding="utf-8")
     swift_api = (SWIFT / "Networking" / "APIClient.swift").read_text(encoding="utf-8")
     web_html = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
-    web_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    web_js = read_web_scripts()
 
     assert "Foto hinzufügen und scannen" in pending_editor
     assert "'/api/pending/scan-photo?url='" not in pending_editor

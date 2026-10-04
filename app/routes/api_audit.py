@@ -63,7 +63,7 @@ def _audit_db_revision(db) -> tuple:
             revision.extend((stat.st_mtime_ns, stat.st_size))
         except OSError:
             revision.extend((0, 0))
-    return tuple(revision)
+    return (getattr(db, "scope", None), *revision)
 
 
 def _openai_config_for_audit() -> Optional[Dict[str, Any]]:
@@ -131,12 +131,14 @@ def get_audit(
     # Alle aktiven Rezepte ohne Zutaten. Verifizierte Rezepte werden
     # ausgeschlossen — der User hat ihren Zustand bewusst bestätigt.
     with db.conn() as c:
-        empty_rows = c.execute("""
+        visible = db.recipe_visibility_sql() if hasattr(db, "recipe_visibility_sql") else "r.owner_account_id IS NULL"
+        empty_rows = c.execute(f"""
             SELECT r.id, r.name, COALESCE(length(r.description), 0) as desc_len,
                    r.folder_path, r.url, r.ingredients_status
             FROM recipes r
             LEFT JOIN recipe_ingredients ri ON ri.recipe_id = r.id
             WHERE r.deleted_at IS NULL
+              AND ({visible})
               AND COALESCE(r.user_verified, 0) = 0
             GROUP BY r.id
             HAVING COUNT(ri.id) = 0
@@ -156,7 +158,7 @@ def get_audit(
     # Rezept — Python sortiert dann in die Buckets. Limit pro Bucket auf
     # 100 damit das UI nicht überflutet.
     with db.conn() as c:
-        all_rows = c.execute("""
+        all_rows = c.execute(f"""
             SELECT r.id, r.name, r.folder_path, r.url, r.thumb_filename,
                    r.ingredients_status, r.calories_per_serving,
                    COALESCE(r.user_verified, 0) as user_verified,
@@ -165,6 +167,7 @@ def get_audit(
                    (SELECT COUNT(*) FROM recipe_steps WHERE recipe_id=r.id) as step_count
             FROM recipes r
             WHERE r.deleted_at IS NULL
+              AND ({visible})
         """).fetchall()
 
     no_image, no_steps, no_url, few_ingredients, no_description, no_nutrition = [], [], [], [], [], []
@@ -328,7 +331,7 @@ def start_ai_sanity_check() -> Dict[str, Any]:
         with db.conn() as c:
             total = int(c.execute(
                 "SELECT COUNT(*) FROM recipes "
-                "WHERE deleted_at IS NULL "
+                "WHERE deleted_at IS NULL AND owner_account_id IS NULL "
                 "AND description IS NOT NULL AND length(description) >= 20"
             ).fetchone()[0])
 
@@ -378,7 +381,7 @@ def ai_sanity_findings() -> Dict[str, Any]:
     with db.conn() as c:
         eligible_recipes = int(c.execute(
             "SELECT COUNT(*) FROM recipes "
-            "WHERE deleted_at IS NULL "
+            "WHERE deleted_at IS NULL AND owner_account_id IS NULL "
             "AND description IS NOT NULL AND length(description) >= 20"
         ).fetchone()[0])
     return {
@@ -405,7 +408,7 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
         with db.conn() as c:
             rows = c.execute(
                 "SELECT id, name, type, category, description, folder_path FROM recipes "
-                "WHERE deleted_at IS NULL "
+                "WHERE deleted_at IS NULL AND owner_account_id IS NULL "
                 "AND description IS NOT NULL AND length(description) >= 20"
             ).fetchall()
             recipes = [dict(r) for r in rows]
@@ -413,7 +416,7 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
         # Alte Findings löschen — nur die NICHT-resolved, die werden neu gesetzt.
         # Resolved-Findings (User hat schon entschieden) bleiben als Audit-Trail.
         with db.conn() as c:
-            c.execute("DELETE FROM audit_ai_findings WHERE resolved=0")
+            c.execute("DELETE FROM audit_ai_findings WHERE resolved=0 AND recipe_id IN (SELECT id FROM recipes WHERE owner_account_id IS NULL)")
 
         # Parallele KI-Calls (3 gleichzeitig). DB-Schreibvorgänge sind klein
         # und thread-safe (sqlite check_same_thread=False), counter wird mit
@@ -499,7 +502,10 @@ def resolve_finding(finding_id: int) -> Dict[str, Any]:
     """Markiert ein KI-Finding als 'erledigt' (ignoriert vom User).
     Wird im UI vom 'Ignorieren'-Button aufgerufen."""
     db = get_db()
-    db.audit_ai_finding_resolve(finding_id)
+    try:
+        db.audit_ai_finding_resolve(finding_id)
+    except LookupError as exc:
+        raise HTTPException(404, "Finding nicht gefunden") from exc
     return {"ok": True}
 
 
@@ -559,6 +565,8 @@ def _apply_finding_internal(finding_id: int) -> Dict[str, Any]:
     if not row:
         raise HTTPException(404, "Finding nicht gefunden")
     finding = dict(row)
+    if not db.recipe_get(int(finding["recipe_id"])):
+        raise HTTPException(404, "Finding nicht gefunden")
 
     cfg = get_config()
     recipe_root = Path(cfg.get("paths", "recipe_dir", default="/mnt/rezepte")).resolve()
@@ -712,8 +720,9 @@ def heal_fs_paths() -> Dict[str, Any]:
     recipe_root_str = str(cfg.get("paths", "recipe_dir", default="/mnt/rezepte"))
 
     with db.conn() as c:
+        visible = db.recipe_visibility_sql() if hasattr(db, "recipe_visibility_sql") else "r.owner_account_id IS NULL"
         rows = c.execute(
-            "SELECT id, name, folder_path FROM recipes WHERE folder_path LIKE ?",
+            "SELECT id, name, folder_path FROM recipes r WHERE folder_path LIKE ? AND " + visible,
             (recipe_root_str + "%",),
         ).fetchall()
 
@@ -811,9 +820,11 @@ def folder_preview(path: str) -> Dict[str, Any]:
     recipe_root = Path(cfg.get("paths", "recipe_dir", default="/mnt/rezepte")).resolve()
     target = Path(path).resolve()
     try:
-        target.relative_to(recipe_root)
+        relative = target.relative_to(recipe_root)
     except ValueError:
         raise HTTPException(400, f"Pfad nicht im Recipe-Root: {target}")
+    if ".households" in relative.parts and not get_db().recipe_get_by_folder(str(target)):
+        raise HTTPException(404, "Folder nicht gefunden")
     if not target.exists() or not target.is_dir():
         raise HTTPException(404, f"Folder existiert nicht: {target}")
 
@@ -886,6 +897,8 @@ def delete_folder_by_path(payload: DeleteByPathPayload) -> Dict[str, Any]:
             400,
             "Nur ein einzelner Konflikt-Rezeptordner (Typ/Kategorie/Rezept) darf gelöscht werden",
         )
+    if ".households" in relative.parts:
+        raise HTTPException(404, "Konfliktordner nicht gefunden")
     db = get_db()
     with db.conn() as c:
         conflict = c.execute(

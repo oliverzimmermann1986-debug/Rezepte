@@ -4,6 +4,7 @@ struct LoginView: View {
     private enum LoginAction: Equatable {
         case account
         case guest
+        case registration
     }
 
     @EnvironmentObject private var session: SessionStore
@@ -11,6 +12,9 @@ struct LoginView: View {
     @State private var server = ""
     @State private var username = ""
     @State private var password = ""
+    @State private var creatingAccount = false
+    @State private var passwordConfirmation = ""
+    @State private var invitationInput = ""
     @State private var cloudflareClientID = ""
     @State private var cloudflareClientSecret = ""
     @State private var showsCloudflareAccess = false
@@ -21,6 +25,8 @@ struct LoginView: View {
         !server.trimmingCharacters(in: .whitespaces).isEmpty
             && !username.trimmingCharacters(in: .whitespaces).isEmpty
             && !password.isEmpty
+            && (!creatingAccount || (username.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3
+                && password.count >= 10 && password.utf8.count <= 72 && password == passwordConfirmation))
             && workingAction == nil
     }
 
@@ -40,7 +46,7 @@ struct LoginView: View {
                         Text("Quellen rein.\nLieblingsessen raus.")
                             .font(.largeTitle.bold())
                             .foregroundStyle(theme.ink)
-                        Text("Melde dich bei deiner Quellenküche an.")
+                        Text(creatingAccount ? "Erstelle deinen eigenen Haushalt oder nimm eine Einladung an." : "Melde dich bei deiner Quellenküche an.")
                             .foregroundStyle(.secondary)
                     }
 
@@ -58,10 +64,20 @@ struct LoginView: View {
                             .autocorrectionDisabled()
                             .accessibilityIdentifier("review.username")
                         SecureField("Passwort", text: $password)
-                            .textContentType(.password)
+                            .textContentType(creatingAccount ? .newPassword : .password)
                             .submitLabel(.go)
-                            .onSubmit { Task { await signIn() } }
+                            .onSubmit { Task { await submit() } }
                             .accessibilityIdentifier("review.password")
+                        if creatingAccount {
+                            SecureField("Passwort wiederholen", text: $passwordConfirmation)
+                                .textContentType(.newPassword)
+                            TextField("Einladungslink oder Code (optional)", text: $invitationInput)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            Text("Mindestens 10 Zeichen. Ohne Einladung erhältst du einen eigenen Haushalt; mit Einladung teilst du den Haushalt der einladenden Person.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .textFieldStyle(.roundedBorder)
 
@@ -91,11 +107,13 @@ struct LoginView: View {
                     }
 
                     Button {
-                        Task { await signIn() }
+                        Task { await submit() }
                     } label: {
                         HStack {
-                            if workingAction == .account { ProgressView() }
-                            Text(workingAction == .account ? "Anmeldung läuft …" : "Anmelden")
+                            if workingAction == .account || workingAction == .registration { ProgressView() }
+                            Text(creatingAccount
+                                ? (workingAction == .registration ? "Konto wird erstellt …" : "Konto erstellen")
+                                : (workingAction == .account ? "Anmeldung läuft …" : "Anmelden"))
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity, minHeight: 48)
@@ -104,6 +122,13 @@ struct LoginView: View {
                     .tint(theme.accent)
                     .foregroundStyle(theme.ink)
                     .disabled(!canSubmit)
+
+                    Button(creatingAccount ? "Mit bestehendem Konto anmelden" : "Konto erstellen") {
+                        creatingAccount.toggle()
+                        errorMessage = nil
+                        passwordConfirmation = ""
+                    }
+                    .disabled(workingAction != nil)
 
                     VStack(spacing: 10) {
                         HStack {
@@ -147,6 +172,7 @@ struct LoginView: View {
             }
             .background(theme.background)
             .onAppear {
+                creatingAccount = session.registrationRequested
                 let reviewEnvironment = ProcessInfo.processInfo.environment
                 if reviewEnvironment["APP_REVIEW_AUTOMATION"] == "1" {
                     if server.isEmpty {
@@ -169,6 +195,28 @@ struct LoginView: View {
                 }
                 showsCloudflareAccess = !cloudflareClientID.isEmpty || !cloudflareClientSecret.isEmpty
             }
+        }
+    }
+
+    private func submit() async {
+        if creatingAccount { await register() } else { await signIn() }
+    }
+
+    private func register() async {
+        guard canSubmit else { return }
+        workingAction = .registration
+        errorMessage = nil
+        defer { workingAction = nil }
+        do {
+            try await session.register(
+                server: server, username: username.trimmingCharacters(in: .whitespacesAndNewlines),
+                password: password, invitationToken: invitationInput,
+                cloudflareClientID: cloudflareClientID, cloudflareClientSecret: cloudflareClientSecret
+            )
+            password = ""
+            passwordConfirmation = ""
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 

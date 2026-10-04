@@ -11,6 +11,57 @@ import pytest
 from video_archiver import ArchiveQueue, VideoArchiver, normalize_supported_url
 
 
+@pytest.fixture(autouse=True)
+def synthetic_archive_capacity(monkeypatch):
+    # Downloads sind lokal gemockt. Diese Tests hängen nicht von der freien
+    # Platte des Entwicklers ab; der gezielte Platzmangeltest setzt eigene Werte.
+    monkeypatch.setattr("video_archiver.worker.shutil.disk_usage",
+                        lambda _path: SimpleNamespace(total=100 * 1024**3, used=0, free=100 * 1024**3))
+
+
+def test_interrupted_download_cleans_work_folder_and_requeues(tmp_path, monkeypatch):
+    executable = tmp_path / "yt-dlp"
+    executable.write_text("synthetic executable", encoding="utf-8")
+    executable.chmod(0o755)
+    queue = ArchiveQueue(tmp_path / "queue.db")
+    queue.enqueue(88, "https://www.tiktok.com/@test/video/88")
+    archive = tmp_path / "archive"
+    def interrupted(command, **_kwargs):
+        output = Path(command[command.index("--output") + 1])
+        output.with_suffix(".part").write_bytes(b"partial download")
+        raise KeyboardInterrupt
+    monkeypatch.setattr("video_archiver.worker.subprocess.run", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        VideoArchiver(queue, archive, str(executable), free_space_reserve_bytes=0).process_one()
+    assert queue.get(88)["status"] == "queued"
+    assert not list((archive / ".work").iterdir())
+
+
+def test_interrupted_metadata_publication_removes_unpaired_video(tmp_path, monkeypatch):
+    executable = tmp_path / "yt-dlp"
+    executable.write_text("synthetic executable", encoding="utf-8")
+    executable.chmod(0o755)
+    queue = ArchiveQueue(tmp_path / "queue.db")
+    queue.enqueue(89, "https://www.tiktok.com/@test/video/89")
+    archive = tmp_path / "archive"
+    def downloaded(command, **_kwargs):
+        output = Path(command[command.index("--output") + 1])
+        output.with_suffix(".mp4").write_bytes(b"downloaded")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+    original_replace = os.replace
+    def interrupted_metadata(source, destination):
+        if Path(destination).suffix == ".json":
+            raise KeyboardInterrupt
+        return original_replace(source, destination)
+    monkeypatch.setattr("video_archiver.worker.subprocess.run", downloaded)
+    monkeypatch.setattr("video_archiver.worker.os.replace", interrupted_metadata)
+    with pytest.raises(KeyboardInterrupt):
+        VideoArchiver(queue, archive, str(executable), free_space_reserve_bytes=0).process_one()
+    assert queue.get(89)["status"] == "queued"
+    assert not list(archive.glob("*.mp4"))
+    assert not list((archive / ".work").iterdir())
+
+
 def test_archiver_url_validation_is_strict():
     assert normalize_supported_url(
         "https://www.tiktok.com/@koch/video/123?share=1#comments"

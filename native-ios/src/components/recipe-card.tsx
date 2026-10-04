@@ -2,11 +2,12 @@ import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import React from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { colors, radii, space } from '@/constants/design';
 import { absoluteApiUrl, apiAuthHeaders } from '@/lib/api';
 import { RecipeListItem } from '@/lib/types';
+import { recipeStatus } from '@/lib/recipe-status';
 
 export function RecipeCard({
   recipe,
@@ -17,14 +18,19 @@ export function RecipeCard({
   deleting?: boolean;
   onDelete?: (recipe: RecipeListItem) => void;
 }) {
+  const status = recipeStatus(recipe);
+  const { fontScale } = useWindowDimensions();
+  const truncate = fontScale < 1.3;
   return (
     <View style={styles.card}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${recipe.name}${recipe.needs_manual_care ? ', manuelle Pflege erforderlich' : ''}`}
+        accessibilityLabel={[recipe.name, status.label, recipe.rating ? `${recipe.rating} von 5 Sternen` : '', recipe.user_verified ? 'Geprüft' : ''].filter(Boolean).join(', ')}
+        accessibilityHint="Rezept öffnen"
         onPress={() => router.push(`/recipe/${recipe.id}`)}
         style={({ pressed }) => pressed && styles.pressed}>
         <Image
+          accessible={false}
           source={{ uri: absoluteApiUrl(`/api/recipes/${recipe.id}/thumb?w=500`), headers: apiAuthHeaders() }}
           style={styles.image}
           contentFit="cover"
@@ -32,14 +38,14 @@ export function RecipeCard({
           transition={120}
         />
         <View style={styles.body}>
-          <Text style={styles.name} numberOfLines={2}>{recipe.name}</Text>
-          {!!recipe.description && <Text style={styles.description} numberOfLines={2}>{recipe.description}</Text>}
+          <Text style={styles.name} numberOfLines={truncate ? 2 : undefined}>{recipe.name}</Text>
+          {!!recipe.description && <Text style={styles.description} numberOfLines={truncate ? 2 : undefined}>{recipe.description}</Text>}
           <View style={styles.footer}>
             <Text style={styles.meta}>{[recipe.type, recipe.category].filter(Boolean).join(' · ')}</Text>
             {!!recipe.rating && <Text accessibilityLabel={`${recipe.rating} von 5 Sternen`} style={styles.rating}>{'★'.repeat(recipe.rating)}</Text>}
             {!!recipe.user_verified && <Text style={styles.verified}>✓ Geprüft</Text>}
-            <Text style={recipe.needs_manual_care ? styles.warning : styles.ready}>
-              {recipe.needs_manual_care ? '⚠ Pflegen' : '✓ Kochfertig'}
+            <Text style={[styles.status, { color: colors[status.tone] }]}>
+              {status.label}
             </Text>
           </View>
         </View>
@@ -49,6 +55,7 @@ export function RecipeCard({
           accessibilityRole="button"
           accessibilityLabel={`${recipe.name} in den Papierkorb verschieben`}
           disabled={deleting}
+          accessibilityState={{ disabled: deleting, busy: deleting }}
           hitSlop={8}
           onPress={() => onDelete(recipe)}
           style={({ pressed }) => [
@@ -96,10 +103,9 @@ const styles = StyleSheet.create({
   body: { padding: 14, gap: 7 },
   name: { color: colors.text, fontSize: 19, lineHeight: 23, fontWeight: '800' },
   description: { color: colors.muted, fontSize: 14, lineHeight: 20 },
-  footer: { marginTop: space.xs, flexDirection: 'row', gap: space.sm, justifyContent: 'space-between' },
+  footer: { marginTop: space.xs, flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, justifyContent: 'space-between' },
   meta: { color: colors.muted, fontSize: 12, flex: 1 },
   rating: { color: colors.butterPressed, fontSize: 12, letterSpacing: -1 },
   verified: { color: colors.success, fontSize: 12, fontWeight: '800' },
-  warning: { color: colors.warning, fontSize: 12, fontWeight: '800' },
-  ready: { color: colors.success, fontSize: 12, fontWeight: '800' },
+  status: { fontSize: 12, fontWeight: '800' },
 });

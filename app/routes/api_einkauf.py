@@ -223,6 +223,10 @@ def _auth_headers() -> dict[str, str]:
 def status() -> dict[str, Any]:
     """Konfigurationsstatus ohne Tokens oder andere Geheimnisse."""
     base = _configured_base_url()
+    from ..tenancy import CURRENT_HOUSEHOLD
+    scope = CURRENT_HOUSEHOLD.get()
+    if scope is not None and scope.account_id != 0:
+        return {"configured": False, "target": "", "scope": "household", "local_only": True}
     return {
         "configured": bool(base),
         "target": base,
@@ -331,6 +335,10 @@ def einkauf_request(
     include_in_schema=False,
 )
 async def proxy(path: str, request: Request) -> Response:
+    from ..tenancy import CURRENT_HOUSEHOLD
+    scope = CURRENT_HOUSEHOLD.get()
+    if scope is not None and scope.account_id != 0:
+        raise HTTPException(409, "Für deinen Haushalt ist die eigene Einkaufsliste aktiv")
     safe_path = _validated_proxy_path(path)
     headers: dict[str, str] = {}
     content_type = request.headers.get("content-type")

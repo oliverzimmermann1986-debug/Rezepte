@@ -78,7 +78,7 @@ export function RecipeShareLinks({
       <SafeAreaView style={styles.safe} edges={['top', 'bottom', 'left', 'right']}>
         <View style={styles.header}>
           <Pressable onPress={onClose} style={styles.headerAction}><Text style={styles.headerLink}>Fertig</Text></Pressable>
-          <Text style={styles.title}>Öffentliche Freigaben</Text>
+          <Text accessibilityRole="header" style={styles.title}>Öffentliche Freigaben</Text>
           <Pressable disabled={loading} onPress={() => void load()} style={styles.headerAction}><Text style={[styles.headerLink, styles.right, loading && styles.disabled]}>Laden</Text></Pressable>
         </View>
         <Text style={styles.help}>Jeder mit einem aktiven Link kann dieses einzelne Rezept ohne Anmeldung sehen. Ein Widerruf wirkt sofort.</Text>

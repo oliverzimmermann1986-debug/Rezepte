@@ -152,10 +152,10 @@ struct PendingEditorView: View {
                 }
 
                 Section("Quelle") {
-                    Text(item.url)
+                    Text(item.sourceUrl ?? item.url)
                         .font(.caption)
                         .textSelection(.enabled)
-                    if let sourceURL = safeExternalURL(item.url) {
+                    if let sourceURL = safeExternalURL(item.sourceUrl ?? item.url) {
                         Button {
                             openURL(sourceURL)
                         } label: {

@@ -8,6 +8,7 @@ kommen zusätzlich Schritte, Portionen und Tags hinzu.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from .auto_tags import compute_diet_tags
 from .canonical import canonical_name
 from .units import normalize_unit
+from .quantities import AMOUNT_PATTERN, parse_amount
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +30,13 @@ _SECTION_STOP = re.compile(
     r"preparation|nährwerte|naehrwerte|nutrition|tipps?|hinweise?|notes?)\s*:??\s*$",
     re.IGNORECASE,
 )
-_BULLET = re.compile(r"^\s*(?:[-–—•▪◦*✓☐]|\d+[.)])\s*")
+_BULLET = re.compile(r"^\s*(?:[-–—•▪◦*✓☐]\s*|\d+[.)]\s+)")
 _UNIT_PATTERN = (
     r"kg|g|mg|l|ml|cl|dl|tl|el|esslöffel|essloeffel|teelöffel|teeloeffel|"
     r"stück|stueck|stk\.?|prise[n]?|bund|zehe[n]?|scheibe[n]?|blatt|blätter|blaetter|"
     r"päckchen|paeckchen|pck\.?|packung|dose[n]?|tasse[n]?|flasche[n]?|glas|gläser|glaeser"
 )
-_AMOUNT = r"(?:\d+(?:[.,]\d+)?|\d+\s*/\s*\d+|[¼½¾⅓⅔⅛⅜⅝⅞])(?:\s*[-–]\s*\d+(?:[.,]\d+)?)?"
+_AMOUNT = AMOUNT_PATTERN
 _INGREDIENT_LINE = re.compile(
     rf"^\s*(?P<amount>{_AMOUNT})?\s*(?:(?P<unit>{_UNIT_PATTERN})(?=\s|$))?\s*(?P<name>[^:;]{{2,120}}?)\s*$",
     re.IGNORECASE,
@@ -51,6 +53,7 @@ class ExtractedRecipeData:
     allergen_info: Optional[Dict[str, str]] = None
     method: str = "none"
     warnings: List[str] = field(default_factory=list)
+    needs_review: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -62,6 +65,7 @@ class ExtractedRecipeData:
             "allergen_info": self.allergen_info,
             "method": self.method,
             "warnings": self.warnings,
+            "needs_review": self.needs_review,
         }
 
 
@@ -96,28 +100,7 @@ def extract_pdf_text(source: bytes | Path, *, max_chars: int = 60000) -> str:
 
 
 def _amount_value(raw: Optional[str]) -> Optional[float]:
-    if not raw:
-        return None
-    value = raw.strip().replace(" ", "")
-    unicode_fractions = {
-        "¼": 0.25, "½": 0.5, "¾": 0.75, "⅓": 1 / 3, "⅔": 2 / 3,
-        "⅛": 0.125, "⅜": 0.375, "⅝": 0.625, "⅞": 0.875,
-    }
-    if value in unicode_fractions:
-        return unicode_fractions[value]
-    if "/" in value and re.fullmatch(r"\d+/\d+", value):
-        num, den = value.split("/", 1)
-        try:
-            return float(num) / float(den)
-        except (ValueError, ZeroDivisionError):
-            return None
-    if re.search(r"[-–]", value):
-        first = re.split(r"[-–]", value, 1)[0]
-        value = first
-    try:
-        return float(value.replace(",", "."))
-    except ValueError:
-        return None
+    return parse_amount(raw)
 
 
 def _clean_ingredient_name(value: str) -> str:
@@ -148,7 +131,6 @@ def parse_ingredient_lines(text: str) -> List[Dict[str, Any]]:
         if in_section and _SECTION_STOP.match(raw_line):
             break
 
-        had_bullet = bool(_BULLET.match(raw_line))
         line = _BULLET.sub("", raw_line).strip()
         if not line or len(line) > 150:
             continue
@@ -195,6 +177,8 @@ def prepare_recipe_ingredients(items: Iterable[Dict[str, Any]]) -> List[Dict[str
     prepared: List[Dict[str, Any]] = []
     seen = set()
     for item in items or []:
+        if not isinstance(item, dict):
+            continue
         name = str(item.get("name") or "").strip()
         if not name:
             continue
@@ -202,6 +186,8 @@ def prepare_recipe_ingredients(items: Iterable[Dict[str, Any]]) -> List[Dict[str
         if amount is not None:
             try:
                 amount = float(amount)
+                if not math.isfinite(amount) or amount < 0:
+                    amount = None
             except (TypeError, ValueError):
                 amount = None
         normalized = {
@@ -263,12 +249,24 @@ def extract_recipe_data(text: str, *, analyzer=None,
         result.warnings.append("KI lieferte keine strukturierten Rezeptdaten")
         return result
 
-    ai_ingredients = prepare_recipe_ingredients(content.get("ingredients") or [])
+    raw_ingredients = content.get("ingredients") or []
+    if not isinstance(raw_ingredients, list):
+        result.warnings.append("KI-Zutatenformat muss geprüft werden")
+        result.needs_review = True
+        return result
+    ai_ingredients = prepare_recipe_ingredients(raw_ingredients)
+    from .extraction_evidence import review_reasons
+    reasons = review_reasons(content, clean_text, threshold=getattr(analyzer, "confidence_threshold", .75))
+    result.needs_review = bool(reasons)
+    result.warnings.extend(reasons)
     if ai_ingredients:
-        result.ingredients = ai_ingredients
+        # Der lokale Quelltext darf nicht durch unbelegte KI-Zutaten ersetzt
+        # werden. Ohne lokale Liste bleiben Vorschläge als Fehler/Entwurf sichtbar.
+        result.ingredients = local if reasons and local else ai_ingredients
         result.method = "ai+local" if local else "ai"
     elif local:
         result.warnings.append("KI erkannte keine Zutaten; lokaler Parser wurde verwendet")
+        result.needs_review = True
 
     steps: List[Dict[str, Any]] = []
     step_indexes: Dict[str, int] = {}
@@ -307,11 +305,28 @@ def extract_recipe_data(text: str, *, analyzer=None,
     return result
 
 
-def existing_hints(db) -> tuple[List[str], List[str]]:
+def existing_hints(db, recipe_id=None) -> tuple[List[str], List[str]]:
     try:
+        owner = getattr(db, "import_owner", None)
+        if recipe_id is not None:
+            recipe = db.recipe_get(recipe_id)
+            owner = recipe.get("owner_account_id") if recipe else None
+        visible = "r.owner_account_id IS NULL"
+        if owner is not None:
+            visible = f"({visible} OR r.owner_account_id={int(owner)})"
         with db.conn() as conn:
-            tags = [row[0] for row in conn.execute("SELECT name FROM tags").fetchall()]
-        return tags, db.ingredient_name_hints()
+            tags = [row[0] for row in conn.execute(
+                "SELECT DISTINCT t.name FROM tags t JOIN recipe_tags rt ON rt.tag_id=t.id "
+                f"JOIN recipes r ON r.id=rt.recipe_id WHERE r.deleted_at IS NULL AND ({visible})"
+            ).fetchall()]
+            canon = [row[0] for row in conn.execute(
+                "SELECT MIN(TRIM(i.name)) AS display_name,COUNT(DISTINCT i.recipe_id) AS uses "
+                "FROM recipe_ingredients i JOIN recipes r ON r.id=i.recipe_id "
+                f"WHERE r.deleted_at IS NULL AND ({visible}) "
+                "AND TRIM(COALESCE(i.name,''))<>'' AND COALESCE(r.ingredients_status,'')<>'variant_pending' "
+                "GROUP BY LOWER(TRIM(i.name)) ORDER BY uses DESC,LENGTH(display_name),display_name COLLATE NOCASE LIMIT 500"
+            ).fetchall()]
+        return tags, canon
     except Exception as exc:
         logger.warning("Stammdaten-Hints konnten nicht geladen werden: %s", exc)
         return [], []
@@ -364,6 +379,7 @@ def apply_extracted_recipe_data(db, recipe_id: int, data: ExtractedRecipeData, *
             steps=data.steps if will_write_steps else current_steps,
             servings=data.servings if will_write_servings else recipe.get("servings"),
             auto_tags=auto_tags,
+            status="error" if data.needs_review else "ok",
         )
     elif not current_ingredients and not data.ingredients:
         with db.conn() as conn:
@@ -380,6 +396,8 @@ def apply_extracted_recipe_data(db, recipe_id: int, data: ExtractedRecipeData, *
         "steps_written": len(data.steps) if will_write_steps else 0,
         "servings_written": data.servings if will_write_servings else None,
         "description_written": will_write_description,
+        "needs_review": data.needs_review,
+        "warnings": data.warnings,
         "skipped_existing": {
             "ingredients": bool(current_ingredients and data.ingredients and not overwrite),
             "steps": bool(current_steps and data.steps and not overwrite),

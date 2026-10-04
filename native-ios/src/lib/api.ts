@@ -98,7 +98,8 @@ export function apiBaseUrl() {
 }
 
 export function apiCacheNamespace() {
-  return `${apiBaseUrl()}\u0000${configuredIdentity || 'anonymous'}`;
+  const principal = authToken?.startsWith('guest.') ? 'guest' : configuredIdentity ? `user:${configuredIdentity}` : 'anonymous';
+  return `${apiBaseUrl()}\u0000${principal}`;
 }
 
 export function absoluteApiUrl(path: string) {
@@ -148,9 +149,10 @@ async function readResponse<T>(response: Response): Promise<T> {
     const detail = payload && typeof payload === 'object' && 'detail' in payload
       ? (payload as { detail?: unknown }).detail
       : null;
-    const message = detail
-      ? String(detail)
-      : `Serverfehler (${response.status})`;
+    const validationMessages = Array.isArray(detail)
+      ? detail.map(item => item && typeof item === 'object' && 'msg' in item ? String(item.msg) : '').filter(Boolean).join(' · ')
+      : '';
+    const message = validationMessages || (typeof detail === 'string' && detail) || `Serverfehler (${response.status})`;
     throw new ApiError(message, response.status);
   }
   return payload as T;
@@ -185,6 +187,10 @@ export async function api<T>(
   signal?: AbortSignal,
   timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
+  const method = (options.method || 'GET').toUpperCase();
+  if (authToken?.startsWith('guest.') && !['GET', 'HEAD', 'OPTIONS'].includes(method) && path !== '/api/auth/logout') {
+    throw new ApiError('Im Gastzugang kannst du ansehen, aber nichts verändern oder erstellen.', 403);
+  }
   const requestEpoch = currentApiSessionEpoch();
   const requestHadAuth = Boolean(authToken);
   const baseUrl = apiBaseUrl();
@@ -227,6 +233,9 @@ export async function uploadFile<T>(
   clientRequestId = createClientRequestId(),
   timeoutMs = UPLOAD_TIMEOUT_MS,
 ): Promise<T> {
+  if (authToken?.startsWith('guest.')) {
+    throw new ApiError('Zum Hochladen bitte mit deinem Konto anmelden.', 403);
+  }
   const requestEpoch = currentApiSessionEpoch();
   const requestHadAuth = Boolean(authToken);
   const baseUrl = apiBaseUrl();

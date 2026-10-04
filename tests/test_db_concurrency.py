@@ -15,6 +15,7 @@ def test_overlapping_initializers_create_one_verified_migration_backup(tmp_path)
             "DELETE FROM schema_migrations WHERE version=?",
             (CURRENT_SCHEMA_VERSION,),
         )
+        previous_version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         databases = list(executor.map(lambda _index: Database(path), range(4)))
@@ -28,7 +29,7 @@ def test_overlapping_initializers_create_one_verified_migration_backup(tmp_path)
         assert backup.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert backup.execute(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
-            ).fetchone()[0] == CURRENT_SCHEMA_VERSION - 10
+            ).fetchone()[0] == previous_version
     with sqlite3.connect(path) as current:
         assert current.execute(
             "SELECT MAX(version) FROM schema_migrations"
@@ -104,6 +105,7 @@ def test_cooking_completion_dedupe_table_is_recreated_on_upgrade(tmp_path):
         assert columns == {
             "recipe_id",
             "username",
+            "user_id",
             "idempotency_key",
             "servings",
             "history_id",
@@ -134,8 +136,8 @@ def test_upgrade_normalizes_existing_recipe_display_names(tmp_path):
             (recipe_id,),
         )
         connection.execute(
-            "DELETE FROM schema_migrations WHERE version=?",
-            (200,),
+            "DELETE FROM schema_migrations WHERE version >= ?",
+            (230,),
         )
 
     Database(path)
@@ -148,8 +150,9 @@ def test_upgrade_normalizes_existing_recipe_display_names(tmp_path):
         assert stored == ("Omas Kuchen", "/tmp/Omas_Kuchen")
         assert connection.execute(
             "SELECT name FROM schema_migrations WHERE version=?",
-            (200,),
-        ).fetchone()[0] == "normalize_recipe_display_names"
+            (263,),
+        ).fetchone()[0] == "stable_cooking_user_identity"
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == CURRENT_SCHEMA_VERSION
 
 
 def test_concurrent_recipe_upserts_converge_on_one_row(tmp_path):

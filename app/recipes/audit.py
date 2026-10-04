@@ -72,9 +72,10 @@ def load_recipes(db_or_path: Union["Database", Path, str]) -> List[Dict[str, Any
     die Web-Route nutzt die erste (teilt die schon existierende Connection)."""
     # Duck-typing: hat ein conn()-Context-Manager → es ist die Database
     if hasattr(db_or_path, "conn"):
+        visible = db_or_path.recipe_visibility_sql() if hasattr(db_or_path, "recipe_visibility_sql") else "r.owner_account_id IS NULL"
         with db_or_path.conn() as c:
             rows = c.execute(
-                "SELECT * FROM recipes WHERE deleted_at IS NULL ORDER BY id"
+                "SELECT * FROM recipes r WHERE deleted_at IS NULL AND " + visible + " ORDER BY id"
             ).fetchall()
             return [_normalize(dict(r)) for r in rows]
     # Sonst: Path/str → read-only sqlite-Direktzugriff
@@ -288,6 +289,8 @@ def ai_suggest_batch(
     user = "Einträge:\n" + json.dumps(candidates, ensure_ascii=False, indent=2)
 
     try:
+        from ..ai_budget import reserve_request
+        reserve_request("POST", "/chat/completions")
         r = server_configured_request(
             "POST",
             f"{base_url}/chat/completions",
@@ -306,7 +309,10 @@ def ai_suggest_batch(
             timeout=timeout,
         )
         r.raise_for_status()
-        content = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "")
+        choice = (r.json().get("choices") or [{}])[0]
+        if choice.get("finish_reason") != "stop":
+            return {}
+        content = choice.get("message", {}).get("content", "")
         data = json.loads(content)
         out = {}
         for s in (data.get("suggestions") or []):

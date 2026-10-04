@@ -1,7 +1,6 @@
 """Reversible Rezeptbild-Generierung mit vorgeschalteter Originalsicherung."""
 from __future__ import annotations
 
-import os
 import re
 import time
 import uuid
@@ -18,9 +17,21 @@ from ..core.safety import (
 )
 from ..db import get_db
 from .image_cache import invalidate_thumbnail_cache, normalize_image
+from .image_publish import image_publication_lock, publish_image
 
 
 _BATCH_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
+
+
+class _ImageSuperseded(Exception):
+    """Der Auftrag darf einen inzwischen geänderten Bildstand nicht ersetzen."""
+
+
+def _skipped_generation(recipe_id: int, batch_id: str) -> Dict[str, Any]:
+    return {
+        "ok": True, "skipped": True, "recipe_id": recipe_id, "batch_id": batch_id,
+        "reason": "Rezeptbild oder Bildauftrag wurde inzwischen geändert",
+    }
 
 
 def image_backup_root() -> Path:
@@ -92,73 +103,124 @@ def backup_recipe_image(recipe: Dict[str, Any], batch_id: str) -> Optional[int]:
     """Sichert das aktuell aktive Bild idempotent und checksummiert."""
     batch_id = _batch_id(batch_id)
     folder = _recipe_folder(recipe)
+    with image_publication_lock(folder):
+        current = get_db().recipe_get(int(recipe["id"]))
+        if not current or current.get("deleted_at") is not None:
+            raise LookupError("Rezept nicht gefunden")
+        return _backup_recipe_image(current, batch_id, folder)
+
+
+def _backup_recipe_image(
+    recipe: Dict[str, Any], batch_id: str, folder: Path, *, mark_prepared: bool = True,
+) -> Optional[int]:
+    """Aufrufer hält den Ordner-Lock; bei Generierung bleibt der Claim unverändert."""
+    db = get_db()
+    existing = db.recipe_image_backup_for_batch(int(recipe["id"]), batch_id)
+    if existing:
+        root = image_backup_root()
+        stored = resolve_regular_file_under(root / str(existing["backup_path"]), root)
+        if sha256_file(stored) != str(existing["original_sha256"]):
+            raise RuntimeError(f"Bildsicherung #{existing['id']} hat eine abweichende Prüfsumme")
+        return int(existing["id"])
     filename = Path(str(recipe.get("thumb_filename") or "")).name
     if not filename:
         candidates = sorted(
             path for path in folder.iterdir()
             if path.is_file()
             and not path.is_symlink()
+            and not path.name.startswith(".")
             and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"}
             and not path.name.startswith("thumb-w")
         )
         filename = candidates[0].name if candidates else ""
-    if not filename:
-        return None
-    source = resolve_regular_file_under(folder / filename, folder, _recipe_root())
-    checksum = sha256_file(source)
-    root = image_backup_root()
-    suffix = source.suffix.lower() if source.suffix else ".img"
-    relative = Path(batch_id) / str(int(recipe["id"])) / f"original{suffix}"
-    destination = root / relative
-    existing = next(
-        (
-            item for item in get_db().recipe_image_backup_list(int(recipe["id"]), limit=1000)
-            if item.get("batch_id") == batch_id
-        ),
-        None,
-    )
-    if existing:
-        stored = resolve_regular_file_under(root / str(existing["backup_path"]), root)
-        if sha256_file(stored) != str(existing["original_sha256"]):
-            raise RuntimeError(f"Bildsicherung #{existing['id']} hat eine abweichende Prüfsumme")
-        return int(existing["id"])
-    atomic_write_bytes(destination, source.read_bytes())
-    if sha256_file(destination) != checksum:
-        destination.unlink(missing_ok=True)
-        raise RuntimeError("Prüfsumme der Bildsicherung stimmt nicht überein")
-    backup_id = get_db().recipe_image_backup_create(
-        batch_id=batch_id,
-        recipe_id=int(recipe["id"]),
-        original_filename=filename,
-        backup_path=relative.as_posix(),
-        original_sha256=checksum,
-    )
-    get_db().recipe_image_generation_status(
-        int(recipe["id"]), status="backed_up", batch_id=batch_id
-    )
+    backup_id = None
+    if filename:
+        source = resolve_regular_file_under(folder / filename, folder, _recipe_root())
+        checksum = sha256_file(source)
+        root = image_backup_root()
+        suffix = source.suffix.lower() if source.suffix else ".img"
+        relative = Path(batch_id) / str(int(recipe["id"])) / f"original{suffix}"
+        destination = root / relative
+        atomic_write_bytes(destination, source.read_bytes())
+        if sha256_file(destination) != checksum:
+            destination.unlink(missing_ok=True)
+            raise RuntimeError("Prüfsumme der Bildsicherung stimmt nicht überein")
+        backup_id = db.recipe_image_backup_create(
+            batch_id=batch_id,
+            recipe_id=int(recipe["id"]),
+            original_filename=filename,
+            backup_path=relative.as_posix(),
+            original_sha256=checksum,
+        )
+    if mark_prepared:
+        db.recipe_image_generation_status(
+            int(recipe["id"]), status="backed_up", batch_id=batch_id,
+            expected_batch_id=recipe.get("image_generation_batch_id"),
+            expected_status=recipe["image_generation_status"],
+        )
     return backup_id
 
 
-def generate_recipe_image(recipe_id: int, *, batch_id: Optional[str] = None) -> Dict[str, Any]:
+def generate_recipe_image(
+    recipe_id: int, *, batch_id: Optional[str] = None, queued: bool = False,
+    replace_existing: bool = False,
+) -> Dict[str, Any]:
     db = get_db()
-    recipe = db.recipe_get(int(recipe_id))
+    recipe_id = int(recipe_id)
+    recipe = db.recipe_get(recipe_id)
     if not recipe or recipe.get("deleted_at") is not None:
         raise LookupError("Rezept nicht gefunden")
     batch_id = _batch_id(batch_id)
-    settings = ensure_image_generation_configured()
-    # Auch die Einzelgenerierung darf ein vorhandenes Bild nie ohne Sicherung ersetzen.
-    backup_id = backup_recipe_image(recipe, batch_id)
-    prompt = build_recipe_image_prompt(recipe, db.recipe_ingredients_get(int(recipe_id)))
-    db.recipe_image_generation_status(
-        int(recipe_id), status="running", model=settings["model"],
-        prompt=prompt, batch_id=batch_id,
-    )
     folder = _recipe_folder(recipe)
+    with image_publication_lock(folder):
+        recipe = db.recipe_get(recipe_id)
+        if not recipe or recipe.get("deleted_at") is not None:
+            raise LookupError("Rezept nicht gefunden")
+        # Ältere, noch nicht markierte pending-Aufträge bleiben nach einem Update
+        # ausführbar. Ein manueller Wechsel/restored-Status entzieht den Claim.
+        if queued and (
+            recipe.get("image_generation_status") not in {"pending", "backed_up", "running", "error"}
+            or not (
+                recipe.get("image_generation_batch_id") == batch_id
+                or (recipe.get("image_generation_batch_id") is None
+                    and recipe.get("image_generation_status") == "pending")
+            )
+        ):
+            return _skipped_generation(recipe_id, batch_id)
+        if queued and not replace_existing and recipe.get("thumb_filename"):
+            try:
+                resolve_regular_file_under(folder / str(recipe["thumb_filename"]), folder)
+            except (ValueError, OSError):
+                pass
+            else:
+                db.recipe_image_generation_status(
+                    recipe_id, status="skipped", expected_batch_id=recipe.get("image_generation_batch_id"),
+                    expected_status=recipe["image_generation_status"],
+                )
+                return {**_skipped_generation(recipe_id, batch_id), "reason": "Vorhandenes Quellbild bleibt erhalten"}
+        settings = ensure_image_generation_configured()
+        # Sicherung und Claim müssen denselben Bildstand sehen. Netzwerk-/KI-Arbeit
+        # erfolgt danach ohne Ordner-Lock, damit manuelle Uploads möglich bleiben.
+        backup_id = _backup_recipe_image(recipe, batch_id, folder, mark_prepared=False)
+        prompt = build_recipe_image_prompt(recipe, db.recipe_ingredients_get(recipe_id))
+        if not db.recipe_image_generation_status(
+            recipe_id, status="running", model=settings["model"], prompt=prompt, batch_id=batch_id,
+            expected_batch_id=recipe.get("image_generation_batch_id"),
+            expected_status=recipe["image_generation_status"],
+        ):
+            return _skipped_generation(recipe_id, batch_id)
     raw = folder / f".generated-{uuid.uuid4().hex}.img"
     staged = folder / f".generated-{uuid.uuid4().hex}.jpg"
     target = folder / "thumb-generated.jpg"
-    rollback = folder / f".generated-rollback-{uuid.uuid4().hex}.jpg"
-    had_target = target.is_file()
+
+    def validate_publication() -> None:
+        current = db.recipe_get(recipe_id)
+        if not current or current.get("deleted_at") is not None or (
+            current.get("image_generation_batch_id") != batch_id
+            or current.get("image_generation_status") != "running"
+        ):
+            raise _ImageSuperseded()
+
     try:
         analyzer = build_analyzer(get_config().get("ai", default={}) or {})
         generated = analyzer.generate_recipe_image(
@@ -171,24 +233,14 @@ def generate_recipe_image(recipe_id: int, *, batch_id: Optional[str] = None) -> 
         atomic_write_bytes(raw, generated)
         normalize_image(raw, staged, max_width=2400, quality=90)
         generated_sha256 = sha256_file(staged)
-        if had_target:
-            os.replace(target, rollback)
-        os.replace(staged, target)
-        try:
-            db.recipe_image_generation_status(
-                int(recipe_id), status="ok", model=settings["model"], prompt=prompt,
+        with publish_image(staged, target, validate=validate_publication):
+            if not db.recipe_image_generation_status(
+                recipe_id, status="ok", model=settings["model"], prompt=prompt,
                 batch_id=batch_id, generated_at=time.time(), thumb_filename=target.name,
-            )
-            if backup_id is not None:
-                db.recipe_image_backup_mark_generated(
-                    backup_id, generated_sha256=generated_sha256,
-                    model=settings["model"], prompt=prompt,
-                )
-        except Exception:
-            target.unlink(missing_ok=True)
-            if had_target and rollback.exists():
-                os.replace(rollback, target)
-            raise
+                backup_id=backup_id, generated_sha256=generated_sha256,
+                expected_batch_id=batch_id, expected_status="running",
+            ):
+                raise _ImageSuperseded()
         invalidate_thumbnail_cache(folder)
         return {
             "ok": True,
@@ -199,85 +251,116 @@ def generate_recipe_image(recipe_id: int, *, batch_id: Optional[str] = None) -> 
             "model": settings["model"],
             "sha256": generated_sha256,
         }
+    except _ImageSuperseded:
+        return _skipped_generation(recipe_id, batch_id)
     except Exception:
-        db.recipe_image_generation_status(
-            int(recipe_id), status="error", model=settings["model"],
+        if not db.recipe_image_generation_status(
+            recipe_id, status="error", model=settings["model"],
             prompt=prompt, batch_id=batch_id,
-        )
+            expected_batch_id=batch_id, expected_status="running",
+        ):
+            return _skipped_generation(recipe_id, batch_id)
         raise
     finally:
         raw.unlink(missing_ok=True)
         staged.unlink(missing_ok=True)
-        rollback.unlink(missing_ok=True)
 
 
-def run_image_backfill(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Sichert erst den vollständigen Altbestand, generiert danach Bilder."""
+def run_image_backfill(
+    payload: Dict[str, Any], *, chunk_size: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Sichert den Altbestand vorab und setzt gespeicherte Teilschritte fort.
+
+    Der Worker verarbeitet pro Claim höchstens ein Rezept. Die direkte Ausführung
+    bleibt für Wartungswerkzeuge möglich. Neue Rezepte werden nicht nachträglich
+    in eine bereits gesicherte Serie aufgenommen.
+    """
     db = get_db()
     run_id = int(payload["run_id"])
     batch_id = _batch_id(str(payload["batch_id"]))
-    recipes = db.recipes_for_image_backfill()
-    total = len(recipes)
-    backed_up = 0
+    run = db.maintenance_get(run_id)
+    if not run:
+        raise LookupError("Bild-Wartungslauf nicht gefunden")
+    saved = run.get("result") or {}
+    if saved.get("batch_id") == batch_id and saved.get("phase") == "done":
+        return saved
+    if run["status"] != "running":
+        raise RuntimeError("Bild-Wartungslauf ist nicht mehr aktiv")
+    if saved.get("batch_id") == batch_id and "recipe_ids" in saved:
+        state = saved
+    else:
+        state = {
+            "phase": "backup", "batch_id": batch_id,
+            "recipe_ids": [int(recipe["id"]) for recipe in db.recipes_for_image_backfill(ids_only=True)],
+            "backup_processed": 0, "backed_up": 0, "generated": 0,
+            "completed_ids": [], "errors": [],
+        }
+    state.setdefault("skipped_ids", [])
+    recipe_ids = state["recipe_ids"]
+    state["total"] = total = len(recipe_ids)
+    budget = max(1, int(chunk_size)) if chunk_size is not None else total * 2 + 1
     try:
         ensure_image_generation_configured()
-        db.maintenance_progress(
-            run_id,
-            {"phase": "backup", "batch_id": batch_id, "total": total, "backed_up": 0},
-        )
+        db.maintenance_progress(run_id, state)
         # Sicherheitsbarriere: Bei genau einem Sicherungsfehler startet keine
         # Bildgenerierung. So bleibt der Altbestand als geschlossene Serie erhalten.
-        for index, recipe in enumerate(recipes, start=1):
+        while state["backup_processed"] < total and budget:
+            recipe_id = recipe_ids[state["backup_processed"]]
+            recipe = db.recipe_get(recipe_id)
+            if not recipe or recipe.get("deleted_at") is not None:
+                raise LookupError(f"Rezept #{recipe_id} fehlt vor der Originalsicherung")
             if backup_recipe_image(recipe, batch_id) is not None:
-                backed_up += 1
-            db.maintenance_progress(
-                run_id,
-                {
-                    "phase": "backup", "batch_id": batch_id, "total": total,
-                    "processed": index, "backed_up": backed_up,
-                },
-            )
+                state["backed_up"] += 1
+            state["backup_processed"] += 1
+            state["processed"] = state["backup_processed"]
+            budget -= 1
+            db.maintenance_progress(run_id, state)
+        if state["backup_processed"] < total:
+            return {"continue": True, "phase": "backup"}
 
-        generated = 0
-        errors: list[dict] = []
-        for index, recipe in enumerate(recipes, start=1):
+        state["phase"] = "generate"
+        completed = set(state["completed_ids"])
+        for recipe_id in recipe_ids:
+            if recipe_id in completed:
+                continue
+            if not budget:
+                db.maintenance_progress(run_id, state)
+                return {"continue": True, "phase": "generate"}
+            recipe = db.recipe_get(recipe_id) or {"id": recipe_id}
             try:
-                generate_recipe_image(int(recipe["id"]), batch_id=batch_id)
-                generated += 1
+                # Ein Absturz zwischen Bild-Commit und Checkpoint darf kein
+                # bereits erfolgreich erzeugtes Bild erneut kostenpflichtig erzeugen.
+                already_generated = (
+                    recipe.get("image_generation_batch_id") == batch_id
+                    and recipe.get("image_generation_status") == "ok"
+                )
+                generated = None if already_generated else generate_recipe_image(
+                    recipe_id, batch_id=batch_id, queued=True, replace_existing=True,
+                )
+                if generated and generated.get("skipped"):
+                    state["skipped_ids"].append(recipe_id)
+                else:
+                    state["generated"] += 1
             except Exception as exc:
-                errors.append({
-                    "recipe_id": int(recipe["id"]),
+                state["errors"].append({
+                    "recipe_id": recipe_id,
                     "name": recipe.get("name"),
                     "error": f"{type(exc).__name__}: {exc}"[:500],
                 })
-            db.maintenance_progress(
-                run_id,
-                {
-                    "phase": "generate", "batch_id": batch_id, "total": total,
-                    "processed": index, "backed_up": backed_up,
-                    "generated": generated, "errors": errors[-20:],
-                },
-            )
+            state["completed_ids"].append(recipe_id)
+            state["processed"] = len(state["completed_ids"])
+            budget -= 1
+            db.maintenance_progress(run_id, state)
         result = {
-            "ok": not errors,
-            "phase": "done",
-            "batch_id": batch_id,
-            "total": total,
-            "backed_up": backed_up,
-            "generated": generated,
-            "error_count": len(errors),
-            "errors": errors,
+            **state, "ok": not state["errors"], "phase": "done",
+            "error_count": len(state["errors"]),
         }
-        db.maintenance_finish(run_id, ok=not errors, result=result)
+        db.maintenance_finish(run_id, ok=result["ok"], result=result)
         return result
     except Exception as exc:
         result = {
-            "ok": False,
-            "phase": "backup_failed",
-            "batch_id": batch_id,
-            "total": total,
-            "backed_up": backed_up,
-            "generated": 0,
+            **state, "ok": False,
+            "phase": "backup_failed" if state["phase"] == "backup" else "generate_failed",
             "error": f"{type(exc).__name__}: {exc}"[:500],
         }
         db.maintenance_finish(run_id, ok=False, result=result)
@@ -299,14 +382,18 @@ def restore_recipe_image_backup(backup_id: int) -> Dict[str, Any]:
     folder = _recipe_folder(recipe)
     filename = Path(str(backup["original_filename"])).name
     target = folder / filename
-    atomic_write_bytes(target, source.read_bytes())
-    if sha256_file(target) != str(backup["original_sha256"]):
-        raise RuntimeError("Wiederhergestelltes Bild hat eine abweichende Prüfsumme")
-    db.recipe_image_generation_status(
-        int(recipe["id"]), status="restored", batch_id=str(backup["batch_id"]),
-        thumb_filename=filename,
-    )
-    db.recipe_image_backup_mark_restored(int(backup_id))
+    staged = folder / f".thumb-restore-{uuid.uuid4().hex}.jpg"
+    try:
+        atomic_write_bytes(staged, source.read_bytes())
+        if sha256_file(staged) != str(backup["original_sha256"]):
+            raise RuntimeError("Wiederhergestelltes Bild hat eine abweichende Prüfsumme")
+        with publish_image(staged, target):
+            db.recipe_image_generation_status(
+                int(recipe["id"]), status="restored", batch_id=str(backup["batch_id"]),
+                thumb_filename=filename, backup_id=int(backup_id),
+            )
+    finally:
+        staged.unlink(missing_ok=True)
     invalidate_thumbnail_cache(folder)
     return {
         "ok": True,

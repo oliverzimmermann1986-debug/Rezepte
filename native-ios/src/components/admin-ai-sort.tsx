@@ -193,7 +193,7 @@ export function AdminAiSort({
           <Pressable accessibilityRole="button" disabled={Boolean(busyId) || starting} onPress={close} style={styles.headerAction}>
             <Text style={styles.headerActionText}>Fertig</Text>
           </Pressable>
-          <Text style={styles.title}>KI-Sortierung</Text>
+          <Text accessibilityRole="header" style={styles.title}>KI-Sortierung</Text>
           <Pressable accessibilityRole="button" accessibilityLabel="KI-Sortierung aktualisieren" onPress={() => setReloadKey(value => value + 1)} style={styles.headerActionRight}>
             <SymbolView name="arrow.clockwise" size={20} weight="semibold" tintColor={colors.text} />
           </Pressable>
@@ -209,7 +209,7 @@ export function AdminAiSort({
             ListHeaderComponent={(
               <>
                 <View style={sharedStyles.card}>
-                  <Text style={sharedStyles.sectionTitle}>Speisekarte prüfen</Text>
+                  <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Speisekarte prüfen</Text>
                   <Text style={styles.help}>
                     Die KI prüft Typ, Kategorie, Rezeptname und Ordner anhand der Beschreibung. Änderungen werden nie automatisch übernommen.
                   </Text>
@@ -240,7 +240,7 @@ export function AdminAiSort({
                 </View>
 
                 <View style={styles.findingsHeader}>
-                  <Text style={sharedStyles.sectionTitle}>Vorschläge</Text>
+                  <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Vorschläge</Text>
                   <Text style={styles.total}>{snapshot?.total_open || 0} offen</Text>
                 </View>
               </>

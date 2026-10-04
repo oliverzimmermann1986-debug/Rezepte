@@ -27,7 +27,7 @@ export function ServingSelector({
   return (
     <View style={styles.card}>
       <View style={styles.copy}>
-        <Text style={styles.title}>Kochen für</Text>
+        <Text accessibilityRole="header" style={styles.title}>Kochen für</Text>
         <Text style={styles.hint}>
           {value === original
             ? `Originalrezept · ${portionLabel(original)}`

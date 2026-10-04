@@ -54,6 +54,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Cache regression tests
+        run: npm test
+
       - name: Lint
         run: npm run lint
 

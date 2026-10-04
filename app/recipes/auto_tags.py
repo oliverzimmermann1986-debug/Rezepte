@@ -257,7 +257,7 @@ def refresh_diet_auto_tags(
     return merged
 
 
-def backfill_diet_auto_tags_connection(connection: Any) -> Dict[str, Any]:
+def backfill_diet_auto_tags_connection(connection: Any, *, visibility: Optional[str] = None) -> Dict[str, Any]:
     """Zieht Diät-/Allergiker-Auto-Tags im Altbestand transaktional nach.
 
     Die Funktion verwendet absichtlich die Connection des Aufrufers, damit
@@ -265,10 +265,13 @@ def backfill_diet_auto_tags_connection(connection: Any) -> Dict[str, Any]:
     ausgeführt werden kann. Manuelle Tags und stilistische Auto-Tags werden
     nicht verändert.
     """
+    if visibility is None:
+        has_owner = "owner_account_id" in {row[1] for row in connection.execute("PRAGMA table_info(recipes)")}
+        visibility = "r.owner_account_id IS NULL" if has_owner else "1"
     rows = connection.execute(
         "SELECT r.id FROM recipes r WHERE r.deleted_at IS NULL "
         "AND EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id) "
-        "ORDER BY r.id"
+        f"AND ({visibility}) ORDER BY r.id"
     ).fetchall()
     assigned = {name: 0 for name in ALLERGEN_FREE_TAGS}
     changed = 0
@@ -350,4 +353,5 @@ def backfill_diet_auto_tags(db: Any) -> Dict[str, Any]:
     """Wiederholbarer Admin-Backfill mit einer gemeinsamen Transaktion."""
     with db.conn() as connection:
         connection.execute("BEGIN IMMEDIATE")
-        return backfill_diet_auto_tags_connection(connection)
+        visibility = db.recipe_visibility_sql() if hasattr(db, "recipe_visibility_sql") else None
+        return backfill_diet_auto_tags_connection(connection, visibility=visibility)

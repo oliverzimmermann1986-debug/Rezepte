@@ -3,6 +3,7 @@ import SwiftUI
 struct RecipeSourceIntegrityView: View {
     let recipeID: Int
     let recipeName: String
+    var canEdit = false
 
     @EnvironmentObject private var session: SessionStore
     @Environment(\.recipeTheme) private var theme
@@ -364,7 +365,7 @@ struct RecipeSourceIntegrityView: View {
 
     @ViewBuilder
     private func actionSection(_ report: RecipeSourceIntegrity) -> some View {
-        if session.fullAccess,
+        if !session.readOnly, canEdit,
            report.sourceUrl?.hasPrefix("https://") == true,
            ["unchecked", "current", "changed", "unavailable"].contains(report.status) {
             VStack(spacing: 10) {

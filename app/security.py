@@ -5,6 +5,8 @@ Self-contained, keine zusätzlichen Dependencies.
 from __future__ import annotations
 
 import ipaddress
+import logging
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -17,7 +19,7 @@ from starlette.responses import JSONResponse, Response
 
 
 class LoginRateLimiter:
-    """Sliding-Window pro IP.
+    """Sliding-Window pro Schlüssel (z.B. IP plus Konto).
 
     Default: 5 Failed-Tries in 10 min  ->  15 min Sperre.
     """
@@ -107,6 +109,48 @@ class LoginRateLimiter:
 
 # Singleton
 login_limiter = LoginRateLimiter()
+login_ip_limiter = LoginRateLimiter(max_fails=100)
+
+
+def login_actor_key(ip: str, username: str) -> str:
+    """HTML und native Anmeldung teilen dieselbe zielbezogene Sperre."""
+    return f"ip-user:{ip}:{username.strip().casefold()}"
+
+
+class DatabaseBusyMiddleware:
+    """Begrenzte SQLite-Wartezeit endet vor Antwortbeginn mit einem 503."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http':
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def track_send(message):
+            nonlocal started
+            if message['type'] == 'http.response.start':
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, track_send)
+        except sqlite3.OperationalError as exc:
+            code = (getattr(exc, 'sqlite_errorcode', 0) or 0) & 0xff
+            busy = code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or str(exc).lower().startswith(
+                ('database is locked', 'database table is locked', 'database schema is locked'))
+            if not busy or started:
+                raise
+            logging.getLogger(__name__).warning('SQLite vorübergehend belegt: %s', scope.get('path', ''))
+            response = JSONResponse(
+                {'detail': 'Datenbank vorübergehend belegt. Bitte erneut versuchen.'},
+                status_code=503,
+                headers={'Retry-After': '1', 'Cache-Control': 'no-store',
+                         'X-Content-Type-Options': 'nosniff'},
+            )
+            await response(scope, receive, send)
 
 
 class _UploadBodyTooLarge(Exception):
@@ -114,7 +158,7 @@ class _UploadBodyTooLarge(Exception):
 
 
 class UploadSizeLimitMiddleware:
-    """Begrenzt Multipart-Bodies beim ASGI-Einlesen vor dem Form-Parser.
+    """Begrenzt Request-Bodies beim ASGI-Einlesen vor dem Form-/JSON-Parser.
 
     FastAPI erzeugt ``UploadFile`` erst nach dem Multipart-Parsing. Eine reine
     Größenprüfung im Endpoint kommt deshalb zu spät und kann die Platte bereits
@@ -127,12 +171,12 @@ class UploadSizeLimitMiddleware:
         self.app = app
 
     @classmethod
-    def _limit_for(cls, path: str) -> Optional[int]:
+    def _limit_for(cls, path: str) -> int:
         if path == "/api/pending/import-file":
             return 25 * 1024 * 1024 + cls._OVERHEAD
         if path == "/api/pending/scan-photo" or path.endswith("/upload-thumbnail"):
             return 10 * 1024 * 1024 + cls._OVERHEAD
-        return None
+        return cls._OVERHEAD
 
     async def __call__(self, scope, receive, send) -> None:
         if scope.get("type") != "http":
@@ -142,11 +186,7 @@ class UploadSizeLimitMiddleware:
             key.lower(): value
             for key, value in scope.get("headers", [])
         }
-        content_type = headers.get(b"content-type", b"").lower()
         limit = self._limit_for(str(scope.get("path") or ""))
-        if limit is None or not content_type.startswith(b"multipart/form-data"):
-            await self.app(scope, receive, send)
-            return
         try:
             content_length = int(headers.get(b"content-length", b"0") or b"0")
         except ValueError:
@@ -217,9 +257,19 @@ def client_ip(request: Request) -> str:
         peer and any(peer in network for network in _trusted_proxy_networks())
     )
     if trusted_peer:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            # Ein Proxy darf die echte Client-IP anhängen; ein vom Client
+            # gesetzter linker Präfix ist keine vertrauenswürdige Identität.
+            chain = [_parsed_ip(value) for value in forwarded.split(',')]
+            if all(chain):
+                trusted = list(_trusted_proxy_networks())
+                for address in reversed(chain):
+                    if not any(address in network for network in trusted):
+                        return str(address)
+            return str(peer)
         for candidate in (
             request.headers.get("cf-connecting-ip", ""),
-            request.headers.get("x-forwarded-for", "").split(",")[0],
         ):
             parsed = _parsed_ip(candidate)
             if parsed:
@@ -271,7 +321,7 @@ class SameOriginMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
             has_cookie_auth = bool(request.cookies.get("scrapper_session"))
-            origin_required_path = request.url.path in {"/login", "/share/resolve"}
+            origin_required_path = request.url.path in {"/login", "/login/guest", "/register", "/logout", "/share/resolve"}
             has_bearer = request.headers.get("authorization", "").lower().startswith("bearer ")
             if (origin_required_path or has_cookie_auth) and not has_bearer and not _same_origin(request):
                 return JSONResponse(
@@ -289,7 +339,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         resp: Response = await call_next(request)
         resp.headers.setdefault("X-Frame-Options", "DENY")
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        # Nur die Herkunft, keine Pfade/Einladungstokens als Referrer.
+        # no-referrer würde bei Formular-POSTs die Origin zu null machen.
+        resp.headers.setdefault("Referrer-Policy", "strict-origin")
         resp.headers.setdefault(
             "Permissions-Policy",
             "geolocation=(), microphone=(), camera=(), payment=()",

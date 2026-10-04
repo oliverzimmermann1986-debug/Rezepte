@@ -172,6 +172,10 @@ def _username(request: Request) -> str:
 @session_router.get("")
 def current_session(request: Request) -> Dict[str, Any]:
     """Sitzungsdaten mit derselben Rollen-Semantik wie der native Login."""
+    from ..auth import guest_access_payload, request_is_guest
+
+    if request_is_guest(request):
+        return guest_access_payload()
     username = _username(request)
     read_only = request_is_guest(request)
     authentication_disabled = auth_disabled()
@@ -226,10 +230,10 @@ def overview() -> Dict[str, Any]:
 @router.get("/import-center")
 def import_center(limit: int = Query(100, ge=10, le=500)) -> Dict[str, Any]:
     db = get_db()
-    pending = db.pending_list(status="pending", sort="oldest")[:limit]
+    pending = [item for item in db.pending_list(status="pending", sort="oldest") if item.get("owner_account_id") is None][:limit]
     failed = db.download_failures_list(limit=limit)
     jobs = db.job_list(limit=min(limit, 100))
-    history = db.history_list(limit=min(limit, 100))
+    history = [item for item in db.history_list(limit=min(limit, 100)) if item.get("owner_account_id") is None]
     stages = {
         "needs_review": len(pending),
         "failed": len(failed),

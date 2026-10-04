@@ -23,7 +23,22 @@ def fold(value: str) -> str:
 
 
 def _clean_token(value: str) -> str:
-    return re.sub(r"[^\w\-äöüÄÖÜß]+", "", value or "", flags=re.UNICODE).strip()
+    return " ".join(re.sub(r"[^\w\s\-äöüÄÖÜß]+", " ", value or "", flags=re.UNICODE).split())
+
+
+def matches_excluded_term(term: str, value: str) -> bool:
+    """Ausschlüsse matchen Zutaten/Wörter, keine beliebigen Teilwörter."""
+    from .canonical import canonical_name
+    if not term or not value:
+        return False
+    target = canonical_name(term) or term
+    if target == canonical_name(value):
+        return True
+    variants = {fold(term), fold(target)}
+    if target == "ei":
+        variants.update({"eier", "eigelb", "eiweiß", "eiweiss", "eiklar"})
+    text = fold(value)
+    return any(re.search(rf"(?<!\w){re.escape(token)}(?!\w)", text) for token in variants)
 
 
 @dataclass

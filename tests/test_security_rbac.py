@@ -181,8 +181,8 @@ def test_source_integrity_routes_use_real_admin_user_and_guest_sessions(
     for operation in mutations:
         assert mutation_responses[(operation, "admin")].status_code == 404
         user_response = mutation_responses[(operation, "user")]
-        assert user_response.status_code == 403
-        assert "Administratorrechte" in user_response.json()["detail"]
+        assert user_response.status_code == 404
+        assert "Rezept nicht gefunden" in user_response.json()["detail"]
         guest_response = mutation_responses[(operation, "guest")]
         assert guest_response.status_code == 403
         assert "schreibgeschützt" in guest_response.json()["detail"]
@@ -574,7 +574,7 @@ def test_audit_openai_uses_server_configured_transport(monkeypatch):
             raise_for_status=lambda: None,
             json=lambda: {
                 "choices": [
-                    {"message": {"content": '{"suggestions":[{"id":7,"name":"Pasta"}]}'}}
+                    {"finish_reason": "stop", "message": {"content": '{"suggestions":[{"id":7,"name":"Pasta"}]}'}}
                 ]
             },
         )

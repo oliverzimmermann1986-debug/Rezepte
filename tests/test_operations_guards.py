@@ -104,10 +104,10 @@ def test_release_versions_are_explicit_and_coherent():
     index = _read("app/static/index.html")
     service_worker = _read("app/static/sw.js")
 
-    assert '__version__ = "1.7.0"' in package
+    assert '__version__ = "1.8.8"' in package
     assert 'MARKETING_VERSION: "1.2.0"' in project
-    assert "systemInfo.version || '1.7.0'" in index
-    assert "rezepte-static-v1.7.0-native-contracts" in service_worker
+    assert "systemInfo.version || '1.8.8'" in index
+    assert "rezepte-static-v1.8.8-household-security" in service_worker
 
 
 def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():

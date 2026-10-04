@@ -96,7 +96,7 @@ export function RecipeEditor({ recipeId, kind, ingredients, steps, visible, onCl
         <KeyboardAvoidingView style={styles.safe} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.header}>
             <Pressable onPress={onClose} hitSlop={10}><Text style={styles.cancel}>Abbrechen</Text></Pressable>
-            <Text style={styles.title}>{kind === 'ingredients' ? 'Zutaten' : 'Schritte'} bearbeiten</Text>
+            <Text accessibilityRole="header" style={styles.title}>{kind === 'ingredients' ? 'Zutaten' : 'Schritte'} bearbeiten</Text>
             <View style={{ width: 72 }} />
           </View>
           <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">

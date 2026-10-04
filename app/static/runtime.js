@@ -63,7 +63,7 @@
     let returnFocus = null;
 
     const focusables = (dialog) => [...dialog.querySelectorAll(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+      'button:not([disabled]), summary, input:not([disabled]), select:not([disabled]), ' +
       'textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
     )].filter((el) => el.offsetParent !== null && !el.hasAttribute('inert'));
 
@@ -87,6 +87,8 @@
     dialogs.forEach((dialog) => {
       dialog.setAttribute('role', 'dialog');
       dialog.setAttribute('aria-modal', 'true');
+      const titleId = dialog.querySelector('.modal')?.getAttribute('aria-labelledby');
+      if (titleId) dialog.setAttribute('aria-labelledby', titleId);
       const observer = new MutationObserver(() => visible(dialog) ? activate(dialog) : deactivate(dialog));
       observer.observe(dialog, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
       if (visible(dialog)) activate(dialog);

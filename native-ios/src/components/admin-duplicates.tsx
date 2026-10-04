@@ -166,7 +166,7 @@ export function AdminDuplicates({
           <Pressable accessibilityRole="button" onPress={onClose} style={styles.headerAction}>
             <Text style={styles.headerLink}>Fertig</Text>
           </Pressable>
-          <Text style={styles.title}>Dubletten</Text>
+          <Text accessibilityRole="header" style={styles.title}>Dubletten</Text>
           <Pressable accessibilityRole="button" onPress={() => void load(true)} disabled={loading} style={styles.headerAction}>
             <Text style={[styles.headerLink, styles.right, loading && styles.disabled]}>Neu prüfen</Text>
           </Pressable>

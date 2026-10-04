@@ -579,7 +579,9 @@ def find_recipe_pdfs(recipe_root: Path) -> Iterable[Path]:
         try:
             if not pdf.is_file() or pdf.is_symlink() or ".pdf-originals" in pdf.parts:
                 continue
-            pdf.resolve().relative_to(recipe_root)
+            relative = pdf.resolve().relative_to(recipe_root)
+            if ".households" in relative.parts:
+                continue
             result.append(pdf)
         except Exception:
             continue

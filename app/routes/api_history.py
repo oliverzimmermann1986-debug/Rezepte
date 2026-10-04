@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/history", tags=["history"], dependencies=[Depend
 
 @router.get("")
 def list_history(limit: int = Query(200, ge=1, le=2000)):
-    return get_db().history_list(limit=limit)
+    return [item for item in get_db().history_list(limit=limit) if item.get("owner_account_id") is None]
 
 
 class EditRequest(BaseModel):

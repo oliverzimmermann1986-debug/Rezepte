@@ -5,6 +5,34 @@ import re
 from typing import Dict, Optional
 
 
+def rank_product_suggestions(items, query="", limit=8):
+    """Rank a prefiltered household catalog without cross-household queries."""
+    needle = " ".join(str(query or "").split()).casefold()
+    limit = max(1, min(25, int(limit)))
+
+    def rank(item):
+        display = " ".join(str(item.get("name") or "").split()).casefold()
+        canonical = " ".join(str(item.get("canonical_name") or "").split()).casefold()
+        values = (display, canonical)
+        if not needle or needle in values:
+            match = 0
+        elif any(value.startswith(needle) for value in values):
+            match = 1
+        elif any(token.startswith(needle) for value in values for token in re.findall(r"\w+", value)):
+            match = 2
+        elif len(needle) >= 3 and any(needle in value for value in values):
+            match = 3
+        else:
+            return None
+        return (match, -int(item.get("recipe_count") or 0), -int(item.get("usage_count") or 0),
+                -float(item.get("last_used_at") or 0) if not needle else 0, display)
+
+    ranked = [(value, item) for item in items if (value := rank(item)) is not None]
+    ranked.sort(key=lambda pair: pair[0])
+    return [{key: value for key, value in item.items() if key not in {"recipe_count", "last_used_at"}}
+            for _, item in ranked[:limit]]
+
+
 SHOPPING_CATEGORY_ICONS: Dict[str, str] = {
     "Obst & Gemüse": "🍎",
     "Bäckerei": "🥖",
@@ -86,7 +114,7 @@ _CATEGORY_FRAGMENTS = {
         "konserve", "kumpir", "mayo", "mehl", "miracel", "miso", "mirin", "nachos",
         "muskat", "nori", "nudel", "nutella", "öl", "orzo", "panko", "panier",
         "paprikapulver", "passiert", "pasta", "paste", "pesto", "pinien", "pistaz",
-        "pulver", "reis", "rigatoni", "röstzwiebel", "sambal",
+        "pulver", "reis", "rigatoni", "röstzwiebel", "sambal", "tomatenmark",
         "sauce", "senf", "siracha", "sojasauce", "sojasoße", "soße", "sosse",
         "sriracha", "stärke", "sumak", "tamari", "teriyaki", "vegeta", "vanille",
         "schoko", "sesam", "stückig", "tagliatelle", "udon", "waln", "worcester",
@@ -122,6 +150,9 @@ _CATEGORY_FRAGMENTS = {
     },
     "Getränke": {
         "mineralwasser", "saft", "sake", "wein",
+    },
+    "Drogerie & Haushalt": {
+        "teelicht",
     },
 }
 

@@ -72,7 +72,7 @@ _BASE = {"mass": "g", "volume": "ml"}
 
 # Welche Display-Einheit für welchen Mengen-Bereich (in Basis):
 _MASS_DISPLAY = [(1000.0, "kg"), (1.0, "g"), (0.0, "mg")]
-_VOLUME_DISPLAY = [(1000.0, "l"), (10.0, "cl"), (1.0, "ml")]
+_VOLUME_DISPLAY = [(1000.0, "l"), (0.0, "ml")]
 
 
 def normalize_unit(unit: Optional[str]) -> Optional[str]:

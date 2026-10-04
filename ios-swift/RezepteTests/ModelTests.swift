@@ -2,6 +2,44 @@ import XCTest
 @testable import Rezepte
 
 final class ModelTests: XCTestCase {
+    func testRecipeReadinessRequiresSuccessfulExtractionAndCompleteContent() {
+        for status in ["pending", "running", "error", "skipped", "unknown"] {
+            XCTAssertNotEqual(RecipeReadiness.classify(status: status, ingredients: 3, steps: 2, needsManualCare: false), .ready)
+        }
+        XCTAssertEqual(RecipeReadiness.classify(status: "ok", ingredients: 3, steps: 2, needsManualCare: false), .ready)
+        XCTAssertEqual(RecipeReadiness.classify(status: "ok", ingredients: 0, steps: 2, needsManualCare: false), .manual)
+        XCTAssertEqual(RecipeReadiness.classify(status: "ok", ingredients: 3, steps: 0, needsManualCare: false), .manual)
+        XCTAssertEqual(RecipeReadiness.classify(status: "ok", ingredients: 3, steps: 2, needsManualCare: true), .manual)
+    }
+
+    func testHouseholdMembersDecodeSQLiteFlags() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let account = try decoder.decode(HouseholdAccount.self, from: Data(#"{"id":9,"is_guest":false,"is_owner":true,"max_members":2,"members":[{"id":1,"username":"owner","disabled":0},{"id":2,"username":"partner","disabled":1}],"invitations":[]}"#.utf8))
+        XCTAssertEqual(account.id, 9)
+        XCTAssertEqual(account.members.count, 2)
+        XCTAssertEqual(account.members[0].disabled, false)
+        XCTAssertEqual(account.members[1].disabled, true)
+    }
+
+    func testInvitationInputAcceptsCodeAndFullLink() {
+        XCTAssertEqual(HouseholdInvitationInput.token(from: "  one-use-token  "), "one-use-token")
+        XCTAssertEqual(HouseholdInvitationInput.token(from: "https://example.de/register?invite=a%2Bb"), "a+b")
+    }
+
+    func testRecipePrivacyFlagsDecodeAndRemainOptionalForOlderServers() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let json = #"{"id":42,"name":"Pasta","is_favorite":false,"rating":0,"ingredients_count":3,"steps_count":2,"needs_manual_care":false,"visibility":"global","in_library":true,"can_edit":false}"#
+        let recipe = try decoder.decode(RecipeSummary.self, from: Data(json.utf8))
+        XCTAssertEqual(recipe.visibility, "global")
+        XCTAssertEqual(recipe.inLibrary, true)
+        XCTAssertEqual(recipe.canEdit, false)
+        let legacy = json.replacingOccurrences(of: #","visibility":"global","in_library":true,"can_edit":false"#, with: "")
+        let older = try decoder.decode(RecipeSummary.self, from: Data(legacy.utf8))
+        XCTAssertNil(older.canEdit)
+    }
+
     func testSessionDecodesGuestReadOnlyAccess() throws {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase

@@ -144,6 +144,10 @@ _SYNONYMS = {
     "spaghetti": "nudeln",
     "penne": "nudeln",
     "reis": "reis",
+    "rote bete": "rote bete",
+    "rote beete": "rote bete",
+    "bete": "rote bete",
+    "beete": "rote bete",
     "basmati reis": "basmatireis",
     "basmati-reis": "basmatireis",
     "basmatireis": "basmatireis",
@@ -235,17 +239,54 @@ def _strip_plural(stem: str) -> str:
     return stem
 
 
+def _strip_preparation(name: str) -> str:
+    # Nur Zubereitungszusätze entfernen. Produktmerkmale wie (laktosefrei)
+    # oder (geräuchert) bleiben erhalten und werden nicht blind weggekürzt.
+    text = str(name)
+    preparation = r"(?:fein\s+|grob\s+)?(?:gewürfelt|gehackt|geschnitten|gerieben|geschält|weich|zimmerwarm|nach geschmack|optional)"
+    text = re.sub(rf"\(\s*{preparation}\s*\)", " ", text, flags=re.I)
+    text = re.sub(rf",\s*{preparation}\s*$", "", text, flags=re.I)
+    return text
+
+
+def canonical_for_existing(
+    name: Optional[str], stored: Optional[str], *, normalize_self_alias: bool = False,
+) -> Optional[str]:
+    """Nur bekannte automatische Altfehler korrigieren; eigene Mappings erhalten."""
+    fresh = canonical_name(name)
+    if not stored:
+        return fresh
+    if not name or not fresh:
+        return stored
+    # Die Wochenplan-Vorschau normalisiert seit jeher unveränderte Eigennamen
+    # wie "Pasta" -> "nudeln". Abweichende, gepflegte Mappings bleiben erhalten.
+    if normalize_self_alias and stored.casefold() == name.strip().casefold():
+        return fresh
+    if fresh == "rote bete" and stored.casefold() in {"bete", "beete"}:
+        return fresh
+    if _strip_preparation(name) != name:
+        old = " ".join(re.sub(r"[^\w\säöüÄÖÜß\-]", " ", name).split()).lower()
+        old = _strip_adjectives(old)
+        if stored.casefold() == old:
+            return fresh
+    return stored
+
+
 def canonical_name(name: Optional[str]) -> Optional[str]:
     """Hauptfunktion. None-tolerant.
     Bei leerer Eingabe oder reinen Sonderzeichen → None."""
     if not name:
         return None
+    text = _strip_preparation(str(name))
     text = " ".join(
-        re.sub(r"[^\w\säöüÄÖÜß\-]", " ", str(name)).split()
+        re.sub(r"[^\w\säöüÄÖÜß\-]", " ", text).split()
     )
     if not text:
         return None
-    text = _strip_adjectives(text).lower()
+    text = text.lower()
+    if text in _SYNONYMS:
+        return _SYNONYMS[text]
+    text = _strip_adjectives(text)
     # Synonym-Direkthit
     if text in _SYNONYMS:
         return _SYNONYMS[text]

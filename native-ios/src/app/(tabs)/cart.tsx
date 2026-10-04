@@ -25,6 +25,7 @@ import { UnitPicker } from '@/components/unit-picker';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
 import { apiCached, invalidateApiCache } from '@/lib/cache';
+import { useAuth } from '@/lib/auth-context';
 import { isValidDateInput, localDateInput } from '@/lib/date-input';
 import { CartItem, RecurringCartItem, ShoppingSuggestion } from '@/lib/types';
 import { normalizeUnit } from '@/lib/units';
@@ -83,6 +84,7 @@ const emptyRecurringForm = (): RecurringForm => ({
 });
 
 export default function CartScreen() {
+  const { isGuest } = useAuth();
   const { width, fontScale } = useWindowDimensions();
   const [tab, setTab] = useState<'list' | 'recurring'>('list');
   const [items, setItems] = useState<CartItem[]>([]);
@@ -379,9 +381,10 @@ export default function CartScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
-        <Text style={styles.title}>Einkauf</Text>
+        <Text accessibilityRole="header" style={styles.title}>Einkauf</Text>
         <Text style={styles.count}>{tab === 'list' ? `${openCount} offen` : `${dueCount} fällig`}</Text>
       </View>
+      {isGuest && <Text style={{ color: colors.muted, paddingHorizontal: space.md, paddingBottom: space.sm }}>Gastzugang · nur ansehen</Text>}
       <View style={styles.tabs} accessibilityRole="tablist">
         <TabButton label="Aktuelle Liste" selected={tab === 'list'} onPress={() => selectTab('list')} />
         <TabButton label="Wiederkehrend" selected={tab === 'recurring'} onPress={() => selectTab('recurring')} />
@@ -392,6 +395,7 @@ export default function CartScreen() {
           <View style={styles.addRow}>
             <TextInput
               accessibilityLabel="Artikel hinzufügen"
+              editable={!isGuest}
               placeholder="Artikel hinzufügen"
               placeholderTextColor={colors.muted}
               value={name}
@@ -407,7 +411,7 @@ export default function CartScreen() {
               accessibilityRole="button"
               accessibilityLabel="Hinzufügen"
               onPress={addItem}
-              disabled={!name.trim()}
+              disabled={isGuest || !name.trim()}
               style={({ pressed }) => [styles.addButton, pressed && styles.pressed, !name.trim() && styles.disabled]}>
               <Text style={styles.addText}>+</Text>
             </Pressable>
@@ -434,6 +438,7 @@ export default function CartScreen() {
             <Pressable
               accessibilityRole="button"
               onPress={() => setShowAiOptimizer(true)}
+              disabled={isGuest}
               style={({ pressed }) => [styles.aiButton, pressed && styles.pressed]}>
               <Text style={styles.aiButtonLabel}>Einkaufsliste mit KI optimieren</Text>
               <Text style={styles.aiButtonArrow}>›</Text>
@@ -464,7 +469,8 @@ export default function CartScreen() {
                   <Pressable
                     accessibilityRole="checkbox"
                     accessibilityLabel={cartItemAccessibilityLabel(item)}
-                    accessibilityState={{ checked: item.checked }}
+                    accessibilityState={{ checked: item.checked, disabled: isGuest }}
+                    disabled={isGuest}
                     style={styles.itemToggle}
                     onPress={() => toggle(item)}>
                     <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.check, item.checked && styles.checkDone]}>
@@ -479,22 +485,22 @@ export default function CartScreen() {
                       </Text>
                     </View>
                   </Pressable>
-                  <Pressable accessibilityRole="button" accessibilityLabel={`${item.name} entfernen`} onPress={() => remove(item)} hitSlop={10}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={`${item.name} entfernen`} style={styles.removeButton} disabled={isGuest} onPress={() => remove(item)} hitSlop={10}>
                     <Text style={styles.remove}>×</Text>
                   </Pressable>
                 </View>
               )}
               ItemSeparatorComponent={() => <View style={styles.separator} />}
               ListEmptyComponent={<StateView title="Alles eingekauft" message="Die Liste ist leer." />}
-              ListFooterComponent={items.some(item => item.checked) ? <View style={styles.footer}><PrimaryButton label="Erledigte entfernen" onPress={clearChecked} destructive /></View> : null}
+              ListFooterComponent={!isGuest && items.some(item => item.checked) ? <View style={styles.footer}><PrimaryButton label="Erledigte entfernen" onPress={clearChecked} destructive /></View> : null}
             />
           )}
         </>
       ) : (
         <>
           <View style={styles.recurringActions}>
-            <PrimaryButton label="Neue Wiederholung" onPress={() => setEditor(emptyRecurringForm())} />
-            {dueCount > 0 && <PrimaryButton label={running ? 'Wird eingetragen …' : `${dueCount} fällige Artikel eintragen`} onPress={runDue} disabled={running} />}
+            <PrimaryButton label="Neue Wiederholung" disabled={isGuest} onPress={() => setEditor(emptyRecurringForm())} />
+            {dueCount > 0 && <PrimaryButton label={running ? 'Wird eingetragen …' : `${dueCount} fällige Artikel eintragen`} onPress={runDue} disabled={isGuest || running} />}
           </View>
           {!!error && !!recurring.length && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
           {loading && !recurring.length ? (
@@ -509,14 +515,14 @@ export default function CartScreen() {
               contentContainerStyle={styles.list}
               renderItem={({ item }) => (
                 <View style={[styles.recurringItem, item.active && item.due_in_days <= 0 && styles.recurringDue]}>
-                  <Pressable style={styles.recurringText} onPress={() => editRecurring(item)}>
+                  <Pressable style={styles.recurringText} disabled={isGuest} onPress={() => editRecurring(item)}>
                     <Text style={styles.name}><Text accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{item.icon || categoryIcon(item.category)} </Text>{item.name}</Text>
                     <Text style={styles.recurringMeta}>alle {item.interval_days} {item.interval_days === 1 ? 'Tag' : 'Tage'}{item.amount == null ? '' : ` · ${item.amount} ${item.default_unit || ''}`}</Text>
                     <Text style={[styles.dueText, !item.active && styles.inactiveText]}>{dueLabel(item)}</Text>
                   </Pressable>
-                  <Switch accessibilityLabel={`${item.name} ${item.active ? 'pausieren' : 'aktivieren'}`} value={item.active} onValueChange={active => setRecurringActive(item, active)} trackColor={{ false: colors.border, true: colors.butter }} thumbColor={colors.white} />
-                  <Pressable accessibilityLabel={`${item.name} bearbeiten`} onPress={() => editRecurring(item)} style={styles.editButton}><Text style={styles.editText}>✎</Text></Pressable>
-                  <Pressable accessibilityLabel={`${item.name} Wiederholung löschen`} onPress={() => deleteRecurring(item)} hitSlop={8}><Text style={styles.remove}>×</Text></Pressable>
+                  <Switch accessibilityLabel={`${item.name} ${item.active ? 'pausieren' : 'aktivieren'}`} disabled={isGuest} value={item.active} onValueChange={active => setRecurringActive(item, active)} trackColor={{ false: colors.border, true: colors.butter }} thumbColor={colors.white} />
+                  <Pressable accessibilityLabel={`${item.name} bearbeiten`} disabled={isGuest} onPress={() => editRecurring(item)} style={styles.editButton}><Text style={styles.editText}>✎</Text></Pressable>
+                  <Pressable accessibilityRole="button" accessibilityLabel={`${item.name} Wiederholung löschen`} style={styles.removeButton} disabled={isGuest} onPress={() => deleteRecurring(item)} hitSlop={8}><Text style={styles.remove}>×</Text></Pressable>
                 </View>
               )}
               ItemSeparatorComponent={() => <View style={styles.separator} />}
@@ -648,6 +654,7 @@ const styles = StyleSheet.create({
   amountValue: { color: colors.text, fontSize: 14, fontWeight: '900', textAlign: 'right', fontVariant: ['tabular-nums'] },
   amountDone: { color: colors.muted },
   remove: { color: colors.muted, fontSize: 26, minWidth: 36, textAlign: 'center' },
+  removeButton: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: 44 },
   footer: { paddingVertical: space.lg },
   recurringActions: { paddingHorizontal: space.md, paddingBottom: space.sm, gap: space.sm },

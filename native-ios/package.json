@@ -7,6 +7,7 @@
     "ios": "expo start --ios",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.cjs",
     "postinstall": "patch-package"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "expo-image": "~55.0.11",
     "expo-image-manipulator": "~55.0.20",
     "expo-image-picker": "~55.0.23",
+    "expo-keep-awake": "~55.0.8",
     "expo-linking": "~55.0.17",
     "expo-router": "~55.0.18",
     "expo-secure-store": "~55.0.17",

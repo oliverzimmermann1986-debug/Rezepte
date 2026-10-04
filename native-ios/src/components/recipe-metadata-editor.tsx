@@ -195,7 +195,7 @@ export function RecipeMetadataEditor({
         <KeyboardAvoidingView style={styles.safe} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.header}>
             <Pressable disabled={busy} onPress={onClose} style={styles.headerAction}><Text style={styles.cancel}>Abbrechen</Text></Pressable>
-            <Text style={styles.title}>Rezept bearbeiten</Text>
+            <Text accessibilityRole="header" style={styles.title}>Rezept bearbeiten</Text>
             <View style={styles.headerAction} />
           </View>
           <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">

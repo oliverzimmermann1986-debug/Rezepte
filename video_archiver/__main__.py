@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sqlite3
 import sys
 import time
@@ -101,6 +102,11 @@ def _recent_sync_exists(queue_path: Path, min_interval: int) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    previous_sigterm = None
+    if args.command == "run" and os.name == "posix":
+        def interrupt_worker(_signal, _frame):
+            raise KeyboardInterrupt
+        previous_sigterm = signal.signal(signal.SIGTERM, interrupt_worker)
     try:
         recipe_links = None
         skip_recipe_sync = False
@@ -170,9 +176,15 @@ def main(argv: list[str] | None = None) -> int:
                 }
         else:  # pragma: no cover - argparse verhindert diesen Zustand
             raise ValueError(f"Unbekannter Befehl: {args.command}")
+    except KeyboardInterrupt:
+        print("Archivierung unterbrochen; temporäre Dateien werden bereinigt.", file=sys.stderr)
+        return 130
     except (OSError, ValueError, sqlite3.Error) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    finally:
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if args.command == "run" and result.get("status") in {"queued", "failed", "partial"}:
         return 1

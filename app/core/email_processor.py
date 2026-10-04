@@ -11,6 +11,7 @@ import email
 import imaplib
 import logging
 import re
+import ssl
 import time
 from contextlib import contextmanager
 from email.header import decode_header
@@ -140,6 +141,20 @@ def _extract_body(msg: email.message.Message) -> str:
     return out
 
 
+def _ai_body_excerpt(body: str) -> str:
+    """Erkennbare Mail-Signaturen vor der KI-Übermittlung entfernen."""
+    lines = []
+    for line in str(body or "").splitlines():
+        if re.match(
+            r"^\s*(?:--\s*$|(?:mit freundlichen|viele|beste|liebe)\s+gr[üu][ßs]s?e\b|"
+            r"kind regards\b|best regards\b|sent from my\b|von meinem .+ gesendet\b)",
+            line, re.I,
+        ):
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()[:500]
+
+
 class MailAccount:
     def __init__(self, name: str, cfg: dict, content_type: str,
                  default_category: Optional[str] = None):
@@ -162,7 +177,9 @@ class MailAccount:
 
     @contextmanager
     def _connect(self, *, readonly: bool = False):
-        mail = imaplib.IMAP4_SSL(self.host, self.port, timeout=30)
+        mail = imaplib.IMAP4_SSL(
+            self.host, self.port, timeout=30, ssl_context=ssl.create_default_context(),
+        )
         try:
             mail.login(self.username, self.password)
             mail.select(self.folder, readonly=readonly)
@@ -187,6 +204,7 @@ class MailAccount:
         *,
         max_mails: Optional[int] = None,
         include_attachments: bool = True,
+        raise_errors: bool = False,
     ) -> Dict[str, List[Dict]]:
         """Inventarisiert Mails, ohne Flags oder Mailbox-Inhalt zu verändern.
 
@@ -198,6 +216,7 @@ class MailAccount:
             readonly=True,
             max_mails=max_mails,
             include_attachments=include_attachments,
+            raise_errors=raise_errors,
         )
 
     def _fetch_all_with_retries(
@@ -206,6 +225,7 @@ class MailAccount:
         readonly: bool,
         max_mails: Optional[int] = None,
         include_attachments: bool = True,
+        raise_errors: bool = False,
     ) -> Dict[str, List[Dict]]:
         if not self.enabled or not self.username or not self.password:
             return {"urls": [], "attachments": []}
@@ -230,8 +250,12 @@ class MailAccount:
             except Exception as e:
                 # Unerwartete Exception: nicht retryen, sofort raus
                 logger.error(f"[{self.name}] IMAP-Hardfailure: {e}")
+                if raise_errors:
+                    raise
                 return {"urls": [], "attachments": []}
         logger.error(f"[{self.name}] IMAP nach 3 Versuchen aufgegeben: {last_error}")
+        if raise_errors and last_error is not None:
+            raise last_error
         return {"urls": [], "attachments": []}
 
     def _fetch_all_once(
@@ -320,7 +344,7 @@ class MailAccount:
                                 "size": len(payload),
                                 "type": self.content_type,   # 'recipe' | 'wedding'
                                 "subject": subject,
-                                "body_excerpt": body[:500],  # Hinweis für die KI
+                                "body_excerpt": _ai_body_excerpt(body),  # ohne erkennbare Signatur
                                 "default_category": self.default_category,
                                 "source_account": self.name,
                                 "mail_uid": mail_uid,

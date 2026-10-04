@@ -185,6 +185,7 @@ def build_recipe_pdf(recipe: dict) -> bytes:
                     body_style,
                 )]],
                 colWidths=[175 * mm],
+                splitInRow=1,
                 style=TableStyle([
                     ("BACKGROUND", (0, 0), (-1, -1), cream),
                     ("BOX", (0, 0), (-1, -1), 0.6, border),
@@ -233,6 +234,7 @@ def build_recipe_pdf(recipe: dict) -> bytes:
         story.append(Table(
             rows,
             colWidths=[87.5 * mm, 87.5 * mm],
+            splitInRow=1,
             style=TableStyle([
                 ("GRID", (0, 0), (-1, -1), 0.35, border),
                 ("BACKGROUND", (0, 0), (-1, -1), cream),
@@ -264,6 +266,7 @@ def build_recipe_pdf(recipe: dict) -> bytes:
                         ),
                     ]],
                     colWidths=[12 * mm, 163 * mm],
+                    splitInRow=1,
                     style=TableStyle([
                         ("BACKGROUND", (0, 0), (0, 0), brand),
                         ("BACKGROUND", (1, 0), (1, 0), cream),

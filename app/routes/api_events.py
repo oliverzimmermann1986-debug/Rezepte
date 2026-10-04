@@ -26,13 +26,14 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from ..auth import request_user, require_auth
+from ..auth import require_admin
+from fastapi import HTTPException
 from ..db import get_db
 from . import api_jobs
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/events", tags=["events"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/events", tags=["events"], dependencies=[Depends(require_admin)])
 
 
 # Wie oft Status-Snapshot gesendet wird. Klein genug für gefühlt
@@ -67,7 +68,11 @@ async def _stream(request: Request) -> AsyncIterator[bytes]:
 
         # Router-Dependencies werden nur beim Verbindungsaufbau ausgewertet.
         # Erneute Prüfung beendet den Stream nach Logout, Sperre oder Rotation.
-        if not await run_in_threadpool(request_user, request):
+        try:
+            from ..auth import clear_request_auth_cache
+            clear_request_auth_cache(request)
+            await require_admin(request)
+        except HTTPException:
             yield _format("auth_revoked", {"reason": "session_invalid"}).encode()
             return
 

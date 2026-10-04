@@ -58,6 +58,12 @@ struct RecipeDetailView: View {
                             .id(imageRefreshToken)
                             .clipShape(RoundedRectangle(cornerRadius: 24))
 
+                        if recipe.imageGenerationStatus == "ok" {
+                            Label("KI-generiertes Rezeptbild", systemImage: "sparkles")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
                         VStack(alignment: .leading, spacing: 8) {
                             Text(recipe.name)
                                 .font(.largeTitle.bold())
@@ -68,6 +74,7 @@ struct RecipeDetailView: View {
                             ManualCareBanner(reasons: recipe.manualCareReasons)
                         }
 
+                        librarySection(recipe)
                         actionBar(recipe)
                         recipePassportSection(recipe)
 
@@ -80,7 +87,7 @@ struct RecipeDetailView: View {
 
                         originalTextSection(recipe)
 
-                        if !session.readOnly {
+                        if !session.readOnly, canEdit(recipe) {
                             Button(role: .destructive) {
                                 showDeleteConfirmation = true
                             } label: {
@@ -122,28 +129,30 @@ struct RecipeDetailView: View {
                         }
                         .accessibilityLabel(recipe.isFavorite ? "Aus Favoriten entfernen" : "Als Favorit speichern")
                         Menu {
-                            Button("Rezeptdaten bearbeiten", systemImage: "pencil") {
-                                showMetadataEditor = true
-                            }
-                            Button("Als Variante duplizieren", systemImage: "plus.square.on.square") {
-                                duplicateName = "\(recipe.name) – Variante"
-                                showDuplicatePrompt = true
-                            }
-                            Button(
-                                recipe.userVerified == true ? "Prüfung zurücknehmen" : "Zutaten als geprüft markieren",
-                                systemImage: recipe.userVerified == true ? "checkmark.seal" : "checkmark.seal.fill"
-                            ) {
-                                Task { await setVerified(recipe.userVerified != true) }
-                            }
-                            Button("Nährwerte neu berechnen", systemImage: "bolt.heart") {
-                                Task { await computeNutrition() }
-                            }
-                            if session.fullAccess {
+                            if canEdit(recipe) {
+                                Button("Rezeptdaten bearbeiten", systemImage: "pencil") {
+                                    showMetadataEditor = true
+                                }
+                                Button("Als Variante duplizieren", systemImage: "plus.square.on.square") {
+                                    duplicateName = "\(recipe.name) – Variante"
+                                    showDuplicatePrompt = true
+                                }
                                 Button(
-                                    "Quelle mit Bild und Audio neu auswerten",
-                                    systemImage: "waveform.and.magnifyingglass"
+                                    recipe.userVerified == true ? "Prüfung zurücknehmen" : "Zutaten als geprüft markieren",
+                                    systemImage: recipe.userVerified == true ? "checkmark.seal" : "checkmark.seal.fill"
                                 ) {
-                                    Task { await reextractSource() }
+                                    Task { await setVerified(recipe.userVerified != true) }
+                                }
+                                Button("Nährwerte neu berechnen", systemImage: "bolt.heart") {
+                                    Task { await computeNutrition() }
+                                }
+                                if session.fullAccess {
+                                    Button(
+                                        "Quelle mit Bild und Audio neu auswerten",
+                                        systemImage: "waveform.and.magnifyingglass"
+                                    ) {
+                                        Task { await reextractSource() }
+                                    }
                                 }
                             }
                             if recipe.pdfFilename != nil {
@@ -365,9 +374,9 @@ struct RecipeDetailView: View {
                 Text("Zutaten")
                     .font(.title2.bold())
                 Spacer()
-                if !session.readOnly {
+                if !session.readOnly, canEdit(recipe) {
                     HStack(spacing: 10) {
-                        if session.fullAccess, session.supports("substitution-lab-v1") {
+                        if session.supports("substitution-lab-v1") {
                             Button {
                                 showSubstitutionLab = true
                             } label: {
@@ -439,7 +448,8 @@ struct RecipeDetailView: View {
                 NavigationLink {
                     RecipeSourceIntegrityView(
                         recipeID: recipe.id,
-                        recipeName: recipe.name
+                        recipeName: recipe.name,
+                        canEdit: canEdit(recipe)
                     )
                     .environmentObject(session)
                 } label: {
@@ -493,7 +503,7 @@ struct RecipeDetailView: View {
                 }
             }
 
-            if session.fullAccess {
+            if canEdit(recipe) {
                 Divider()
                 NavigationLink {
                     RecipeImageHistoryView(recipeID: recipe.id, recipeName: recipe.name)
@@ -600,7 +610,7 @@ struct RecipeDetailView: View {
                     .font(.footnote)
                     .foregroundStyle(theme.warning)
 
-                if !session.readOnly {
+                if !session.readOnly, canEdit(recipe) {
                     Button("Originalquelle ergänzen") {
                         showMetadataEditor = true
                     }
@@ -662,7 +672,7 @@ struct RecipeDetailView: View {
                 Text("Zubereitung")
                     .font(.title2.bold())
                 Spacer()
-                if !session.readOnly {
+                if !session.readOnly, canEdit(recipe) {
                     Button("Bearbeiten") { showStepsEditor = true }
                 }
             }
@@ -735,6 +745,49 @@ struct RecipeDetailView: View {
             showOriginalText = false
         } catch {
             errorMessage = error.localizedDescription
+            session.handle(error)
+        }
+    }
+
+    private func canEdit(_ recipe: Recipe) -> Bool {
+        !session.readOnly && (recipe.canEdit ?? session.fullAccess)
+    }
+
+    @ViewBuilder
+    private func librarySection(_ recipe: Recipe) -> some View {
+        if session.supports("household-libraries-v1") {
+            VStack(alignment: .leading, spacing: 12) {
+                Label(recipe.visibility == "private" ? "Privat im Haushalt" : "Global für alle",
+                      systemImage: recipe.visibility == "private" ? "lock" : "globe")
+                    .font(.subheadline.bold())
+                if !session.readOnly, recipe.visibility == "global" {
+                    Button {
+                        Task { await saveToLibrary(recipe) }
+                    } label: {
+                        Label(recipe.inLibrary == true ? "Aus meiner Sammlung entfernen" : "In meiner Sammlung speichern",
+                              systemImage: recipe.inLibrary == true ? "bookmark.slash" : "bookmark")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isManaging)
+                    Text("Das globale Rezept bleibt für alle erhalten. Dein Haushalt speichert einen Verweis darauf.")
+                        .font(.caption)
+                        .foregroundStyle(theme.muted)
+                }
+            }
+            .cardSurface()
+        }
+    }
+
+    private func saveToLibrary(_ recipe: Recipe) async {
+        guard !session.readOnly, !isManaging else { return }
+        isManaging = true
+        defer { isManaging = false }
+        do {
+            _ = try await session.api.saveRecipe(id: recipe.id, saved: recipe.inLibrary != true)
+            await load()
+            NotificationCenter.default.post(name: .recipesChanged, object: nil)
+        } catch {
             session.handle(error)
         }
     }

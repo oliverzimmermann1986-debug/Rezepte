@@ -8,7 +8,7 @@ import logging
 import os
 import html
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import Depends, FastAPI, Form, Request, status
 from fastapi.exceptions import HTTPException
@@ -18,16 +18,18 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
 from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, auth_disabled, check_credentials,
+                    GUEST_MAX_AGE, request_is_guest,
                     create_session, migrate_security, migrate_users_to_db,
                     request_user, require_auth, verify_session)
 from .config_store import get_config, migrate_pdf_quality_defaults
 from .db import get_db
-from .routes import (api_admin, api_audit, api_auth, api_browse, api_config, api_einkauf, api_events, api_hdd,
+from .routes import (api_account, api_admin, api_audit, api_auth, api_browse, api_config, api_einkauf, api_events, api_hdd,
                      api_history, api_jobs, api_master, api_metrics, api_pending, api_recipes,
                      api_meal_plan, api_schedule, api_share, api_shopping, api_stats, api_test,
                      api_users, sharing)
 from .security import (SameOriginMiddleware, SecurityHeadersMiddleware,
-                       UploadSizeLimitMiddleware, client_ip, login_limiter)
+                       DatabaseBusyMiddleware, UploadSizeLimitMiddleware, client_ip,
+                       login_actor_key, login_limiter, login_ip_limiter)
 
 # -------- Logging --------
 # Strukturiertes Logging: rotation via RotatingFileHandler (10MB pro Datei,
@@ -231,17 +233,22 @@ def _stop_trash_cleanup_thread(timeout: float = 5.0) -> bool:
 def _purge_old_trash_items(days: int = 30):
     """Endgültig löschen aller Trash-Items deren deleted_at > days Tage her ist."""
     from .recipes.manage import safe_delete_recipe
+    import time
     db = _db or get_db()
+    cutoff = time.time() - days * 86400
     items = db.recipe_list_trash_expired(days=days)
     if not items:
         return
     logger.info(f"trash-cleanup: {len(items)} items >{days}d found")
     for it in items:
         try:
-            # delete_files=True nur wenn die Files noch da sind (files_deleted=0).
-            # Falls files_deleted=1, nur DB-Eintrag noch.
-            delete_files = not it.get("files_deleted")
-            safe_delete_recipe(db, it["id"], delete_files=delete_files, hard=True)
+            # Dateien liegen nach Soft-Delete in Quarantäne. Der Manager räumt
+            # genau diesen Payload auf und prüft Status/Alter unter dem Lock neu.
+            safe_delete_recipe(
+                db, it["id"], delete_files=True, hard=True,
+                only_deleted=True, deleted_before=cutoff,
+                expected_deleted_at=it["deleted_at"],
+            )
         except Exception as e:
             logger.warning(f"trash-purge #{it['id']} '{it.get('name')}' fail: {e}")
 
@@ -352,6 +359,9 @@ APP_CAPABILITIES = [
     "native-admin-roles",
     "native-admin-config-v1",
     "guest-read-only",
+    "household-libraries-v1",
+    "household-invitations-v1",
+    "global-recipe-references-v1",
     "pdf-processing",
     "pdf-background-jobs",
     "pdf-preflight",
@@ -382,6 +392,8 @@ app = FastAPI(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SameOriginMiddleware)
 app.add_middleware(UploadSizeLimitMiddleware)
+from .tenancy import HouseholdMiddleware
+app.add_middleware(HouseholdMiddleware)
 
 # gzip-Compression für API-Responses + HTML. Spart ~70% Transfer-Bytes auf
 # JSON-Listen, ~50% auf HTML. Schwelle 500 Bytes — kleinere Responses bleiben
@@ -409,6 +421,7 @@ class SelectiveGZipMiddleware:
 
 
 app.add_middleware(SelectiveGZipMiddleware, minimum_size=500, compresslevel=5)
+app.add_middleware(DatabaseBusyMiddleware)
 
 # Statisch (Frontend)
 STATIC_DIR = Path(__file__).parent / "static"
@@ -438,6 +451,7 @@ def serve_manifest():
 # API-Routen
 app.include_router(api_admin.session_router)
 app.include_router(api_auth.router)
+app.include_router(api_account.router)
 app.include_router(api_admin.router)
 app.include_router(api_config.router)
 app.include_router(api_jobs.router)
@@ -472,7 +486,7 @@ def _set_session_cookie(resp, token: str, request: Request) -> None:
     resp.set_cookie(
         SESSION_COOKIE,
         token,
-        max_age=SESSION_MAX_AGE,
+        max_age=GUEST_MAX_AGE if token.startswith("guest.") else SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
         secure=is_https,
@@ -498,6 +512,9 @@ LOGIN_HTML = """\
   <label>Benutzer<input name="username" autocomplete="username" required></label>
   <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
   <button type="submit">Anmelden</button>
+  <a class="btn btn-secondary" href="/register">Konto erstellen</a>
+  <button type="submit" formaction="/login/guest" formnovalidate>Als Gast ansehen</button>
+  <p class="muted">Gäste können Rezepte, Einkauf und Wochenplan ansehen. Änderungen bleiben angemeldeten Konten vorbehalten.</p>
 </form>
 </body></html>
 """
@@ -543,11 +560,22 @@ Rezeptverwaltung. Verantwortlich ist der Betreiber des Servers, dessen
 Adresse in der App eingetragen wurde.</p>
 <h2>Verarbeitete Daten</h2>
 <p>Die App verarbeitet die Server-Adresse, den Benutzernamen, ein
-widerrufbares Sitzungstoken sowie die auf dem privaten Server gespeicherten
+Sitzungstoken sowie die auf dem privaten Server gespeicherten
 Rezepte, Einkaufslisten und Wochenpläne. Dazu können vom Nutzer geteilte
 Quellenlinks sowie hochgeladene Bilder und PDF-Dokumente gehören. Das Passwort
-wird nur zur Anmeldung verschlüsselt an den Rezepteserver übertragen, dort
-geprüft und nicht von der App gespeichert.</p>
+wird zur Anmeldung oder Registrierung verschlüsselt an den Rezepteserver
+übertragen. Der Server speichert einen Passwort-Hash; die App speichert das
+Passwort nicht.</p>
+<p>Eine Gastanmeldung benötigt keinen Benutzernamen und erlaubt nur das Lesen
+der globalen Rezepte. Private Haushaltsdaten sind für Gäste nicht sichtbar.
+Ein registriertes Konto kann eine zweite Person mit
+eigener Anmeldung einladen. Der Server speichert die Kontozuordnung, einen
+Hash des Einladungslinks und dessen Gültigkeits- und Verwendungszeitpunkte.
+Der Link gilt sieben Tage, ist einmal verwendbar und kann widerrufen werden.
+Jeder Haushalt besitzt getrennte private Rezepte, Favoriten, Bewertungen,
+Kochverläufe, Einkäufe und Planungen. Globale Rezepte sind für alle lesbar.
+Ein privater Import eines schon global vorhandenen Links legt einen Verweis
+auf das bestehende Rezept an.</p>
 <h2>Speicherung und Übertragung</h2>
 <p>Das Sitzungstoken und – falls Cloudflare Access verwendet wird – die vom
 Nutzer eingegebenen Cloudflare-Gerätezugangsdaten werden im iOS-Schlüsselbund
@@ -556,15 +584,28 @@ erfolgt über HTTPS direkt mit dem eingetragenen Rezepteserver. Die App enthält
 keine Werbung, keine Telemetrie und keine Analyse-SDKs.</p>
 <h2>KI-gestützte Verarbeitung</h2>
 <p>Wenn eine KI-Funktion verwendet wird, kann der Rezepteserver die dafür
-erforderlichen Rezepttexte, Bilder, PDF-Inhalte oder aus einer Quelle
-extrahierten Audio- und Bildinformationen an OpenAI übermitteln. Die
+erforderlichen Rezepttexte, Bilder, PDF-Inhalte, Videoframes und extrahierte
+Audiospuren an OpenAI übermitteln. Für die Bildgenerierung werden Rezepttitel,
+Zutaten und ein kurzer Beschreibungsauszug übertragen. Erkennbare Mail-Signaturen
+werden aus dem Hinweistext entfernt; in Rezeptquellen enthaltene personenbezogene
+Daten können dennoch mitverarbeitet werden. Die
 Übermittlung dient ausschließlich dazu, Zutaten, Mengen, Zubereitungsschritte,
 Kategorien oder ähnliche Rezeptinformationen zu erkennen und zu ordnen. Die
 App nutzt diese Daten nicht für Werbung oder Tracking.</p>
+<p>Je nach konfiguriertem Anbieter, API-Projekt und Region kann die Verarbeitung
+auch in den USA erfolgen. Speicherfristen, Datenregion und vertragliche Grundlagen
+richten sich nach den Einstellungen und Vereinbarungen des Serverbetreibers.
+Die App sichert keine bestimmte Datenregion oder Löschfrist beim KI-Anbieter zu.
+Informationen stellt OpenAI in den
+<a href="https://developers.openai.com/api/docs/guides/your-data" rel="noopener noreferrer">API-Datenkontrollen</a>
+bereit.</p>
 <h2>Externe Quellen</h2>
-<p>TikTok- und Instagram-Medien werden nicht heruntergeladen. Erst wenn
-ein Nutzer den Quellenlink antippt, wird er an die jeweilige externe App oder
-Website übergeben; dann gelten deren Datenschutzbestimmungen.</p>
+<p>Beim Import ruft der Rezepteserver TikTok- und Instagram-Quellen ab und kann
+Videos, Bilder und Beschreibungen lokal herunterladen und archivieren.
+Für die Rezeptanalyse können Bildtext und Audio ausgewertet werden. Videos bleiben
+im Serverarchiv und werden in der iPhone-App nicht abgespielt. Wenn ein Nutzer den
+Quellenlink antippt, wird er an die externe App oder Website übergeben; dort gelten
+deren Datenschutzbestimmungen.</p>
 <h2>Öffentliche Rezeptlinks</h2>
 <p>Nur nach ausdrücklicher Bestätigung kann die App einen öffentlichen Link
 erstellen. Jeder mit diesem Link kann das ausgewählte Rezept einschließlich
@@ -575,8 +616,11 @@ sofort widerrufen werden.</p>
 <p>Rezepte und Kontodaten werden vom Betreiber des privaten Servers verwaltet.
 Anfragen zu Auskunft oder Löschung sind an diesen Betreiber zu richten. Durch
 Abmelden werden Sitzungstoken, Cloudflare-Zugangsdaten und private
-Bildcaches vom iPhone entfernt; die Serversitzung wird widerrufen.</p>
-<p><small>Stand: 24. August 2026</small></p>
+Bildcaches vom iPhone entfernt; reguläre Serversitzungen werden widerrufen.
+Gastsitzungen laufen spätestens nach 24 Stunden ab. Beim Wechsel von Gast zur
+Anmeldung bleiben Server-Adresse und Cloudflare-Gerätezugang auf dem Gerät
+gespeichert.</p>
+<p><small>Stand: 4. Oktober 2026</small></p>
 </main></body></html>"""
     )
 
@@ -589,15 +633,14 @@ def login(
     next: str = Form("/"),
 ):
     ip = client_ip(request)
-    normalized_username = username.strip().casefold()
     ip_key = f"ip:{ip}"
-    actor_key = f"ip-user:{ip}:{normalized_username}"
-    ip_blocked, ip_remaining = login_limiter.is_blocked(ip_key)
+    actor_key = login_actor_key(ip, username)
+    ip_blocked, ip_remaining = login_ip_limiter.is_blocked(ip_key)
     actor_blocked, actor_remaining = login_limiter.is_blocked(actor_key)
     blocked = ip_blocked or actor_blocked
     remaining = max(ip_remaining, actor_remaining)
     if blocked:
-        logger.warning(f"Login-Block für IP {ip}, noch {remaining}s")
+        logger.warning("Login vorübergehend gesperrt (%ss)", remaining)
         return HTMLResponse(
             LOGIN_HTML.format(
                 error=f'<p class="error">⛔ Zu viele Fehlversuche. '
@@ -605,12 +648,13 @@ def login(
                 next=html.escape(_safe_next(next), quote=True),
             ),
             status_code=429,
+            headers={"Retry-After": str(remaining + 1)},
         )
 
     if not check_credentials(username, password):
-        login_limiter.record_fail(ip_key)
+        login_ip_limiter.record_fail(ip_key)
         login_limiter.record_fail(actor_key)
-        logger.warning(f"Fehl-Login von {ip} (user={username!r})")
+        logger.warning("Login abgelehnt: ungültige Zugangsdaten")
         return HTMLResponse(
             LOGIN_HTML.format(
                 error='<p class="error">❌ Login fehlgeschlagen</p>',
@@ -627,7 +671,7 @@ def login(
     except ValueError:
         # Konto kann zwischen Credential-Prüfung und Session-Erstellung
         # deaktiviert oder gelöscht worden sein.
-        logger.warning("Session-Erstellung für %r nach erfolgreichem Login abgelehnt", username)
+        logger.warning("Session-Erstellung nach erfolgreichem Login abgelehnt: Konto nicht mehr aktiv")
         return HTMLResponse(
             LOGIN_HTML.format(
                 error='<p class="error">❌ Konto ist nicht mehr aktiv</p>',
@@ -638,6 +682,54 @@ def login(
     resp = RedirectResponse(url=_safe_next(next), status_code=303)
     _set_session_cookie(resp, token, request)
     return resp
+
+
+@app.post("/login/guest")
+def guest_login(request: Request, next: str = Form("/")):
+    result = api_auth.guest_login(request)
+    resp = RedirectResponse(url=_safe_next(next), status_code=303)
+    _set_session_cookie(resp, result["token"], request)
+    return resp
+
+
+def _registration_page(invitation: str = "", username: str = "", error: str = "", *, code: int = 200):
+    source = (STATIC_DIR / "register.html").read_text(encoding="utf-8")
+    values = {"TITLE": "Einladung annehmen" if invitation else "Konto erstellen",
+              "ACTION": "Einladung annehmen und Konto erstellen" if invitation else "Konto erstellen",
+              "INVITATION": html.escape(invitation, quote=True), "USERNAME": html.escape(username, quote=True),
+              "LOGIN": html.escape('/login?next=' + quote('/account?invite=' + invitation, safe=''), quote=True) if invitation else '/login',
+              "ERROR": '<p class="error" role="alert">' + html.escape(error) + '</p>' if error else ""}
+    for name, value in values.items():
+        source = source.replace("{" + name + "}", value)
+    return HTMLResponse(source, status_code=code, headers={"Cache-Control": "no-store", "Referrer-Policy": "strict-origin"})
+
+
+@app.get("/register", response_class=HTMLResponse)
+def register_page(invite: str = ""):
+    return _registration_page(invite[:256])
+
+
+@app.post("/register")
+def register_browser(request: Request, username: str = Form(...), password: str = Form(...),
+                     password_confirm: str = Form(...), invitation_token: str = Form("")):
+    from pydantic import ValidationError
+
+    if password != password_confirm:
+        return _registration_page(invitation_token, username, "Passwörter stimmen nicht überein", code=422)
+    try:
+        payload = api_auth.Registration(username=username, password=password, invitation_token=invitation_token)
+        result = api_auth.register_account(payload, request)
+    except ValidationError as exc:
+        errors = exc.errors(include_input=False)
+        return _registration_page(invitation_token, username, str(errors[0]["msg"]), code=422)
+    except HTTPException as exc:
+        response = _registration_page(invitation_token, username, str(exc.detail), code=exc.status_code)
+        if exc.headers:
+            response.headers.update(exc.headers)
+        return response
+    response = RedirectResponse("/account", status_code=303)
+    _set_session_cookie(response, result["token"], request)
+    return response
 
 
 def _logout_target() -> str:
@@ -663,7 +755,7 @@ def _logout_target() -> str:
 
 @app.post("/logout")
 def logout(request: Request):
-    if not auth_disabled():
+    if not auth_disabled() and not request_is_guest(request):
         username = request_user(request)
         if username:
             try:
@@ -684,17 +776,11 @@ def logout(request: Request):
 
 # -------- Home (geschützt) --------
 def _static_version() -> str:
-    """Cache-Buster für /static/app.js und /static/rezepte.css.
-
-    Max-mtime von app.js UND rezepte.css als Token. Vorher nur app.js —
-    reine CSS-Deploys änderten die URL nicht und Browser/SW lieferten
-    altes CSS aus dem Cache."""
+    """Gemeinsamer Cache-Buster für CSS, Runtime und alle Fachmodule."""
     try:
-        m = max(
-            int((STATIC_DIR / "app.js").stat().st_mtime),
-            int((STATIC_DIR / "rezepte.css").stat().st_mtime),
-            int((STATIC_DIR / "runtime.js").stat().st_mtime),
-        )
+        assets = [STATIC_DIR / name for name in ("app.js", "rezepte.css", "runtime.js", "alpine.min.js")]
+        assets.extend((STATIC_DIR / "features").glob("*.js"))
+        m = max(asset.stat().st_mtime_ns for asset in assets)
         return str(m)
     except Exception:
         return "0"
@@ -726,6 +812,11 @@ def admin_shortcut(request: Request):
     return _render_spa(request, initial_page="admin", initial_admin_tab="home")
 
 
+@app.get("/account", response_class=HTMLResponse)
+def account_shortcut(request: Request):
+    return _render_spa(request, initial_page="account")
+
+
 @app.get("/admin/pdf", response_class=HTMLResponse)
 def admin_pdf_shortcut(request: Request):
     return _render_spa(request, initial_page="admin", initial_admin_tab="pdf")
@@ -741,9 +832,17 @@ def home(request: Request):
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == status.HTTP_303_SEE_OTHER and "Location" in (exc.headers or {}):
         return RedirectResponse(url=exc.headers["Location"], status_code=303)
+    detail = exc.detail
+    storage_message = (
+        "Zu wenig freier Speicher für die sichere Verarbeitung. "
+        "Bitte Speicher freigeben und den Upload erneut versuchen."
+    )
+    if exc.status_code >= 500 and not (exc.status_code == 507 and detail == storage_message):
+        logger.error("HTTP %s auf %s: %s", exc.status_code, request.url.path, detail)
+        detail = "Serverfehler. Bitte später erneut versuchen."
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail},
+        content={"detail": detail},
         headers=exc.headers,
     )
 
@@ -757,7 +856,7 @@ def healthz():
         return {"ok": True, "version": APP_VERSION, "capabilities": APP_CAPABILITIES}
     except Exception as e:
         logger.error(f"healthz failed: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+        return JSONResponse({"ok": False, "error": "Datenbank nicht verfügbar"}, status_code=503)
 
 
 @app.get("/readyz")
@@ -779,7 +878,7 @@ def readyz():
     except Exception as exc:
         logger.error("readyz failed: %s", exc)
         return JSONResponse(
-            {"ok": False, "db": False, "error": str(exc)},
+            {"ok": False, "db": False, "error": "Dienst nicht bereit"},
             status_code=503,
         )
 

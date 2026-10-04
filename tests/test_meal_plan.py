@@ -526,8 +526,12 @@ def test_conductor_authenticated_post_remains_supported(
     from app import auth
     from app.main import app
 
-    _prepare_conductor_day(test_db)
     user_token, _guest_token = _auth_tokens(monkeypatch, test_db)
+    from app import accounts
+    from app.tenant_db import HouseholdDatabase
+    from app.tenancy import HouseholdScope
+    uid = test_db.user_get_by_name("anna")["id"]
+    _prepare_conductor_day(HouseholdDatabase(test_db, HouseholdScope(accounts.view(test_db, uid)["id"])))
     app.dependency_overrides.pop(auth.require_auth, None)
     try:
         response = client.post(
@@ -542,7 +546,7 @@ def test_conductor_authenticated_post_remains_supported(
     assert response.json()["summary"]["active_cooks"] == 1
 
 
-def test_conductor_signed_guest_can_use_read_only_get_preview(
+def test_conductor_signed_guest_cannot_read_another_households_plan(
     client,
     test_db: Database,
     monkeypatch,
@@ -572,8 +576,8 @@ def test_conductor_signed_guest_can_use_read_only_get_preview(
         app.dependency_overrides[auth.require_auth] = lambda: None
 
     assert anonymous_response.status_code == 401
-    assert response.status_code == 200, response.text
-    assert response.json()["summary"]["active_cooks"] == 2
+    assert response.status_code == 400, response.text
+    assert "keine Gerichte geplant" in response.json()["detail"]
     assert test_db.meal_plan_entries("2026-07-27", "2026-07-27") == before
 
 

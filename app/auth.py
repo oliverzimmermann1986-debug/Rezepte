@@ -8,6 +8,7 @@ from __future__ import annotations
 import hmac
 import logging
 import secrets
+from contextvars import ContextVar
 from typing import Optional
 
 import bcrypt
@@ -30,9 +31,11 @@ ROLE_USER = "user"
 ROLE_ADMIN = "admin"
 ROLE_GUEST = "guest"
 GUEST_USERNAME = "Gast"
+GUEST_MAX_AGE = 60 * 60 * 24
 VALID_ROLES = frozenset({ROLE_USER, ROLE_ADMIN})
 SAFE_SESSION_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _DUMMY_PASSWORD_HASH = "$2b$12$tHqkjQG/5uUOLxPxh766ku3u8CNZ6YprzbSzD8uyU7ZB04RLAt1m2"
+_SESSION_LOOKUP = ContextVar("session_lookup", default=None)
 
 
 # -------------------- Passwort-Hashing --------------------
@@ -220,13 +223,35 @@ def create_session(username: str) -> str:
 
 
 def create_guest_session() -> str:
-    """Erstellt eine zustandslose, strikt schreibgeschützte Gastsitzung.
+    """Signierte Lesesitzung ohne Benutzerkonto oder Rechte aus der DB."""
+    return "guest." + _serializer().dumps({"kind": ROLE_GUEST, "nonce": secrets.token_urlsafe(16)})
 
-    Gäste sind absichtlich keine DB-Benutzer. Das signierte ``guest``-Merkmal
-    trennt sie eindeutig vom Legacy-Config-Fallback und kann daher niemals
-    Administratorrechte erben.
-    """
-    return _serializer().dumps({"user": GUEST_USERNAME, "guest": True})
+
+def _guest_token_valid(token: str) -> bool:
+    if not token:
+        return False
+    if not token.startswith("guest."):
+        data = _session_payload(token)
+        return bool(data and data.get("guest") is True and data.get("user") == GUEST_USERNAME)
+    try:
+        data = _serializer().loads(token.removeprefix("guest."), max_age=GUEST_MAX_AGE)
+        return isinstance(data, dict) and data.get("kind") == ROLE_GUEST
+    except (BadSignature, SignatureExpired, TypeError, ValueError, RuntimeError):
+        return False
+
+
+def _request_token(request: Request) -> str:
+    token = getattr(request, "cookies", {}).get(SESSION_COOKIE, "")
+    authorization = getattr(request, "headers", {}).get("authorization", "")
+    return authorization[7:].strip() if authorization.lower().startswith("bearer ") else token
+
+
+def request_is_guest(request: Request) -> bool:
+    return _guest_token_valid(_request_token(request))
+
+
+def guest_access_payload() -> dict:
+    return {"username": "Gast", "role": ROLE_GUEST, "is_admin": False, "full_access": False, "read_only": True}
 
 
 def _session_payload(token: str) -> Optional[dict]:
@@ -235,18 +260,12 @@ def _session_payload(token: str) -> Optional[dict]:
     try:
         data = _serializer().loads(token, max_age=SESSION_MAX_AGE)
         return data if isinstance(data, dict) else None
-    except (BadSignature, SignatureExpired, TypeError, ValueError):
+    except (BadSignature, SignatureExpired, TypeError, ValueError, RuntimeError):
         return None
 
 
 def session_is_guest(token: str) -> bool:
-    """Prüft das signierte Gastmerkmal ohne einen DB-Benutzer anzulegen."""
-    data = _session_payload(token)
-    return bool(
-        data
-        and data.get("guest") is True
-        and hmac.compare_digest(str(data.get("user") or ""), GUEST_USERNAME)
-    )
+    return _guest_token_valid(token)
 
 
 def session_user(token: str) -> Optional[str]:
@@ -258,6 +277,8 @@ def session_user(token: str) -> Optional[str]:
     jedem Request aus der DB gelesen, damit Sperre, Löschung und Passwortwechsel
     bestehende Cookies unmittelbar invalidieren.
     """
+    if token.startswith("guest."):
+        return "Gast" if _guest_token_valid(token) else None
     data = _session_payload(token)
     if data is None:
         return None
@@ -286,6 +307,9 @@ def session_user(token: str) -> Optional[str]:
                     return None
             except (TypeError, ValueError):
                 return None
+            sink = _SESSION_LOOKUP.get()
+            if sink is not None:
+                sink["user"] = dict(user)
             return str(user["username"])
 
         # Nur vor der ersten Benutzer-Migration zulassen. Sobald mindestens ein
@@ -303,11 +327,12 @@ def session_user(token: str) -> Optional[str]:
             )
         except (TypeError, ValueError):
             version_ok = False
-        return (
-            cfg_user
-            if version_ok and hmac.compare_digest(username, cfg_user)
-            else None
-        )
+        if version_ok and hmac.compare_digest(username, cfg_user):
+            sink = _SESSION_LOOKUP.get()
+            if sink is not None:
+                sink["user"] = {"username": cfg_user, "role": ROLE_ADMIN, "legacy_config_user": True}
+            return cfg_user
+        return None
     except (TypeError, ValueError):
         return None
     except Exception:
@@ -329,17 +354,20 @@ def auth_disabled() -> bool:
     auf dem öffentlichen Hostname) und das LAN vertrauenswürdig ist.
     """
     try:
-        return bool((get_config().get("web") or {}).get("auth_disabled", False))
+        # Nur ein echter YAML/JSON-Boolean darf die Anmeldung abschalten.
+        # Insbesondere "false", "0" und beliebige andere Strings sind truthy.
+        return (get_config().get("web") or {}).get("auth_disabled", False) is True
     except Exception:
         return False
 
 
-async def require_auth(request: Request) -> None:
-    if request_is_guest(request) and request.method.upper() not in SAFE_SESSION_METHODS:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Der Gastzugang ist schreibgeschützt.",
-        )
+def _require_auth(request: Request) -> None:
+    if _request_token(request).startswith("guest.") and not request_is_guest(request):
+        raise HTTPException(401, "Gastsitzung abgelaufen")
+    if request_is_guest(request):
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            raise HTTPException(403, "Der Gastzugang ist schreibgeschützt.")
+        return
     if auth_disabled():
         from .security import request_is_from_trusted_proxy
         if request_is_from_trusted_proxy(request):
@@ -358,30 +386,49 @@ async def require_auth(request: Request) -> None:
         )
 
 
+async def require_auth(request: Request) -> None:
+    from starlette.concurrency import run_in_threadpool
+    await run_in_threadpool(_require_auth, request)
+
+
+def cached_request_user(request: Request) -> Optional[dict]:
+    state = getattr(request, "state", None)
+    snapshot = getattr(state, "_verified_session", None)
+    return snapshot[2] if snapshot and snapshot[0] == _request_token(request) else None
+
+
+def clear_request_auth_cache(request: Request) -> None:
+    state = getattr(request, "state", None)
+    if state is not None:
+        state._verified_session = None
+
+
 def request_user(request: Request) -> Optional[str]:
     """Liest eine Sitzung aus HttpOnly-Cookie oder Bearer-Header."""
-    token = _request_token(request)
-    if session_is_guest(token):
-        return GUEST_USERNAME
+    if request_is_guest(request):
+        return "Gast"
+    if _request_token(request).startswith("guest."):
+        return None
     if auth_disabled():
         from .security import request_is_from_trusted_proxy
         return "local" if request_is_from_trusted_proxy(request) else None
-    return session_user(token)
+    token = _request_token(request)
+    state = getattr(request, "state", None)
+    snapshot = getattr(state, "_verified_session", None)
+    if snapshot and snapshot[0] == token:
+        return snapshot[1]
+    sink = {}
+    lookup = _SESSION_LOOKUP.set(sink)
+    try:
+        username = session_user(token)
+    finally:
+        _SESSION_LOOKUP.reset(lookup)
+    if state is not None:
+        state._verified_session = (token, username, sink.get("user"))
+    return username
 
 
-def _request_token(request: Request) -> str:
-    token = request.cookies.get(SESSION_COOKIE, "")
-    authorization = getattr(request, "headers", {}).get("authorization", "")
-    if authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-    return token
-
-
-def request_is_guest(request: Request) -> bool:
-    return session_is_guest(_request_token(request))
-
-
-async def require_admin(request: Request) -> dict:
+def _require_admin(request: Request) -> dict:
     """Verlangt eine aktive Sitzung mit der Rolle ``admin``.
 
     Im expliziten ``auth_disabled``-Betrieb bleibt der lokale/Cloudflare-
@@ -391,7 +438,8 @@ async def require_admin(request: Request) -> dict:
     """
     if request_is_guest(request):
         raise HTTPException(403, "Der Gastzugang ist schreibgeschützt.")
-
+    if _request_token(request).startswith("guest."):
+        raise HTTPException(401, "Gastsitzung abgelaufen")
     if auth_disabled():
         from .security import request_is_from_trusted_proxy
         if not request_is_from_trusted_proxy(request):
@@ -408,7 +456,7 @@ async def require_admin(request: Request) -> dict:
         raise HTTPException(401, "Authentication required")
 
     from .db import get_db
-    user = get_db().user_get_by_name(username)
+    user = cached_request_user(request) or get_db().user_get_by_name(username)
     if user:
         if user.get("disabled"):
             raise HTTPException(403, "Benutzerkonto ist deaktiviert")
@@ -432,3 +480,8 @@ async def require_admin(request: Request) -> dict:
         }
 
     raise HTTPException(401, "Authentication required")
+
+
+async def require_admin(request: Request) -> dict:
+    from starlette.concurrency import run_in_threadpool
+    return await run_in_threadpool(_require_admin, request)

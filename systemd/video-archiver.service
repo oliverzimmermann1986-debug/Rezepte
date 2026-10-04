@@ -21,8 +21,11 @@ ExecStart=/opt/video-archiver/venv/bin/python -m video_archiver \
   --yt-dlp /opt/video-archiver/venv/bin/yt-dlp \
   --max-size-mb 1000 \
   --max-jobs 4 \
+  --timeout 900 \
   --confirm-rights
-TimeoutStartSec=1800
+SuccessExitStatus=1
+TimeoutStartSec=3900
+TimeoutStopSec=30
 UMask=0027
 
 # Der Worker darf nur in Queue, Archiv und seinem temporären Bereich schreiben.

@@ -312,6 +312,13 @@ def extract_recipe_web_metadata(
     canonical_url = normalize_recipe_url(
         urljoin(final_url, str(canonical_tag.get("href") or "")) if canonical_tag else final_url
     ) or final_url
+    # Der HTML-Herausgeber darf nur Identitäten seines tatsächlich abgerufenen
+    # HTTPS-Origin beanspruchen. Redirects wurden bereits separat geprüft.
+    canonical_parts, source_parts = urlsplit(canonical_url), urlsplit(final_url)
+    if (canonical_parts.scheme, canonical_parts.hostname, canonical_parts.port or 443) != (
+        source_parts.scheme, source_parts.hostname, source_parts.port or 443
+    ):
+        canonical_url = normalize_recipe_url(final_url) or final_url
     image_url = _image_url(recipe_node.get("image")) or meta("og:image", "twitter:image")
     if image_url:
         image_url = urljoin(final_url, image_url)

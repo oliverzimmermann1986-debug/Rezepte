@@ -29,6 +29,10 @@ export default function TabLayout() {
         <NativeTabs.Trigger.Label>Admin</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf={{ default: 'wrench.and.screwdriver', selected: 'wrench.and.screwdriver.fill' }} />
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="account">
+        <NativeTabs.Trigger.Label>Konto</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf={{ default: 'person.crop.circle', selected: 'person.crop.circle.fill' }} />
+      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }

@@ -1,25 +1,31 @@
 """Native-App-Authentifizierung mit widerrufbaren Bearer-Sitzungen."""
 from __future__ import annotations
 
+import re
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..auth import (
-    GUEST_USERNAME,
     ROLE_ADMIN,
     ROLE_GUEST,
     ROLE_USER,
+    GUEST_MAX_AGE,
     auth_disabled,
     check_credentials,
     create_guest_session,
     create_session,
+    guest_access_payload,
     request_is_guest,
+    hash_password,
     request_user,
 )
 from ..db import get_db
-from ..security import client_ip, login_limiter, request_is_from_trusted_proxy
+from ..security import (LoginRateLimiter, client_ip, login_actor_key, login_limiter,
+                        login_ip_limiter, request_is_from_trusted_proxy)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+registration_limiter = LoginRateLimiter(max_fails=10, window_sec=600, ban_sec=600)
+guest_limiter = LoginRateLimiter(max_fails=30, window_sec=300, ban_sec=300)
 
 
 def _access_payload(username: str, *, read_only: bool = False) -> dict:
@@ -53,13 +59,52 @@ class NativeLogin(BaseModel):
     password: str = Field(min_length=1, max_length=512)
 
 
+class Registration(BaseModel):
+    username: str = Field(min_length=3, max_length=60)
+    password: str = Field(min_length=10, max_length=72)
+    invitation_token: str = Field(default="", max_length=256)
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value):
+        value = value.strip()
+        if not re.fullmatch(r"[\w.@+-]{3,60}", value):
+            raise ValueError("Benutzername: 3–60 Buchstaben, Ziffern oder . @ + - _")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value):
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Passwort darf höchstens 72 UTF-8-Bytes enthalten")
+        return value
+
+
+@router.post("/register", status_code=201)
+def register_account(payload: Registration, request: Request) -> dict:
+    from .. import accounts
+
+    if auth_disabled():
+        raise HTTPException(409, "Für die Registrierung muss die Kontenanmeldung aktiviert sein")
+    key = "register:" + client_ip(request)
+    blocked, remaining = registration_limiter.is_blocked(key)
+    if blocked:
+        raise HTTPException(429, "Zu viele Registrierungsversuche. Bitte später erneut versuchen",
+                            headers={"Retry-After": str(remaining + 1)})
+    registration_limiter.record_fail(key)
+    accounts.register(get_db(), payload.username, hash_password(payload.password),
+                      invitation_token=payload.invitation_token.strip())
+    return {"token": create_session(payload.username), "token_type": "bearer",
+            "expires_in": 60 * 60 * 24 * 14, **_access_payload(payload.username)}
+
+
 @router.post("/login")
 def native_login(payload: NativeLogin, request: Request) -> dict:
     username = payload.username.strip()
     ip = client_ip(request)
     ip_key = f"ip:{ip}"
-    limiter_key = f"ip-user:{ip}|{username.casefold()}"
-    blocked_ip, remaining_ip = login_limiter.is_blocked(ip_key)
+    limiter_key = login_actor_key(ip, username)
+    blocked_ip, remaining_ip = login_ip_limiter.is_blocked(ip_key)
     blocked_user, remaining_user = login_limiter.is_blocked(limiter_key)
     if blocked_ip or blocked_user:
         remaining = max(remaining_ip, remaining_user)
@@ -79,7 +124,7 @@ def native_login(payload: NativeLogin, request: Request) -> dict:
             **_access_payload("local"),
         }
     if not check_credentials(username, payload.password):
-        login_limiter.record_fail(ip_key)
+        login_ip_limiter.record_fail(ip_key)
         login_limiter.record_fail(limiter_key)
         raise HTTPException(401, "Benutzername oder Passwort falsch")
     login_limiter.record_success(limiter_key)
@@ -91,25 +136,28 @@ def native_login(payload: NativeLogin, request: Request) -> dict:
     }
 
 
-@router.post("/guest")
-def native_guest_login(request: Request) -> dict:
-    """Gibt einen signierten Gasttoken aus, ohne ein Benutzerkonto anzulegen."""
-    if auth_disabled() and not request_is_from_trusted_proxy(request):
-        raise HTTPException(403, "Unsichere direkte Verbindung")
-    return {
-        "token": create_guest_session(),
-        "token_type": "bearer",
-        "expires_in": 60 * 60 * 24 * 14,
-        **_access_payload(GUEST_USERNAME, read_only=True),
-    }
-
-
 @router.get("/session")
 def native_session(request: Request) -> dict:
     username = request_user(request)
     if not username:
         raise HTTPException(401, "Authentication required")
-    return _access_payload(username, read_only=request_is_guest(request))
+    if request_is_guest(request):
+        return guest_access_payload()
+    return _access_payload(username)
+
+
+@router.post("/guest")
+def guest_login(request: Request) -> dict:
+    if auth_disabled() and not request_is_from_trusted_proxy(request):
+        raise HTTPException(403, "Unsichere direkte Verbindung")
+    key = "guest:" + client_ip(request)
+    blocked, remaining = guest_limiter.is_blocked(key)
+    if blocked:
+        raise HTTPException(429, "Zu viele Gastanmeldungen. Bitte später erneut versuchen.",
+                            headers={"Retry-After": str(remaining + 1)})
+    guest_limiter.record_fail(key)
+    return {"token": create_guest_session(), "token_type": "bearer",
+            "expires_in": GUEST_MAX_AGE, **guest_access_payload()}
 
 
 @router.post("/logout")
@@ -124,7 +172,7 @@ def native_logout(request: Request) -> dict:
     username = request_user(request)
     if not username:
         return {"ok": True}
-    if auth_disabled():
+    if request_is_guest(request) or auth_disabled():
         return {"ok": True}
     revoked = get_db().user_revoke_sessions(username)
     return {"ok": True, "revoked": revoked}

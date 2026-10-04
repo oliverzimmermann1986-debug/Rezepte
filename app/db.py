@@ -13,7 +13,8 @@ import sqlite3
 import threading
 import time
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -21,8 +22,25 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 260
+CURRENT_SCHEMA_VERSION = 265
 RECIPE_VARIANT_PENDING_STATUS = "variant_pending"
+_READ_CONNECTION = ContextVar('recipe_read_connection', default=None)
+
+
+def configured_database_path() -> Path:
+    """Konfiguration gilt auch in frisch gestarteten Web-/CLI-Prozessen."""
+    from .config_store import get_config
+    cfg = get_config()
+    configured = cfg.get('paths', 'db_path', default=None)
+    if configured:
+        return Path(configured)
+    data_dir = cfg.get('paths', 'data_dir', default=None)
+    if data_dir:
+        return Path(data_dir) / 'scrapper.db'
+    config_path = getattr(cfg, 'path', None)
+    if config_path is not None:
+        return Path(config_path).parent / 'scrapper.db'
+    return Path(os.environ['SCRAPPER_CONFIG']).parent / 'scrapper.db' if os.environ.get('SCRAPPER_CONFIG') else DB_PATH
 
 
 def _invalidate_recipe_nutrition(connection: Any, recipe_id: int) -> None:
@@ -63,6 +81,11 @@ class CookingCompletionConflictError(RuntimeError):
 
 
 _DDL = """
+CREATE TABLE IF NOT EXISTS ai_request_budget_usage (
+  created_at REAL NOT NULL,
+  kind TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_request_budget_time ON ai_request_budget_usage(created_at);
 CREATE TABLE IF NOT EXISTS history (
   url TEXT PRIMARY KEY,
   processed_at REAL NOT NULL,
@@ -115,6 +138,7 @@ CREATE TABLE IF NOT EXISTS background_tasks (
   started_at REAL,
   ended_at REAL,
   attempts INTEGER NOT NULL DEFAULT 0,
+  recovery_attempts INTEGER NOT NULL DEFAULT 0,
   result_json TEXT,
   error TEXT,
   next_attempt_at REAL
@@ -336,6 +360,7 @@ CREATE INDEX IF NOT EXISTS idx_meal_plan_date
 CREATE TABLE IF NOT EXISTS recipe_cooking_progress (
   recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
   username TEXT NOT NULL,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
   completed_steps_json TEXT NOT NULL DEFAULT '[]',
   active_step INTEGER NOT NULL DEFAULT 0,
   servings INTEGER,
@@ -364,6 +389,7 @@ CREATE INDEX IF NOT EXISTS idx_recipe_cook_history_recipe
 CREATE TABLE IF NOT EXISTS recipe_cooking_completion_requests (
   recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
   username TEXT NOT NULL,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
   idempotency_key TEXT NOT NULL,
   servings INTEGER,
   history_id INTEGER NOT NULL REFERENCES recipe_cook_history(id) ON DELETE CASCADE,
@@ -388,6 +414,29 @@ CREATE TABLE IF NOT EXISTS users (
   last_login_at REAL                           -- NULL bis 1. Login
 );
 CREATE INDEX IF NOT EXISTS idx_users_name ON users(username);
+
+CREATE TABLE IF NOT EXISTS user_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS account_members (
+  account_id INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  joined_at REAL NOT NULL,
+  PRIMARY KEY (account_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS account_invitations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at REAL NOT NULL,
+  expires_at REAL NOT NULL,
+  revoked_at REAL,
+  accepted_at REAL,
+  accepted_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_account_invites ON account_invitations(account_id, created_at);
 
 -- sync_errors: FS-Sync-Konflikte (UNIQUE constraint failed, etc.)
 -- Werden vom Audit-Tab als 'FS-Konflikte'-Findings angezeigt — User entscheidet
@@ -522,7 +571,7 @@ END;
 """
 
 
-def _build_fts_query(q: str) -> Optional[str]:
+def _build_fts_query(q: str, *, phrase: bool = False) -> Optional[str]:
     """User-Input → FTS5-MATCH-Syntax. Multi-Word wird AND-verknüpft, jedes
     Token bekommt prefix-* damit Wortanfänge matchen.
 
@@ -544,10 +593,12 @@ def _build_fts_query(q: str) -> Optional[str]:
         return None
     # Maximal 8 Tokens (Performance + AND wird sonst sehr restriktiv)
     tokens = tokens[:8]
+    if phrase:
+        return '"' + " ".join(tokens) + '"*'
     return ' AND '.join(f'"{t}"*' for t in tokens)
 
 
-def _rebuild_shopping_catalog_from_recipes(c) -> Dict[str, int]:
+def _rebuild_shopping_catalog_from_recipes(c, *, account_id: int = 0) -> Dict[str, int]:
     """Baut den Produktstamm aus allen Zutaten aktiver Rezepte neu auf.
 
     Historische Einkaufsnutzung bleibt erhalten; rezeptbasierte Häufigkeit
@@ -569,13 +620,18 @@ def _rebuild_shopping_catalog_from_recipes(c) -> Dict[str, int]:
         "Flasche", "Tüte", "Glas", "Becher", "Handvoll", "Stiel", "Stange",
         "Kopf", "Schale",
     }
+    scoped = "account_id" in {row[1] for row in c.execute("PRAGMA table_info(shopping_products)")}
+    has_owner = "owner_account_id" in {row[1] for row in c.execute("PRAGMA table_info(recipes)")}
+    recipe_scope = " AND (r.owner_account_id IS NULL OR r.owner_account_id=?)" if has_owner else ""
+    account_scope = " AND account_id=?" if scoped else ""
+    account_params = (int(account_id),) if scoped else ()
     rows = c.execute(
         "SELECT ri.name, ri.canonical_name, ri.unit, ri.recipe_id "
         "FROM recipe_ingredients ri JOIN recipes r ON r.id=ri.recipe_id "
         "WHERE r.deleted_at IS NULL "
         "AND COALESCE(r.ingredients_status, '')<>? "
-        "AND TRIM(COALESCE(ri.name, ''))<>''",
-        (RECIPE_VARIANT_PENDING_STATUS,),
+        "AND TRIM(COALESCE(ri.name, ''))<>''" + recipe_scope,
+        (RECIPE_VARIANT_PENDING_STATUS, *((int(account_id),) if has_owner else ())),
     ).fetchall()
     catalog: Dict[str, Dict[str, Any]] = {}
     for name, stored_canonical, unit, recipe_id in rows:
@@ -597,7 +653,8 @@ def _rebuild_shopping_catalog_from_recipes(c) -> Dict[str, int]:
     # Einkaufshistorie hat last_used_at und wird deshalb beibehalten.
     c.execute(
         "UPDATE shopping_products SET recipe_count=0, "
-        "usage_count=CASE WHEN last_used_at IS NULL THEN 0 ELSE usage_count END"
+        "usage_count=CASE WHEN last_used_at IS NULL THEN 0 ELSE usage_count END WHERE 1" + account_scope,
+        account_params,
     )
     now = time.time()
     unassigned = 0
@@ -617,14 +674,15 @@ def _rebuild_shopping_catalog_from_recipes(c) -> Dict[str, int]:
             unassigned += 1
         icon = category_icon(category)
         c.execute(
-            "INSERT INTO shopping_products(canonical_name, display_name, category, icon, "
+            "INSERT INTO shopping_products(" + ("account_id," if scoped else "") + "canonical_name, display_name, category, icon, "
             "default_unit, usage_count, recipe_count, last_used_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 0, ?, NULL, ?) "
-            "ON CONFLICT(canonical_name) DO UPDATE SET "
+            "VALUES (" + ("?," if scoped else "") + "?, ?, ?, ?, ?, 0, ?, NULL, ?) "
+            "ON CONFLICT(" + ("account_id," if scoped else "") + "canonical_name) DO UPDATE SET "
             "display_name=excluded.display_name, category=excluded.category, icon=excluded.icon, "
             "default_unit=excluded.default_unit, "
             "recipe_count=excluded.recipe_count, updated_at=excluded.updated_at",
             (
+                *account_params,
                 canonical,
                 display_name,
                 category,
@@ -638,9 +696,10 @@ def _rebuild_shopping_catalog_from_recipes(c) -> Dict[str, int]:
     removed = c.execute(
         "DELETE FROM shopping_products WHERE recipe_count=0 AND last_used_at IS NULL "
         "AND canonical_name NOT IN ("
-        "SELECT canonical_name FROM shopping_cart WHERE canonical_name IS NOT NULL "
-        "UNION SELECT canonical_name FROM shopping_recurring WHERE canonical_name IS NOT NULL"
-        ")"
+        "SELECT canonical_name FROM shopping_cart WHERE canonical_name IS NOT NULL " + account_scope +
+        " UNION SELECT canonical_name FROM shopping_recurring WHERE canonical_name IS NOT NULL" + account_scope +
+        ")" + account_scope,
+        account_params * 3,
     ).rowcount
     return {
         "ingredient_rows": len(rows),
@@ -1247,6 +1306,10 @@ class Database:
             "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
             (230, "transactional_boundaries_and_runtime_hardening", time.time()),
         )
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (231, "guest_access_and_account_invitations", time.time()),
+        )
 
         allergen_backfill_migration = c.execute(
             "SELECT 1 FROM schema_migrations WHERE version=?", (240,)
@@ -1373,8 +1436,49 @@ class Database:
                     (term, json.dumps(synonyms, ensure_ascii=False), now),
                 )
 
+        from .tenancy import migrate_schema, migrate_share_ownership, migrate_cooking_identity
+        migrate_schema(c)
+        migrate_share_ownership(c)
+        migrate_cooking_identity(c)
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (264, "limit_server_ai_requests", time.time()),
+        )
+        if not c.execute('SELECT 1 FROM schema_migrations WHERE version=265').fetchone():
+            task_columns = {row[1] for row in c.execute('PRAGMA table_info(background_tasks)')}
+            if 'recovery_attempts' not in task_columns:
+                c.execute('ALTER TABLE background_tasks ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0')
+            from .tenancy import canonical_source
+            for row in c.execute('SELECT id, deleted_url FROM recipes WHERE source_url IS NULL '
+                                 'AND deleted_url IS NOT NULL').fetchall():
+                source = str(row[1])
+                if not source.startswith('private-recipe://'):
+                    c.execute('UPDATE recipes SET source_url=? WHERE id=?', (canonical_source(source), row[0]))
+            c.execute('INSERT INTO schema_migrations(version, name, applied_at) VALUES(265, ?, ?)',
+                      ('independent_worker_recovery_and_trash_sources', time.time()))
+
+    @contextmanager
+    def read_snapshot(self):
+        """Eine kurzlebige, schreibgeschützte Verbindung für zusammengesetzte Reads."""
+        borrowed = _READ_CONNECTION.get()
+        if borrowed is not None and borrowed[0] is self:
+            yield
+            return
+        with self.conn() as connection:
+            connection.execute('PRAGMA query_only=ON')
+            connection.execute('BEGIN')
+            token = _READ_CONNECTION.set((self, connection))
+            try:
+                yield
+            finally:
+                _READ_CONNECTION.reset(token)
+
     @contextmanager
     def conn(self):
+        borrowed = _READ_CONNECTION.get()
+        if borrowed is not None and borrowed[0] is self:
+            yield borrowed[1]
+            return
         # SQLite: pro-Aufruf Verbindung, dank check_same_thread=False thread-safe genug.
         # journal_mode=WAL ist file-persistent (einmalig in __init__).
         # busy_timeout=10s per-Connection: SQLite-internes Polling wenn ein anderer
@@ -1385,6 +1489,8 @@ class Database:
         # WAL wird häufiger in die Haupt-DB übernommen → kleineres Verlustfenster.
         c = sqlite3.connect(str(self.path), timeout=10, check_same_thread=False)
         c.row_factory = sqlite3.Row
+        from .recipes.search import matches_excluded_term
+        c.create_function("recipe_term_matches", 2, matches_excluded_term, deterministic=True)
         try:
             c.execute("PRAGMA busy_timeout=10000")
             c.execute("PRAGMA synchronous=FULL")
@@ -1402,12 +1508,13 @@ class Database:
             return row is not None
 
     def history_add(self, url: str, *, content_type: str = "", name: str = "",
-                    target_dir: str = "") -> None:
+                    target_dir: str = "", owner_account_id: Optional[int] = None,
+                    source_url: Optional[str] = None) -> None:
         with self.conn() as c:
             c.execute(
-                "INSERT OR REPLACE INTO history (url, processed_at, content_type, name, target_dir) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (url, time.time(), content_type, name, target_dir),
+                "INSERT OR REPLACE INTO history (url, processed_at, content_type, name, target_dir, owner_account_id, source_url) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (url, time.time(), content_type, name, target_dir, owner_account_id, source_url or url),
             )
 
     def history_list(self, limit: int = 200) -> List[Dict[str, Any]]:
@@ -1452,21 +1559,27 @@ class Database:
         video_path: Optional[str] = None,
         frame_path: Optional[str] = None,
         ai_suggestion: Optional[Dict] = None,
+        owner_account_id: Optional[int] = None,
+        source_url: Optional[str] = None,
+        update_existing: bool = True,
     ) -> None:
         """Upsert: bei Konflikt werden nur Description/Pfade/Vorschlag aktualisiert.
         ``status`` und ``created_at`` bleiben erhalten - sonst würde ein bereits
-        resolved/skipped-Item beim erneuten Auftauchen wieder auf 'pending' springen."""
+        resolved/skipped-Item beim erneuten Auftauchen wieder auf 'pending' springen.
+        Ein Import-Platzhalter setzt update_existing=False, damit bereits
+        ermittelte Daten auch bei einer zeitgleichen Worker-Schreiboperation bleiben.
+        """
+        conflict = (
+            "ON CONFLICT(url) DO UPDATE SET content_type=excluded.content_type, "
+            "description=excluded.description, video_path=excluded.video_path, "
+            "frame_path=excluded.frame_path, ai_suggestion=excluded.ai_suggestion"
+            if update_existing else "ON CONFLICT(url) DO NOTHING"
+        )
         with self.conn() as c:
             c.execute(
                 "INSERT INTO pending "
-                "(url, content_type, created_at, description, video_path, frame_path, ai_suggestion, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending') "
-                "ON CONFLICT(url) DO UPDATE SET "
-                "  content_type=excluded.content_type, "
-                "  description=excluded.description, "
-                "  video_path=excluded.video_path, "
-                "  frame_path=excluded.frame_path, "
-                "  ai_suggestion=excluded.ai_suggestion",
+                "(url, content_type, created_at, description, video_path, frame_path, ai_suggestion, status, owner_account_id, source_url) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) " + conflict,
                 (
                     url,
                     content_type,
@@ -1475,6 +1588,8 @@ class Database:
                     video_path,
                     frame_path,
                     json.dumps(ai_suggestion or {}, ensure_ascii=False),
+                    owner_account_id,
+                    source_url or url,
                 ),
             )
 
@@ -1591,7 +1706,7 @@ class Database:
         with self.conn() as c:
             rows = c.execute(
                 "SELECT url, content_type, attempts FROM download_failures "
-                "WHERE attempts < ? ORDER BY last_try ASC LIMIT 50",
+                "WHERE attempts < ? AND url NOT LIKE 'private-recipe://%' ORDER BY last_try ASC LIMIT 50",
                 (max_attempts,),
             ).fetchall()
             return [dict(r) for r in rows]
@@ -1824,6 +1939,7 @@ class Database:
         *,
         dedupe_key: Optional[str] = None,
         max_active: Optional[int] = None,
+        reserve_budget: bool = False,
     ) -> int:
         """Reiht einen Task ein oder liefert den gleichartigen aktiven Task.
 
@@ -1853,6 +1969,9 @@ class Database:
                     raise OverflowError(
                         f"Queue-Limit für {kind} erreicht ({int(active)})"
                     )
+            if reserve_budget:
+                from .import_budget import reserve_in_connection
+                reserve_in_connection(self, c)
             cur = c.execute(
                 "INSERT INTO background_tasks("
                 "kind, payload_json, dedupe_key, status, created_at"
@@ -1864,16 +1983,38 @@ class Database:
                     time.time(),
                 ),
             )
+            if kind == "recipe_image_generate" and payload.get("recipe_id") and payload.get("batch_id"):
+                # Auftrag und Bildstatus werden vor dem Worker-Wakeup zusammen
+                # gespeichert. Ein später Route-Write könnte einen bereits
+                # abgeschlossenen Auftrag wieder auf pending zurücksetzen.
+                updated = c.execute(
+                    "UPDATE recipes SET image_generation_status='pending', "
+                    "image_generation_batch_id=?, "
+                    "image_generation_model=COALESCE(?, image_generation_model) "
+                    "WHERE id=? AND deleted_at IS NULL",
+                    (str(payload["batch_id"]), payload.get("model"), int(payload["recipe_id"])),
+                ).rowcount
+                if not updated:
+                    raise LookupError("Rezept nicht mehr vorhanden")
             return int(cur.lastrowid)
 
-    def background_task_claim_next(self) -> Optional[Dict[str, Any]]:
-        """Claimt atomar den ältesten queued Task für genau einen Worker."""
+    def background_task_claim_next(self, *, lane: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Claimt atomar einen Task; Bildarbeit hat eine eigene Worker-Spur."""
+        image_kinds = "('recipe_image_generate', 'recipe_image_backfill')"
+        lane_filter = ""
+        if lane == "images":
+            lane_filter = f" AND kind IN {image_kinds}"
+        elif lane == "imports":
+            lane_filter = f" AND kind NOT IN {image_kinds}"
+        elif lane is not None:
+            raise ValueError(f"Unbekannte Worker-Spur: {lane}")
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
             row = c.execute(
                 "SELECT * FROM background_tasks WHERE status='queued' "
                 "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
-                "ORDER BY created_at, id LIMIT 1",
+                + lane_filter + " ORDER BY CASE WHEN kind='recipe_image_backfill' "
+                "THEN 1 ELSE 0 END, created_at, id LIMIT 1",
                 (time.time(),),
             ).fetchone()
             if not row:
@@ -1896,6 +2037,16 @@ class Database:
             task["payload"] = {}
         return task
 
+    def background_task_continue(self, task_id: int) -> None:
+        """Gibt einen erfolgreich gespeicherten Teilschritt ohne Retry-Verbrauch frei."""
+        with self.conn() as c:
+            c.execute(
+                "UPDATE background_tasks SET status='queued', started_at=NULL, "
+                "attempts=0, recovery_attempts=0, next_attempt_at=NULL, error=NULL "
+                "WHERE id=? AND status='running'",
+                (int(task_id),),
+            )
+
     def background_task_retry(
         self,
         task_id: int,
@@ -1909,7 +2060,7 @@ class Database:
         with self.conn() as c:
             c.execute(
                 "UPDATE background_tasks SET status='queued', started_at=NULL, "
-                "ended_at=NULL, next_attempt_at=?, result_json=?, error=? "
+                "ended_at=NULL, recovery_attempts=0, next_attempt_at=?, result_json=?, error=? "
                 "WHERE id=? AND status='running'",
                 (
                     next_attempt,
@@ -1924,17 +2075,49 @@ class Database:
         error: Optional[str] = None,
     ) -> None:
         with self.conn() as c:
+            ended_at = time.time()
             c.execute(
                 "UPDATE background_tasks SET status=?, ended_at=?, next_attempt_at=NULL, "
                 "result_json=?, error=? WHERE id=?",
                 (
                     "ok" if ok else "error",
-                    time.time(),
+                    ended_at,
                     json.dumps(result or {}, ensure_ascii=False, default=str),
                     error,
                     int(task_id),
                 ),
             )
+            task = c.execute(
+                "SELECT kind, payload_json FROM background_tasks WHERE id=?",
+                (int(task_id),),
+            ).fetchone()
+            if ok or not task or task["kind"] != "recipe_image_backfill":
+                return
+            try:
+                run_id = int(json.loads(task["payload_json"])["run_id"])
+            except (ValueError, TypeError, KeyError):
+                return
+            run = c.execute(
+                "SELECT result_json FROM maintenance_runs "
+                "WHERE id=? AND kind='recipe_image_backfill' AND status='running'",
+                (run_id,),
+            ).fetchone()
+            if run:
+                try:
+                    saved = json.loads(run["result_json"] or "{}")
+                except (ValueError, TypeError):
+                    saved = {}
+                if not isinstance(saved, dict):
+                    saved = {}
+                # End the UI's progress tracking in the same transaction as the
+                # failed task, including failures before the dispatch handler.
+                saved.update({"ok": False, "phase": "task_failed",
+                              "error": error or (result or {}).get("error") or "Bildtask fehlgeschlagen"})
+                c.execute(
+                    "UPDATE maintenance_runs SET status='error', ended_at=?, result_json=? "
+                    "WHERE id=? AND status='running'",
+                    (ended_at, json.dumps(saved, ensure_ascii=False, default=str), run_id),
+                )
 
     def background_task_get(self, task_id: int) -> Optional[Dict[str, Any]]:
         with self.conn() as c:
@@ -1967,20 +2150,21 @@ class Database:
         return task
 
     def background_tasks_recover(self, *, max_attempts: int = 3) -> int:
-        """Nach Neustart laufende Tasks erneut einreihen; Endlosschleifen begrenzen."""
+        """Unerwartete Neustarts zählen getrennt von regulären Transportversuchen."""
         with self.conn() as c:
-            retry = c.execute(
-                "UPDATE background_tasks SET status='queued', started_at=NULL, "
-                "next_attempt_at=NULL, error=NULL "
-                "WHERE status='running' AND attempts < ?",
-                (max_attempts,),
-            ).rowcount or 0
+            c.execute('BEGIN IMMEDIATE')
             c.execute(
                 "UPDATE background_tasks SET status='error', ended_at=?, "
-                "error=COALESCE(error, 'Zu viele Neustartversuche') "
-                "WHERE status='running' AND attempts >= ?",
+                "error='Zu viele aufeinanderfolgende Neustartversuche' "
+                "WHERE status='running' AND recovery_attempts >= ?",
                 (time.time(), max_attempts),
             )
+            retry = c.execute(
+                "UPDATE background_tasks SET status='queued', started_at=NULL, "
+                "next_attempt_at=NULL, error=NULL, recovery_attempts=recovery_attempts+1 "
+                "WHERE status='running' AND recovery_attempts < ?",
+                (max_attempts,),
+            ).rowcount or 0
         return int(retry)
 
     def deleted_history_add(self, entry: Dict[str, Any], *, quarantine_path: str = "",
@@ -2182,6 +2366,8 @@ class Database:
         source_added_at: Optional[float],
         preserve_existing: Iterable[str] = (),
         initial_ingredients_status: str = "pending",
+        owner_account_id: Optional[int] = None,
+        source_url: Optional[str] = None,
     ) -> int:
         """Legt einen Recipe-Eintrag an oder aktualisiert ihn (Key: folder_path).
         Zutaten-Status wird NICHT überschrieben — ein bereits extrahiertes
@@ -2194,6 +2380,8 @@ class Database:
             RECIPE_VARIANT_PENDING_STATUS,
         }:
             raise ValueError("Ungültiger initialer Zutatenstatus")
+        from .tenancy import canonical_source
+        source_url = source_url or canonical_source(url)
         now = time.time()
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
@@ -2225,6 +2413,9 @@ class Database:
                         continue
                     assignments.append(f"{field}=?")
                     update_params.append(value)
+                if "url" not in preserve:
+                    assignments.append("source_url=?")
+                    update_params.append(source_url)
                 sql = ("UPDATE recipes SET " + ", ".join(assignments) + ", "
                        "source_added_at=COALESCE(?, source_added_at)"
                        + (
@@ -2239,11 +2430,11 @@ class Database:
             cur = c.execute(
                 "INSERT INTO recipes (url, name, type, category, folder_path, "
                 "description, thumb_filename, video_filename, source_added_at, "
-                "indexed_at, ingredients_extracted_at, ingredients_status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                "indexed_at, ingredients_extracted_at, ingredients_status, owner_account_id, source_url) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
                 (url, name, type, category, folder_path, description,
                  thumb_filename, video_filename, source_added_at, now,
-                 initial_ingredients_status),
+                 initial_ingredients_status, owner_account_id, source_url or url),
             )
             return int(cur.lastrowid)
 
@@ -2263,10 +2454,17 @@ class Database:
             row = c.execute(sql, params).fetchone()
             return dict(row) if row else None
 
-    def recipes_for_image_backfill(self) -> List[Dict[str, Any]]:
+    def _present_recipe(self, row):
+        return row
+
+    def _present_recipes(self, rows):
+        return rows
+
+    def recipes_for_image_backfill(self, *, ids_only: bool = False) -> List[Dict[str, Any]]:
+        columns = "id" if ids_only else "*"
         with self.conn() as c:
             rows = c.execute(
-                "SELECT * FROM recipes WHERE deleted_at IS NULL "
+                f"SELECT {columns} FROM recipes WHERE deleted_at IS NULL "
                 "AND COALESCE(ingredients_status, '')<>? ORDER BY id",
                 (RECIPE_VARIANT_PENDING_STATUS,),
             ).fetchall()
@@ -2282,10 +2480,18 @@ class Database:
         batch_id: Optional[str] = None,
         generated_at: Optional[float] = None,
         thumb_filename: Optional[str] = None,
-    ) -> None:
+        backup_id: Optional[int] = None,
+        generated_sha256: Optional[str] = None,
+        expected_batch_id: Optional[str] = None,
+        expected_status: Optional[str] = None,
+    ) -> bool:
         allowed = {"pending", "backed_up", "running", "ok", "error", "restored", "skipped"}
         if status not in allowed:
             raise ValueError(f"Ungültiger Bildstatus: {status}")
+        if backup_id is not None and (
+            status not in {"ok", "restored"} or (status == "ok" and not generated_sha256)
+        ):
+            raise ValueError("Sicherungsdaten benötigen eine erfolgreiche Bildgenerierung oder Wiederherstellung")
         with self.conn() as c:
             assignments = [
                 "image_generation_status=?",
@@ -2299,10 +2505,41 @@ class Database:
                 assignments.append("thumb_filename=?")
                 params.append(thumb_filename)
             params.append(int(recipe_id))
-            c.execute(
-                f"UPDATE recipes SET {', '.join(assignments)} WHERE id=?",
+            guarded = expected_batch_id is not None or expected_status is not None
+            condition = " AND deleted_at IS NULL" if status == "ok" or guarded else ""
+            if guarded:
+                # IS vergleicht auch einen bisher leeren Batch korrekt. Sobald
+                # expected_status gesetzt ist, gehört dieser NULL-Wert zum Claim.
+                condition += " AND image_generation_batch_id IS ?"
+                params.append(expected_batch_id)
+            if expected_status is not None:
+                condition += " AND image_generation_status=?"
+                params.append(expected_status)
+            updated = c.execute(
+                f"UPDATE recipes SET {', '.join(assignments)} WHERE id=?" + condition,
                 params,
             )
+            if not updated.rowcount:
+                if guarded:
+                    return False
+                raise LookupError(f"Rezept #{recipe_id} nicht mehr vorhanden")
+            if backup_id is not None:
+                if status == "restored":
+                    backup_updated = c.execute(
+                        "UPDATE recipe_image_backups SET restored_at=? "
+                        "WHERE id=? AND recipe_id=? AND batch_id=?",
+                        (time.time(), int(backup_id), int(recipe_id), batch_id),
+                    )
+                else:
+                    backup_updated = c.execute(
+                        "UPDATE recipe_image_backups SET generated_sha256=?, model=?, prompt=?, "
+                        "generated_at=? WHERE id=? AND recipe_id=? AND batch_id=?",
+                        (generated_sha256, model, prompt, generated_at or time.time(),
+                         int(backup_id), int(recipe_id), batch_id),
+                    )
+                if not backup_updated.rowcount:
+                    raise LookupError("Bildsicherung gehört nicht zu diesem Rezept und Bildlauf")
+            return True
 
     def recipe_image_backup_create(
         self,
@@ -2360,6 +2597,15 @@ class Database:
                 "FROM recipe_image_backups b LEFT JOIN recipes r ON r.id=b.recipe_id "
                 "WHERE b.id=?",
                 (int(backup_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def recipe_image_backup_for_batch(self, recipe_id: int, batch_id: str) -> Optional[Dict[str, Any]]:
+        """Direkter Lookup ohne Listenlimit über den eindeutigen Batch/Rezept-Index."""
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT * FROM recipe_image_backups WHERE recipe_id=? AND batch_id=?",
+                (int(recipe_id), batch_id),
             ).fetchone()
         return dict(row) if row else None
 
@@ -2705,6 +2951,7 @@ class Database:
         history_entry: Optional[Dict[str, Any]] = None,
         quarantine_path: str = "",
         reason: str = "manual_delete",
+        expected_deleted_at: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Persistiert Cart-Bereinigung, Delete-Status und History atomar.
 
@@ -2721,6 +2968,9 @@ class Database:
             ).fetchone()
             if not recipe:
                 raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
+            if expected_deleted_at is not None and recipe["deleted_at"] != expected_deleted_at:
+                return {"cart_entries_updated": 0, "history_id": None,
+                        "already_deleted": False, "skipped": True}
             if not hard and recipe["deleted_at"] is not None:
                 return {"cart_entries_updated": 0, "history_id": None,
                         "already_deleted": True}
@@ -2890,13 +3140,13 @@ class Database:
         from .recipes.search import parse_search_query
         plan = parse_search_query(search, self.search_synonyms_map())
         for group in plan.positive_groups:
-            fts_parts = [_build_fts_query(term) for term in group]
+            fts_parts = [_build_fts_query(term, phrase=" " in term) for term in group]
             fts_parts = [part for part in fts_parts if part]
             likes = [str(term).strip() for term in group if len(str(term).strip()) >= 2]
             clauses = []
             if fts_parts:
                 clauses.append(
-                    "r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?)"
+                    "SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?"
                 )
                 params.append(" OR ".join(f"({part})" for part in fts_parts))
             if likes:
@@ -2904,28 +3154,33 @@ class Database:
                 # LIKE-Pfad findet auch zusammengesetzte deutsche Begriffe wie
                 # „Kartoffelpfanne“ bei der Suche nach „Pfanne“.
                 broad_parts = []
+                ingredient_parts = []
                 for term in likes:
                     like = f"%{term}%"
                     broad_parts.append(
-                        "(COALESCE(r.name,'') LIKE ? OR COALESCE(r.description,'') LIKE ? "
-                        "OR COALESCE(r.type,'') LIKE ? OR COALESCE(r.category,'') LIKE ? "
-                        "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
-                        "AND (COALESCE(ri.canonical_name,'') LIKE ? OR COALESCE(ri.name,'') LIKE ?)))"
+                        "(COALESCE(sr.name,'') LIKE ? OR COALESCE(sr.description,'') LIKE ? "
+                        "OR COALESCE(sr.type,'') LIKE ? OR COALESCE(sr.category,'') LIKE ?)"
                     )
-                    params.extend([like, like, like, like, like, like])
-                clauses.append("(" + " OR ".join(broad_parts) + ")")
+                    params.extend([like] * 4)
+                    ingredient_parts.append("(COALESCE(ri.canonical_name,'') LIKE ? OR COALESCE(ri.name,'') LIKE ?)")
+                clauses.append("SELECT sr.id FROM recipes sr WHERE " + " OR ".join(broad_parts))
+                clauses.append("SELECT ri.recipe_id FROM recipe_ingredients ri WHERE " + " OR ".join(ingredient_parts))
+                for term in likes:
+                    params.extend([f"%{term}%"] * 2)
             if clauses:
-                where.append("(" + " OR ".join(clauses) + ")")
+                # Materialize matching IDs once. In particular, ingredient
+                # substring lookup no longer runs as a correlated subquery
+                # against every recipe in the outer list/count scan.
+                where.append("r.id IN (" + " UNION ALL ".join(clauses) + ")")
 
         for term in plan.negative_terms:
-            like = f"%{term}%"
             where.append(
-                "NOT (COALESCE(r.name,'') LIKE ? OR COALESCE(r.description,'') LIKE ? "
-                "OR COALESCE(r.type,'') LIKE ? OR COALESCE(r.category,'') LIKE ? "
+                "NOT (recipe_term_matches(?,r.name) OR recipe_term_matches(?,r.description) "
+                "OR recipe_term_matches(?,r.type) OR recipe_term_matches(?,r.category) "
                 "OR EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
-                "AND (COALESCE(ri.canonical_name,'') LIKE ? OR COALESCE(ri.name,'') LIKE ?)))"
+                "AND (recipe_term_matches(?,ri.canonical_name) OR recipe_term_matches(?,ri.name))))"
             )
-            params.extend([like, like, like, like, like, like])
+            params.extend([term] * 6)
 
     def recipe_list(
         self,
@@ -2995,7 +3250,7 @@ class Database:
             rows = [dict(row) for row in c.execute(sql, params).fetchall()]
         for row in rows:
             row.pop("_search_score", None)
-        return rows
+        return self._present_recipes(rows)
 
     def recipe_count(
         self,
@@ -3380,7 +3635,7 @@ class Database:
                 INSERT INTO meal_plan_entries
                     (planned_for, recipe_id, planned_servings, sort_order, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(planned_for, recipe_id) DO UPDATE SET
+                ON CONFLICT(account_id, planned_for, recipe_id) DO UPDATE SET
                     planned_servings=excluded.planned_servings,
                     updated_at=excluded.updated_at
                 """,
@@ -3438,6 +3693,7 @@ class Database:
         if not row:
             return None
         result = dict(row)
+        result.pop("user_id", None)  # Internal ownership; keep the API shape.
         try:
             values = json.loads(result.pop("completed_steps_json") or "[]")
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -3449,14 +3705,19 @@ class Database:
         result["exists"] = True
         return result
 
+    @staticmethod
+    def _cooking_user_id(c, username: str) -> Optional[int]:
+        row = c.execute("SELECT id FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
+        return int(row[0]) if row else None
+
     def recipe_cooking_progress_get(
         self, recipe_id: int, username: str
     ) -> Optional[Dict[str, Any]]:
         with self.conn() as c:
             row = c.execute(
                 "SELECT * FROM recipe_cooking_progress "
-                "WHERE recipe_id=? AND username=?",
-                (recipe_id, username),
+                "WHERE recipe_id=? AND username=? AND user_id IS ?",
+                (recipe_id, username, self._cooking_user_id(c, username)),
             ).fetchone()
             return self._cooking_progress_row(row)
 
@@ -3479,6 +3740,7 @@ class Database:
             # alte Liste validieren und nach deren Austausch Fortschritt
             # zurückschreiben.
             c.execute("BEGIN IMMEDIATE")
+            user_id = self._cooking_user_id(c, username)
             recipe = c.execute(
                 "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL",
                 (recipe_id,),
@@ -3497,14 +3759,17 @@ class Database:
                 raise ValueError("Der aktive Kochschritt existiert nicht")
             c.execute(
                 "INSERT INTO recipe_cooking_progress "
-                "(recipe_id, username, completed_steps_json, active_step, servings, "
-                "started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "(recipe_id, username, user_id, completed_steps_json, active_step, servings, "
+                "started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(recipe_id, username) DO UPDATE SET "
+                "user_id=excluded.user_id, "
+                "started_at=CASE WHEN recipe_cooking_progress.user_id IS excluded.user_id "
+                "THEN recipe_cooking_progress.started_at ELSE excluded.started_at END, "
                 "completed_steps_json=excluded.completed_steps_json, "
                 "active_step=excluded.active_step, servings=excluded.servings, "
                 "updated_at=excluded.updated_at",
                 (
-                    recipe_id, username, completed_json, active, servings,
+                    recipe_id, username, user_id, completed_json, active, servings,
                     now, now,
                 ),
             )
@@ -3520,8 +3785,8 @@ class Database:
     def recipe_cooking_progress_clear(self, recipe_id: int, username: str) -> bool:
         with self.conn() as c:
             cur = c.execute(
-                "DELETE FROM recipe_cooking_progress WHERE recipe_id=? AND username=?",
-                (recipe_id, username),
+                "DELETE FROM recipe_cooking_progress WHERE recipe_id=? AND username=? AND user_id IS ?",
+                (recipe_id, username, self._cooking_user_id(c, username)),
             )
             return cur.rowcount > 0
 
@@ -3532,6 +3797,7 @@ class Database:
         *,
         servings: Optional[int],
         idempotency_key: Optional[str] = None,
+        account_id: int = 0,
     ) -> Dict[str, Any]:
         now = time.time()
         key = idempotency_key.strip() if idempotency_key is not None else None
@@ -3539,6 +3805,7 @@ class Database:
             raise ValueError("Ungültiger Idempotenzschlüssel")
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
+            user_id = self._cooking_user_id(c, username)
             recipe = c.execute(
                 "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL",
                 (recipe_id,),
@@ -3547,35 +3814,43 @@ class Database:
                 raise ValueError("Rezept nicht gefunden")
             if key is not None:
                 existing = c.execute(
-                    "SELECT q.servings AS request_servings, h.* "
+                    "SELECT q.servings AS request_servings, q.user_id AS request_user_id, h.* "
                     "FROM recipe_cooking_completion_requests q "
                     "JOIN recipe_cook_history h ON h.id=q.history_id "
                     "WHERE q.recipe_id=? AND q.username=? AND q.idempotency_key=?",
                     (recipe_id, username, key),
                 ).fetchone()
-                if existing is not None:
+                if (existing is not None and existing["request_user_id"] == user_id
+                        and existing["account_id"] == account_id):
                     if existing["request_servings"] != servings:
                         raise CookingCompletionConflictError(
                             "Idempotency-Key wurde bereits mit einer anderen Portionszahl verwendet"
                         )
                     replay = dict(existing)
                     replay.pop("request_servings", None)
+                    replay.pop("request_user_id", None)
                     return replay
+                if existing is not None:
+                    # Legacy/unassigned retries and another household's row
+                    # cannot be replayed by the current login. Keep history.
+                    c.execute("DELETE FROM recipe_cooking_completion_requests "
+                              "WHERE recipe_id=? AND username=? AND idempotency_key=?",
+                              (recipe_id, username, key))
             cur = c.execute(
                 "INSERT INTO recipe_cook_history "
-                "(recipe_id, cooked_at, cooked_by, servings) VALUES (?, ?, ?, ?)",
-                (recipe_id, now, username, servings),
+                "(recipe_id, cooked_at, cooked_by, servings, account_id) VALUES (?, ?, ?, ?, ?)",
+                (recipe_id, now, username, servings, account_id),
             )
             c.execute(
-                "DELETE FROM recipe_cooking_progress WHERE recipe_id=? AND username=?",
-                (recipe_id, username),
+                "DELETE FROM recipe_cooking_progress WHERE recipe_id=? AND username=? AND user_id IS ?",
+                (recipe_id, username, user_id),
             )
             if key is not None:
                 c.execute(
                     "INSERT INTO recipe_cooking_completion_requests "
-                    "(recipe_id, username, idempotency_key, servings, history_id, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (recipe_id, username, key, servings, int(cur.lastrowid), now),
+                    "(recipe_id, username, user_id, idempotency_key, servings, history_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (recipe_id, username, user_id, key, servings, int(cur.lastrowid), now),
                 )
             row = c.execute(
                 "SELECT * FROM recipe_cook_history WHERE id=?",
@@ -4163,8 +4438,13 @@ class Database:
         self.user_update_security(user_id, disabled=disabled)
 
     def user_delete(self, user_id: int) -> bool:
-        with self.conn() as c:
+        from .tenancy import user_household_guard
+        from fastapi import HTTPException
+        with user_household_guard(self, user_id, require_active_user=False) as locked_account, self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
+            member = c.execute("SELECT account_id FROM account_members WHERE user_id=?", (user_id,)).fetchone()
+            if (int(member[0]) if member else None) != locked_account:
+                raise HTTPException(409, "Der Haushalt hat sich geändert. Bitte erneut versuchen.")
             current = c.execute(
                 "SELECT role, disabled FROM users WHERE id=?",
                 (user_id,),
@@ -4177,6 +4457,30 @@ class Database:
                 role="user",
                 disabled=True,
             )
+            for account in c.execute("SELECT id FROM user_accounts WHERE owner_user_id=?", (user_id,)).fetchall():
+                partner = c.execute("SELECT m.user_id FROM account_members m JOIN users u ON u.id=m.user_id "
+                                    "WHERE m.account_id=? AND m.user_id!=? ORDER BY u.disabled,m.user_id LIMIT 1",
+                                    (account[0], user_id)).fetchone()
+                if partner:
+                    # Deleting one login must not cascade-delete the household
+                    # of the remaining member or their saved recipe references.
+                    c.execute("UPDATE user_accounts SET owner_user_id=? WHERE id=?", (partner[0], account[0]))
+                    c.execute("UPDATE account_invitations SET revoked_at=? WHERE account_id=? "
+                              "AND accepted_at IS NULL AND revoked_at IS NULL", (time.time(), account[0]))
+                else:
+                    # Deleting a login is not permission to silently orphan
+                    # or erase the last member's household data.
+                    populated = any(c.execute(f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1", (account[0],)).fetchone()
+                                    for table, column in (
+                                        ("recipes", "owner_account_id"), ("pending", "owner_account_id"),
+                                        ("history", "owner_account_id"), ("account_recipe_state", "account_id"),
+                                        ("shopping_cart", "account_id"), ("meal_plan_entries", "account_id"),
+                                        ("shopping_recurring", "account_id"), ("shopping_products", "account_id"),
+                                        ("shopping_exclusions", "account_id"), ("recipe_cook_history", "account_id")))
+                    busy = c.execute("SELECT 1 FROM background_tasks WHERE status IN ('queued','running') "
+                                     "AND json_extract(payload_json,'$.account_id')=? LIMIT 1", (account[0],)).fetchone()
+                    if populated or busy:
+                        raise HTTPException(409, "Das letzte Mitglied eines Haushalts mit Daten oder laufenden Importen kann nicht gelöscht werden. Bitte zuerst eine zweite Person aufnehmen.")
             c.execute("DELETE FROM users WHERE id=?", (user_id,))
             return True
 
@@ -4368,7 +4672,7 @@ class Database:
             "INSERT INTO shopping_products(canonical_name, display_name, category, icon, "
             "default_unit, usage_count, last_used_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(canonical_name) DO UPDATE SET "
+            "ON CONFLICT(account_id, canonical_name) DO UPDATE SET "
             "display_name=excluded.display_name, category=excluded.category, icon=excluded.icon, "
             "default_unit=COALESCE(excluded.default_unit, shopping_products.default_unit), "
             "usage_count=shopping_products.usage_count+excluded.usage_count, "
@@ -4530,7 +4834,7 @@ class Database:
                     src_ids.append(source_recipe_id)
                 c.execute(
                     "UPDATE shopping_cart SET amount=?, source_recipe_ids=?, "
-                    "category=COALESCE(category, ?) WHERE id=?",
+                    "checked=0, category=COALESCE(category, ?) WHERE id=?",
                     (new_amount, json.dumps(src_ids), resolved_category, existing["id"]),
                 )
                 self._shopping_product_upsert_conn(
@@ -4674,6 +4978,9 @@ class Database:
         now = time.time()
         added: List[Dict[str, Any]] = []
         with self.conn() as c:
+            if not c.execute("SELECT 1 FROM shopping_recurring WHERE active=1 AND next_due_on<=? LIMIT 1",
+                             (run_day.isoformat(),)).fetchone():
+                return []
             c.execute("BEGIN IMMEDIATE")
             rows = c.execute(
                 "SELECT * FROM shopping_recurring "
@@ -4990,14 +5297,15 @@ class Database:
 
     def recipe_share_link_create(self, share_id: str, recipe_id: int, *,
                                  expires_at: float,
-                                 created_by: Optional[str] = None) -> Dict[str, Any]:
+                                 created_by: Optional[str] = None,
+                                 owner_account_id: Optional[int] = None) -> Dict[str, Any]:
         now = time.time()
         with self.conn() as c:
             c.execute(
                 "INSERT INTO recipe_share_links "
-                "(id, recipe_id, created_at, expires_at, created_by, revoked_at) "
-                "VALUES (?, ?, ?, ?, ?, NULL)",
-                (share_id, int(recipe_id), now, float(expires_at), created_by),
+                "(id, recipe_id, created_at, expires_at, created_by, revoked_at, owner_account_id) "
+                "VALUES (?, ?, ?, ?, ?, NULL, ?)",
+                (share_id, int(recipe_id), now, float(expires_at), created_by, owner_account_id),
             )
             return dict(c.execute(
                 "SELECT * FROM recipe_share_links WHERE id=?", (share_id,)
@@ -5120,20 +5428,16 @@ class Database:
     def _backup_thumbnail_for_version(self, recipe: Dict[str, Any], version_id: int) -> None:
         """Sichert das aktuelle Cover im Rezeptordner und verknüpft es mit der Version."""
         from pathlib import Path
-        from .core.safety import atomic_copy_file
+        from .core.safety import atomic_copy_file, resolve_regular_file_under
 
         folder = Path(str(recipe.get("folder_path") or "")).resolve()
         filename = str(recipe.get("thumb_filename") or "").strip()
         if not filename:
             self.recipe_version_attach_media(version_id, {"thumbnail_absent": True})
             return
-        source = (folder / filename).resolve()
         try:
-            source.relative_to(folder)
-        except ValueError:
-            self.recipe_version_attach_media(version_id, {"thumbnail_absent": True})
-            return
-        if not source.is_file() or source.is_symlink():
+            source = resolve_regular_file_under(folder / filename, folder)
+        except (OSError, ValueError):
             self.recipe_version_attach_media(version_id, {"thumbnail_absent": True})
             return
         relative = Path(".versions") / str(version_id) / f"thumbnail{source.suffix.lower()}"
@@ -5149,12 +5453,42 @@ class Database:
         )
 
     def recipe_version_restore(self, version_id: int, *, restored_by: str = "system") -> Dict[str, Any]:
+        from .recipes.image_publish import image_publication_lock
+        from .recipes.manage import _assert_inside_root, _recipe_mutation_lock
+
         version = self.recipe_version_get(version_id)
         if not version or not version.get("snapshot"):
             return {"ok": False, "error": "Version nicht gefunden oder beschädigt"}
         recipe_id = int(version["recipe_id"])
+        try:
+            with _recipe_mutation_lock(self, recipe_id):
+                current = self.recipe_get(recipe_id)
+                if not current or current.get("deleted_at") is not None:
+                    return {"ok": False, "error": "Rezept existiert nicht mehr oder liegt im Papierkorb"}
+                if not str(current.get("folder_path") or "").strip():
+                    return {"ok": False, "error": "Rezeptordner fehlt"}
+                original = _assert_inside_root(Path(str(current.get("folder_path") or "")))
+                saved_folder = (version["snapshot"].get("recipe") or {}).get("folder_path")
+                target = _assert_inside_root(Path(str(saved_folder))) if saved_folder else original
+                # Beide Pfade bleiben während Verschieben, Coverwechsel und
+                # Rollback exklusiv. Bildjobs dürfen erst danach publizieren.
+                with ExitStack() as locks:
+                    for folder in sorted({original, target}, key=str):
+                        locks.enter_context(image_publication_lock(folder))
+                    return self._recipe_version_restore_locked(version, restored_by=restored_by)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return {"ok": False, "error": f"Version konnte nicht wiederhergestellt werden: {exc}"}
+
+    def _recipe_version_restore_locked(self, version: Dict[str, Any], *, restored_by: str) -> Dict[str, Any]:
+        from .core.safety import atomic_copy_file, resolve_regular_file_under
+        from .recipes.image_cache import invalidate_thumbnail_cache
+        from .recipes.image_publish import _cleanup, _publish_image, _remove_images
+        from .recipes.manage import _safe_update_recipe_metadata_locked
+        import uuid
+
+        recipe_id = int(version["recipe_id"])
         current = self.recipe_get(recipe_id)
-        if not current:
+        if not current or current.get("deleted_at") is not None:
             return {"ok": False, "error": "Rezept existiert nicht mehr"}
         snap = version["snapshot"]
         media = snap.get("media") or {}
@@ -5162,13 +5496,10 @@ class Database:
         backup_relative: Optional[Path] = None
         if media.get("thumbnail_backup"):
             backup_relative = Path(str(media["thumbnail_backup"]))
-            backup = (original_folder / backup_relative).resolve()
             try:
-                backup.relative_to(original_folder)
-            except ValueError:
-                return {"ok": False, "error": "Cover-Sicherung liegt außerhalb des Rezeptordners"}
-            if not backup.is_file() or backup.is_symlink():
-                return {"ok": False, "error": "Cover-Sicherung der Version fehlt"}
+                resolve_regular_file_under(original_folder / backup_relative, original_folder)
+            except (OSError, ValueError) as exc:
+                return {"ok": False, "error": f"Cover-Sicherung der Version fehlt oder ist unzulässig: {exc}"}
         # Undo-Snapshot des aktuellen Stands anlegen, bevor zurückgerollt wird.
         undo_version_id = self.recipe_version_create(
             recipe_id, created_by=restored_by, source="restore",
@@ -5182,10 +5513,8 @@ class Database:
         # zurückgeschrieben werden; sonst setzt der nächste FS-Sync den Restore
         # wieder zurück. Der Manager verschiebt und rollt diese Kerndaten
         # konsistent zurück.
-        from .recipes.manage import safe_update_recipe_metadata
-
         try:
-            safe_update_recipe_metadata(
+            _safe_update_recipe_metadata_locked(
                 self,
                 recipe_id,
                 name=str(recipe.get("name") or current.get("name") or "Unbekannt"),
@@ -5210,42 +5539,74 @@ class Database:
             if col in recipe:
                 sets.append(f"{col}=?"); params.append(recipe.get(col))
         params.append(recipe_id)
+        restored = self.recipe_get(recipe_id) or current
+        folder = Path(str(restored.get("folder_path") or "")).resolve()
+        media_restored = bool(media.get("thumbnail_absent") or media.get("thumbnail_backup"))
+        filename = None
         try:
-            with self.conn() as c:
-                c.execute("BEGIN IMMEDIATE")
-                if sets:
-                    c.execute(f"UPDATE recipes SET {', '.join(sets)} WHERE id=?", params)
-                c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
-                for idx, ing in enumerate(snap.get("ingredients") or []):
-                    c.execute(
-                        "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, amount, unit, raw, sort_order, calories) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (recipe_id, ing.get("name") or "", ing.get("canonical_name"),
-                         ing.get("amount"), ing.get("unit"), ing.get("raw"),
-                         ing.get("sort_order", idx), ing.get("calories")),
-                    )
-                _invalidate_recipe_nutrition(c, recipe_id)
-                c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
-                for idx, step in enumerate(snap.get("steps") or [], start=1):
-                    c.execute(
-                        "INSERT INTO recipe_steps (recipe_id, step_number, instruction, timer_seconds) VALUES (?, ?, ?, ?)",
-                        (recipe_id, int(step.get("step_number") or idx),
-                         step.get("instruction") or "", step.get("timer_seconds")),
-                    )
-                c.execute("DELETE FROM recipe_tags WHERE recipe_id=?", (recipe_id,))
-                for tag in snap.get("tags") or []:
-                    name = str(tag.get("name") or "").strip()
-                    if not name:
-                        continue
-                    c.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (name,))
-                    tag_id = int(c.execute("SELECT id FROM tags WHERE name=? COLLATE NOCASE", (name,)).fetchone()[0])
-                    c.execute(
-                        "INSERT OR IGNORE INTO recipe_tags(recipe_id, tag_id, auto) VALUES (?, ?, ?)",
-                        (recipe_id, tag_id, 1 if tag.get("auto") else 0),
-                    )
+            with ExitStack() as changes:
+                if media.get("thumbnail_absent"):
+                    candidates = [p for p in folder.glob("thumb.*") if p.is_file() and not p.is_symlink()]
+                    current_thumb = str(restored.get("thumb_filename") or "").strip()
+                    if current_thumb:
+                        candidate = folder / current_thumb
+                        if candidate.exists():
+                            candidates.append(resolve_regular_file_under(candidate, folder))
+                    changes.enter_context(_remove_images(candidates, folder))
+                elif backup_relative is not None:
+                    backup = resolve_regular_file_under(folder / backup_relative, folder)
+                    filename = Path(str(media.get("thumbnail_filename") or "thumb.jpg")).name
+                    target = folder / filename
+                    staged = folder / f".thumb-version-{uuid.uuid4().hex}{target.suffix}"
+                    changes.callback(_cleanup, staged)
+                    atomic_copy_file(backup, staged)
+                    changes.enter_context(_publish_image(staged, target))
+                # Cover und Inhaltsdaten teilen einen Commit. Erst danach
+                # dürfen ihre Rückfallkopien entfernt werden.
+                with self.conn() as c:
+                    c.execute("BEGIN IMMEDIATE")
+                    if sets:
+                        c.execute(f"UPDATE recipes SET {', '.join(sets)} WHERE id=?", params)
+                    c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
+                    for idx, ing in enumerate(snap.get("ingredients") or []):
+                        c.execute(
+                            "INSERT INTO recipe_ingredients (recipe_id, name, canonical_name, amount, unit, raw, sort_order, calories) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (recipe_id, ing.get("name") or "", ing.get("canonical_name"),
+                             ing.get("amount"), ing.get("unit"), ing.get("raw"),
+                             ing.get("sort_order", idx), ing.get("calories")),
+                        )
+                    _invalidate_recipe_nutrition(c, recipe_id)
+                    c.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (recipe_id,))
+                    for idx, step in enumerate(snap.get("steps") or [], start=1):
+                        c.execute(
+                            "INSERT INTO recipe_steps (recipe_id, step_number, instruction, timer_seconds) VALUES (?, ?, ?, ?)",
+                            (recipe_id, int(step.get("step_number") or idx),
+                             step.get("instruction") or "", step.get("timer_seconds")),
+                        )
+                    # Schritt-Indizes gehören zur ersetzten Liste. Der Fortschritt
+                    # aller Nutzer wird mit dem Schrittersatz atomar ungültig.
+                    c.execute("DELETE FROM recipe_cooking_progress WHERE recipe_id=?", (recipe_id,))
+                    c.execute("DELETE FROM recipe_tags WHERE recipe_id=?", (recipe_id,))
+                    for tag in snap.get("tags") or []:
+                        name = str(tag.get("name") or "").strip()
+                        if not name:
+                            continue
+                        c.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (name,))
+                        tag_id = int(c.execute("SELECT id FROM tags WHERE name=? COLLATE NOCASE", (name,)).fetchone()[0])
+                        c.execute(
+                            "INSERT OR IGNORE INTO recipe_tags(recipe_id, tag_id, auto) VALUES (?, ?, ?)",
+                            (recipe_id, tag_id, 1 if tag.get("auto") else 0),
+                        )
+                    if media_restored:
+                        c.execute(
+                            "UPDATE recipes SET thumb_filename=?, image_generation_status='skipped', "
+                            "image_generation_batch_id=NULL WHERE id=?",
+                            (filename, recipe_id),
+                        )
         except Exception as exc:
             try:
-                safe_update_recipe_metadata(
+                _safe_update_recipe_metadata_locked(
                     self,
                     recipe_id,
                     name=str(current.get("name") or "Unbekannt"),
@@ -5260,37 +5621,8 @@ class Database:
                 logger.exception("Recipe #%s: Restore-Rollback unvollständig", recipe_id)
             return {"ok": False, "error": f"Versionsdaten konnten nicht wiederhergestellt werden: {exc}"}
 
-        restored = self.recipe_get(recipe_id) or current
-        folder = Path(str(restored.get("folder_path") or "")).resolve()
-        backup = (folder / backup_relative).resolve() if backup_relative else None
-        media_restored = False
-        if media.get("thumbnail_absent"):
-            current_thumb = str(restored.get("thumb_filename") or "").strip()
-            if current_thumb:
-                candidate = (folder / Path(current_thumb).name).resolve()
-                try:
-                    candidate.relative_to(folder)
-                    if candidate.is_file() and not candidate.is_symlink():
-                        candidate.unlink(missing_ok=True)
-                except ValueError:
-                    pass
-            for candidate in folder.glob("thumb.*"):
-                if candidate.is_file() and not candidate.is_symlink():
-                    candidate.unlink(missing_ok=True)
-            with self.conn() as c:
-                c.execute("UPDATE recipes SET thumb_filename=NULL WHERE id=?", (recipe_id,))
-            media_restored = True
-        elif media.get("thumbnail_backup"):
-            from .core.safety import atomic_copy_file
-
-            filename = Path(str(media.get("thumbnail_filename") or "thumb.jpg")).name
-            target = folder / filename
-            if backup is None or not backup.is_file() or backup.is_symlink():
-                return {"ok": False, "error": "Cover-Sicherung der Version fehlt"}
-            atomic_copy_file(backup, target)
-            with self.conn() as c:
-                c.execute("UPDATE recipes SET thumb_filename=? WHERE id=?", (filename, recipe_id))
-            media_restored = True
+        if media_restored:
+            invalidate_thumbnail_cache(folder)
         return {
             "ok": True,
             "recipe_id": recipe_id,
@@ -5369,14 +5701,27 @@ class Database:
             return int(cur.lastrowid)
 
     def reset_stale_maintenance(self) -> int:
-        """Schließt nach einem Prozessneustart verwaiste Wartungsläufe."""
+        """Schließt verwaiste Läufe, erhält aber fortsetzbare Bild-Checkpoints."""
         with self.conn() as c:
+            resumable = []
+            for row in c.execute(
+                "SELECT payload_json FROM background_tasks WHERE kind='recipe_image_backfill' "
+                "AND (status='queued' OR (status='running' AND recovery_attempts < 3))"
+            ).fetchall():
+                try:
+                    resumable.append(int(json.loads(row[0])["run_id"]))
+                except (ValueError, TypeError, KeyError):
+                    continue
+            protected = ""
+            if resumable:
+                protected = f" AND id NOT IN ({','.join('?' for _ in resumable)})"
             cur = c.execute(
                 "UPDATE maintenance_runs SET status='error', ended_at=?, "
-                "result_json=? WHERE status='running'",
+                "result_json=? WHERE status='running'" + protected,
                 (
                     time.time(),
                     json.dumps({"error": "Prozessneustart während des Laufs"}),
+                    *resumable,
                 ),
             )
             return int(cur.rowcount)
@@ -5443,5 +5788,10 @@ def get_db() -> Database:
     if _db is None:
         with _db_lock:
             if _db is None:
-                _db = Database()
+                _db = Database(configured_database_path())
+    from .tenancy import CURRENT_HOUSEHOLD
+    identity = CURRENT_HOUSEHOLD.get()
+    if identity is not None:
+        from .tenant_db import HouseholdDatabase
+        return HouseholdDatabase(_db, identity)
     return _db

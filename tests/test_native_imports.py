@@ -428,7 +428,7 @@ def test_pending_routes_separate_submission_from_admin_management(client):
         assert require_auth in calls
         assert require_admin not in calls
 
-    submission_paths = {"/api/pending/import-url", "/api/pending/import-file"}
+    submission_paths = {"/api/pending/import-url", "/api/pending/import-file", "/api/pending", "/api/pending/file", "/api/pending/scan-photo", "/api/pending/reanalyze"}
     for (path, _method), route in routes.items():
         if path in submission_paths:
             continue
@@ -563,7 +563,8 @@ def test_native_social_import_is_visible_before_background_analysis(
 
     queued = {}
 
-    def fake_enqueue(kind, payload, *, dedupe_key=None):
+    def fake_enqueue(kind, payload, *, dedupe_key=None, reserve_budget=False):
+        assert reserve_budget is False  # A fresh URL already reserved its slot.
         queued.update(kind=kind, payload=payload, dedupe_key=dedupe_key)
         return 73
 

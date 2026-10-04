@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="de"><head>
+<meta charset="UTF-8"><title>Konto erstellen · Rezepte</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="strict-origin">
+<link rel="stylesheet" href="/static/rezepte.css">
+</head><body class="login-body">
+<form method="post" action="/register" class="login-card">
+  <h1>{TITLE}</h1>
+  <p class="muted">Eigene Anmeldung für den gemeinsamen Rezept-Haushalt. Eine Einladung verbindet dich mit der einladenden Person.</p>
+  {ERROR}
+  <input type="hidden" name="invitation_token" value="{INVITATION}">
+  <label>Benutzername<input name="username" value="{USERNAME}" autocomplete="username" minlength="3" maxlength="60" required></label>
+  <label>Passwort<input name="password" type="password" autocomplete="new-password" minlength="10" maxlength="72" required></label>
+  <label>Passwort wiederholen<input name="password_confirm" type="password" autocomplete="new-password" minlength="10" maxlength="72" required></label>
+  <p class="muted">Mindestens 10 Zeichen. Dein Passwort bleibt deine eigene Anmeldung.</p>
+  <button type="submit">{ACTION}</button>
+  <a class="btn btn-secondary" href="{LOGIN}">Ich habe bereits ein Konto · anmelden</a>
+</form>
+</body></html>

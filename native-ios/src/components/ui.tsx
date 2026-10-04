@@ -46,6 +46,7 @@ export function PrimaryButton({
     <Pressable
       accessibilityRole="button"
       disabled={disabled}
+      accessibilityState={{ disabled: Boolean(disabled) }}
       onPress={onPress}
       style={({ pressed }) => [
         styles.button,
@@ -72,9 +73,9 @@ export function StateView({
   onAction?: () => void;
 }) {
   return (
-    <View style={styles.state}>
-      {loading && <ActivityIndicator color={colors.text} />}
-      <Text style={styles.stateTitle}>{title}</Text>
+    <View style={styles.state} accessibilityLiveRegion="polite" accessibilityState={{ busy: Boolean(loading) }}>
+      {loading && <ActivityIndicator color={colors.text} accessibilityLabel="Wird geladen" />}
+      <Text style={styles.stateTitle} accessibilityRole="header">{title}</Text>
       {!!message && <Text style={styles.stateMessage}>{message}</Text>}
       {action && onAction && <PrimaryButton label={action} onPress={onAction} />}
     </View>

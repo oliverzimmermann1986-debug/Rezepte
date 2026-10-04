@@ -126,7 +126,28 @@ def run_share_ingest_task(payload: dict) -> dict:
     except HTTPException as exc:
         return {"ok": False, "error": str(exc.detail)}
     content_type = str(payload.get("type") or "recipe")
-    existing = get_db().history_get(url)
+    db = get_db()
+    if payload.get("account_id") is not None:
+        from ..tenancy import HouseholdScope, scoped_scraper
+        from ..tenant_db import HouseholdDatabase
+        try:
+            account_id = int(payload["account_id"])
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "Ungültiger Import-Haushalt"}
+        with db.conn() as c:
+            active = c.execute("SELECT 1 FROM account_members m JOIN users u ON u.id=m.user_id WHERE m.account_id=? AND u.disabled=0 LIMIT 1", (account_id,)).fetchone()
+        if not active or account_id <= 0:
+            return {"ok": False, "error": "Import-Haushalt ist nicht mehr aktiv"}
+        db = HouseholdDatabase(db, HouseholdScope(account_id), import_owner=account_id)
+        global_recipe = db.global_recipe_for_url(url)
+        if global_recipe:
+            db.save_recipe(int(global_recipe["id"]))
+            db.pending_resolve(url)
+            return {"ok": True, "status": "linked_global", "recipe_id": int(global_recipe["id"]), "url": url, "downloaded": False}
+        job = scoped_scraper(db)
+    else:
+        job = scraper_job.get_scraper_job()
+    existing = db.history_get(url)
     if existing and existing.get("target_dir") and Path(existing["target_dir"]).is_dir():
         return {
             "ok": True,
@@ -142,16 +163,22 @@ def run_share_ingest_task(payload: dict) -> dict:
                 "url": url,
                 "error": "Scraper ist momentan belegt",
             }
-        result = scraper_job.get_scraper_job().process_url(
-            {
+        from ..tenancy import household_context
+        with household_context(getattr(db, "scope", None)):
+            if getattr(db, "import_owner", None) is not None:
+                global_recipe = db.global_recipe_for_url(url)
+                if global_recipe:
+                    db.save_recipe(int(global_recipe["id"]))
+                    db.pending_resolve(url)
+                    return {"ok": True, "status": "linked_global", "recipe_id": int(global_recipe["id"]), "url": url, "downloaded": False}
+            result = job.process_url({
                 "url": url,
                 "type": content_type,
                 # Die native Intake-Route legt sofort einen sichtbaren
                 # Pending-Platzhalter an. Der Worker muss diesen analysieren,
                 # statt ihn als bereits bekannten Import zu überspringen.
                 "reanalyze_existing": True,
-            }
-        )
+            })
         logger.info(
             "Share-Intake url_sha256=%s → %s",
             hashlib.sha256(url.encode("utf-8")).hexdigest()[:16],
@@ -177,15 +204,18 @@ def share_intake(payload: ShareIn, request: Request,
         f"{ctype}\0{url}".encode("utf-8")
     ).hexdigest()
     cfg = get_config()
+    from ..import_budget import reserve_import
+    budget_reserved = reserve_import(get_db(), dedupe_key=dedupe_key)
     try:
         queue_limit = max(1, min(1000, int(
             cfg.get("web", "share_queue_limit", default=100) or 100
         )))
         task_id = enqueue(
             "share_ingest",
-            {"url": url, "type": ctype},
+            {"url": url, "type": ctype, "account_id": None},
             dedupe_key=dedupe_key,
             max_active=queue_limit,
+            reserve_budget=not budget_reserved,
         )
     except OverflowError as exc:
         raise HTTPException(

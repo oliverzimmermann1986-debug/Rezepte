@@ -95,7 +95,7 @@ export function AdminTrash({
       <SafeAreaView style={styles.safe} edges={['top', 'bottom', 'left', 'right']}>
         <View style={styles.header}>
           <Pressable onPress={onClose} style={styles.headerAction}><Text style={styles.headerLink}>Fertig</Text></Pressable>
-          <Text style={styles.title}>Papierkorb</Text>
+          <Text accessibilityRole="header" style={styles.title}>Papierkorb</Text>
           <Pressable onPress={() => void load()} disabled={loading} style={styles.headerAction}><Text style={[styles.headerLink, styles.right, loading && styles.disabled]}>Laden</Text></Pressable>
         </View>
         {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}

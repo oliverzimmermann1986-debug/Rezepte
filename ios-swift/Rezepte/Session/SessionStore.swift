@@ -16,6 +16,9 @@ final class SessionStore: ObservableObject {
     @Published private(set) var serverVersion = ""
     @Published private(set) var serverCapabilities: Set<String> = []
     @Published private(set) var compatibilityWarning: String?
+    @Published private(set) var identity = UUID()
+    @Published private(set) var registrationRequested = false
+    @Published private(set) var isEndingSession = false
     @Published var alertMessage: String?
 
     let api = APIClient()
@@ -38,6 +41,7 @@ final class SessionStore: ObservableObject {
     }
 
     func restore() async {
+        let expectedIdentity = identity
         guard !savedServer.isEmpty,
               let token = KeychainStore.read(account: tokenAccount) else {
             state = .signedOut
@@ -51,14 +55,16 @@ final class SessionStore: ObservableObject {
             try await api.configure(
                 server: savedServer,
                 token: token,
-                cloudflareCredentials: cloudflareCredentials
+                cloudflareCredentials: cloudflareCredentials,
+                sessionID: expectedIdentity
             )
             let session = try await api.sessionInfo()
+            guard identity == expectedIdentity else { return }
             apply(session)
             await refreshSystemInfo()
             if !readOnly { await drainSharedImports() }
         } catch {
-            signOut()
+            if identity == expectedIdentity { signOut() }
         }
     }
 
@@ -69,6 +75,8 @@ final class SessionStore: ObservableObject {
         cloudflareClientID: String,
         cloudflareClientSecret: String
     ) async throws {
+        identity = UUID()
+        let expectedIdentity = identity
         let cloudflareCredentials = try CloudflareAccessCredentials(
             clientID: cloudflareClientID,
             clientSecret: cloudflareClientSecret
@@ -76,13 +84,15 @@ final class SessionStore: ObservableObject {
         try await api.configure(
             server: server,
             token: nil,
-            cloudflareCredentials: cloudflareCredentials
+            cloudflareCredentials: cloudflareCredentials,
+            sessionID: expectedIdentity
         )
         let response = try await api.login(username: username, password: password)
         try await activate(
             server: server,
             token: response.token,
-            cloudflareCredentials: cloudflareCredentials
+            cloudflareCredentials: cloudflareCredentials,
+            expectedIdentity: expectedIdentity
         )
     }
 
@@ -91,6 +101,8 @@ final class SessionStore: ObservableObject {
         cloudflareClientID: String,
         cloudflareClientSecret: String
     ) async throws {
+        identity = UUID()
+        let expectedIdentity = identity
         let cloudflareCredentials = try CloudflareAccessCredentials(
             clientID: cloudflareClientID,
             clientSecret: cloudflareClientSecret
@@ -98,17 +110,38 @@ final class SessionStore: ObservableObject {
         try await api.configure(
             server: server,
             token: nil,
-            cloudflareCredentials: cloudflareCredentials
+            cloudflareCredentials: cloudflareCredentials,
+            sessionID: expectedIdentity
         )
         let response = try await api.guestLogin()
         try await activate(
             server: server,
             token: response.token,
-            cloudflareCredentials: cloudflareCredentials
+            cloudflareCredentials: cloudflareCredentials,
+            expectedIdentity: expectedIdentity
         )
     }
 
+    func register(
+        server: String, username: String, password: String, invitationToken: String,
+        cloudflareClientID: String, cloudflareClientSecret: String
+    ) async throws {
+        identity = UUID()
+        let expectedIdentity = identity
+        let cloudflare = try CloudflareAccessCredentials(clientID: cloudflareClientID, clientSecret: cloudflareClientSecret)
+        try await api.configure(server: server, token: nil, cloudflareCredentials: cloudflare, sessionID: expectedIdentity)
+        let response = try await api.register(username: username, password: password, invitationToken: invitationToken)
+        try await activate(server: server, token: response.token, cloudflareCredentials: cloudflare, expectedIdentity: expectedIdentity)
+    }
+
     func signOut() {
+        let previousIdentity = identity
+        if !readOnly, !username.isEmpty {
+            for url in SharedImportQueue.all() { SharedImportQueue.remove(url) }
+        }
+        identity = UUID()
+        URLCache.shared.removeAllCachedResponses()
+        Task { await api.clearAuthentication(ifSessionID: previousIdentity) }
         KeychainStore.delete(account: tokenAccount)
         username = ""
         fullAccess = false
@@ -116,16 +149,44 @@ final class SessionStore: ObservableObject {
         serverVersion = ""
         serverCapabilities = []
         compatibilityWarning = nil
+        registrationRequested = false
         state = .signedOut
+    }
+
+    func startRegistration() {
+        signOut()
+        registrationRequested = true
+    }
+
+    func logOut() async {
+        guard case .signedIn = state, !isEndingSession else { return }
+        let expectedIdentity = identity
+        isEndingSession = true
+        defer { isEndingSession = false }
+        _ = try? await api.logout()
+        if identity == expectedIdentity { signOut() }
+    }
+
+    func householdDidChange() async throws {
+        guard let token = KeychainStore.read(account: tokenAccount) else { throw APIError.unauthenticated }
+        let cloudflare = try CloudflareAccessCredentials(clientID: savedCloudflareClientID, clientSecret: savedCloudflareClientSecret)
+        identity = UUID()
+        let expectedIdentity = identity
+        try await api.configure(server: savedServer, token: token, cloudflareCredentials: cloudflare, sessionID: expectedIdentity)
+        let current = try await api.sessionInfo()
+        guard identity == expectedIdentity else { throw APIError.sessionChanged }
+        apply(current)
     }
 
     func refreshAccess() async {
         guard case .signedIn = state else { return }
+        let expectedIdentity = identity
         do {
             let session = try await api.sessionInfo()
+            guard identity == expectedIdentity else { return }
             apply(session)
         } catch {
-            handle(error)
+            if identity == expectedIdentity { handle(error) }
         }
     }
 
@@ -142,14 +203,18 @@ final class SessionStore: ObservableObject {
     private func activate(
         server: String,
         token: String,
-        cloudflareCredentials: CloudflareAccessCredentials?
+        cloudflareCredentials: CloudflareAccessCredentials?,
+        expectedIdentity: UUID
     ) async throws {
+        guard identity == expectedIdentity else { throw APIError.sessionChanged }
         try await api.configure(
             server: server,
             token: token,
-            cloudflareCredentials: cloudflareCredentials
+            cloudflareCredentials: cloudflareCredentials,
+            sessionID: expectedIdentity
         )
         let activeSession = try await api.sessionInfo()
+        guard identity == expectedIdentity else { throw APIError.sessionChanged }
         try KeychainStore.save(token, account: tokenAccount)
         try saveCloudflareCredentials(cloudflareCredentials)
         defaults.set(
@@ -173,8 +238,10 @@ final class SessionStore: ObservableObject {
     }
 
     private func refreshSystemInfo() async {
+        let expectedIdentity = identity
         do {
             let info = try await api.systemInfo()
+            guard identity == expectedIdentity else { return }
             serverVersion = info.version
             serverCapabilities = Set(info.capabilities)
             let required = Set([
@@ -187,6 +254,7 @@ final class SessionStore: ObservableObject {
                 ? nil
                 : "Der Server ist älter als diese App. Es fehlen: \(missing.joined(separator: ", "))."
         } catch {
+            guard identity == expectedIdentity else { return }
             serverVersion = "unbekannt"
             serverCapabilities = []
             compatibilityWarning = "Serverversion konnte nicht geprüft werden. App und Server bitte gemeinsam aktualisieren."
@@ -194,6 +262,8 @@ final class SessionStore: ObservableObject {
     }
 
     func handle(_ error: Error) {
+        if error is CancellationError { return }
+        if let apiError = error as? APIError, case .sessionChanged = apiError { return }
         if let apiError = error as? APIError,
            case .unauthenticated = apiError {
             signOut()
@@ -203,21 +273,29 @@ final class SessionStore: ObservableObject {
 
     func drainSharedImports() async {
         guard case .signedIn = state, !readOnly else { return }
+        let expectedIdentity = identity
         let queued = SharedImportQueue.all()
         guard !queued.isEmpty else { return }
         var imported = 0
+        var linked = 0
         for url in queued {
+            guard identity == expectedIdentity, !readOnly else { return }
             do {
-                _ = try await api.importURL(url)
+                let result = try await api.importURL(url)
+                guard identity == expectedIdentity else { return }
                 SharedImportQueue.remove(url)
                 imported += 1
+                if result.status == "linked_global" { linked += 1 }
             } catch {
+                guard identity == expectedIdentity else { return }
                 alertMessage = "Ein geteilter Link konnte noch nicht importiert werden: \(error.localizedDescription)"
                 break
             }
         }
         if imported > 0 {
-            alertMessage = imported == 1
+            alertMessage = imported == 1 && linked == 1
+                ? "Das globale Rezept wurde in deinem Haushalt gespeichert. Kein erneuter Download."
+                : imported == 1
                 ? "Der geteilte Rezeptlink wurde importiert."
                 : "\(imported) geteilte Links wurden importiert."
         }

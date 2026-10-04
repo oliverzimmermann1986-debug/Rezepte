@@ -12,10 +12,14 @@ export type RecipeListItem = {
   needs_manual_care: boolean;
   is_favorite: boolean;
   rating: number;
+  visibility?: 'global' | 'private';
+  in_library?: boolean;
+  can_edit?: boolean;
   user_verified?: boolean | number;
   verified_at?: number | null;
   verified_by?: string | null;
   servings?: number | null;
+  image_generation_status?: string | null;
 };
 
 export type Ingredient = {
@@ -91,6 +95,7 @@ export type PendingSuggestion = {
 
 export type PendingItem = {
   url: string;
+  visibility?: 'private' | 'global';
   content_type?: string | null;
   description?: string | null;
   created_at?: number | null;

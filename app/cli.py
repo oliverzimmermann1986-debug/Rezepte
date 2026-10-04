@@ -173,10 +173,12 @@ def _cmd_db_restore(args: list) -> int:
            3) Integrity-Check der Backup-Datei
            4) Ziel überschreiben
 
-    WICHTIG: Service muss vorher gestoppt werden!
-       systemctl stop scrapper-web
+    WICHTIG: Schreibende Dienste und ihre Timer müssen gestoppt werden!
+       systemctl stop scrapper-job.timer scrapper-db-backup.timer
+       systemctl stop scrapper-web scrapper-job scrapper-db-backup
        python -m app.cli db-restore <backup-file>
        systemctl start scrapper-web
+       # Nur die zuvor aktiven Timer wieder starten.
     """
     if not args or not args[0]:
         print("Usage: python -m app.cli db-restore <backup-file>", file=sys.stderr)
@@ -199,6 +201,8 @@ def _cmd_db_restore(args: list) -> int:
                 "scrapper-web.service",
                 "scrapper-job.service",
                 "scrapper-db-backup.service",
+                "scrapper-job.timer",
+                "scrapper-db-backup.timer",
             ):
                 active = _subprocess.run(
                     ["systemctl", "is-active", "--quiet", unit],
@@ -209,7 +213,7 @@ def _cmd_db_restore(args: list) -> int:
                     active_units.append(unit)
             if active_units:
                 print(
-                    "✗ Schreibende Dienste laufen noch: "
+                    "✗ Schreibende Dienste oder Timer laufen noch: "
                     + ", ".join(active_units)
                     + ". Vor Restore stoppen.",
                     file=sys.stderr,

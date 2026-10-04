@@ -7,12 +7,17 @@ parallel erzeugen.
 from __future__ import annotations
 
 import os
+import hashlib
 import subprocess
 import threading
+import time
 import weakref
+from contextlib import contextmanager
 from pathlib import Path
 
 from PIL import Image, ImageOps
+from ..config_store import get_config
+from ..jobs.locks import file_lock_path_or_none
 
 MAX_JPEG_SOURCE_PIXELS = 50_000_000
 MAX_OTHER_SOURCE_PIXELS = 24_000_000
@@ -24,11 +29,46 @@ Image.MAX_IMAGE_PIXELS = MAX_JPEG_SOURCE_PIXELS
 
 _lock_guard = threading.Lock()
 _locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
+_publication_local = threading.local()
+
+
+class ImagePublicationBusyError(RuntimeError):
+    """An existing process still owns this recipe's image transaction."""
 
 
 def _keyed_lock(key: str) -> threading.Lock:
     with _lock_guard:
         return _locks.setdefault(key, threading.Lock())
+
+
+@contextmanager
+def image_publication_lock(folder: Path, *, wait_seconds: float = 5.0):
+    """Serialisiert Bilder und Rollbacks über Threads und Prozesse hinweg."""
+    key = os.path.normcase(str(Path(folder).resolve()))
+    held = getattr(_publication_local, "held", None)
+    if held is None:
+        held = _publication_local.held = set()
+    if key in held:
+        yield
+        return
+    data_dir = Path(get_config().get("paths", "data_dir", default="/opt/scrapper/data"))
+    lock_path = data_dir / "locks" / ("recipe-image-" + hashlib.sha256(key.encode()).hexdigest() + ".lock")
+    wait_seconds = max(0.0, float(wait_seconds))
+    deadline = time.monotonic() + wait_seconds
+    thread_lock = _keyed_lock(f"image-publication::{key}")
+    if not thread_lock.acquire(timeout=wait_seconds):
+        raise ImagePublicationBusyError("Das Rezeptbild wird gerade geändert. Bitte erneut versuchen.")
+    try:
+        with file_lock_path_or_none(lock_path, wait_seconds=max(0.0, deadline-time.monotonic())) as lock:
+            if lock is None:
+                raise ImagePublicationBusyError("Das Rezeptbild wird gerade geändert. Bitte erneut versuchen.")
+            held.add(key)
+            try:
+                yield
+            finally:
+                held.remove(key)
+    finally:
+        thread_lock.release()
 
 
 def assert_safe_image_dimensions(image) -> None:
@@ -83,6 +123,11 @@ def _thumbnail_cache_is_current(source: Path, target: Path, marker: Path) -> boo
 
 def ensure_thumbnail(source: Path, width: int, *, quality: int = 84) -> Path:
     """Erzeugt/aktualisiert ``thumb-w<width>.jpg`` atomar und gibt den Pfad zurück."""
+    with image_publication_lock(Path(source).parent):
+        return _ensure_thumbnail(source, width, quality=quality)
+
+
+def _ensure_thumbnail(source: Path, width: int, *, quality: int) -> Path:
     source = Path(source)
     width = max(64, min(2048, int(width)))
     target = cached_thumbnail_path(source, width)
@@ -147,11 +192,12 @@ def ensure_pdf_first_page(
         prefix = target.parent / (
             f".{target.stem}.{os.getpid()}.{threading.get_ident()}"
         )
-        rendered = prefix.with_suffix(".jpg")
+        rendered = prefix.with_name(prefix.name + ".jpg")
         try:
             result = subprocess.run(
                 [
                     "pdftoppm", "-jpeg", "-r", str(max(72, min(300, int(dpi)))),
+                    "-scale-to", "1600",
                     "-f", "1", "-l", "1", "-singlefile", str(source), str(prefix),
                 ],
                 capture_output=True,

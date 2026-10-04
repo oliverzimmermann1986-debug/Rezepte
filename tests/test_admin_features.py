@@ -65,6 +65,45 @@ def test_recipe_version_restore_is_atomic_and_keeps_personal_state(test_db: Data
     assert len(test_db.recipe_versions_list(recipe_id=recipe_id)) == 2  # Snapshot + Undo-Snapshot
 
 
+def test_version_restore_clears_progress_from_the_replaced_step_list(test_db, tmp_path, monkeypatch):
+    from app.recipes import manage
+
+    monkeypatch.setattr(manage, "_recipe_root", lambda: tmp_path.resolve())
+    recipe_id = _recipe(test_db, tmp_path)
+    test_db.recipe_steps_set(recipe_id, [{"instruction": "Original zubereiten"}])
+    version_id = test_db.recipe_version_create(recipe_id)
+    test_db.recipe_steps_set(recipe_id, [{"instruction": "Neu vorbereiten"}, {"instruction": "Neu kochen"}])
+    for username in ("first-user", "second-user"):
+        test_db.recipe_cooking_progress_set(recipe_id, username, completed_steps=[1], active_step=1, servings=2)
+
+    assert test_db.recipe_version_restore(version_id)["ok"]
+    for username in ("first-user", "second-user"):
+        assert test_db.recipe_cooking_progress_get(recipe_id, username) is None
+    assert test_db.recipe_steps_get(recipe_id)[0]["instruction"] == "Original zubereiten"
+
+
+def test_version_steps_and_progress_rollback_together_on_database_failure(test_db, tmp_path, monkeypatch):
+    from app.recipes import manage
+
+    monkeypatch.setattr(manage, "_recipe_root", lambda: tmp_path.resolve())
+    recipe_id = _recipe(test_db, tmp_path)
+    test_db.recipe_steps_set(recipe_id, [{"instruction": "Original zubereiten"}])
+    version_id = test_db.recipe_version_create(recipe_id)
+    test_db.recipe_steps_set(recipe_id, [{"instruction": "Neu vorbereiten"}, {"instruction": "Neu kochen"}])
+    test_db.recipe_cooking_progress_set(recipe_id, "first-user", completed_steps=[1], active_step=1, servings=2)
+    with test_db.conn() as connection:
+        connection.execute("""
+            CREATE TRIGGER fail_progress_cleanup BEFORE DELETE ON recipe_cooking_progress
+            BEGIN SELECT RAISE(ABORT, 'simulated progress cleanup failure'); END
+        """)
+
+    result = test_db.recipe_version_restore(version_id)
+
+    assert not result["ok"] and "progress cleanup failure" in result["error"]
+    assert [step["instruction"] for step in test_db.recipe_steps_get(recipe_id)] == ["Neu vorbereiten", "Neu kochen"]
+    assert test_db.recipe_cooking_progress_get(recipe_id, "first-user")["active_step"] == 1
+
+
 def test_uploaded_cover_is_versioned_and_can_be_restored(client, test_db: Database, tmp_path: Path, monkeypatch):
     import app.routes.api_recipes as api_recipes
     import app.recipes.manage as manage
@@ -532,6 +571,10 @@ def test_pdf_background_job_persists_result(client, test_db: Database, tmp_path:
         def submit(self, fn, *args, **kwargs):
             fn(*args, **kwargs)
             return object()
+
+        def shutdown(self, wait=True, *, cancel_futures=False):
+            # Work above already completed; match Executor's lifespan contract.
+            return None
 
     monkeypatch.setattr(admin_api, "get_config", lambda: FakeConfig())
     monkeypatch.setattr(admin_api, "_PDF_EXECUTOR", ImmediateExecutor())

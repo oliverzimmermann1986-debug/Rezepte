@@ -13,53 +13,67 @@ struct RecipesView: View {
     @State private var isLoading = true
     @State private var isLoadingMore = false
     @State private var errorMessage: String?
+    @State private var requestID = UUID()
 
     private var hasMore: Bool { recipes.count < total }
 
     var body: some View {
         NavigationStack {
-            Group {
-                if isLoading && recipes.isEmpty {
-                    ProgressView("Rezepte werden geladen …")
-                } else if let errorMessage, recipes.isEmpty {
-                    ErrorState(message: errorMessage) {
-                        Task { await load() }
+            VStack(spacing: 0) {
+                if !session.readOnly, session.supports("household-libraries-v1") {
+                    Picker("Sammlung", selection: $filters.library) {
+                        ForEach(RecipeLibrary.allCases) { library in Text(library.title).tag(library) }
                     }
-                } else if recipes.isEmpty {
-                    EmptyState(
-                        icon: filters.activeCount > 0 ? "line.3.horizontal.decrease.circle" : "fork.knife",
-                        title: filters.activeCount > 0 ? "Keine Treffer" : "Keine Rezepte",
-                        message: filters.activeCount > 0
-                            ? "Passe die aktiven Filter an."
-                            : session.readOnly
-                                ? "Für den Gastzugang sind derzeit keine Rezepte verfügbar."
-                                : "Passe die Suche an oder importiere ein Rezept."
-                    )
-                } else {
-                    List {
-                        ForEach(recipes) { recipe in
-                            NavigationLink(value: recipe.id) {
-                                RecipeRow(recipe: recipe)
-                            }
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+                    .onChange(of: filters.library) { _, _ in
+                        Task { await load(); await loadFacets() }
+                    }
+                }
+                Group {
+                    if isLoading && recipes.isEmpty {
+                        ProgressView("Rezepte werden geladen …")
+                    } else if let errorMessage, recipes.isEmpty {
+                        ErrorState(message: errorMessage) {
+                            Task { await load() }
                         }
+                    } else if recipes.isEmpty {
+                        EmptyState(
+                            icon: filters.activeCount > 0 ? "line.3.horizontal.decrease.circle" : "fork.knife",
+                            title: filters.activeCount > 0 ? "Keine Treffer" : "Keine Rezepte",
+                            message: filters.activeCount > 0
+                                ? "Passe die aktiven Filter an."
+                                : session.readOnly
+                                    ? "Für den Gastzugang sind derzeit keine Rezepte verfügbar."
+                                    : "Passe die Suche an oder importiere ein Rezept."
+                        )
+                    } else {
+                        List {
+                            ForEach(recipes) { recipe in
+                                NavigationLink(value: recipe.id) {
+                                    RecipeRow(recipe: recipe)
+                                }
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                            }
 
-                        if hasMore {
-                            HStack {
-                                Spacer()
-                                ProgressView()
-                                Spacer()
+                            if hasMore {
+                                HStack {
+                                    Spacer()
+                                    ProgressView()
+                                    Spacer()
+                                }
+                                .padding(.vertical, 12)
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .accessibilityLabel("Weitere Rezepte werden geladen")
+                                .task { await loadMore() }
                             }
-                            .padding(.vertical, 12)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .accessibilityLabel("Weitere Rezepte werden geladen")
-                            .task { await loadMore() }
                         }
+                        .listStyle(.plain)
+                        .refreshable { await load() }
                     }
-                    .listStyle(.plain)
-                    .refreshable { await load() }
                 }
             }
             .background(theme.background)
@@ -123,17 +137,22 @@ struct RecipesView: View {
     }
 
     private func load() async {
+        let currentRequest = UUID()
+        requestID = currentRequest
         isLoading = true
+        isLoadingMore = false
         errorMessage = nil
-        defer { isLoading = false }
+        defer { if requestID == currentRequest { isLoading = false } }
         do {
             let response = try await session.api.recipes(
                 search: search,
                 filters: filters
             )
+            guard requestID == currentRequest else { return }
             recipes = response.items
             total = response.total
         } catch {
+            guard requestID == currentRequest else { return }
             errorMessage = error.localizedDescription
             session.handle(error)
         }
@@ -142,15 +161,17 @@ struct RecipesView: View {
     /// Nächste Seite anhängen. Der Server kennt den Filter, deshalb ist
     /// `response.total` die vollständige Trefferzahl und nicht die der Seite.
     private func loadMore() async {
-        guard !isLoadingMore, hasMore else { return }
+        guard !isLoading, !isLoadingMore, hasMore else { return }
+        let currentRequest = requestID
         isLoadingMore = true
-        defer { isLoadingMore = false }
+        defer { if requestID == currentRequest { isLoadingMore = false } }
         do {
             let response = try await session.api.recipes(
                 search: search,
                 filters: filters,
                 offset: recipes.count
             )
+            guard requestID == currentRequest else { return }
             total = response.total
             let bekannt = Set(recipes.map(\.id))
             let neue = response.items.filter { !bekannt.contains($0.id) }
@@ -161,14 +182,19 @@ struct RecipesView: View {
                 total = recipes.count
             }
         } catch {
+            guard requestID == currentRequest else { return }
             errorMessage = error.localizedDescription
             session.handle(error)
         }
     }
 
     private func loadFacets() async {
+        let expectedFilters = filters
+        let expectedSearch = search
         do {
-            facets = try await session.api.recipeFacets(search: search, filters: filters)
+            let result = try await session.api.recipeFacets(search: expectedSearch, filters: expectedFilters)
+            guard filters == expectedFilters, search == expectedSearch else { return }
+            facets = result
         } catch {
             // Die Liste bleibt nutzbar, selbst wenn nur die Filtervorschläge
             // vorübergehend nicht geladen werden können.
@@ -220,11 +246,10 @@ private struct RecipeRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                if recipe.needsManualCare {
-                    Label("Manuell pflegen", systemImage: "exclamationmark.triangle.fill")
+                    Label(recipe.readiness.title, systemImage: recipe.readiness.symbol)
                         .font(.caption.bold())
-                        .foregroundStyle(theme.warning)
-                }
+                        .foregroundStyle(recipe.readiness == .ready ? theme.success
+                                         : recipe.readiness == .failed ? theme.danger : theme.warning)
             }
         }
         .padding(.vertical, 7)

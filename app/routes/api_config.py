@@ -38,6 +38,10 @@ def _update_config_locked(payload: Dict[str, Any], request: Request):
     current = store.all()
     authenticated_username = request_user(request)
 
+    present, auth_setting = _incoming_path_value(payload, ("web", "auth_disabled"))
+    if present and not isinstance(auth_setting, bool):
+        raise HTTPException(400, "web.auth_disabled muss true oder false als Boolean sein")
+
     # Laufzeit-/Datenpfade definieren die Sicherheitsgrenzen für Browse,
     # Audit, PDF und Backups. Sie dürfen nicht über eine HTTP-Anfrage auf '/'
     # oder andere beliebige Wurzeln umgebogen werden. Bewusste Infrastruktur-

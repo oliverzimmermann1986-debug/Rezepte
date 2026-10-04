@@ -320,6 +320,42 @@ def _shopping_product_stats(db: Database) -> dict[str, tuple]:
     }
 
 
+def test_review_refresh_targets_review_household_and_preserves_other_household(tmp_path: Path):
+    from app import accounts
+
+    inputs = _review_inputs(tmp_path)
+    seed_review_demo(**inputs)
+    db = Database(inputs["db_path"])
+    review_id = db.user_get_by_name("app-review")["id"]
+    account_id = accounts.view(db, review_id)["id"]
+    other_id = accounts.view(db, db.user_create("other-demo-member", "synthetic-hash"))["id"]
+    tables = ("shopping_products", "shopping_cart", "shopping_recurring", "meal_plan_entries")
+    with db.conn() as connection:
+        for table in tables:
+            connection.execute(f"UPDATE {table} SET account_id=? WHERE account_id=0", (account_id,))
+            columns = [row[1] for row in connection.execute(f"PRAGMA table_info({table})")
+                       if row[1] not in {"id", "account_id"}]
+            names = ",".join(columns)
+            connection.execute(f"INSERT INTO {table}(account_id,{names}) SELECT ?,{names} FROM {table} WHERE account_id=?",
+                               (other_id, account_id))
+        connection.execute("UPDATE shopping_products SET display_name='Andere Demo-Liste' WHERE account_id=?", (other_id,))
+        connection.execute("UPDATE shopping_products SET display_name='Veralteter Demo-Name' WHERE account_id=?", (account_id,))
+        original = {table: [tuple(row) for row in connection.execute(
+            f"SELECT * FROM {table} WHERE account_id=?", (other_id,))] for table in tables}
+    arguments = {key: inputs[key] for key in ("db_path", "recipe_root", "config_path", "public_url", "hostname")}
+    arguments.update(backup_dir=tmp_path / "backups", today=date(2026, 10, 3))
+    first = refresh_app_review_demo(**arguments)
+    assert first["shopping_changed"] is True
+    assert first["shopping_cart_items"] == len(REVIEW_CART_ITEMS)
+    assert refresh_app_review_demo(**arguments)["changed"] is False
+    with db.conn() as connection:
+        for table in tables:
+            assert [tuple(row) for row in connection.execute(
+                f"SELECT * FROM {table} WHERE account_id=?", (other_id,))] == original[table]
+        assert connection.execute("SELECT COUNT(*) FROM shopping_cart WHERE account_id=?", (account_id,)).fetchone()[0] == len(REVIEW_CART_ITEMS)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def test_review_refresh_upgrades_existing_instance_and_is_idempotent(tmp_path: Path):
     inputs = _review_inputs(tmp_path)
     db, source_recipe_id, variant_id = _prepare_legacy_review_state(inputs)

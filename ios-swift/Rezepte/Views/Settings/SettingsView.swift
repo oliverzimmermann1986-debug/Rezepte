@@ -85,6 +85,9 @@ struct SettingsView: View {
                 }
 
                 Section("Konto") {
+                    if session.supports("household-invitations-v1") {
+                        NavigationLink("Mein Haushalt & Einladungen") { HouseholdAccountView() }
+                    }
                     LabeledContent("Angemeldet als", value: session.username)
                     LabeledContent("Zugriff", value: session.readOnly ? "Nur lesen" : "Bearbeiten")
                     Button {
@@ -99,7 +102,8 @@ struct SettingsView: View {
                     } label: {
                         Label("Datenschutz", systemImage: "hand.raised")
                     }
-                    Button("Abmelden", role: .destructive) { session.signOut() }
+                    Button("Abmelden", role: .destructive) { Task { await session.logOut() } }
+                        .disabled(session.isEndingSession)
                 }
 
                 Section {

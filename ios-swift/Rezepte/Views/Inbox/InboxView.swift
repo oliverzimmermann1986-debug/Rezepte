@@ -14,6 +14,7 @@ struct InboxView: View {
     @State private var isWorking = false
     @State private var isLoading = false
     @State private var resultMessage: String?
+    @State private var importVisibility = "private"
 
     var body: some View {
         NavigationStack {
@@ -22,7 +23,7 @@ struct InboxView: View {
                     hero
                     importComposer
 
-                    if session.fullAccess {
+                    if !session.readOnly {
                         reviewQueue
                     } else {
                         Label(
@@ -109,6 +110,18 @@ struct InboxView: View {
                 .font(.title2.bold())
                 .foregroundStyle(theme.ink)
 
+            if session.fullAccess, session.supports("household-libraries-v1") {
+                Picker("Sichtbarkeit", selection: $importVisibility) {
+                    Text("Privat im Haushalt").tag("private")
+                    Text("Global für alle").tag("global")
+                }
+            }
+            Text(importVisibility == "global"
+                 ? "Dieses Rezept wird für alle Konten lesbar."
+                 : "Neue Rezepte bleiben im Haushalt. Bereits globale Links werden ohne erneuten Download in deiner Sammlung gespeichert.")
+                .font(.caption)
+                .foregroundStyle(theme.muted)
+
             HStack(spacing: 10) {
                 Image(systemName: "link")
                     .foregroundStyle(theme.muted)
@@ -192,7 +205,7 @@ struct InboxView: View {
                         selectedPending = item
                     } label: {
                         HStack(spacing: 14) {
-                            Image(systemName: sourceSymbol(item.url))
+                            Image(systemName: sourceSymbol(item.sourceUrl ?? item.url))
                                 .font(.title3)
                                 .foregroundStyle(theme.ink)
                                 .frame(width: 42, height: 42)
@@ -240,14 +253,14 @@ struct InboxView: View {
     }
 
     private func loadPending() async {
-        guard session.fullAccess else {
+        guard !session.readOnly else {
             pending = []
             return
         }
         isLoading = true
         defer { isLoading = false }
         do {
-            pending = try await session.api.pending()
+            pending = try await session.api.pending(visibility: session.fullAccess ? nil : "private")
         } catch {
             resultMessage = error.localizedDescription
             session.handle(error)
@@ -255,6 +268,7 @@ struct InboxView: View {
     }
 
     private func importURL() async {
+        guard !session.readOnly, !isWorking else { return }
         let link = importLink.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased()) else {
             resultMessage = "Bitte einen gültigen Weblink eingeben."
@@ -264,9 +278,11 @@ struct InboxView: View {
         resultMessage = nil
         defer { isWorking = false }
         do {
-            let result = try await session.api.importURL(link)
+            let result = try await session.api.importURL(link, visibility: importVisibility)
             importLink = ""
-            resultMessage = result.message ?? "Der Link wurde in den Eingang gelegt."
+            resultMessage = result.status == "linked_global"
+                ? "Globales Rezept im Haushalt gespeichert. Kein erneuter Download."
+                : result.message ?? "Der Link wurde in den Eingang gelegt."
             await loadPending()
         } catch {
             resultMessage = error.localizedDescription
@@ -274,6 +290,7 @@ struct InboxView: View {
     }
 
     private func uploadPhoto(_ item: PhotosPickerItem) async {
+        guard !session.readOnly, !isWorking else { return }
         isWorking = true
         resultMessage = nil
         defer {
@@ -290,7 +307,8 @@ struct InboxView: View {
             let result = try await session.api.importFile(
                 data: data,
                 filename: "rezept-\(Int(Date().timeIntervalSince1970)).jpg",
-                mimeType: "image/jpeg"
+                mimeType: "image/jpeg",
+                visibility: importVisibility
             )
             resultMessage = result.message ?? "Das Foto wurde in den Eingang gelegt."
             await loadPending()
@@ -300,6 +318,7 @@ struct InboxView: View {
     }
 
     private func uploadFile(_ url: URL) async {
+        guard !session.readOnly, !isWorking else { return }
         isWorking = true
         resultMessage = nil
         defer { isWorking = false }
@@ -312,7 +331,8 @@ struct InboxView: View {
             let result = try await session.api.importFile(
                 data: data,
                 filename: url.lastPathComponent,
-                mimeType: mimeType
+                mimeType: mimeType,
+                visibility: importVisibility
             )
             resultMessage = result.message ?? "Die Datei wurde in den Eingang gelegt."
             await loadPending()

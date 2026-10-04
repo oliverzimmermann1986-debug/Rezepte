@@ -103,6 +103,88 @@ Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Butto
 
 ---
 
+## Gastzugang und Konten
+
+- **Als Gast ansehen:** auf der Anmeldung in Web/PWA und iOS. Gäste können die
+  Rezeptbibliothek, Einkaufsliste und den Wochenplan lesen. Das Backend sperrt
+  sämtliche Schreibzugriffe; Verwaltungsdaten bleiben Administratoren vorbehalten.
+  Die signierte Gastsitzung gilt 24 Stunden und legt keinen Benutzer an.
+- **Konto erstellen:** eigene Anmeldung mit Benutzername und Passwort ab zehn
+  Zeichen (höchstens 72 UTF-8-Bytes). Registrierte Personen erhalten die Rolle
+  `user`; eine Registrierung kann keinen Administrator anlegen. Der Betreiber
+  muss zuerst als aktiver Administrator eingerichtet sein.
+- **Zweite Person einladen:** im Reiter **Konto**. Der Link gilt sieben Tage,
+  funktioniert einmal und ist widerrufbar. Ein neuer Link widerruft die vorige
+  offene Einladung. Beide Personen haben eigene Passwörter; Einladungen übertragen
+  keine Adminrechte. Bestehende Benutzer können den Link unter **Konto** annehmen.
+  Es sind höchstens zwei Personen pro Konto möglich.
+
+Die Installation unterstützt **mehrere getrennte Haushalte**. Globale Rezepte sind
+für alle angemeldeten Personen und Gäste lesbar. Private Rezepte, Favoriten,
+Bewertungen, Kochverlauf, Einkaufsliste, wiederkehrende Einkäufe und Wochenplan
+gehören zu genau einem Haushalt. Zwei eingeladene Personen teilen diesen Haushalt.
+Globale Inhalte können nur Administratoren bearbeiten; private Rezepte können
+beide Haushaltsmitglieder pflegen. Ein privater Import eines bereits global
+vorhandenen Links speichert einen Verweis auf das vorhandene Rezept, ohne einen
+weiteren Download oder Analyseauftrag. Web und iOS bieten die Ansichten **Global
+für alle** und **Mein Haushalt**. Private Importe können unter **Konto** geprüft
+und übernommen werden. Globale Link-Importe sind Administratoren vorbehalten.
+
+Freigaben gehören zum Haushalt und bleiben für die zweite Person verwaltbar,
+wenn die Anmeldung des Erstellers gelöscht wird. Ein wiedervergebener
+Benutzername erhält diese Rechte nicht. Während einer Änderung oder synchronen
+Analyse wird ein gleichzeitiger Haushaltsbeitritt mit 409 abgewiesen; nach
+Abschluss kann die Einladung erneut angenommen werden. Das letzte Mitglied
+eines Haushalts mit Daten oder laufenden Importen kann nicht gelöscht werden;
+zuerst muss eine zweite Person die Daten übernehmen.
+
+Neue Link-, Datei- und Fotoanalysen, erneute Analysen sowie Share-Intakes haben
+zusammen mit einzeln gestarteten Rezeptbildern ein persistentes Kontingent
+über gleitende 24 Stunden: standardmäßig 20 je
+Haushalt und 200 insgesamt. `web.import_daily_limit` und
+`web.import_server_daily_limit` passen es an; 0 sperrt neue Analysen und Bilder.
+Fehlgeschlagene Versuche zählen mit. Verknüpfungen vorhandener globaler Rezepte,
+Upload-Replays und Wiederholungen eines aktiven URL-Auftrags verbrauchen kein
+zusätzliches Kontingent; das gilt auch für aktive Bildaufträge. Endet ein Auftrag
+während der Wiederholung, benötigt ein neuer Auftrag ein eigenes Kontingent.
+429 enthält eine Wartezeit in `Retry-After`.
+Eine erneute Linkübernahme erhält bereits ermittelte Vorschläge und Medien;
+ein Platzhalter überschreibt diese Daten nicht.
+Gastanmeldungen sind auf 30 je IP innerhalb von fünf Minuten begrenzt.
+Mail-/CLI-Jobs und gesonderte Admin-Batchjobs verwenden diese Nutzerkontingente
+nicht; sie bleiben durch ihre jeweiligen Zugriffsrechte geschützt.
+
+Die Migration auf Schema **261** behält bestehende Rezepte als globale Sammlung
+und ordnet vorhandene Einkaufs- und Plandaten einmalig dem Betreiberhaushalt zu.
+Beim Beitritt eines bestehenden Kontos werden dessen private Inhalte, Sammlung,
+Einkäufe und Planungen zusammengeführt. Laufende Importe müssen zuerst enden.
+Die externe Einkauf-API verwendet gemeinsame Zugangsdaten und wird für getrennte
+Haushalte deshalb durch die eigene lokale Einkaufsliste ersetzt; ihre bestehende
+Konfiguration bleibt für den alten Einbenutzermodus erhalten.
+Einladungen speichern nur den Hash des Tokens; der kopierbare Link wird
+ausschließlich beim Erstellen angezeigt.
+
+Für Gastzugang und Registrierung muss `web.auth_disabled: false` gelten. Im
+Proxybetrieb mit `auth_disabled: true` wird jeder Besucher als Administrator
+behandelt; dort sind diese Einstiege deshalb gesperrt. Cloudflare Access bleibt
+eine zusätzliche Zugangsgrenze und wird durch eine Einladung nicht umgangen.
+
+Die Konto- und Haushaltstabellen wurden mit Schema **261** angelegt. Schema
+**262** ergänzt stabile Freigabeeigentümer und die Importkontingente. Schema
+**263** bindet persönlichen Kochfortschritt und Abschlusswiederholungen an feste
+Benutzer-IDs. Beim Löschen einer Anmeldung wird deren persönlicher Zwischenstand
+entfernt; die Kochhistorie des Haushalts bleibt erhalten. Historische Zwischenstände
+werden nur zugeordnet, wenn das aktuelle Konto damals bereits bestand. Unklare
+Altdaten bleiben gespeichert und werden neu registrierten Konten nicht gezeigt.
+Bestehende Benutzer und
+Rezeptdaten bleiben erhalten. Web-Registrierung und Anmeldung verwenden
+Same-Origin-Prüfungen, native Clients weiterhin Bearer-Sitzungen.
+
+Bildveröffentlichung und Rollback verwenden eine gemeinsame Dateisperre für
+Web-/Worker-Prozesse. Versteckte Entwürfe und Rückfallkopien werden weder als
+Titelbild noch als Originalsicherung ausgewählt. Bilduploads verarbeiten
+Dekodierung, Sicherung und Veröffentlichung außerhalb der HTTP-Ereignisschleife.
+
 ## Admin-Zentrale
 
 Der Reiter **Admin** ist ausschließlich für aktive Konten mit der Rolle
@@ -117,7 +199,22 @@ nutzen, aber keine Server-, Import- oder Benutzerverwaltung ausführen.
 - **Wartung:** Integrität, Testbackup, Medienprüfung, Temp-Bereinigung und VACUUM
 - **Stammdaten/Einstellungen/Papierkorb:** bestehende Verwaltungsfunktionen an einem Ort
 
-Versionen erfassen strukturierte Rezeptdaten. Binärmedien wie Videos, frei ersetzte Bilder oder PDF-Originale werden nicht in der Datenbankversion dupliziert. PDF-Änderungen legen deshalb separat ein Original im Datenverzeichnis ab.
+Versionen erfassen strukturierte Rezeptdaten. Vor einem Coverwechsel wird das
+bisherige Bild separat im Rezeptordner unter `.versions/` gesichert und mit
+dem Snapshot verknüpft. Videos und PDF-Originale werden nicht in der
+Datenbankversion dupliziert; PDF-Änderungen sichern ihr Original separat im
+Datenverzeichnis.
+
+Papierkorbsicherungen werden dem ursprünglichen Rezept zugeordnet, auch wenn
+derselbe Ordnerpfad inzwischen erneut verwendet wird. Löschläufe prüfen den
+aktuellen Löschzeitpunkt unter der Rezeptsperre; zwischenzeitlich gerettete
+Rezepte bleiben erhalten. Eine Versionswiederherstellung ersetzt die
+Schrittliste und entfernt dabei den dazu nicht mehr passenden Kochfortschritt.
+Gesicherte Cover und Versionsdaten werden gemeinsam übernommen. Scheitert
+ein Datei- oder Datenbankschritt, werden Cover und Metadaten zurückgerollt.
+Eine erfolgreiche Cover-Wiederherstellung hebt ältere Bildaufträge auf.
+Versionen von Rezepten im Papierkorb können erst nach deren Rettung
+wiederhergestellt werden.
 
 Details stehen in [`ADMIN_CENTER.md`](ADMIN_CENTER.md) und [`PDF_PROCESSING.md`](PDF_PROCESSING.md).
 
@@ -444,14 +541,12 @@ mail:
     always_pending: false
 
 ai:
-  ollama:
-    enabled: true
-    url: http://localhost:11434
-    model: qwen2.5:7b-instruct
-    fallback_model: qwen2.5:14b-instruct  # optional, leer = kein Fallback
-    timeout: 60
+  openai:
+    api_key: ""       # API-Key nur in der geschützten Serverkonfiguration
+    model: gpt-4o-mini
+    base_url: ""      # leer = api.openai.com
+    timeout: 30
   confidence_threshold: 0.75
-  fallback_threshold: 0.5
   description_min_length: 20
 
 ytdlp:
@@ -480,6 +575,37 @@ pdf:
 - **Keine NAS-Annahme** — Pfade sind generisch konfigurierbar und können auf lokale Mounts zeigen
 
 ---
+
+## Lokale Prüfungen
+
+`python tools/run_isolated_tests.py -q` führt die Suite mit temporären Datenbank-
+und Dateipfaden sowie deaktivierten externen Integrationen aus. Voraussetzung:
+`pip install -r requirements-dev.txt` und `python -m playwright install chromium`.
+Browserprüfungen verwenden die lokalen Web-Dateien und einen synthetischen
+Haushalt; API-Schreibzugriffe bleiben innerhalb des Browser-Fixtures.
+`node --test tests/web_async.test.cjs` prüft zusätzlich verzögerte Antworten,
+Abbruch und Zeitlimits für JSON/PDF sowie konkurrierende Aktualisierungen von
+Wochenplan, Einkaufsliste und Zutatenvorschlägen ohne laufenden Server. Sie
+prüfen auch, dass verspätete Bild- und Löschantworten ein inzwischen geöffnetes
+anderes Rezept nicht verändern oder schließen.
+Nach Upload oder Wiederherstellung ändern sich die Bild-URLs für Detail und
+Bibliothek, ohne Dateinamen zu verändern. Der Browser muss Cover vor erneuter
+Verwendung validieren; Vorschaubilder werden mit Coverwechseln serialisiert.
+Bei unveränderten Bildern antwortet der Server mit `304`, ohne die Bilddaten
+erneut zu übertragen.
+
+Die Bildtests nutzen simulierte KI-Antworten und echte lokale Dateien/SQLite:
+Sie prüfen Rollbacks bei Speicherfehlern, den Vorrang späterer Uploads oder
+Wiederherstellungen sowie fortsetzbare Bestandsläufe. Der Bestandslauf liest
+die Rezept-IDs einmal; jeder Teilschritt lädt anschließend nur sein aktuelles
+Rezept. Ein überholter Bildauftrag wird übersprungen, ohne einen späteren
+Bildstand als erfolgreich generiert oder fehlgeschlagen zu markieren.
+Versionsprüfungen simulieren auch Coverfehler nach einer Ordneränderung,
+prüfen Kochfortschritt-Rollbacks und verhindern veraltete Thumbnail-Caches.
+
+Für die native App: im Verzeichnis `native-ios` `npm test` und
+`npm run typecheck` ausführen. Die Cache-Tests simulieren Speicherzugriffe,
+Abbruch und Sitzungswechsel; sie ersetzen keinen Test auf einem iPhone.
 
 ## Lizenz / Verantwortung
 
@@ -538,6 +664,105 @@ einschließlich des künstlichen Warenkorbs und der wöchentlichen Einkaufsregel
 atomar sowie wiederholbar auf den dokumentierten Sollstand an; Konten,
 Zugangsdaten und Produkt-Nutzungsstatistiken bleiben dabei unverändert.
 
+Vor dem Austausch verweigert das Skript ältere Datenbankschemas und Releases,
+denen bisherige Fähigkeiten fehlen. Es sichert Datenbank, Konfiguration, Code
+und installierte Dienste und stellt sie bei einem Fehler gemeinsam wieder her.
+Die vorherige Aktivität der Import- und Backup-Timer bleibt erhalten;
+ausgeschaltete Timer werden nicht aktiviert. Auf der Review-Instanz bleibt der
+Import-Timer ausgeschaltet.
+
+Für den Wechsel vom bisherigen Cloudflare-Einzelbenutzerbetrieb auf Haushalte
+das Update mit `sudo ENABLE_HOUSEHOLD_AUTH=1 bash proxmox/update-local.sh`
+aufrufen. Dafür muss der konfigurierte Betreiber bereits als aktiver Administrator
+existieren. Seine bisherigen Zugangsdaten bleiben erhalten; Benutzer und Kennwörter
+werden nicht neu angelegt oder zurückgesetzt. Danach ist eine persönliche Anmeldung
+oder der lesende Gastzugang erforderlich.
+
 ### PDF-Rezeptdaten
 
 PDF-Rezepte werden nach OCR/Ausrichtung direkt auf Zutaten, Mengen, Einheiten, Schritte und Portionen ausgewertet. Für Bestandsdateien steht die Funktion unter **Admin → PDF & Scan** zur Verfügung. Details: `PDF_RECIPE_EXTRACTION.md`.
+
+### Importgrenzen und Mailverbindungen ab 1.8.5
+
+IMAP-Verbindungen prüfen Zertifikatskette und Hostnamen, bevor Zugangsdaten
+übertragen werden. Der Verbindungstest liest nur und meldet Verbindungsfehler;
+er verändert weder Mailflags noch die gespeicherte Mailkonfiguration.
+
+Request-Bodies sind vor dem Parsing begrenzt: regulär auf 1 MiB, Dateiimporte
+auf 25 MiB plus 1 MiB Formular-Overhead und Foto-/Coverimporte auf 10 MiB plus
+Overhead. PDF-Vorschaubilder werden mit maximal 1600 Pixeln an der längeren Seite
+gerendert. Video-Downloads werden bei bekannten Größen vorab und bei unbekannten
+Streams durch eine laufende Überwachung bei 100 MiB abgebrochen. Das ist eine
+Abbruchschwelle mit kurzen Messintervallen, keine bytegenaue Speicherreservierung.
+
+Ordnerteile aus KI-Ausgaben und manuellen Eingaben verwenden dieselbe
+Pfadbereinigung. HTML-Canonical-Tags dürfen nur URLs des tatsächlich abgerufenen
+HTTPS-Origin beanspruchen. Die bestehenden DNS-/SSRF-Prüfungen bleiben aktiv.
+
+Der Status der Sicherheits- und GUI-Befunde steht in [AUDIT.md](AUDIT.md), die
+offenen Arbeiten in [FIXPLAN.md](FIXPLAN.md). Der Prüf- und Rolloutnachweis dieser
+Runde steht in [AUDIT_FOLLOWUP_1.8.5.md](AUDIT_FOLLOWUP_1.8.5.md). Die Freigabe
+automatischer Mailabsender braucht noch die erlaubten Adressen und eine Prüfung
+der vom Mailprovider bestätigten Absenderidentität.
+
+### Request- und Archivstabilisierung ab 1.8.6
+
+Anmeldung und Rollenprüfungen verwenden einen Worker und teilen ihren geprüften
+Benutzer nur innerhalb desselben Requests. Lang laufende Status-Streams prüfen
+einen Sitzungswiderruf weiterhin erneut. Thumbnails verwenden einen privaten
+Revalidierungs-Cache: Auch ein `304` setzt eine gültige Sitzung und den richtigen
+Haushalt voraus. Warenkorblesen ohne fällige Regel benötigt keine Schreibsperre.
+
+Die Suche ermittelt Kandidaten-IDs aus Volltext, Teilwörtern und Zutaten einmal.
+Die Teilwortsuche bleibt ein Scan; Details der vergleichenden Messung mit
+2000 Rezepten stehen in [AUDIT_FOLLOWUP_1.8.6.md](AUDIT_FOLLOWUP_1.8.6.md).
+
+### Fachlogik und KI-Belege ab 1.8.7
+
+PDF-Mengen und Suchausschlüsse sind korrigiert. Unbelegte KI-Zutaten und
+unvollständige Antworten erhalten den Fehlerstatus zur manuellen Pflege; der
+lokale PDF-Quelltext wird erhalten. Alle KI-POST-Versuche unterliegen rollierenden,
+serverweiten 24-Stunden-Kontingenten in `ai.openai`: `server_daily_request_limit`
+(Standard 1000) und `server_daily_image_limit` (Standard 40). Null sperrt weitere
+Versuche; fehlgeschlagene Versuche und Retries zählen mit. Die Kontingente gelten
+auch für automatische Mail- und Hintergrundarbeit und sind keine Dollar-/Eurogrenze.
+
+Automatische Rezeptbilder ersetzen kein vorhandenes Quellcover. Ein expliziter
+Bildauftrag oder administrativer Backfill bleibt mit Originalsicherung möglich.
+Testläufe isolieren Pfade und externe Integrationen bereits in `tests/conftest.py`;
+auch ein direkter `pytest`-Aufruf liest keine Betreiberkonfiguration.
+Details: [CHANGELOG_V1.8.7.md](CHANGELOG_V1.8.7.md).
+
+### Anmeldung, Last und Upgrades ab 1.8.8
+
+Formular-POSTs nutzen `strict-origin` in Header und Registrierungs-Meta. Der
+Referer enthält damit nur den Ursprung; fremde oder `null` Origins bleiben
+abgewiesen. Auch Logout erfordert einen passenden Origin. HTML und native Login
+teilen den Zähler pro IP und Benutzername (fünf Fehlversuche); eine zusätzliche
+IP-Grenze von 100 Fehlversuchen schützt vor breit gestreuten Versuchen. Direkte
+Proxyheader werden ignoriert, konfigurierte Proxyketten von rechts geprüft.
+
+SQLite-Schreibkonkurrenz vor Antwortbeginn liefert 503 mit `Retry-After: 1`.
+Rezeptdetail-Datenabfragen verwenden eine gemeinsame schreibgeschützte
+Verbindung pro Aufruf. Schema 265 trennt Worker-Abstürze von normalen Retries
+und ergänzt fehlende Papierkorb-Quell-URLs aus erhaltenen Original-URLs.
+Frische Prozesse beachten den konfigurierten Datenbankpfad; Job-Locks liegen
+daneben. Browser-Tests erzwingen den temporären Pfad vor dem Datenbankzugriff.
+
+Details: [CHANGELOG_V1.8.8.md](CHANGELOG_V1.8.8.md).
+Vor `db-restore` müssen schreibende Services **und ihre Job-/Backup-Timer**
+gestoppt sein. Hinterher nur die vorher aktiven Timer wieder starten.
+
+Der separate Archiver erstellt seine venv an einem dauerhaften Pfad und
+verknüpft `/opt/video-archiver/venv` darauf. Installation startet keinen Download
+als Abnahme. Eine deaktivierte Timer-Einstellung bleibt bei Updates erhalten;
+die Unit erlaubt vier Jobs zu je 900 Sekunden plus fünf Minuten Reserve.
+Bei Updates bleiben vorhandene Workerargumente, Grenzwerte und Timerzyklen
+erhalten. Das Zeitbudget wird mindestens auf `max_jobs × timeout + 300 s`
+angehoben (mindestens 3900 s); nicht auflösbare Variablen lehnen das Update ab.
+Der neue Linux-Test unter `tools/probe_video_archiver_install.py` prüft Launcher,
+Rollback und SIGTERM ausschließlich mit temporären Testdaten.
+
+Die priorisierte Übergabe einschließlich offener Betreiber- und Geräteprüfungen
+steht in [AUDIT_HANDOFF.md](AUDIT_HANDOFF.md). Expo-Kochmodus und VoiceOver-
+Korrekturen benötigen einen neuen App-Build und die Abnahme auf dem Gerät.

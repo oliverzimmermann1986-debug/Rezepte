@@ -140,7 +140,8 @@ def test_schema_migration_backfills_existing_recipes_and_creates_backup(tmp_path
             "SELECT name FROM schema_migrations WHERE version=240"
         ).fetchone()
     assert migration["name"] == "backfill_allergen_free_tags"
-    assert list((tmp_path / "backups").glob("pre-migration-v230-to-v260-*.db"))
+    from app.db import CURRENT_SCHEMA_VERSION
+    assert list((tmp_path / "backups").glob(f"pre-migration-v231-to-v{CURRENT_SCHEMA_VERSION}-*.db"))
 
 
 def test_new_recipe_prompt_requests_conservative_allergen_info() -> None:

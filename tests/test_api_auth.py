@@ -114,7 +114,7 @@ def test_native_guest_login_creates_no_database_user(client, test_db, monkeypatc
     assert response.json() == {
         "token": "signed-guest-token",
         "token_type": "bearer",
-        "expires_in": 1209600,
+        "expires_in": 86400,
         "username": "Gast",
         "role": "guest",
         "is_admin": False,

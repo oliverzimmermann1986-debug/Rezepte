@@ -29,6 +29,64 @@ struct SessionResponse: Codable {
     let readOnly: Bool?
 }
 
+enum RecipeLibrary: String, CaseIterable, Identifiable, Codable, Sendable {
+    case all, global, mine
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .all: "Alle"
+        case .global: "Global"
+        case .mine: "Mein Haushalt"
+        }
+    }
+}
+
+struct HouseholdAccount: Codable {
+    let id: Int?
+    let isGuest: Bool
+    let isOwner: Bool
+    let members: [HouseholdMember]
+    let invitations: [HouseholdInvitation]
+    let maxMembers: Int
+}
+
+struct HouseholdMember: Codable, Identifiable {
+    let id: Int
+    let username: String
+    @FlexibleBool var disabled: Bool?
+}
+
+struct HouseholdInvitation: Codable, Identifiable {
+    let id: Int
+    let expiresAt: Double
+    let revokedAt: Double?
+    let acceptedAt: Double?
+
+    var isActive: Bool {
+        revokedAt == nil && acceptedAt == nil && expiresAt > Date().timeIntervalSince1970
+    }
+}
+
+struct CreatedHouseholdInvitation: Codable {
+    let id: Int
+    let token: String
+    let invitePath: String
+    let expiresAt: Double
+}
+
+enum HouseholdInvitationInput {
+    static func token(from input: String) -> String {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: value),
+              ["https", "http"].contains(components.scheme?.lowercased() ?? ""),
+              let token = components.queryItems?.first(where: { $0.name == "invite" })?.value else {
+            return value
+        }
+        return token
+    }
+}
+
 struct SystemInfo: Codable {
     let name: String
     let version: String
@@ -88,6 +146,7 @@ extension KeyedDecodingContainer {
 }
 
 struct RecipeFilters: Equatable, Sendable {
+    var library = RecipeLibrary.all
     var type = ""
     var category = ""
     var tagIDs: Set<Int> = []
@@ -176,6 +235,38 @@ struct IngredientFacet: Codable, Identifiable, Hashable, Sendable {
     var isPantryBasic: Bool { isBasic ?? false }
 }
 
+enum RecipeReadiness: Equatable {
+    case ready, pending, failed, missingDescription, manual
+
+    static func classify(status: String?, ingredients: Int, steps: Int, needsManualCare: Bool) -> Self {
+        switch status {
+        case "pending", "running": .pending
+        case "error": .failed
+        case "skipped": .missingDescription
+        case "ok" where !needsManualCare && ingredients > 0 && steps > 0: .ready
+        default: .manual
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .ready: "Kochfertig"
+        case .pending: "Zutaten werden ermittelt"
+        case .failed: "Auswertung fehlgeschlagen"
+        case .missingDescription: "Beschreibung fehlt"
+        case .manual: "Manuell pflegen"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .ready: "checkmark.seal.fill"
+        case .pending: "hourglass"
+        default: "exclamationmark.triangle.fill"
+        }
+    }
+}
+
 struct RecipeSummary: Codable, Identifiable, Hashable {
     let id: Int
     let name: String
@@ -196,6 +287,14 @@ struct RecipeSummary: Codable, Identifiable, Hashable {
     let ingredientsStatus: String?
     let imageGenerationStatus: String?
     let thumbnailVersion: String?
+    var visibility: String? = nil
+    var inLibrary: Bool? = nil
+    var canEdit: Bool? = nil
+
+    var readiness: RecipeReadiness {
+        .classify(status: ingredientsStatus, ingredients: ingredientsCount,
+                  steps: stepsCount, needsManualCare: needsManualCare)
+    }
 }
 
 struct Recipe: Codable, Identifiable {
@@ -234,6 +333,9 @@ struct Recipe: Codable, Identifiable {
     let fatG: Double?
     let variantProvenance: RecipeVariantProvenance?
     let variantReviewNotice: String?
+    var visibility: String? = nil
+    var inLibrary: Bool? = nil
+    var canEdit: Bool? = nil
 }
 
 struct SubstitutionIngredientValue: Codable, Hashable {
@@ -895,6 +997,7 @@ struct PendingItem: Codable, Identifiable {
     let status: String?
     let reason: String?
     let aiSuggestion: PendingSuggestion?
+    var sourceUrl: String? = nil
 
     var id: String { url }
     var displayName: String {

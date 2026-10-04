@@ -39,8 +39,8 @@ def test_mail(req: MailTestRequest) -> Dict[str, Any]:
 
     start = time.time()
     try:
-        acc = MailAccount(req.account, cfg, req.account)
-        urls = acc.fetch_urls()
+        acc = MailAccount(req.account, {**cfg, 'enabled': True}, req.account)
+        urls = acc.fetch_all_readonly(include_attachments=False, raise_errors=True)['urls']
         elapsed = round(time.time() - start, 2)
         return {
             "ok": True,

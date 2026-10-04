@@ -181,7 +181,7 @@ def test_substitution_routes_enforce_real_admin_user_and_guest_sessions(
     for role, response in previews.items():
         assert response.status_code == 200, f"{role}: {response.text}"
     assert user_apply.status_code == 403
-    assert "Administratorrechte" in user_apply.json()["detail"]
+    assert "Globale Rezepte" in user_apply.json()["detail"]
     assert guest_apply.status_code == 403
     assert "schreibgeschützt" in guest_apply.json()["detail"]
     assert count_after_denials == 1

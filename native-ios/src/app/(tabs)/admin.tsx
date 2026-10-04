@@ -56,7 +56,7 @@ export default function AdminScreen() {
     try {
       const [overviewResult, pendingResult, failedResult] = await Promise.allSettled([
         api<Overview>('/api/admin/overview'),
-        api<PendingItem[]>('/api/pending?status=pending&sort=newest'),
+        api<PendingItem[]>('/api/pending?status=pending&sort=newest&visibility=global'),
         api<FailedDownload[]>('/api/pending/failed'),
       ]);
       if (overviewResult.status === 'fulfilled') setOverview(overviewResult.value);
@@ -97,7 +97,7 @@ export default function AdminScreen() {
     try {
       const result = await api<{ ok: boolean; status?: string; message?: string }>('/api/pending/import-url', {
         method: 'POST',
-        body: JSON.stringify({ url: source, type: 'recipe' }),
+        body: JSON.stringify({ url: source, type: 'recipe', visibility: 'global' }),
       });
       await invalidateApiCacheByPrefix('recipes:');
       setUrl('');
@@ -132,7 +132,7 @@ export default function AdminScreen() {
     setBusy(true);
     try {
       const result = await uploadFile<{ ok: boolean; status?: string; message?: string }>(
-        '/api/pending/import-file?type=recipe',
+        '/api/pending/import-file?type=recipe&visibility=global',
         file,
         clientRequestId,
       );
@@ -208,7 +208,7 @@ export default function AdminScreen() {
       <View style={styles.header}>
         <View>
           <Text style={styles.eyebrow}>SYSTEM & PFLEGE</Text>
-          <Text style={styles.title}>Administration</Text>
+          <Text accessibilityRole="header" style={styles.title}>Administration</Text>
         </View>
         <Pressable accessibilityRole="button" accessibilityLabel="Administration aktualisieren" onPress={() => load()} style={styles.refresh}><Text style={styles.refreshText}>↻</Text></Pressable>
       </View>
@@ -230,7 +230,7 @@ export default function AdminScreen() {
           </View>
 
           <View style={sharedStyles.card}>
-            <Text style={sharedStyles.sectionTitle}>Direktimport</Text>
+            <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Direktimport</Text>
             <Text style={styles.help}>Rezept-Webseite, Pinterest-, YouTube-, TikTok- oder Instagram-Link übernehmen. Videos bleiben bei der Plattform; gespeichert werden Link und erkannte Rezeptdaten.</Text>
             <TextInput
               accessibilityLabel="Link zu einem Rezept"
@@ -252,7 +252,7 @@ export default function AdminScreen() {
           </View>
 
           <View style={sharedStyles.card}>
-            <Text style={sharedStyles.sectionTitle}>Rezeptbestand pflegen</Text>
+            <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Rezeptbestand pflegen</Text>
             <Text style={styles.help}>Dubletten vergleichen, die Speisekarte per KI prüfen oder mehrere Rezepte manuell verschieben und mit Tags pflegen.</Text>
             <PrimaryButton label="Dubletten finden" onPress={() => setShowDuplicates(true)} disabled={busy} />
             <PrimaryButton label="Speisekarte mit KI sortieren" onPress={() => setShowAiSort(true)} disabled={busy} />
@@ -260,7 +260,7 @@ export default function AdminScreen() {
           </View>
 
           <View style={styles.section}>
-            <Text style={sharedStyles.sectionTitle}>Manuelle Prüfung</Text>
+            <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Manuelle Prüfung</Text>
             {!pending.length ? <Text style={styles.empty}>Keine offenen Importe.</Text> : pending.map(item => (
               <Pressable
                 key={item.url}
@@ -280,7 +280,7 @@ export default function AdminScreen() {
 
           {!!failed.length && (
             <View style={styles.section}>
-              <Text style={sharedStyles.sectionTitle}>Alte fehlgeschlagene Importe</Text>
+              <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Alte fehlgeschlagene Importe</Text>
               {failed.map(item => (
                 <View key={item.url} style={styles.failed}>
                   <Text style={styles.pendingTitle} numberOfLines={1}>Download fehlgeschlagen · {item.attempts} Versuche</Text>
@@ -296,7 +296,7 @@ export default function AdminScreen() {
           )}
 
           <View style={sharedStyles.card}>
-            <Text style={sharedStyles.sectionTitle}>Konto</Text>
+            <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Konto</Text>
             <Text style={styles.account}>Angemeldet als {username || 'lokal'}</Text>
             <Text style={styles.server} numberOfLines={2}>{serverUrl}</Text>
             <PrimaryButton label="Datenschutz" onPress={() => void openPrivacy()} />

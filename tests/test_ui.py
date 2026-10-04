@@ -1,5 +1,7 @@
 """Regressionstests für die einheitliche Rezepte-Oberfläche."""
 from pathlib import Path
+
+from tests.web_source import read_web_scripts
 import json
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,12 +20,12 @@ def test_only_one_application_stylesheet_exists():
 
 
 def test_recipe_library_is_default_and_has_primary_navigation():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert "page: 'recipes'" in js
-    assert "new Set(['recipes','plan','cart','admin'])" in js
+    assert "new Set(['recipes','plan','cart','admin','account'])" in js
     assert '<span class="nav-label">Favoriten</span>' not in html
-    assert html.count('class="nav-item nav-primary"') == 4
+    assert html.count('class="nav-item nav-primary"') == 5
     assert "Einkaufsliste" in html
     assert "Rezepte" in html
     assert "recipes-searchbar" in html
@@ -32,7 +34,7 @@ def test_recipe_library_is_default_and_has_primary_navigation():
 
 def test_legacy_theme_switcher_is_gone():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
     combined = html + js
     assert "data-theme" not in combined
@@ -68,7 +70,7 @@ def test_manifest_uses_rezepte_brand_and_plum_palette():
 
 def test_weekly_meal_plan_has_desktop_mobile_and_shopping_flow():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
     assert "page==='plan'" in html
     assert '<span class="nav-label">Wochenplan</span>' in html
@@ -91,7 +93,7 @@ def test_weekly_meal_plan_has_desktop_mobile_and_shopping_flow():
 
 def test_verified_review_regressions_are_guarded_in_web_ui():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
 
     assert "if (weekStart === undefined || this.mealPlan.loading) return;" in js
     assert "Math.max(0, Math.round(Number(step.timer_seconds)))" in js
@@ -100,12 +102,12 @@ def test_verified_review_regressions_are_guarded_in_web_ui():
     assert "`/api/recipes?limit=${pageSize}&offset=${offset}`" in js
     assert "if (!result || !Array.isArray(result.items))" in js
     assert "this.mealPlan.optionsLoaded = true;" in js
-    assert "r.needs_manual_care && !['pending','error','skipped'].includes(r.ingredients_status)" in html
+    assert 'x-text="recipeStatus(r).label"' in html
 
 
 def test_single_recipe_can_download_and_share_a_real_pdf():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     assert '@click="downloadRecipePdf()"' in html
     assert '@click="shareRecipePdf(recipeDetail.data)"' in html
     assert '@click="copyRecipeShareLink()"' in html
@@ -127,7 +129,7 @@ def test_single_recipe_can_download_and_share_a_real_pdf():
 
 
 def test_dead_web_helpers_and_print_route_are_removed():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     sharing = (ROOT / "app" / "routes" / "sharing.py").read_text(encoding="utf-8")
 
     assert "ingredientFilterState(" not in js
@@ -152,7 +154,7 @@ def test_no_removed_remote_sync_feature_remains_in_runtime():
 
 
 def test_audit_state_is_safe_before_hidden_page_is_loaded():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     assert "total_recipes: 0" in js
     assert "exact_duplicates: []" in js
     assert "data_gaps: { no_image: []" in js
@@ -161,7 +163,7 @@ def test_audit_state_is_safe_before_hidden_page_is_loaded():
 
 def test_pdf_auto_rotation_settings_are_exposed_with_safe_defaults():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     assert "PDF-Verarbeitung" in html
     assert 'x-model="config.pdf.auto_rotate"' in html
     assert 'x-model="config.pdf.use_tesseract_osd"' in html
@@ -184,13 +186,13 @@ def test_server_managed_service_urls_are_read_only_in_admin_ui():
 
 def test_admin_center_uses_private_tile_navigation():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
     assert "Administration" in html
     for label in ("Importzentrale", "Versionen", "PDF &amp; Scan", "Suche", "Wartung"):
         assert label in html
     assert "page==='admin'" in html
-    assert "['recipes','plan','cart','admin']" in js.replace(" ", "")
+    assert "['recipes','plan','cart','admin','account']" in js.replace(" ", "")
     assert "admin-home-grid" in html
     assert ".admin-home-tile" in css
     assert "Privater Admin-Bereich" in html
@@ -205,10 +207,10 @@ def test_mobile_admin_and_footer_have_reserved_space():
     assert "var(--mobile-nav-height)" in css
 
 
-def test_admin_center_has_three_item_mobile_entry_and_pdf_quality_controls():
+def test_admin_center_and_account_have_mobile_entries_and_pdf_quality_controls():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
-    assert html.count('class="nav-item nav-primary"') == 4
+    js = read_web_scripts()
+    assert html.count('class="nav-item nav-primary"') == 5
     assert '<span class="nav-label">Admin</span>' in html
     assert "mobile-admin-button" not in html
     assert 'x-model="admin.pdf.sharpen_scans"' in html
@@ -219,7 +221,7 @@ def test_admin_center_has_three_item_mobile_entry_and_pdf_quality_controls():
 
 def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
     main_py = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     sw = (STATIC / "sw.js").read_text(encoding="utf-8")
     assert '@app.get("/admin", response_class=HTMLResponse)' in main_py
     assert 'initial_page="admin"' in main_py
@@ -229,7 +231,7 @@ def test_admin_uses_real_routes_and_pwa_shell_is_network_first():
     assert "window.location.pathname.startsWith('/admin')" in js
     assert "params.get('tab') || routePage" in js
     assert "params.get('section')" in js
-    assert "rezepte-static-v1.7.0-native-contracts" in sw
+    assert "const CACHE_NAME = 'rezepte-static-v" in sw
     assert "caches.delete" in sw
     assert "request.mode === 'navigate'" in sw
     assert "fetch(event.request, {cache: 'no-store'})" in sw
@@ -252,7 +254,7 @@ def test_recipe_library_uses_structural_redesign_and_real_recipe_data():
 
 
 def test_recipe_timers_survive_closing_the_detail_dialog():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     close_body = js.split("closeRecipeDetail() {", 1)[1].split("async addTagToRecipe", 1)[0]
     assert "Step-Timer bleiben bewusst aktiv" in close_body
     assert "this.timers = {}" not in close_body
@@ -272,7 +274,7 @@ def test_logout_controls_work_without_javascript_on_desktop_and_mobile():
 
 
 def test_admin_ui_is_private_and_backend_has_explicit_roles():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     users_api = (ROOT / "app" / "routes" / "api_users.py").read_text(encoding="utf-8")
     assert "Privater Admin-Bereich" in html
@@ -284,17 +286,17 @@ def test_admin_ui_is_private_and_backend_has_explicit_roles():
 
 def test_refined_recipe_filters_and_shopping_list_match_mockup():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     assert "recipes-quick-filters" in html
     assert 'aria-label="Kategorie filtern"' not in html
     assert 'aria-label="Typ filtern"' not in html
-    assert "1× klicken: muss enthalten sein" in html
-    assert "2×: ausschließen" in html
+    assert "Mit oder ohne Zutat suchen" in html
+    assert ">Mit</button>" in html
+    assert ">Ohne</button>" in html
     assert "recipes.filters.excludedIngredients" in html
     assert "exclude_ingredient" in js
     assert "ingredientFilterSummary()" in html
-    assert "if (includedIndex >= 0)" in js
-    assert "else if (excludedIndex >= 0)" in js
+    assert "setIngredientFilter(canonicalName, mode)" in js
     assert ".chip.exclude" in (STATIC / "rezepte.css").read_text(encoding="utf-8")
     assert "Nur Favoriten anzeigen" in html
     assert "📦 Senden" not in html
@@ -308,7 +310,7 @@ def test_refined_recipe_filters_and_shopping_list_match_mockup():
 
 def test_failed_imports_can_be_discarded_from_import_center():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     pending_api = (ROOT / "app" / "routes" / "api_pending.py").read_text(encoding="utf-8")
     assert "Verwerfen" in html
     assert "discardFailedDownload(f.url)" in html
@@ -320,7 +322,7 @@ def test_failed_imports_can_be_discarded_from_import_center():
 
 def test_external_shopping_and_local_recurring_ui_are_available():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     css = (STATIC / "rezepte.css").read_text(encoding="utf-8")
     main_py = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
     config_example = (ROOT / "config" / "config.example.yaml").read_text(encoding="utf-8")
@@ -344,7 +346,7 @@ def test_external_shopping_and_local_recurring_ui_are_available():
 
 def test_ingredients_can_be_excluded_from_shopping():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     updater = (ROOT / "proxmox" / "update-local.sh").read_text(encoding="utf-8")
 
     assert "Nicht einkaufen" in html
@@ -357,7 +359,7 @@ def test_ingredients_can_be_excluded_from_shopping():
 def test_pdf_admin_uses_background_jobs_and_preflight():
     from pathlib import Path
     html = Path("app/static/index.html").read_text(encoding="utf-8")
-    js = Path("app/static/app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     css = Path("app/static/rezepte.css").read_text(encoding="utf-8")
 
     assert "/api/admin/pdf/preflight" in js

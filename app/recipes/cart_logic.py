@@ -23,6 +23,7 @@ from .canonical import (
     TOMATO_CANONICAL,
     TOMATO_SHOPPING_NAME,
     canonical_name as _canonical,
+    canonical_for_existing,
 )
 from .units import normalize_unit, to_base, from_base_display, unit_class
 
@@ -95,7 +96,7 @@ def add_recipe_to_cart(db, recipe_id: int, multiplier: float = 1.0) -> Dict[str,
     counters = {"added": 0, "merged": 0, "skipped": 0}
     for ing in ingredients:
         name = ing.get("name") or ""
-        canon = ing.get("canonical_name") or _canonical(name)
+        canon = canonical_for_existing(name, ing.get("canonical_name"))
         if not canon:
             # Zutat ohne erkennbaren Namen — überspringen (passiert nicht,
             # weil canonical_name in der DB seit Migration 1 immer gesetzt
@@ -153,13 +154,16 @@ def aggregate_recipes_for_cart(
 
         for ingredient in db.recipe_ingredients_get(recipe_id):
             name = ingredient.get("name") or ""
-            canonical = ingredient.get("canonical_name") or _canonical(name)
+            canonical = canonical_for_existing(
+                name, ingredient.get("canonical_name"), normalize_self_alias=True,
+            )
             if not canonical or canonical.strip().lower() in excluded:
                 continue
             amount = ingredient.get("amount")
             if amount is not None:
                 amount = float(amount) * multiplier
             prepared = prepare_for_cart(name, amount, ingredient.get("unit"))
+            prepared["canonical_name"] = canonical
             key = (str(prepared["canonical_name"]), prepared["unit"])
             existing = aggregated.get(key)
             if existing is None:

@@ -290,9 +290,9 @@ def test_extraction_worker_rejects_nutrition_after_concurrent_ingredient_change(
         lambda *_args, **_kwargs: SimpleNamespace(
             content={
                 "ingredients": [
-                    {"name": "A"},
-                    {"name": "B"},
-                    {"name": "C"},
+                    {"name": "Mehl", "amount": 250, "unit": "g", "raw": "250 g Mehl"},
+                    {"name": "Milch", "amount": 100, "unit": "ml", "raw": "100 ml Milch"},
+                    {"name": "Ei", "amount": 2, "unit": "Stück", "raw": "2 Eier"},
                 ],
                 "steps": [{"instruction": "Kochen."}],
                 "tags": [],
@@ -302,6 +302,7 @@ def test_extraction_worker_rejects_nutrition_after_concurrent_ingredient_change(
             reason="test",
             frame_text_count=0,
             transcribed=False,
+            evidence_text="Zutaten:\n250 g Mehl\n100 ml Milch\n2 Eier\nZubereitung:\nKochen.",
         ),
     )
 
@@ -312,7 +313,7 @@ def test_extraction_worker_rejects_nutrition_after_concurrent_ingredient_change(
         "extract-worker",
     )
 
-    assert observed == ["A", "B", "C"]
+    assert observed == ["Mehl", "Milch", "Ei"]
     recipe = test_db.recipe_get(rid)
     assert recipe["calories_per_serving"] is None
     assert recipe["nutrition_claim_owner"] is None

@@ -29,6 +29,11 @@ web:
   # Token-Rotation erfolgen über den geschützten Admin-Endpunkt.
   share_enabled: false
   share_queue_limit: 100
+  # Benutzer-, Datei-, Foto-, Share-Importe und einzelne Rezeptbilder: 24 Stunden.
+  # Fehlgeschlagene Versuche zählen mit; globale Verknüpfungen/aktive Replays nicht.
+  # 0 sperrt neue Analysen/Bilder. Gilt auch ohne Eintrag im Bestands-YAML.
+  import_daily_limit: 20
+  import_server_daily_limit: 200
   secret_key: change-this-to-random-string-32chars-min
   # Nur von diesen unmittelbaren Proxy-Adressen werden CF-Connecting-IP und
   # X-Forwarded-For ausgewertet. Bei einem separaten cloudflared-LXC dessen
@@ -92,6 +97,11 @@ ai:
     # keine internen DNS-Namen; öffentliche HTTPS-Ziele werden DNS-gepinnt.
     base_url: ""
     timeout: 30
+    # Serverweite rollierende 24-Stunden-Grenzen, einschließlich Retries und
+    # automatischer Mail-/Video-/PDF-Verarbeitung. 0 sperrt weitere Aufrufe.
+    # Dies sind Versuchskontingente, keine garantierte Euro-/Dollar-Obergrenze.
+    server_daily_request_limit: 1000
+    server_daily_image_limit: 40
   # Confidence-Schwelle: darunter → Pending (manuell)
   confidence_threshold: 0.75
   description_min_length: 20
@@ -107,8 +117,9 @@ ai:
     max_seconds: 600
     transcription_model: gpt-4o-mini-transcribe
     cache_filename: .video-ai-evidence.json
-  # Neue Rezeptbilder werden im Hintergrund erzeugt. Vor dem ersten Ersetzen
-  # wird das vorhandene Bild checksummiert unter paths.data_dir gesichert.
+  # Neue Rezeptbilder werden bei fehlendem Cover im Hintergrund erzeugt.
+  # Bestehende Cover werden nur durch explizit angeforderte Generierung ersetzt
+  # und vorher checksummiert unter paths.data_dir gesichert.
   image_generation:
     enabled: true
     model: gpt-image-2

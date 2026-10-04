@@ -20,7 +20,7 @@ apt-get -y upgrade
 apt-get install -y --no-install-recommends \
   ca-certificates curl wget gnupg git \
   python3 python3-venv python3-pip python3-dev \
-  build-essential ffmpeg \
+  build-essential ffmpeg poppler-utils \
   tesseract-ocr tesseract-ocr-osd tesseract-ocr-deu tesseract-ocr-eng \
   sqlite3 \
   cron \

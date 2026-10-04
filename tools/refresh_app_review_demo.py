@@ -406,6 +406,7 @@ def _apply_transactional_refresh(
     base_by_slug: Mapping[str, sqlite3.Row],
     monday: date,
     effective_today: date,
+    account_id: int,
 ) -> dict[str, Any]:
     source_url = review_source_url(REVIEW_PUBLIC_URL)
     lemon_id = int(base_by_slug[PLAN_RECIPES[0][0]]["id"])
@@ -425,18 +426,19 @@ def _apply_transactional_refresh(
         (lemon_id,),
     ).fetchall()
     meal_rows = connection.execute(
-        "SELECT * FROM meal_plan_entries ORDER BY planned_for, sort_order, id"
+        "SELECT * FROM meal_plan_entries WHERE account_id=? ORDER BY planned_for, sort_order, id",
+        (account_id,),
     ).fetchall()
-    cart_rows = connection.execute("SELECT * FROM shopping_cart ORDER BY id").fetchall()
+    cart_rows = connection.execute("SELECT * FROM shopping_cart WHERE account_id=? ORDER BY id", (account_id,)).fetchall()
     recurring_rows = connection.execute(
-        "SELECT * FROM shopping_recurring ORDER BY id"
+        "SELECT * FROM shopping_recurring WHERE account_id=? ORDER BY id", (account_id,),
     ).fetchall()
     product_canonicals = tuple(item[1] for item in REVIEW_CART_ITEMS)
     product_rows = connection.execute(
-        "SELECT * FROM shopping_products WHERE canonical_name IN ("
+        "SELECT * FROM shopping_products WHERE account_id=? AND canonical_name IN ("
         + ",".join("?" for _item in product_canonicals)
         + ") ORDER BY canonical_name COLLATE NOCASE",
-        product_canonicals,
+        (account_id, *product_canonicals),
     ).fetchall()
     expected_next_due = _review_recurring_next_due(recurring_rows, effective_today)
     url_changed = str(base_by_slug[PLAN_RECIPES[0][0]]["url"] or "") != source_url
@@ -497,16 +499,17 @@ def _apply_transactional_refresh(
             ),
         )
     if meal_plan_changed:
-        connection.execute("DELETE FROM meal_plan_entries")
+        connection.execute("DELETE FROM meal_plan_entries WHERE account_id=?", (account_id,))
         for week_offset in range(REVIEW_PLAN_WEEKS):
             planned_for = (monday + timedelta(weeks=week_offset)).isoformat()
             for sort_order, (slug, servings) in enumerate(PLAN_RECIPES):
                 connection.execute(
                     "INSERT INTO meal_plan_entries ("
-                    "planned_for, recipe_id, planned_servings, sort_order, "
+                    "account_id, planned_for, recipe_id, planned_servings, sort_order, "
                     "created_at, updated_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?)",
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
+                        account_id,
                         planned_for,
                         int(base_by_slug[slug]["id"]),
                         servings,
@@ -516,20 +519,21 @@ def _apply_transactional_refresh(
                     ),
                 )
     if shopping_changed:
-        connection.execute("DELETE FROM shopping_cart")
-        connection.execute("DELETE FROM shopping_recurring")
+        connection.execute("DELETE FROM shopping_cart WHERE account_id=?", (account_id,))
+        connection.execute("DELETE FROM shopping_recurring WHERE account_id=?", (account_id,))
         for name, canonical, amount, unit, category, checked in REVIEW_CART_ITEMS:
             prepared = prepare_for_cart(name, amount, unit)
             connection.execute(
                 "INSERT INTO shopping_products ("
-                "canonical_name, display_name, category, icon, default_unit, "
+                "account_id, canonical_name, display_name, category, icon, default_unit, "
                 "usage_count, recipe_count, last_used_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, 0, 0, NULL, ?) "
-                "ON CONFLICT(canonical_name) DO UPDATE SET "
+                ") VALUES (?, ?, ?, ?, ?, ?, 0, 0, NULL, ?) "
+                "ON CONFLICT(account_id, canonical_name) DO UPDATE SET "
                 "display_name=excluded.display_name, category=excluded.category, "
                 "icon=excluded.icon, default_unit=excluded.default_unit, "
                 "updated_at=excluded.updated_at",
                 (
+                    account_id,
                     canonical,
                     name,
                     category,
@@ -540,10 +544,11 @@ def _apply_transactional_refresh(
             )
             connection.execute(
                 "INSERT INTO shopping_cart ("
-                "name, canonical_name, amount, unit, checked, added_at, "
+                "account_id, name, canonical_name, amount, unit, checked, added_at, "
                 "source_recipe_ids, category, sort_order"
-                ") VALUES (?, ?, ?, ?, ?, ?, '[]', ?, NULL)",
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, NULL)",
                 (
+                    account_id,
                     name,
                     canonical,
                     prepared["amount"],
@@ -557,10 +562,11 @@ def _apply_transactional_refresh(
         prepared_recurring = prepare_for_cart(name, amount, unit)
         connection.execute(
             "INSERT INTO shopping_recurring ("
-            "name, canonical_name, amount, unit, category, interval_days, "
+            "account_id, name, canonical_name, amount, unit, category, interval_days, "
             "next_due_on, active, last_added_at, created_at, updated_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
             (
+                account_id,
                 name,
                 canonical,
                 prepared_recurring["amount"],
@@ -586,17 +592,18 @@ def _apply_transactional_refresh(
         (lemon_id,),
     ).fetchall()
     final_meals = connection.execute(
-        "SELECT * FROM meal_plan_entries ORDER BY planned_for, sort_order, id"
+        "SELECT * FROM meal_plan_entries WHERE account_id=? ORDER BY planned_for, sort_order, id",
+        (account_id,),
     ).fetchall()
-    final_cart = connection.execute("SELECT * FROM shopping_cart ORDER BY id").fetchall()
+    final_cart = connection.execute("SELECT * FROM shopping_cart WHERE account_id=? ORDER BY id", (account_id,)).fetchall()
     final_recurring = connection.execute(
-        "SELECT * FROM shopping_recurring ORDER BY id"
+        "SELECT * FROM shopping_recurring WHERE account_id=? ORDER BY id", (account_id,),
     ).fetchall()
     final_products = connection.execute(
-        "SELECT * FROM shopping_products WHERE canonical_name IN ("
+        "SELECT * FROM shopping_products WHERE account_id=? AND canonical_name IN ("
         + ",".join("?" for _item in product_canonicals)
         + ") ORDER BY canonical_name COLLATE NOCASE",
-        product_canonicals,
+        (account_id, *product_canonicals),
     ).fetchall()
     if str(refreshed_recipe["url"]) != source_url:
         raise RuntimeError("Review-Quell-URL wurde nicht atomar aktualisiert.")
@@ -744,11 +751,14 @@ def refresh_app_review_demo(
         base_by_slug = _assert_active_recipe_provenance(active, recipe_root)
         effective_today = today or date.today()
         monday = effective_today - timedelta(days=effective_today.weekday())
+        account = connection.execute("SELECT account_id FROM account_members WHERE user_id=?",
+                                     (int(review_user["id"]),)).fetchone()
         result = _apply_transactional_refresh(
             connection,
             base_by_slug=base_by_slug,
             monday=monday,
             effective_today=effective_today,
+            account_id=int(account["account_id"]) if account else 0,
         )
         final_user = connection.execute(
             "SELECT password_hash, role, disabled, session_version FROM users WHERE id=?",

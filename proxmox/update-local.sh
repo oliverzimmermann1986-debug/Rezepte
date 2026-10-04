@@ -9,14 +9,17 @@ APP_DIR="${APP_DIR:-/opt/scrapper}"
 APP_USER="${APP_USER:-scrapper}"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/scrapper-code-backups}"
-STAMP="$(date +%Y%m%d-%H%M%S)"
+STAMP="$(date +%Y%m%d-%H%M%S)-$$"
 BACKUP_FILE="$BACKUP_ROOT/code-$STAMP.tar.gz"
+STATE_DIR="$BACKUP_ROOT/state-$STAMP"
 HEALTH_FILE=""
 REVIEW_HEALTH_FILE=""
+ROLLBACK_HEALTH_FILE=""
 
 cleanup_health_files() {
   [[ -z "$HEALTH_FILE" ]] || rm -f -- "$HEALTH_FILE" || true
   [[ -z "$REVIEW_HEALTH_FILE" ]] || rm -f -- "$REVIEW_HEALTH_FILE" || true
+  [[ -z "$ROLLBACK_HEALTH_FILE" ]] || rm -f -- "$ROLLBACK_HEALTH_FILE" || true
 }
 
 poll_local_health() {
@@ -66,7 +69,46 @@ if [[ "$SOURCE_DIR" != "$APP_DIR" && "$SOURCE_DIR" == "$APP_DIR/"* ]]; then
   exit 1
 fi
 
-OCR_PACKAGES=(tesseract-ocr tesseract-ocr-osd tesseract-ocr-deu tesseract-ocr-eng)
+mkdir -p "$BACKUP_ROOT"
+chmod 0700 "$BACKUP_ROOT"
+exec 9>"$BACKUP_ROOT/update.lock"
+if ! flock -n 9; then
+  echo "Fehler: Ein anderes Update läuft bereits." >&2
+  exit 1
+fi
+
+# Keine älteren Schemas oder fehlenden bestehenden Fähigkeiten ausrollen.
+# Der Helfer liest SQLite ausschließlich read-only und importiert keine App.
+"$APP_DIR/venv/bin/python" "$SOURCE_DIR/tools/release_state.py" preflight \
+  --app "$APP_DIR" --source "$SOURCE_DIR"
+for writer in scrapper-job.service scrapper-db-backup.service; do
+  if systemctl is-active --quiet "$writer"; then
+    echo "Fehler: $writer läuft. Update nach Abschluss erneut starten." >&2
+    exit 1
+  fi
+done
+declare -A TIMER_WAS_ACTIVE
+for timer in scrapper-job.timer scrapper-db-backup.timer; do
+  TIMER_WAS_ACTIVE["$timer"]=0
+  if systemctl is-active --quiet "$timer"; then
+    TIMER_WAS_ACTIVE["$timer"]=1
+  fi
+done
+
+restore_timer_activity() {
+  local timer
+  for timer in scrapper-job.timer scrapper-db-backup.timer; do
+    if [[ "$timer" == "scrapper-job.timer" && "$IS_REVIEW_INSTANCE" == "1" ]]; then
+      systemctl disable --now "$timer" >/dev/null
+    elif [[ "${TIMER_WAS_ACTIVE[$timer]}" == "1" ]]; then
+      systemctl start "$timer"
+    else
+      systemctl stop "$timer"
+    fi
+  done
+}
+
+OCR_PACKAGES=(poppler-utils tesseract-ocr tesseract-ocr-osd tesseract-ocr-deu tesseract-ocr-eng)
 MISSING_PACKAGES=()
 for pkg in "${OCR_PACKAGES[@]}"; do
   dpkg -s "$pkg" >/dev/null 2>&1 || MISSING_PACKAGES+=("$pkg")
@@ -80,12 +122,12 @@ if [[ "$SOURCE_DIR" != "$APP_DIR" ]] && ! command -v rsync >/dev/null 2>&1; then
   apt-get install -y --no-install-recommends rsync
 fi
 
-mkdir -p "$BACKUP_ROOT"
 if [[ -d "$APP_DIR/app" ]]; then
   echo "Sichere bisherigen Anwendungscode nach $BACKUP_FILE"
   tar -C "$APP_DIR" -czf "$BACKUP_FILE" \
     --exclude='./data' --exclude='./venv' --exclude='./logs' \
-    --exclude='./temp' --exclude='./files' --exclude='./playwright-browsers' \
+    --exclude='./temp' --exclude='./files' --exclude='./playwright-browsers*' \
+    --exclude='./venv.*' \
     --exclude='./.git' .
 fi
 
@@ -98,14 +140,20 @@ BROWSERS_SWAPPED=0
 
 restore_on_error() {
   local rc=$?
+  local restored=1
+  trap - ERR
   if [[ $rc -ne 0 ]]; then
     echo "Update fehlgeschlagen (Code $rc). Stelle bisherigen Code wieder her…" >&2
     if [[ -f "$BACKUP_FILE" ]]; then
+      systemctl stop scrapper-web.service scrapper-job.timer scrapper-db-backup.timer || restored=0
+      systemctl stop scrapper-job.service scrapper-db-backup.service || restored=0
       RESTORE_DIR="$(mktemp -d /tmp/rezepte-restore.XXXXXX)"
       tar -C "$RESTORE_DIR" -xzf "$BACKUP_FILE"
-      rsync -a --delete \
+      rsync -a --checksum --delete \
         --exclude='/data/' --exclude='/venv/' --exclude='/logs/' \
         --exclude='/temp/' --exclude='/files/' --exclude='/playwright-browsers/' \
+        --exclude='/venv.previous/' --exclude='/venv.next' \
+        --exclude='/playwright-browsers.previous/' --exclude='/playwright-browsers.next/' \
         --exclude='/.git/' \
         "$RESTORE_DIR/" "$APP_DIR/"
       rm -rf -- "$RESTORE_DIR"
@@ -117,22 +165,35 @@ restore_on_error() {
         rm -rf -- "$APP_DIR/playwright-browsers"
         mv "$APP_DIR/playwright-browsers.previous" "$APP_DIR/playwright-browsers"
       fi
-      systemctl daemon-reload || true
-      systemctl restart scrapper-web.service || true
-      if [[ "$IS_REVIEW_INSTANCE" != "1" ]]; then
-        systemctl restart scrapper-job.timer || true
+      if [[ -f "$STATE_DIR/manifest.json" && "$restored" == "1" ]]; then
+        "$APP_DIR/venv/bin/python" "$SOURCE_DIR/tools/release_state.py" restore \
+          --state "$STATE_DIR" || restored=0
       fi
-      systemctl restart scrapper-db-backup.timer || true
+      systemctl daemon-reload || true
+      ROLLBACK_HEALTH_FILE="$(mktemp /tmp/rezepte-rollback-health.XXXXXX)"
+      chmod 0600 "$ROLLBACK_HEALTH_FILE"
+      if [[ "$restored" == "1" ]] && systemctl restart scrapper-web.service \
+          && poll_local_health "$ROLLBACK_HEALTH_FILE"; then
+        restore_timer_activity || true
+      else
+        echo "Wiederherstellung braucht Prüfung. Dienste bleiben angehalten; Sicherung: $STATE_DIR" >&2
+        systemctl stop scrapper-web.service || true
+      fi
     fi
   fi
   exit "$rc"
 }
 trap restore_on_error ERR
 
+# Sichert DB, Konfiguration und installierte Units vor dem ersten neuen Code.
+# Erst nach angehaltenen Schreibern ist ein Daten-Rollback verlustfrei möglich.
+"$APP_DIR/venv/bin/python" "$SOURCE_DIR/tools/release_state.py" capture \
+  --app "$APP_DIR" --state "$STATE_DIR"
+
 mkdir -p "$APP_DIR"
 if [[ "$SOURCE_DIR" != "$APP_DIR" ]]; then
   echo "Übertrage Anwendungscode vollständig…"
-  rsync -a --delete \
+  rsync -a --checksum --delete \
     --exclude='/data/' --exclude='/venv/' --exclude='/logs/' \
     --exclude='/temp/' --exclude='/files/' --exclude='/playwright-browsers/' \
     --exclude='/.git/' \
@@ -140,6 +201,9 @@ if [[ "$SOURCE_DIR" != "$APP_DIR" ]]; then
 else
   echo "Release liegt bereits in $APP_DIR; aktualisiere Abhängigkeiten und Dienste."
 fi
+
+"$APP_DIR/venv/bin/python" "$SOURCE_DIR/tools/release_state.py" verify-code \
+  --app "$APP_DIR" --source "$SOURCE_DIR"
 
 # `mktemp -d` erzeugt Release-Verzeichnisse mit 0700. `rsync -a` übernimmt
 # diesen Modus sonst auf APP_DIR und systemd kann als APP_USER nicht hinein.
@@ -176,6 +240,10 @@ fi
 mv "$APP_DIR/playwright-browsers.next" "$APP_DIR/playwright-browsers"
 BROWSERS_SWAPPED=1
 
+# Deterministic archives can retain identical timestamps and file sizes. Force
+# hash-checked bytecode so an old timestamp-based .pyc cannot survive an update.
+"$APP_DIR/venv/bin/python" -m compileall -q -f --invalidation-mode checked-hash "$APP_DIR/app"
+
 install -m 0644 "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/scrapper-web.service
 install -m 0644 "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/scrapper-job.service
 install -m 0644 "$APP_DIR/systemd/scrapper-job.timer" /etc/systemd/system/scrapper-job.timer
@@ -199,17 +267,15 @@ find "$APP_DIR" -path "$APP_DIR/data" -prune -o -path "$APP_DIR/logs" -prune \
   -o -exec chown root:root {} +
 
 systemctl daemon-reload
-systemctl enable scrapper-web.service scrapper-db-backup.timer >/dev/null
+if [[ "${ENABLE_HOUSEHOLD_AUTH:-0}" == "1" ]]; then
+  # Die ursprüngliche Konfiguration ist bereits im Rollback-Snapshot.
+  # Bestehende Konten und Kennwörter werden nicht verändert.
+  "$APP_DIR/venv/bin/python" "$SOURCE_DIR/tools/release_state.py" enable-accounts --app "$APP_DIR"
+fi
 if [[ "$IS_REVIEW_INSTANCE" == "1" ]]; then
   systemctl disable --now scrapper-job.timer >/dev/null 2>&1 || true
-else
-  systemctl enable scrapper-job.timer >/dev/null
 fi
 systemctl restart scrapper-web.service
-if [[ "$IS_REVIEW_INSTANCE" != "1" ]]; then
-  systemctl restart scrapper-job.timer
-  systemctl restart scrapper-db-backup.timer
-fi
 
 HEALTH_FILE="$(mktemp /tmp/rezepte-health.XXXXXX)"
 chmod 0600 "$HEALTH_FILE"
@@ -219,7 +285,7 @@ if ! poll_local_health "$HEALTH_FILE"; then
   false
 fi
 
-EXPECTED_VERSION="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$APP_DIR/app/__init__.py" | head -n 1 | tr -d '\r')"
+EXPECTED_VERSION="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$SOURCE_DIR/app/__init__.py" | head -n 1 | tr -d '\r')"
 HEALTH_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version", ""))' "$HEALTH_FILE" 2>/dev/null || true)"
 if [[ -z "$EXPECTED_VERSION" || "$HEALTH_VERSION" != "$EXPECTED_VERSION" ]]; then
   echo "Fehler: Erwartete Version '$EXPECTED_VERSION', Dienst meldet '$HEALTH_VERSION'." >&2
@@ -232,6 +298,9 @@ for REQUIRED_CAPABILITY in \
   shopping-categories \
   native-admin-roles \
   native-admin-config-v1 \
+  household-libraries-v1 \
+  household-invitations-v1 \
+  global-recipe-references-v1 \
   recurring-shopping \
   meal-conductor-v1 \
   source-integrity-v2 \
@@ -260,6 +329,12 @@ from app.main import app
 required_methods = {
     "/api/admin/pdf/preflight": {"get"},
     "/api/cart/optimize/preview": {"post"},
+    "/api/auth/guest": {"post"},
+    "/api/auth/register": {"post"},
+    "/api/account": {"get"},
+    "/api/account/invitations": {"post"},
+    "/api/account/invitations/accept": {"post"},
+    "/api/recipes/{recipe_id}/save": {"post", "delete"},
     "/api/meal-plan/conductor/preview": {"get", "post"},
     "/api/recipes/{recipe_id}/source-integrity": {"get"},
     "/api/recipes/{recipe_id}/source-integrity/check": {"post"},
@@ -325,11 +400,12 @@ if [[ "$IS_REVIEW_INSTANCE" == "1" ]]; then
     journalctl -u scrapper-web.service -n 80 --no-pager >&2 || true
     false
   fi
-  systemctl restart scrapper-db-backup.timer
 fi
 
+restore_timer_activity
 trap - ERR
 rm -rf -- "$APP_DIR/venv.previous" "$APP_DIR/playwright-browsers.previous"
 echo "Update erfolgreich. Backend und Frontend laufen gemeinsam auf Version $EXPECTED_VERSION."
 echo "Gesundheit: $(cat "$HEALTH_FILE")"
 echo "API-Vertraege: OpenAPI-Methoden vollständig registriert"
+echo "Rückweg mit Datenbank, Konfiguration und Units: $STATE_DIR"

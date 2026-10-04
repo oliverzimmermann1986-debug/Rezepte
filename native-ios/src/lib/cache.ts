@@ -31,8 +31,11 @@ export async function putApiCache<T>(key: string, value: T) {
 }
 
 export async function readApiCache<T>(key: string): Promise<T | null> {
+  const requestEpoch = currentApiSessionEpoch();
+  const requestStorageKey = storageKey(key);
   try {
-    const raw = await AsyncStorage.getItem(storageKey(key));
+    const raw = await AsyncStorage.getItem(requestStorageKey);
+    assertApiSessionEpochCurrent(requestEpoch);
     if (!raw) return null;
     return (JSON.parse(raw) as CachedValue<T>).value;
   } catch {
@@ -45,15 +48,24 @@ export async function readApiCache<T>(key: string): Promise<T | null> {
 export async function apiCached<T>(key: string, path: string, signal?: AbortSignal): Promise<T> {
   const requestEpoch = currentApiSessionEpoch();
   const requestStorageKey = storageKey(key);
-  try {
-    const value = await api<T>(path, {}, signal);
+  const assertCurrent = () => {
     assertApiSessionEpochCurrent(requestEpoch);
+    if (signal?.aborted) {
+      const error = new Error('Anfrage abgebrochen.');
+      error.name = 'AbortError';
+      throw error;
+    }
+  };
+  try {
+    assertCurrent();
+    const value = await api<T>(path, {}, signal);
+    assertCurrent();
     const cached: CachedValue<T> = { storedAt: Date.now(), value };
     await AsyncStorage.setItem(requestStorageKey, JSON.stringify(cached)).catch(() => undefined);
-    assertApiSessionEpochCurrent(requestEpoch);
+    assertCurrent();
     return value;
   } catch (reason) {
-    if (signal?.aborted) throw reason;
+    assertCurrent();
     const recoverable = !(reason instanceof ApiError) || reason.status === 0 || reason.status >= 500;
     if (!recoverable) throw reason;
     let raw: string | null;
@@ -61,13 +73,18 @@ export async function apiCached<T>(key: string, path: string, signal?: AbortSign
       assertApiSessionEpochCurrent(requestEpoch);
       raw = await AsyncStorage.getItem(requestStorageKey);
     } catch {
+      assertCurrent();
       throw reason;
     }
+    // Abmeldung, Serverwechsel oder Abbruch können während des Speicher-Reads
+    // passieren. Eine vorherige Prüfung schützt die spätere Rückgabe nicht.
+    assertCurrent();
     if (!raw) throw reason;
     try {
       return (JSON.parse(raw) as CachedValue<T>).value;
     } catch {
-      await AsyncStorage.removeItem(storageKey(key)).catch(() => undefined);
+      await AsyncStorage.removeItem(requestStorageKey).catch(() => undefined);
+      assertCurrent();
       throw reason;
     }
   }

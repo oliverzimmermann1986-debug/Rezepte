@@ -20,6 +20,7 @@ temp/
 video-archive/
 
 # Local tool/build output
+.codex-tmp*/
 .codex-release-assets/pytest/
 .impeccable/questions/
 native-ios/dist*/

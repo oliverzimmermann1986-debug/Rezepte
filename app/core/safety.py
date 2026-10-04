@@ -12,11 +12,24 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+
+
+def safe_path_component(name: str) -> str:
+    """Ein einzelner sichtbarer Ordnername, niemals Punkt- oder Elternpfad."""
+    value = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "", (name or "").strip())
+    value = re.sub(r"\s+", "_", value).strip(". ")
+    value = value.encode("utf-8")[:180].decode("utf-8", errors="ignore").rstrip(". ")
+    reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                *(f"LPT{i}" for i in range(1, 10))}
+    if value.partition(".")[0].upper() in reserved:
+        value = "_" + value
+    return value or "Unbekannt"
 
 
 def _resolve_under(path: Path, roots: Iterable[Path], *, kind: str) -> Path:

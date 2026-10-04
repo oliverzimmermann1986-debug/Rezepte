@@ -8,11 +8,11 @@ adaptive (Web/PWA und native iOS-App)
 
 ## Users
 
-Ein privater Haushalt mit Login-Accounts, in drei bestätigten Situationen:
+Getrennte private Haushalte mit Login-Accounts und globaler Rezeptsammlung, in drei bestätigten Situationen:
 
 1. **Kochend, einhändig am Handy in der Küche** — der Hauptfall. Rezept ist in der nativen iOS-App oder PWA offen, Hände sind beschäftigt, Blickabstand ist größer als am Schreibtisch.
 2. **Haushalt/Partner an Handy und Desktop** — gemeinsame Bibliothek, gemeinsame Einkaufsliste, gemischte Geräte. Pflege- und Prüfarbeit (Import auflösen, PDF/Scan, Wartung) passiert am Desktop.
-3. **Gäste ohne Account über Share-Links** — sehen ein einzelnes geteiltes Rezept (`app/routes/sharing.py`), ohne Navigation und ohne Adminrechte.
+3. **Gäste ohne Account** — können per Gastanmeldung die Bibliothek, Einkaufsliste und den Wochenplan ansehen. Das Backend sperrt Schreibzugriffe und Verwaltung. Share-Links (`app/routes/sharing.py`) zeigen weiterhin ein einzelnes geteiltes Rezept.
 
 ## Product Purpose
 
@@ -36,7 +36,15 @@ Kein Rezept-Manager, in den man Rezepte tippt, sondern eine **Auffang-Anlage fü
 
 **Datenmodell (Auszug, `app/db.py`):** `recipes(name, type, category, folder_path, description, thumb_filename, video_filename, source_added_at, indexed_at, ingredients_status)`; `recipe_ingredients(name, canonical_name, amount, unit, raw, sort_order)`; `recipe_steps(step_number, …)`. `ingredients_status` kennt `pending | running | ok | error | skipped` — **unfertige Rezepte sind ein Normalzustand, kein Fehler**, und die Oberfläche muss diesen Zustand ehrlich zeigen.
 
-**Technische Constraints:** FastAPI + SQLite (WAL, `synchronous=FULL`); Frontend ist ein Single-File-Bundle ohne Build-Pipeline (`app/static/index.html`, ein Stylesheet `rezepte.css`, lokales Alpine.js); strikte CSP und Security-Header, deshalb **keine externen Fonts, Skripte oder Design-CDNs**; Touch-Ziele ≥ 40–44 px; Formfelder mobil 16 px gegen iOS-Autozoom.
+**Technische Constraints:** FastAPI + SQLite (WAL, `synchronous=FULL`); Frontend bleibt ohne Build-Pipeline (`app/static/index.html`, ein Stylesheet `rezepte.css`, lokales Alpine.js). `app.js` enthält Zustand und Infrastruktur, `app/static/features/` die Fachmethoden für Rezepte, Einkauf, Wochenplan und Administration; strikte CSP und Security-Header, deshalb **keine externen Fonts, Skripte oder Design-CDNs**; Touch-Ziele ≥ 44 px; Formfelder mobil 16 px gegen iOS-Autozoom.
+
+**Konten:** Eigene Registrierung und eine Einladung für eine zweite Person mit
+separater Anmeldung. Der Link gilt sieben Tage, ist einmal verwendbar und
+widerrufbar. Jeder Haushalt ist ein getrennter Mandant. Globale Rezepte sind für alle lesbar;
+private Rezepte, Sammlung, Favoriten, Bewertungen, Kochverlauf, Einkauf und
+Wochenplan gehören zum Haushalt. Private Importe vorhandener globaler Links
+speichern einen Verweis ohne erneuten Download. Gastzugang und Registrierung
+erfordern aktivierte Kontenanmeldung (`web.auth_disabled: false`).
 
 ## Brand Commitments
 

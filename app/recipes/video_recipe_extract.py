@@ -86,6 +86,15 @@ def _merge_missing(primary: Optional[dict], enrichment: Optional[dict]) -> Optio
     if out.get("servings") is None and extra.get("servings") is not None:
         out["servings"] = extra["servings"]
     out["tags"] = sorted(set(out.get("tags") or []) | set(extra.get("tags") or []))
+    out["review_reasons"] = list(dict.fromkeys(
+        [*(out.get("review_reasons") or []), *(extra.get("review_reasons") or [])]
+    ))
+    confidences = [item.get("confidence") for item in (primary or {}, extra) if item.get("confidence") is not None]
+    if confidences:
+        try:
+            out["confidence"] = min(float(value) for value in confidences)
+        except (TypeError, ValueError):
+            out["confidence"] = 0
     primary_allergens = normalize_allergen_info(out.get("allergen_info"))
     extra_allergens = normalize_allergen_info(extra.get("allergen_info"))
     if primary_allergens is None:

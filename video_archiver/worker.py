@@ -442,6 +442,10 @@ class VideoArchiver:
             if not self.queue.complete(recipe_id, path, expected_url=expected_url):
                 return {"recipe_id": recipe_id, "status": "superseded", "path": str(path)}
             return {"recipe_id": recipe_id, "status": "completed", "path": str(path)}
+        except KeyboardInterrupt:
+            self.queue.fail(recipe_id, "Archivierung unterbrochen", max_attempts=self.max_attempts,
+                            expected_url=expected_url)
+            raise
         except Exception as exc:
             if not self.queue.fail(
                 recipe_id, str(exc), max_attempts=self.max_attempts,
@@ -548,7 +552,7 @@ class VideoArchiver:
             os.replace(source, final_video)
             try:
                 os.replace(metadata_temp, final_metadata)
-            except Exception:
+            except BaseException:
                 final_video.unlink(missing_ok=True)
                 raise
             for item in (final_video, final_metadata):

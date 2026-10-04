@@ -11,7 +11,7 @@ import time
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import (
     APIRouter,
@@ -61,14 +61,34 @@ def _is_under_temp(path_str: str) -> bool:
         return False
 
 
-@router.get("", dependencies=[Depends(require_admin)])
-def list_pending(status: str = "pending", sort: str = "newest") -> List[Dict[str, Any]]:
-    return get_db().pending_list(status=status, sort=sort)
+@router.get("")
+def list_pending(status: str = "pending", sort: str = "newest", visibility: Optional[Literal["private", "global"]] = None) -> List[Dict[str, Any]]:
+    items = get_db().pending_list(status=status, sort=sort)
+    return [item for item in items if visibility is None or ("private" if item.get("owner_account_id") is not None else "global") == visibility]
+
+
+def _pending_import(url, visibility=None):
+    from ..tenancy import CURRENT_HOUSEHOLD, scoped_scraper
+    from ..tenant_db import HouseholdDatabase
+    db = get_db()
+    scope = CURRENT_HOUSEHOLD.get()
+    entry = db.pending_get(url, visibility=visibility) if scope is not None else db.pending_get(url)
+    if not entry:
+        raise HTTPException(404, "Prüfeintrag nicht gefunden")
+    if scope is not None:
+        if entry.get("owner_account_id") is None and not scope.is_admin:
+            raise HTTPException(403, "Globale Importe können nur Administratoren bearbeiten")
+        db = HouseholdDatabase(db, scope, import_owner=entry.get("owner_account_id"))
+        job = scoped_scraper(db, get_scraper_job())
+    else:
+        job = get_scraper_job()
+    return db, entry, job
 
 
 class ImportUrlBody(BaseModel):
     url: str
     type: str = "recipe"          # 'recipe' | 'wedding'
+    visibility: str = "private"
 
 
 _UPLOAD_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
@@ -197,9 +217,9 @@ def _stored_import_result(db: Any, synth_url: str) -> Optional[Dict[str, Any]]:
 def _request_urls(db: Any, prefix: str) -> List[str]:
     with db.conn() as connection:
         rows = connection.execute(
-            "SELECT url FROM pending WHERE url LIKE ? "
-            "UNION SELECT url FROM history WHERE url LIKE ?",
-            (f"{prefix}%", f"{prefix}%"),
+            "SELECT COALESCE(source_url,url) AS url FROM pending WHERE COALESCE(source_url,url) LIKE ? AND owner_account_id IS ? "
+            "UNION SELECT COALESCE(source_url,url) AS url FROM history WHERE COALESCE(source_url,url) LIKE ? AND owner_account_id IS ?",
+            (f"{prefix}%", getattr(db, "import_owner", None), f"{prefix}%", getattr(db, "import_owner", None)),
         ).fetchall()
     return [str(row["url"]) for row in rows]
 
@@ -244,7 +264,7 @@ def _assert_upload_capacity(payload_size: int) -> None:
 
 
 @router.post("/import-url")
-def import_url(body: ImportUrlBody) -> Dict[str, Any]:
+def import_url(body: ImportUrlBody, request: Request) -> Dict[str, Any]:
     """Nimmt eine Rezept-Webquelle sofort an und analysiert sie im Hintergrund.
 
     Der Platzhalter ist direkt in der manuellen Prüfung sichtbar. Caption- und
@@ -268,15 +288,42 @@ def import_url(body: ImportUrlBody) -> Dict[str, Any]:
             "Pinterest-Pin oder eine konkrete Rezeptseite einfügen.",
         )
 
-    db = get_db()
+    from ..tenancy import import_database
+    db = import_database(request, body.visibility)
+    if db.import_owner is not None and body.type != "recipe":
+        raise HTTPException(400, "Private Importe unterstützen Rezepte")
+    if db.import_owner is not None:
+        existing = db.global_recipe_for_url(url)
+        if existing:
+            db.save_recipe(int(existing["id"]))
+            return {"ok": True, "status": "linked_global", "url": url, "recipe_id": int(existing["id"]),
+                    "visibility": "global", "in_library": True, "downloaded": False,
+                    "message": "Globales Rezept in deinem Haushalt gespeichert. Kein erneuter Download."}
+        existing = db.recipe_get_by_url(url)
+        if existing:
+            db.save_recipe(int(existing["id"]))
+            return {"ok": True, "status": "duplicate", "url": url, "recipe_id": int(existing["id"]),
+                    "visibility": "private", "in_library": True, "downloaded": False,
+                    "message": "Dieses Rezept ist bereits in deinem Haushalt gespeichert."}
+    elif body.type == "recipe":
+        existing = db.global_recipe_for_url(url)
+        if existing:
+            if db.account_id > 0:
+                db.save_recipe(int(existing["id"]))
+            return {"ok": True, "status": "duplicate", "url": url, "recipe_id": int(existing["id"]),
+                    "visibility": "global", "downloaded": False, "message": "Dieses globale Rezept ist bereits vorhanden."}
     if db.history_has(url):
         return {"ok": True, "status": "duplicate", "url": url,
                 "message": "URL wurde bereits importiert"}
 
     platform = recipe_source_platform(url)
+    dedupe_key = hashlib.sha256(f"{db.import_owner or 'global'}\0{body.type}\0{url}".encode("utf-8")).hexdigest()
+    from ..import_budget import reserve_import
+    budget_reserved = reserve_import(db, dedupe_key=dedupe_key)
     db.pending_add(
         url=url,
         content_type=body.type,
+        update_existing=False,
         description=None,
         video_path=None,
         frame_path=None,
@@ -293,11 +340,14 @@ def import_url(body: ImportUrlBody) -> Dict[str, Any]:
             "servings": None,
         },
     )
-    dedupe_key = hashlib.sha256(f"{body.type}\0{url}".encode("utf-8")).hexdigest()
+    # Explicit None preserves global visibility through the request facade,
+    # whose default otherwise adds the requesting person's household.
+    task_payload = {"url": url, "type": body.type, "account_id": db.import_owner}
     task_id = enqueue(
         "share_ingest",
-        {"url": url, "type": body.type},
+        task_payload,
         dedupe_key=dedupe_key,
+        reserve_budget=not budget_reserved,
     )
     return {
         "ok": True,
@@ -315,6 +365,7 @@ async def import_file(
     file: UploadFile = File(...),
     type: Optional[str] = Query(None),
     form_type: Optional[str] = Form(None, alias="type"),
+    visibility: str = Form("private"),
     client_request_id: Optional[str] = Form(None),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     force: bool = Query(False),
@@ -355,9 +406,13 @@ async def import_file(
         f"{import_type}\0{filename_identity}\0{content_hash}".encode("utf-8")
     ).hexdigest()
     stable_request_id = _normalized_request_id(client_request_id, idempotency_key)
-    db = get_db()
+    from ..tenancy import import_database, scoped_scraper
+    db = import_database(request, visibility)
+    if db.import_owner is not None and import_type != "recipe":
+        raise HTTPException(400, "Private Importe unterstützen Rezepte")
+    semantic_hash = hashlib.sha256(f"{db.import_owner or 'global'}\0{semantic_hash}".encode()).hexdigest()
     if stable_request_id:
-        request_hash = hashlib.sha256(stable_request_id.encode("utf-8")).hexdigest()[:32]
+        request_hash = hashlib.sha256(f"{db.import_owner or 'global'}\0{stable_request_id}".encode("utf-8")).hexdigest()[:32]
         request_prefix = f"manual-upload://request/{request_hash}/"
         synth_url = f"{request_prefix}{semantic_hash}{detected}"
         known_urls = _request_urls(db, request_prefix)
@@ -421,8 +476,10 @@ async def import_file(
                     return replay
         # PDF-Parsing, OCR und Vision sind synchron/blockierend. Im Threadpool
         # bleibt der FastAPI-Event-Loop für Login, Status und andere Nutzer frei.
+        from ..import_budget import reserve_import
+        reserve_import(db)
         result = await run_in_threadpool(
-            get_scraper_job().process_attachment,
+            scoped_scraper(db, get_scraper_job()).process_attachment,
             attachment,
             synth_url,
         )
@@ -444,11 +501,12 @@ async def import_file(
     return result
 
 
-@router.post("/scan-photo", dependencies=[Depends(require_admin)])
+@router.post("/scan-photo")
 async def scan_pending_photo(
     request: Request,
     url: str = Query(..., min_length=1),
     file: UploadFile = File(...),
+    visibility: Optional[Literal["private", "global"]] = None,
 ) -> Dict[str, Any]:
     """Hängt ein Foto an einen offenen Prüfeintrag und analysiert es sofort.
 
@@ -479,8 +537,7 @@ async def scan_pending_photo(
     _validate_upload_payload(data, detected)
     _assert_upload_capacity(len(data))
 
-    db = get_db()
-    entry = db.pending_get(url)
+    db, entry, job = _pending_import(url, visibility)
     if not entry or entry.get("status") != "pending":
         raise HTTPException(404, "Offener Prüfeintrag nicht gefunden")
     if (entry.get("content_type") or "recipe") != "recipe":
@@ -491,8 +548,10 @@ async def scan_pending_photo(
             raise HTTPException(409, "Ein Import läuft bereits. Bitte gleich erneut versuchen.")
         # Vision und strukturierte Rezeptanalyse sind blockierend. Wie beim
         # Dateiimport bleibt der Event-Loop währenddessen frei.
+        from ..import_budget import reserve_import
+        reserve_import(db)
         result = await run_in_threadpool(
-            get_scraper_job().attach_pending_photo,
+            job.attach_pending_photo,
             url,
             data,
             detected,
@@ -533,9 +592,11 @@ def bulk_skip(body: BulkSkipBody) -> Dict[str, Any]:
 # vor der Freigabe tatsächlich kontrolliert werden können.
 
 
-@router.get("/file", dependencies=[Depends(require_admin)])
-def pending_file(url: str) -> FileResponse:
-    entry = get_db().pending_get(url)
+@router.get("/file")
+def pending_file(url: str, visibility: Optional[Literal["private", "global"]] = None) -> FileResponse:
+    from ..tenancy import CURRENT_HOUSEHOLD
+    db = get_db()
+    entry = db.pending_get(url, visibility=visibility) if CURRENT_HOUSEHOLD.get() is not None else db.pending_get(url)
     if not entry:
         raise HTTPException(404, "Nicht gefunden")
     path_str = entry.get("video_path") or entry.get("frame_path")
@@ -596,6 +657,7 @@ class PendingStepIn(BaseModel):
 
 class ResolveBody(BaseModel):
     url: str
+    visibility: Optional[Literal["private", "global"]] = None
     action: str                   # 'save' | 'skip'
     name: Optional[str] = None
     type: Optional[str] = None    # für Rezept
@@ -607,10 +669,11 @@ class ResolveBody(BaseModel):
     verified: bool = False
 
 
-@router.post("", dependencies=[Depends(require_admin)])
+@router.post("")
 def resolve(body: ResolveBody):
     if body.action not in ("save", "skip"):
         raise HTTPException(400, "action muss 'save' oder 'skip' sein")
+    _db, _entry, job = _pending_import(body.url, body.visibility)
     decision = {
         "action": body.action,
         "name": body.name,
@@ -631,24 +694,28 @@ def resolve(body: ResolveBody):
     with file_lock_or_none("scraper") as lock:
         if lock is None:
             raise HTTPException(409, "Ein Import läuft bereits. Bitte gleich erneut versuchen.")
-        return get_scraper_job().resolve_pending(body.url, decision)
+        return job.resolve_pending(body.url, decision)
 
 
 class ReanalyzeRequest(BaseModel):
     url: str
+    visibility: Optional[Literal["private", "global"]] = None
 
 
 class FailedActionRequest(BaseModel):
     url: str
 
 
-@router.post("/reanalyze", dependencies=[Depends(require_admin)])
+@router.post("/reanalyze")
 def reanalyze(body: ReanalyzeRequest):
     """Lässt ein Pending-Item neu durch die KI-Cascade laufen."""
+    db, _entry, job = _pending_import(body.url, body.visibility)
     with file_lock_or_none("scraper") as lock:
         if lock is None:
             raise HTTPException(409, "Ein Import läuft bereits. Bitte gleich erneut versuchen.")
-        return get_scraper_job().reanalyze_pending(body.url)
+        from ..import_budget import reserve_import
+        reserve_import(db)
+        return job.reanalyze_pending(body.url)
 
 
 import logging as _logging
@@ -688,7 +755,7 @@ def _reanalyze_all_thread(job_id: int):
 
         job = get_scraper_job()
         try:
-            items = db.pending_list("pending")
+            items = [item for item in db.pending_list("pending") if item.get("owner_account_id") is None]
             summary["total"] = len(items)
             _logger.info(f"=== Pending-Reanalyze {job_id} startet: {summary['total']} Items ===")
             cancelled = False

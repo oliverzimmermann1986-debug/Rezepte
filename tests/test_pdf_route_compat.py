@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from app import __version__
+from tests.web_source import read_web_scripts
 
 
 def test_pdf_admin_routes_are_registered():
@@ -62,7 +63,7 @@ def test_logout_clears_browser_state_and_redirects_to_login(client, monkeypatch)
     import app.main as main
 
     monkeypatch.setattr(main, "auth_disabled", lambda: False)
-    response = client.post("/logout", follow_redirects=False)
+    response = client.post("/logout", headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
     assert response.headers["cache-control"] == "no-store"
@@ -84,7 +85,7 @@ def test_browser_logout_revokes_server_sessions(client, monkeypatch):
     monkeypatch.setattr(main, "request_user", lambda _request: "anna")
     monkeypatch.setattr(main, "get_db", lambda: FakeDb())
 
-    response = client.post("/logout", follow_redirects=False)
+    response = client.post("/logout", headers={"Origin": "http://testserver"}, follow_redirects=False)
 
     assert response.status_code == 303
     assert revoked == ["anna"]
@@ -96,7 +97,7 @@ def test_logout_delegates_to_cloudflare_when_internal_auth_is_disabled(
     import app.main as main
 
     monkeypatch.setattr(main, "auth_disabled", lambda: True)
-    response = client.post("/logout", follow_redirects=False)
+    response = client.post("/logout", headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/cdn-cgi/access/logout"
     assert response.headers["clear-site-data"] == '"cache", "storage"'
@@ -111,7 +112,7 @@ def test_deep_health_route_requires_authentication():
 
 
 def test_frontend_has_legacy_pdf_fallback():
-    app_js = Path("app/static/app.js").read_text(encoding="utf-8")
+    app_js = read_web_scripts()
     assert "legacyMode" in app_js
     assert "backend_restart_required" in app_js
     assert "PDF-Backend fehlt" in app_js
@@ -122,7 +123,10 @@ def test_local_updater_does_not_git_pull():
     updater = Path("proxmox/update-local.sh").read_text(encoding="utf-8")
     assert "\ngit pull" not in updater
     assert "\n  git pull" not in updater
-    assert "rsync -a --delete" in updater
+    sync_commands = [line.split() for line in updater.splitlines()
+                     if line.lstrip().startswith("rsync ")]
+    assert sync_commands
+    assert all({"-a", "--checksum", "--delete"}.issubset(command) for command in sync_commands)
     assert "/api/admin/pdf/preflight" in updater
     assert "/api/cart/optimize/preview" in updater
     assert "ai-shopping-optimization" in updater

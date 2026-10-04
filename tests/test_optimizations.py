@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+from tests.web_source import read_web_scripts
+
 import pytest
 from PIL import Image
 
@@ -165,7 +167,7 @@ def test_image_dimension_guard_rejects_dimensions_and_pixel_bombs():
 def test_ui_loads_runtime_helpers_and_accessible_status_region():
     root = Path(__file__).resolve().parents[1] / "app" / "static"
     html = (root / "index.html").read_text(encoding="utf-8")
-    js = (root / "app.js").read_text(encoding="utf-8")
+    js = read_web_scripts()
     runtime = (root / "runtime.js").read_text(encoding="utf-8")
     assert '/static/runtime.js?v={VERSION}' in html
     assert 'aria-live="polite"' in html

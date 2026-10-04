@@ -27,7 +27,15 @@ from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
-LOCK_DIR = Path("/opt/scrapper/data/locks")
+LOCK_DIR: Optional[Path] = None  # expliziter Override für eingebettete Aufrufer
+
+
+def lock_dir() -> Path:
+    """Dieselbe DB bestimmt in Web und CLI auch Lock-/Abbruchpfade."""
+    if LOCK_DIR is not None:
+        return Path(LOCK_DIR)
+    from ..db import configured_database_path
+    return configured_database_path().resolve().parent / 'locks'
 
 
 def _ensure_lock_file(lock_path: Path) -> None:
@@ -152,10 +160,10 @@ def file_lock_or_none(name: str) -> Iterator[Optional[object]]:
         Das geöffnete File-Handle wenn der Lock erworben wurde,
         sonst ``None`` (Caller MUSS checken).
 
-    Der Lock-File-Pfad ist ``{LOCK_DIR}/{name}.lock``. Das File bleibt
+    Der Lock-File-Pfad ist ``{lock_dir()}/{name}.lock``. Das File bleibt
     zwischen Runs liegen (nur die Betriebssystem-Sperre ist transient).
     """
-    lock_path = LOCK_DIR / f"{name}.lock"
+    lock_path = lock_dir() / f"{name}.lock"
     with file_lock_path_or_none(lock_path) as fh:
         yield fh
 
@@ -170,14 +178,14 @@ def is_locked(name: str) -> bool:
 
 def request_cancel(name: str) -> None:
     """Prozessübergreifendes Abbruchsignal im gemeinsamen Datenverzeichnis."""
-    marker = LOCK_DIR / f"{name}.cancel"
+    marker = lock_dir() / f"{name}.cancel"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(f"{os.getpid()}\n", encoding="ascii")
 
 
 def clear_cancel(name: str) -> None:
-    (LOCK_DIR / f"{name}.cancel").unlink(missing_ok=True)
+    (lock_dir() / f"{name}.cancel").unlink(missing_ok=True)
 
 
 def cancel_requested(name: str) -> bool:
-    return (LOCK_DIR / f"{name}.cancel").is_file()
+    return (lock_dir() / f"{name}.cancel").is_file()

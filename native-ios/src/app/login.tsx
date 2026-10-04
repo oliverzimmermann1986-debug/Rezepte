@@ -25,6 +25,8 @@ export default function LoginScreen() {
     sessionWarning,
     authCleanupPending,
     signIn,
+    signInAsGuest,
+    registerAccount,
     retryAuthCleanup,
   } = useAuth();
   const [server, setServer] = useState(storedServer);
@@ -37,12 +39,22 @@ export default function LoginScreen() {
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [registration, setRegistration] = useState(false);
+  const [confirmation, setConfirmation] = useState('');
+  const [invitationToken, setInvitationToken] = useState('');
 
   async function submit() {
+    if (busy || !server.trim() || !username.trim() || !password) return;
     setBusy(true);
     setError('');
     try {
-      await signIn(server, username, password, cloudflareClientId, cloudflareClientSecret);
+      if (registration) {
+        if (password !== confirmation) throw new ApiError('Passwörter stimmen nicht überein.', 0);
+        const invite = invitationToken.trim();
+        const token = invite.includes('://') ? new URL(invite).searchParams.get('invite') || '' : invite;
+        if (invite && !token) throw new ApiError('Im Link fehlt der Einladungscode.', 0);
+        await registerAccount(server, username, password, cloudflareClientId, cloudflareClientSecret, token);
+      } else await signIn(server, username, password, cloudflareClientId, cloudflareClientSecret);
     } catch (reason) {
       setError(reason instanceof ApiError ? reason.message : 'Verbindung zum Server fehlgeschlagen.');
     } finally {
@@ -70,7 +82,7 @@ export default function LoginScreen() {
           keyboardShouldPersistTaps="handled">
           <View style={styles.mark}><Text style={styles.markText}>R</Text></View>
           <View style={styles.intro}>
-            <Text style={styles.title}>Rezepte</Text>
+            <Text accessibilityRole="header" style={styles.title}>Rezepte</Text>
             <Text style={styles.subtitle}>Deine private Rezeptbibliothek – nativ auf dem iPhone.</Text>
           </View>
           <View style={styles.form}>
@@ -98,7 +110,7 @@ export default function LoginScreen() {
           <TextInput
             accessibilityLabel="Passwort"
             secureTextEntry
-            textContentType="password"
+            textContentType={registration ? 'newPassword' : 'password'}
             placeholder="Passwort"
             placeholderTextColor={colors.muted}
             value={password}
@@ -114,6 +126,13 @@ export default function LoginScreen() {
             <Text style={styles.cloudflareToggleText}>🛡 Cloudflare-Gerätezugang</Text>
             <Text style={styles.cloudflareChevron}>{showCloudflare ? '−' : '+'}</Text>
           </Pressable>
+          {registration && <>
+            <TextInput accessibilityLabel="Passwort wiederholen" secureTextEntry textContentType="newPassword" placeholder="Passwort wiederholen" value={confirmation} onChangeText={setConfirmation} style={styles.input} />
+            <TextInput accessibilityLabel="Einladungscode oder Link" autoCapitalize="none" autoCorrect={false} placeholder="Einladungscode oder Link (optional)" value={invitationToken} onChangeText={setInvitationToken} style={styles.input} />
+            <Text style={styles.subtitle}>Mindestens 10 Zeichen. Jeder meldet sich mit eigenem Passwort an.</Text>
+          </>}
+          <PrimaryButton label={registration ? 'Zur Anmeldung' : 'Konto erstellen'} onPress={() => { setRegistration(!registration); setError(''); setPassword(''); setConfirmation(''); }} disabled={busy} />
+          <PrimaryButton label="Als Gast ansehen" disabled={busy} onPress={() => { setBusy(true); setError(''); void signInAsGuest(server, cloudflareClientId, cloudflareClientSecret).catch(reason => setError(reason instanceof Error ? reason.message : 'Gastzugang fehlgeschlagen.')).finally(() => setBusy(false)); }} />
           {showCloudflare && (
             <View style={styles.cloudflarePanel}>
               <TextInput
@@ -157,9 +176,9 @@ export default function LoginScreen() {
           )}
           {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
           <PrimaryButton
-            label={busy ? 'Anmelden …' : 'Anmelden'}
+            label={busy ? (registration ? 'Konto wird erstellt …' : 'Anmelden …') : (registration ? 'Konto erstellen' : 'Anmelden')}
             onPress={submit}
-            disabled={busy || !server.trim() || !username.trim() || !password}
+            disabled={busy || !server.trim() || !username.trim() || !password || (registration && (!confirmation || password.length < 10))}
           />
           <Text style={styles.privacy}>Passwort wird nicht gespeichert. Sitzung und Gerätezugang liegen im iOS-Schlüsselbund.</Text>
           <Pressable accessibilityRole="link" onPress={() => void openPrivacy()} style={styles.privacyLinkButton}>

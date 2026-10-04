@@ -12,10 +12,11 @@ type ImportResult = {
   ok: boolean;
   status?: string;
   message?: string;
+  recipe_id?: number;
 };
 
 export function SharedLinkReceiver() {
-  const { isAdmin, ready, token } = useAuth();
+  const { isGuest, ready, token } = useAuth();
   const { error, hasShareIntent, isReady, resetShareIntent, shareIntent } = useShareIntentContext();
   const navigationState = useRootNavigationState();
   const router = useRouter();
@@ -46,6 +47,12 @@ export function SharedLinkReceiver() {
     ) return;
 
     processing.current = true;
+    if (isGuest) {
+      resetShareIntent();
+      processing.current = false;
+      Alert.alert('Gastzugang', 'Zum Importieren bitte mit deinem Konto anmelden.');
+      return;
+    }
     const source = socialLinkFromShareIntent(shareIntent);
     if (!source) {
       Alert.alert(
@@ -64,27 +71,22 @@ export function SharedLinkReceiver() {
 
     void api<ImportResult>('/api/pending/import-url', {
       method: 'POST',
-      body: JSON.stringify({ url: source, type: 'recipe' }),
+      body: JSON.stringify({ url: source, type: 'recipe', visibility: 'private' }),
     })
       .then(async result => {
-        await invalidateApiCacheByPrefix('recipes:');
+        await invalidateApiCacheByPrefix('recipes:', 'recipe:');
         if (result.ok) {
-          router.replace(isAdmin
-            ? {
-                pathname: '/(tabs)/admin',
-                params: { importRefresh: String(Date.now()) },
-              }
-            : '/(tabs)');
+          router.replace(result.recipe_id
+            ? { pathname: '/recipe/[id]', params: { id: String(result.recipe_id) } }
+            : '/(tabs)/account');
         }
         Alert.alert(
           result.ok
-            ? isAdmin ? 'Link übernommen' : 'Zur Prüfung eingereicht'
+            ? 'Link übernommen'
             : 'Import fehlgeschlagen',
-          result.ok && !isAdmin
-            ? 'Der Link wurde übernommen. Nach der Prüfung erscheint das Rezept in deiner Rezeptliste.'
-            : result.message
+          result.message
               || (result.status === 'pending'
-                ? 'Der Beitrag wartet unter „Manuelle Prüfung“.'
+                ? 'Der private Import wartet unter „Konto“ auf Prüfung.'
                 : 'Der Beitrag wurde verarbeitet.'),
         );
       })
@@ -100,7 +102,7 @@ export function SharedLinkReceiver() {
       });
   }, [
     hasShareIntent,
-    isAdmin,
+    isGuest,
     isReady,
     navigationState?.key,
     ready,

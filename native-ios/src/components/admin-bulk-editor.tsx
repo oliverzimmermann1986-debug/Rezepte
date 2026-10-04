@@ -276,7 +276,7 @@ export function AdminBulkEditor({
             <Pressable accessibilityRole="button" disabled={busy} onPress={stage === 'edit' ? () => setStage('select') : close} style={styles.headerAction}>
               <Text style={styles.headerActionText}>{stage === 'edit' ? 'Zurück' : 'Abbrechen'}</Text>
             </Pressable>
-            <Text style={styles.title}>{stage === 'edit' ? 'Änderungen' : 'Massenpflege'}</Text>
+            <Text accessibilityRole="header" style={styles.title}>{stage === 'edit' ? 'Änderungen' : 'Massenpflege'}</Text>
             <View style={styles.headerAction} />
           </View>
 

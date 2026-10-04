@@ -15,6 +15,7 @@ struct RootView: View {
             LoginView()
         case .signedIn:
             MainTabView()
+                .id(session.identity)
         }
     }
 }

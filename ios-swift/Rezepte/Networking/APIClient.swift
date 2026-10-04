@@ -6,6 +6,7 @@ enum APIError: LocalizedError {
     case incompleteCloudflareCredentials
     case cloudflareAccessRequired
     case unauthenticated
+    case sessionChanged
     case server(Int, String)
     case invalidResponse(String)
 
@@ -21,6 +22,8 @@ enum APIError: LocalizedError {
             return "Cloudflare Access hat den Gerätezugang abgelehnt. Bitte Client-ID und Client-Secret prüfen."
         case .unauthenticated:
             return "Die Sitzung ist abgelaufen. Bitte erneut anmelden."
+        case .sessionChanged:
+            return "Die Sitzung hat sich geändert. Bitte erneut laden."
         case let .server(_, message):
             return message
         case let .invalidResponse(endpoint):
@@ -52,6 +55,7 @@ actor APIClient {
     private var baseURL: URL?
     private var token: String?
     private var cloudflareCredentials: CloudflareAccessCredentials?
+    private var configurationID = UUID()
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -67,7 +71,8 @@ actor APIClient {
     func configure(
         server: String,
         token: String?,
-        cloudflareCredentials: CloudflareAccessCredentials? = nil
+        cloudflareCredentials: CloudflareAccessCredentials? = nil,
+        sessionID: UUID? = nil
     ) throws {
         guard let url = Self.normalizedServerURL(server) else {
             throw APIError.invalidServer
@@ -83,6 +88,16 @@ actor APIClient {
         baseURL = url
         self.token = token
         self.cloudflareCredentials = cloudflareCredentials
+        configurationID = sessionID ?? UUID()
+        URLCache.shared.removeAllCachedResponses()
+    }
+
+    func clearAuthentication(ifSessionID expected: UUID) {
+        guard configurationID == expected else { return }
+        token = nil
+        cloudflareCredentials = nil
+        configurationID = UUID()
+        URLCache.shared.removeAllCachedResponses()
     }
 
     static func normalizedServerURL(_ value: String) -> URL? {
@@ -164,6 +179,49 @@ actor APIClient {
             body: EmptyBody(),
             authenticated: false
         )
+    }
+
+    func register(username: String, password: String, invitationToken: String = "") async throws -> LoginResponse {
+        try await send("/api/auth/register", method: "POST", body: RegistrationPayload(
+            username: username, password: password,
+            invitationToken: HouseholdInvitationInput.token(from: invitationToken)
+        ), authenticated: false)
+    }
+
+    func logout() async throws -> APIResult {
+        try await send("/api/auth/logout", method: "POST", body: EmptyBody())
+    }
+
+    func account() async throws -> HouseholdAccount {
+        try await send("/api/account")
+    }
+
+    func createInvitation() async throws -> CreatedHouseholdInvitation {
+        try await send("/api/account/invitations", method: "POST", body: EmptyBody())
+    }
+
+    func revokeInvitation(id: Int) async throws -> APIResult {
+        try await send("/api/account/invitations/\(id)", method: "DELETE")
+    }
+
+    func acceptInvitation(_ input: String) async throws -> APIResult {
+        try await send("/api/account/invitations/accept", method: "POST",
+                       body: ["token": HouseholdInvitationInput.token(from: input)])
+    }
+
+    func invitationURL(path: String) throws -> URL {
+        guard let components = URLComponents(string: path), components.scheme == nil,
+              components.host == nil, components.path == "/register" else {
+            throw APIError.invalidResponse("Einladungslink")
+        }
+        return try endpoint(components.path, query: components.queryItems ?? [])
+    }
+
+    func saveRecipe(id: Int, saved: Bool) async throws -> APIResult {
+        if saved {
+            return try await send("/api/recipes/\(id)/save", method: "POST", body: EmptyBody())
+        }
+        return try await send("/api/recipes/\(id)/save", method: "DELETE")
     }
 
     func sessionInfo() async throws -> SessionResponse {
@@ -825,25 +883,27 @@ actor APIClient {
         )
     }
 
-    func pending() async throws -> [PendingItem] {
-        try await send("/api/pending")
+    func pending(visibility: String? = nil) async throws -> [PendingItem] {
+        try await send("/api/pending", query: visibility.map { [URLQueryItem(name: "visibility", value: $0)] } ?? [])
     }
 
     func failedDownloads() async throws -> [FailedDownload] {
         try await send("/api/pending/failed")
     }
 
-    func importURL(_ url: String) async throws -> APIResult {
+    func importURL(_ url: String, visibility: String = "private") async throws -> APIResult {
         try await send(
             "/api/pending/import-url",
             method: "POST",
-            body: ImportPayload(url: url, type: "recipe")
+            body: ImportPayload(url: url, type: "recipe", visibility: visibility)
         )
     }
 
-    func importFile(data: Data, filename: String, mimeType: String) async throws -> APIResult {
+    func importFile(data: Data, filename: String, mimeType: String, visibility: String = "private") async throws -> APIResult {
         let boundary = "RezepteBoundary-\(UUID().uuidString)"
         var body = Data()
+        body.append("--\(boundary)\r\n")
+        body.append("Content-Disposition: form-data; name=\"visibility\"\r\n\r\n\(visibility)\r\n")
         body.append("--\(boundary)\r\n")
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
         body.append("Content-Type: \(mimeType)\r\n\r\n")
@@ -1031,7 +1091,10 @@ actor APIClient {
         request.timeoutInterval = 60
         request.setValue(accept, forHTTPHeaderField: "Accept")
         authorize(&request, includeBearer: true)
+        let requestConfiguration = configurationID
         let (data, response) = try await session.data(for: request)
+        guard configurationID == requestConfiguration else { throw APIError.sessionChanged }
+        try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse(path)
         }
@@ -1048,6 +1111,7 @@ actor APIClient {
     }
 
     private func authorize(_ request: inout URLRequest, includeBearer: Bool) {
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         if let cloudflareCredentials {
             request.setValue(
                 cloudflareCredentials.clientID,
@@ -1069,6 +1133,9 @@ actor APIClient {
         forceManualOnly: Bool = false
     ) -> [URLQueryItem] {
         var query: [URLQueryItem] = []
+        if filters.library != .all {
+            query.append(URLQueryItem(name: "library", value: filters.library.rawValue))
+        }
         let cleanSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanSearch.isEmpty {
             query.append(URLQueryItem(name: "search", value: cleanSearch))
@@ -1101,7 +1168,10 @@ actor APIClient {
     }
 
     private func execute<Response: Decodable>(_ request: URLRequest) async throws -> Response {
+        let requestConfiguration = configurationID
         let (data, response) = try await session.data(for: request)
+        guard configurationID == requestConfiguration else { throw APIError.sessionChanged }
+        try Task.checkCancellation()
         let endpoint = request.url?.path.nilIfEmpty ?? "diese Anfrage"
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse(endpoint)
@@ -1230,7 +1300,12 @@ private struct MealConductorPayload: Codable {
     let burners: Int
     let ovenSlots: Int
 }
-private struct ImportPayload: Codable { let url: String; let type: String }
+private struct ImportPayload: Codable { let url: String; let type: String; let visibility: String }
+private struct RegistrationPayload: Encodable {
+    let username: String
+    let password: String
+    let invitationToken: String
+}
 private struct ResolvePendingPayload: Codable {
     let url: String
     let action: String

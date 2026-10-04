@@ -47,10 +47,12 @@ struct AuthenticatedImage: View {
     }
 
     private var loadIdentity: String {
-        "\(recipeID)-\(refreshToken?.uuidString ?? cacheVersion ?? "cached")"
+        "\(session.identity.uuidString)-\(recipeID)-\(refreshToken?.uuidString ?? cacheVersion ?? "cached")"
     }
 
     private func load() async {
+        let expectedIdentity = session.identity
+        let expectedLoad = loadIdentity
         failed = false
         image = nil
         do {
@@ -60,6 +62,7 @@ struct AuthenticatedImage: View {
                 forceRefresh: refreshToken != nil
             )
             let (data, response) = try await URLSession.shared.data(for: request)
+            guard !Task.isCancelled, session.identity == expectedIdentity, loadIdentity == expectedLoad else { return }
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode),
                   let loaded = UIImage(data: data) else {
@@ -68,6 +71,7 @@ struct AuthenticatedImage: View {
             }
             image = loaded
         } catch {
+            guard !Task.isCancelled, session.identity == expectedIdentity, loadIdentity == expectedLoad else { return }
             failed = true
         }
     }

@@ -121,7 +121,7 @@ export function ShoppingAiOptimizer({
           <Pressable accessibilityRole="button" disabled={loading || applying} onPress={close} style={styles.headerAction}>
             <Text style={styles.headerActionText}>Abbrechen</Text>
           </Pressable>
-          <Text style={styles.title}>KI optimieren</Text>
+          <Text accessibilityRole="header" style={styles.title}>KI optimieren</Text>
           <View style={styles.headerAction} />
         </View>
 
@@ -135,7 +135,7 @@ export function ShoppingAiOptimizer({
             ListHeaderComponent={(
               <>
                 <View style={sharedStyles.card}>
-                  <Text style={sharedStyles.sectionTitle}>Vorschau</Text>
+                  <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Vorschau</Text>
                   <Text style={styles.help}>Prüfe die Liste vor dem Übernehmen. An die KI wurden ausschließlich die Artikelnamen gesendet.</Text>
                   <View style={styles.summaryRow}>
                     <Summary value={preview.summary.optimized_count} label="Einträge" />
@@ -168,7 +168,7 @@ export function ShoppingAiOptimizer({
         ) : (
           <View style={styles.startContent}>
             <View style={sharedStyles.card}>
-              <Text style={sharedStyles.sectionTitle}>Einkauf einfacher ablaufen</Text>
+              <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Einkauf einfacher ablaufen</Text>
               <Text style={styles.help}>Die KI vereinheitlicht Artikelnamen, erkennt sichere Dubletten und sortiert nach Einkaufsbereichen.</Text>
               <View style={styles.guardrail}>
                 <Text style={styles.guardrailTitle}>Mengen bleiben geschützt</Text>

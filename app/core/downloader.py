@@ -6,13 +6,77 @@ startet nur den Downloader und trifft selbst keine Aussage über Datenübertragu
 from __future__ import annotations
 
 import logging
+import os
+import signal
 import shutil
 import subprocess
+import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+MAX_VIDEO_DOWNLOAD_BYTES = 100 * 1024 * 1024
+
+
+def _discard_download(folder: Path, root: Path) -> None:
+    """Löscht nur den eigenen Downloadordner, auch nach verzögertem Unlock."""
+    folder, root = folder.resolve(), root.resolve()
+    if folder == root or not folder.is_relative_to(root):
+        raise ValueError('Unsicherer temporärer Downloadpfad')
+    for attempt in range(5):
+        try:
+            shutil.rmtree(folder)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt == 4:
+                logger.warning('Temporärer Download konnte nicht entfernt werden: %s', folder)
+                return
+            time.sleep(.1 * (attempt + 1))
+
+
+def _run_bounded_download(command, folder: Path, *, timeout: float = 180,
+                          max_bytes: int = MAX_VIDEO_DOWNLOAD_BYTES):
+    """Bricht auch Streams ohne bekannte Dateigröße ab und begrenzt Fehlerlogs."""
+    with tempfile.TemporaryFile(dir=folder.parent) as errors:
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=errors, start_new_session=os.name == 'posix')
+        deadline = time.monotonic() + timeout
+        completed = False
+        try:
+            while True:
+                size = os.fstat(errors.fileno()).st_size
+                for path in folder.rglob('*'):
+                    try:
+                        if path.is_file():
+                            size += path.stat().st_size
+                    except FileNotFoundError:
+                        # yt-dlp benennt gerade .part in die fertige Datei um.
+                        continue
+                if size > max_bytes:
+                    raise ValueError('Video-Download überschreitet das Limit von 100 MiB')
+                if process.poll() is not None:
+                    break
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                time.sleep(0.05)
+            errors.seek(max(0, os.fstat(errors.fileno()).st_size - 2000))
+            completed = True
+            return subprocess.CompletedProcess(command, process.returncode, '',
+                                                errors.read().decode('utf-8', errors='replace'))
+        finally:
+            if not completed:
+                if os.name == 'posix':
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                elif process.poll() is None:
+                    process.kill()
+                process.wait(timeout=10)
 
 
 class VideoDownloader:
@@ -33,6 +97,7 @@ class VideoDownloader:
             self.ytdlp_path, url,
             "-o", str(sub / "video.%(ext)s"),
             "--no-playlist", "--quiet", "--no-warnings",
+            "--max-filesize", str(MAX_VIDEO_DOWNLOAD_BYTES),
             "--write-description",
             # Cover direkt mitladen — sonst startet jedes Rezept ohne Thumbnail
             # und landet im Audit unter "Kein Bild" (nur Re-Scrape holte es bisher).
@@ -41,13 +106,10 @@ class VideoDownloader:
         if self.cookies_file:
             cmd += ["--cookies", self.cookies_file]
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True, text=True, timeout=180,
-            )
+            result = _run_bounded_download(cmd, sub)
             if result.returncode != 0:
                 logger.error(f"yt-dlp Fehler: {result.stderr.strip()}")
-                shutil.rmtree(sub, ignore_errors=True)
+                _discard_download(sub, self.temp_dir)
                 return None
             videos = (
                 list(sub.glob("video.mp4"))
@@ -58,16 +120,16 @@ class VideoDownloader:
             videos = [v for v in videos if v.suffix.lower() not in (".description", ".part")]
             if not videos:
                 logger.warning(f"yt-dlp: kein Video heruntergeladen für {url}")
-                shutil.rmtree(sub, ignore_errors=True)
+                _discard_download(sub, self.temp_dir)
                 return None
             return videos[0]
         except subprocess.TimeoutExpired:
             logger.error("yt-dlp Timeout")
-            shutil.rmtree(sub, ignore_errors=True)
+            _discard_download(sub, self.temp_dir)
             return None
         except Exception as e:
             logger.error(f"yt-dlp Exception: {e}")
-            shutil.rmtree(sub, ignore_errors=True)
+            _discard_download(sub, self.temp_dir)
             return None
 
     @staticmethod
@@ -117,15 +179,15 @@ class VideoDownloader:
             )
             if result.returncode != 0:
                 logger.warning(f"yt-dlp refresh_metadata fehler: {result.stderr.strip()[:300]}")
-                shutil.rmtree(sub, ignore_errors=True)
+                _discard_download(sub, self.temp_dir)
                 return None
         except subprocess.TimeoutExpired:
             logger.warning(f"yt-dlp refresh_metadata Timeout für {url}")
-            shutil.rmtree(sub, ignore_errors=True)
+            _discard_download(sub, self.temp_dir)
             return None
         except Exception as e:
             logger.warning(f"yt-dlp refresh_metadata Exception: {e}")
-            shutil.rmtree(sub, ignore_errors=True)
+            _discard_download(sub, self.temp_dir)
             return None
 
         out: Dict[str, Any] = {}
@@ -141,7 +203,7 @@ class VideoDownloader:
         desc_files = list(sub.glob("*.description"))
         thumb_files = list(sub.glob("*.jpg")) + list(sub.glob("*.jpeg")) + list(sub.glob("*.webp")) + list(sub.glob("*.png"))
         if not desc_files and not thumb_files and not out:
-            shutil.rmtree(sub, ignore_errors=True)
+            _discard_download(sub, self.temp_dir)
             return None
 
         try:
@@ -165,4 +227,4 @@ class VideoDownloader:
             logger.warning(f"Metadata read fehler: {e}")
             return None
         finally:
-            shutil.rmtree(sub, ignore_errors=True)
+            _discard_download(sub, self.temp_dir)

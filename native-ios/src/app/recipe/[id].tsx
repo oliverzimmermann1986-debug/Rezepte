@@ -31,6 +31,7 @@ import {
   putApiCache,
 } from '@/lib/cache';
 import { externalSourceLabel, openExternalUrl } from '@/lib/external-links';
+import { useAuth } from '@/lib/auth-context';
 import { pickEditedJpeg } from '@/lib/image-picker';
 import { formatScaledAmount, normalizedServings, portionLabel } from '@/lib/servings';
 import { CookingProgress, RecipeDetail } from '@/lib/types';
@@ -70,10 +71,12 @@ function cookedAtLabel(value: number) {
 }
 
 export default function RecipeDetailScreen() {
+  const { isGuest, isAdmin } = useAuth();
   const { id } = useLocalSearchParams<{ id: string }>();
   const recipeId = Number(id);
   const router = useRouter();
   const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
+  const canEdit = !isGuest && (isAdmin || recipe?.can_edit === true);
   const [cookingProgress, setCookingProgress] = useState<CookingProgress | null>(null);
   const [tab, setTab] = useState<Tab>('steps');
   const [loading, setLoading] = useState(true);
@@ -127,9 +130,25 @@ export default function RecipeDetailScreen() {
     setBusy(true);
     try {
       const result = await api<{ is_favorite: boolean }>(`/api/recipes/${recipe.id}/favorite`, { method: 'POST' });
-      updateCachedRecipe({ ...recipe, is_favorite: result.is_favorite });
+      updateCachedRecipe({ ...recipe, is_favorite: result.is_favorite, in_library: true });
     } catch (reason) {
       Alert.alert('Favorit nicht geändert', reason instanceof Error ? reason.message : 'Bitte erneut versuchen.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleHouseholdRecipe() {
+    if (!recipe || isGuest) return;
+    setBusy(true);
+    try {
+      const result = await api<{ in_library: boolean }>(`/api/recipes/${recipe.id}/save`, {
+        method: recipe.in_library ? 'DELETE' : 'POST',
+      });
+      updateCachedRecipe({ ...recipe, in_library: result.in_library,
+        ...(result.in_library ? {} : { is_favorite: false, rating: 0 }) });
+    } catch (reason) {
+      Alert.alert('Sammlung nicht geändert', reason instanceof Error ? reason.message : 'Bitte erneut versuchen.');
     } finally {
       setBusy(false);
     }
@@ -359,22 +378,26 @@ export default function RecipeDetailScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Rezeptbild ändern"
-            disabled={busy}
+            disabled={!canEdit || busy}
             onPress={changeImage}
             style={({ pressed }) => [styles.imageEdit, pressed && styles.imageEditPressed, busy && styles.disabled]}>
             <SymbolView name="pencil" size={20} weight="bold" tintColor={colors.text} />
           </Pressable>
         </View>
+        {recipe.image_generation_status === 'ok' ? (
+          <Text style={styles.meta}>KI-generiertes Rezeptbild</Text>
+        ) : null}
         <View style={styles.titleRow}>
           <View style={styles.titleText}>
-            <Text style={styles.title}>{recipe.name}</Text>
+            <Text accessibilityRole="header" style={styles.title}>{recipe.name}</Text>
             <Text style={styles.meta}>{[recipe.type, recipe.category].filter(Boolean).join(' · ')}</Text>
+            <Text style={styles.meta}>{recipe.visibility === 'private' ? 'Privat im Haushalt' : 'Global für alle'}</Text>
           </View>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={recipe.is_favorite ? 'Favorit entfernen' : 'Als Favorit markieren'}
             onPress={toggleFavorite}
-            disabled={busy}
+            disabled={isGuest || busy}
             style={styles.favorite}>
             <Text style={styles.favoriteText}>{recipe.is_favorite ? '★' : '☆'}</Text>
           </Pressable>
@@ -393,7 +416,7 @@ export default function RecipeDetailScreen() {
                 accessibilityLabel={`${value} Sterne`}
                 accessibilityState={{ selected: recipe.rating === value }}
                 onPress={() => setRating(value)}
-                disabled={busy}
+                disabled={isGuest || busy}
                 hitSlop={5}>
                 <Text style={[styles.star, value <= recipe.rating && styles.starActive]}>★</Text>
               </Pressable>
@@ -402,14 +425,18 @@ export default function RecipeDetailScreen() {
         </View>
 
         <View style={styles.actionRow}>
+          {recipe.visibility === 'global' && !isGuest && (
+            <CompactAction label={recipe.in_library ? 'Entfernen' : 'Merken'} symbol="bookmark"
+              onPress={toggleHouseholdRecipe} disabled={busy} />
+          )}
           {!!recipe.url && (
             <CompactAction label={sourcePlatform} symbol="arrow.up.right.square" onPress={openSource} disabled={busy} />
           )}
           {!!recipe.pdf_filename && (
             <CompactAction label="PDF" symbol="doc" onPress={openPdf} disabled={busy} />
           )}
-          <CompactAction label="Variante" symbol="doc.on.doc" onPress={duplicateRecipe} disabled={busy} />
-          <CompactAction label="Teilen" symbol="square.and.arrow.up" onPress={shareRecipe} disabled={busy} />
+          <CompactAction label="Variante" symbol="doc.on.doc" onPress={duplicateRecipe} disabled={!canEdit || busy} />
+          <CompactAction label="Teilen" symbol="square.and.arrow.up" onPress={shareRecipe} disabled={isGuest || busy} />
         </View>
 
         {recipe.needs_manual_care && (
@@ -432,7 +459,7 @@ export default function RecipeDetailScreen() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Portionszahl im Rezept ergänzen"
-              disabled={busy}
+              disabled={!canEdit || busy}
               onPress={() => setMetadataEditor(true)}
               style={({ pressed }) => [styles.servingMissingAction, pressed && styles.actionPressed, busy && styles.disabled]}>
               <Text style={styles.servingMissingText}>Ergänzen</Text>
@@ -460,8 +487,8 @@ export default function RecipeDetailScreen() {
         {tab === 'info' && (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Text style={sharedStyles.sectionTitle}>Informationen</Text>
-              <Pressable accessibilityRole="button" accessibilityLabel="Rezeptinformationen bearbeiten" onPress={() => setMetadataEditor(true)} hitSlop={8}>
+              <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Informationen</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Rezeptinformationen bearbeiten" disabled={!canEdit} onPress={() => setMetadataEditor(true)} hitSlop={8}>
                 <Text style={styles.edit}>Bearbeiten</Text>
               </Pressable>
             </View>
@@ -522,7 +549,7 @@ export default function RecipeDetailScreen() {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`${recipe.name} in den Papierkorb verschieben`}
-                disabled={busy}
+                disabled={!canEdit || busy}
                 onPress={confirmDeleteRecipe}
                 style={({ pressed }) => [styles.deleteButton, pressed && styles.actionPressed, busy && styles.disabled]}>
                 <SymbolView name="trash" size={18} weight="semibold" tintColor={colors.danger} />
@@ -535,8 +562,8 @@ export default function RecipeDetailScreen() {
         {tab === 'ingredients' && (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Text style={sharedStyles.sectionTitle}>Zutaten</Text>
-              <Pressable accessibilityRole="button" accessibilityLabel="Zutaten bearbeiten" onPress={() => setEditor('ingredients')} hitSlop={8}>
+              <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Zutaten</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Zutaten bearbeiten" disabled={!canEdit} onPress={() => setEditor('ingredients')} hitSlop={8}>
                 <Text style={styles.edit}>Bearbeiten</Text>
               </Pressable>
             </View>
@@ -552,7 +579,7 @@ export default function RecipeDetailScreen() {
               accessibilityRole="checkbox"
               accessibilityState={{ checked: Boolean(recipe.user_verified) }}
               onPress={toggleVerified}
-              disabled={busy || !recipe.ingredients.length}
+              disabled={!canEdit || busy || !recipe.ingredients.length}
               style={[styles.verifiedRow, Boolean(recipe.user_verified) && styles.verifiedRowActive, !recipe.ingredients.length && styles.disabled]}>
               <Text style={styles.verifiedCheck}>{recipe.user_verified ? '✓' : ''}</Text>
               <View style={styles.verifiedText}>
@@ -565,7 +592,7 @@ export default function RecipeDetailScreen() {
             <PrimaryButton
               label={busy ? 'Wird hinzugefügt …' : selectedServings ? `Für ${portionLabel(selectedServings)} einkaufen` : 'Originalmenge einkaufen'}
               onPress={addToCart}
-              disabled={busy || !recipe.ingredients.length}
+              disabled={isGuest || busy || !recipe.ingredients.length}
             />
           </View>
         )}
@@ -573,8 +600,8 @@ export default function RecipeDetailScreen() {
         {tab === 'steps' && (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Text style={sharedStyles.sectionTitle}>Zubereitung</Text>
-              <Pressable accessibilityRole="button" accessibilityLabel="Schritte bearbeiten" onPress={() => setEditor('steps')} hitSlop={8}>
+              <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Zubereitung</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Schritte bearbeiten" disabled={!canEdit} onPress={() => setEditor('steps')} hitSlop={8}>
                 <Text style={styles.edit}>Bearbeiten</Text>
               </Pressable>
             </View>

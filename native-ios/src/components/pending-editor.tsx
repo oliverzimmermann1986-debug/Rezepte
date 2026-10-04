@@ -139,6 +139,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
         method: 'POST',
         body: JSON.stringify({
           url: item.url,
+          visibility: item.visibility || 'global',
           action: 'save',
           name: name.trim(),
           type: recipeType.trim(),
@@ -182,7 +183,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
         '/api/pending/reanalyze',
         {
           method: 'POST',
-          body: JSON.stringify({ url: item.url }),
+          body: JSON.stringify({ url: item.url, visibility: item.visibility || 'global' }),
         },
         undefined,
         120_000,
@@ -208,7 +209,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
       setPhotoBusy(true);
       setError('');
       const result = await uploadFile<ReanalyzeResult>(
-        `/api/pending/scan-photo?url=${encodeURIComponent(item.url)}`,
+        `/api/pending/scan-photo?url=${encodeURIComponent(item.url)}&visibility=${item.visibility || 'global'}`,
         picked,
         undefined,
         180_000,
@@ -244,7 +245,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
       // ungültige Mengen/Timer dürfen diese unabhängige Aktion nie blockieren.
       const result = await api<{ ok: boolean; error?: string }>('/api/pending', {
         method: 'POST',
-        body: JSON.stringify({ url: item.url, action: 'skip' }),
+        body: JSON.stringify({ url: item.url, visibility: item.visibility || 'global', action: 'skip' }),
       });
       if (!result.ok) throw new Error(result.error || 'Import konnte nicht verworfen werden');
       onSaved();
@@ -265,7 +266,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   const hasPendingPhoto = hasExternalPreview;
   const isImage = ['jpg', 'jpeg', 'png'].includes(extension);
   const localFilePath = item
-    ? `/api/pending/file?url=${encodeURIComponent(item.url)}&v=${previewRevision}`
+    ? `/api/pending/file?visibility=${item.visibility || 'global'}&url=${encodeURIComponent(item.url)}&v=${previewRevision}`
     : '';
   const compactForm = width < 390 || fontScale > 1.15;
 
@@ -313,12 +314,12 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
         <KeyboardAvoidingView style={styles.safe} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.header}>
             <Pressable accessibilityRole="button" accessibilityLabel="Importprüfung schließen" onPress={onClose} hitSlop={10}><Text style={styles.cancel}>Abbrechen</Text></Pressable>
-            <Text style={styles.title}>Import prüfen</Text>
+            <Text accessibilityRole="header" style={styles.title}>Import prüfen</Text>
             <View style={{ width: 78 }} />
           </View>
           <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
             <View style={sharedStyles.card}>
-              <Text style={sharedStyles.sectionTitle}>Zuordnung</Text>
+              <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Zuordnung</Text>
               <TextInput placeholder="Rezeptname" placeholderTextColor={colors.muted} value={name} onChangeText={setName} style={sharedStyles.input} />
               <View style={[styles.twoColumns, compactForm && styles.singleColumn]}>
                 <TextInput placeholder="Typ" placeholderTextColor={colors.muted} value={recipeType} onChangeText={setRecipeType} style={[sharedStyles.input, styles.flex]} />
@@ -340,7 +341,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
             </View>
 
             <View style={styles.section}>
-              <Text style={sharedStyles.sectionTitle}>Zutaten</Text>
+              <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Zutaten</Text>
               {ingredients.map((ingredient, index) => (
                 <View key={ingredient.clientKey} style={styles.rowCard}>
                   <TextInput
@@ -373,7 +374,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
             </View>
 
             <View style={styles.section}>
-              <Text style={sharedStyles.sectionTitle}>Zubereitung</Text>
+              <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Zubereitung</Text>
               {steps.map((step, index) => (
                 <View key={step.clientKey} style={styles.rowCard}>
                   <TextInput

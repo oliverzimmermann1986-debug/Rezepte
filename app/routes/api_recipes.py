@@ -38,10 +38,11 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
-from ..auth import require_admin, require_auth
+from ..auth import require_admin, require_auth, request_is_guest
+from ..tenancy import CURRENT_HOUSEHOLD, RECIPE_LIBRARY, require_recipe_editor
 from ..core.analyzer import build_analyzer
 from ..core.recipe_web import (
     extract_recipe_web_metadata,
@@ -108,26 +109,17 @@ def _safe_recipe_folder(recipe: Dict[str, Any]) -> Path:
 
 def _publish_thumbnail(db, recipe_id: int, staged: Path, target: Path) -> None:
     """Veröffentlicht Bild und DB-Zeiger mit kompensierendem Rollback."""
-    rollback = target.parent / f".thumb-rollback-{time.time_ns()}{target.suffix}"
-    had_target = target.is_file()
-    if had_target:
-        target.replace(rollback)
-    try:
-        staged.replace(target)
+    from ..recipes.image_publish import publish_image
+
+    with publish_image(staged, target):
         with db.conn() as connection:
             updated = connection.execute(
-                "UPDATE recipes SET thumb_filename=? WHERE id=?",
+                "UPDATE recipes SET thumb_filename=?, image_generation_status='skipped', "
+                "image_generation_batch_id=NULL WHERE id=? AND deleted_at IS NULL",
                 (target.name, recipe_id),
             ).rowcount
             if not updated:
                 raise LookupError(f"Rezept #{recipe_id} nicht mehr vorhanden")
-    except Exception:
-        target.unlink(missing_ok=True)
-        if had_target and rollback.exists():
-            rollback.replace(target)
-        raise
-    finally:
-        rollback.unlink(missing_ok=True)
 
 
 def _safe_recipe_file(recipe: Dict[str, Any], filename: str) -> Path:
@@ -191,6 +183,7 @@ _FACET_CACHE = TTLCache(ttl_seconds=5.0, max_entries=128)
 
 @router.get("")
 def list_recipes(
+    request: Request,
     type: Optional[str] = Query(None),
     category: Optional[List[str]] = Query(None),
     folder: Optional[str] = Query(None, description="Pfad-Präfix, z.B. /mnt/rezepte/Hauptgericht"),
@@ -226,7 +219,8 @@ def list_recipes(
         raise HTTPException(422, "Bewertungen müssen zwischen 0 und 5 liegen")
 
     # Lazy-Background-Extraction starten (no-op wenn nichts pending)
-    ensure_extraction_running()
+    if not request_is_guest(request):
+        ensure_extraction_running()
 
     items = db.recipe_list(
         type=type,
@@ -320,6 +314,9 @@ def list_recipes(
             "ingredients_status": r.get("ingredients_status"),
             "image_generation_status": r.get("image_generation_status"),
             "is_favorite": bool(r.get("is_favorite")),
+            "visibility": r.get("visibility", "global"),
+            "in_library": bool(r.get("in_library")),
+            "can_edit": bool(r.get("can_edit")),
             "rating": r.get("rating") or 0,
             "user_verified": bool(r.get("user_verified")),
             "verified_by": r.get("verified_by"),
@@ -358,6 +355,7 @@ def facets(
     if rating and any(value < 0 or value > 5 for value in rating):
         raise HTTPException(422, "Bewertungen müssen zwischen 0 und 5 liegen")
     cache_key = (
+        CURRENT_HOUSEHOLD.get(), RECIPE_LIBRARY.get(),
         type or "", tuple(sorted(category or [])), tuple(sorted(tag_id or [])),
         tuple(sorted(ingredient or [])), tuple(sorted(exclude_ingredient or [])),
         search or "", ingredients_status or "",
@@ -369,14 +367,15 @@ def facets(
         return cached
 
     db = get_db()
+    visibility = db.recipe_visibility_sql("recipes") if hasattr(db, "recipe_visibility_sql") else "1=1"
     with db.conn() as c:
         types = [r[0] for r in c.execute(
             "SELECT DISTINCT type FROM recipes WHERE deleted_at IS NULL "
-            "AND type IS NOT NULL AND type != '' ORDER BY type"
+            f"AND {visibility} AND type IS NOT NULL AND type != '' ORDER BY type"
         ).fetchall()]
         cats = [r[0] for r in c.execute(
             "SELECT DISTINCT category FROM recipes WHERE deleted_at IS NULL "
-            "AND category IS NOT NULL AND category != '' ORDER BY category"
+            f"AND {visibility} AND category IS NOT NULL AND category != '' ORDER BY category"
         ).fetchall()]
     flt = dict(
         type=type, categories=category, tag_ids=tag_id, ingredient_canonical=ingredient,
@@ -505,7 +504,7 @@ def list_image_backups(
 
 
 @router.get(
-    "/image-backups/{backup_id}/file", dependencies=[Depends(require_admin)]
+    "/image-backups/{backup_id}/file", dependencies=[Depends(require_recipe_editor)]
 )
 def get_image_backup_file(backup_id: int):
     from ..recipes.image_generation import image_backup_root
@@ -525,7 +524,7 @@ def get_image_backup_file(backup_id: int):
 
 
 @router.post(
-    "/image-backups/{backup_id}/restore", dependencies=[Depends(require_admin)]
+    "/image-backups/{backup_id}/restore", dependencies=[Depends(require_recipe_editor)]
 )
 def restore_image_backup(backup_id: int):
     from ..recipes.image_generation import restore_recipe_image_backup
@@ -549,7 +548,7 @@ def backfill_allergen_info():
 @router.post(
     "/{recipe_id}/generate-image",
     status_code=202,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_recipe_editor)],
 )
 def queue_recipe_image(recipe_id: int):
     from ..jobs.task_queue import enqueue
@@ -564,19 +563,15 @@ def queue_recipe_image(recipe_id: int):
         batch_id = uuid.uuid4().hex
         task_id = enqueue(
             "recipe_image_generate",
-            {"recipe_id": recipe_id, "batch_id": batch_id},
+            {"recipe_id": recipe_id, "batch_id": batch_id, "model": settings["model"], "replace_existing": True},
             dedupe_key=str(recipe_id),
+            reserve_budget=True,
         )
         task = db.background_task_get(task_id) or {}
         existing_payload = task.get("payload") or {}
         batch_id = str(existing_payload.get("batch_id") or batch_id)
-        if task.get("status") != "running":
-            db.recipe_image_generation_status(
-                recipe_id,
-                status="pending",
-                model=settings["model"],
-                batch_id=batch_id,
-            )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"ok": True, "task_id": task_id, "recipe_id": recipe_id, "batch_id": batch_id}
@@ -585,6 +580,11 @@ def queue_recipe_image(recipe_id: int):
 @router.get("/{recipe_id}")
 def get_recipe(recipe_id: int):
     db = get_db()
+    with db.read_snapshot():
+        return _recipe_detail(db, recipe_id)
+
+
+def _recipe_detail(db, recipe_id: int):
     r = db.recipe_get(recipe_id)
     if (
         not r
@@ -761,7 +761,7 @@ def source_integrity(recipe_id: int) -> Dict[str, Any]:
 
 @router.post(
     "/{recipe_id}/source-integrity/check",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_recipe_editor)],
 )
 def check_source_integrity(recipe_id: int, request: Request) -> Dict[str, Any]:
     """Prüft die öffentliche Quelle, ohne das gespeicherte Rezept zu verändern."""
@@ -859,7 +859,7 @@ class SourceIntegrityAccept(BaseModel):
 
 @router.post(
     "/{recipe_id}/source-integrity/accept",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_recipe_editor)],
 )
 def accept_source_integrity(
     recipe_id: int,
@@ -914,7 +914,7 @@ def recipe_substitutions(recipe_id: int) -> Dict[str, Any]:
 
 @router.post(
     "/{recipe_id}/substitutions/apply",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_recipe_editor)],
 )
 def apply_recipe_substitution(
     recipe_id: int,
@@ -1160,7 +1160,7 @@ def _normalized_user_tags(tags: List[str]) -> List[str]:
     return normalized
 
 
-@router.put("/{recipe_id}/tags", dependencies=[Depends(require_admin)])
+@router.put("/{recipe_id}/tags", dependencies=[Depends(require_recipe_editor)])
 def update_tags(recipe_id: int, payload: TagsUpdate, request: Request):
     db = get_db()
     if not db.recipe_get(recipe_id):
@@ -1315,7 +1315,7 @@ def _metadata_source_url(value: Optional[str]) -> Optional[str]:
     return value
 
 
-@router.put("/{recipe_id}/metadata", dependencies=[Depends(require_admin)])
+@router.put("/{recipe_id}/metadata", dependencies=[Depends(require_recipe_editor)])
 def update_metadata(recipe_id: int, payload: MetadataUpdate, request: Request):
     from ..recipes.manage import safe_update_recipe_metadata
 
@@ -1356,7 +1356,7 @@ def cooking_progress(recipe_id: int, request: Request) -> Dict[str, Any]:
     if not recipe or recipe.get("deleted_at") is not None:
         raise HTTPException(404, "Rezept nicht gefunden")
     username = _actor(request)
-    progress = db.recipe_cooking_progress_get(recipe_id, username)
+    progress = None if request_is_guest(request) else db.recipe_cooking_progress_get(recipe_id, username)
     step_count = len(db.recipe_steps_get(recipe_id))
     if not progress:
         return {
@@ -1515,7 +1515,7 @@ def _replace_ingredients_and_reset_verification(
         )
 
 
-@router.put("/{recipe_id}/ingredients", dependencies=[Depends(require_admin)])
+@router.put("/{recipe_id}/ingredients", dependencies=[Depends(require_recipe_editor)])
 def update_ingredients(recipe_id: int, payload: IngredientsUpdate, request: Request):
     """Manuelle Override der Zutatenliste. Setzt ingredients_status='ok',
     sodass der Background-Worker das Rezept nicht überschreibt.
@@ -1608,7 +1608,7 @@ def _replace_steps_and_clear_progress(
     return max(0, int(cleared))
 
 
-@router.put("/{recipe_id}/steps", dependencies=[Depends(require_admin)])
+@router.put("/{recipe_id}/steps", dependencies=[Depends(require_recipe_editor)])
 def update_steps(recipe_id: int, payload: StepsUpdate, request: Request):
     """Manuelles Override der Zubereitungs-Schritte. step_number wird beim
     Insert automatisch aus der Listen-Position abgeleitet (1-basiert),
@@ -1631,7 +1631,7 @@ class ServingsUpdate(BaseModel):
     servings: Optional[int] = Field(None, ge=1, le=50)
 
 
-@router.put("/{recipe_id}/servings", dependencies=[Depends(require_admin)])
+@router.put("/{recipe_id}/servings", dependencies=[Depends(require_recipe_editor)])
 def update_servings(recipe_id: int, payload: ServingsUpdate, request: Request):
     db = get_db()
     if not db.recipe_get(recipe_id):
@@ -1679,12 +1679,14 @@ def recover_empty(request: Request) -> Dict[str, Any]:
     try:
         # 1. Read: fetch alle Kandidaten in einer einzigen SELECT
         with db.conn() as c:
-            rows = c.execute("""
+            visible = db.recipe_visibility_sql() if hasattr(db, "recipe_visibility_sql") else "1"
+            rows = c.execute(f"""
                 SELECT r.id
                 FROM recipes r
                 LEFT JOIN recipe_ingredients ri ON ri.recipe_id = r.id
                 WHERE r.ingredients_status IN ('ok', 'error', 'skipped')
                   AND r.deleted_at IS NULL
+                  AND ({visible})
                   AND COALESCE(r.user_verified, 0) = 0
                   AND r.description IS NOT NULL
                   AND length(r.description) >= 20
@@ -1730,7 +1732,7 @@ def recover_empty(request: Request) -> Dict[str, Any]:
         raise HTTPException(500, f"recover-empty failed: {type(e).__name__}: {e}")
 
 
-@router.post("/{recipe_id}/rescrape", dependencies=[Depends(require_admin)])
+@router.post("/{recipe_id}/rescrape", dependencies=[Depends(require_recipe_editor)])
 def rescrape_recipe(
     recipe_id: int,
     request: Request,
@@ -1946,7 +1948,7 @@ def rescrape_recipe(
     }
 
 
-@router.post("/{recipe_id}/upload-thumbnail", dependencies=[Depends(require_admin)])
+@router.post("/{recipe_id}/upload-thumbnail", dependencies=[Depends(require_recipe_editor)])
 async def upload_thumbnail(
     recipe_id: int,
     request: Request,
@@ -1977,8 +1979,25 @@ async def upload_thumbnail(
         if size == 0:
             raise HTTPException(400, "Leere Datei")
 
-        target = folder_p / "thumb.jpg"
-        staged_target = folder_p / f".thumb-upload-{time.time_ns()}.jpg"
+        from starlette.concurrency import run_in_threadpool
+        from ..recipes.image_cache import ImagePublicationBusyError
+        try:
+            return await run_in_threadpool(_finish_thumbnail_upload, db, recipe_id, request, folder_p, temp_path, size)
+        except ImagePublicationBusyError as exc:
+            raise HTTPException(409, str(exc)) from exc
+    finally:
+        if temp_path:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _finish_thumbnail_upload(db, recipe_id, request, folder_p, temp_path, size):
+    """Bilddekodierung, Dateisperren und DB-Arbeit blockieren keine HTTP-Sitzung."""
+    target = folder_p / "thumb.jpg"
+    staged_target = folder_p / f".thumb-upload-{time.time_ns()}.jpg"
+    try:
         try:
             normalize_image(temp_path, staged_target)
         except HTTPException:
@@ -1986,21 +2005,28 @@ async def upload_thumbnail(
         except Exception as exc:
             raise HTTPException(400, f"Bild konnte nicht gelesen werden: {exc}") from exc
 
-        version_id = _version_before(recipe_id, request, "Coverbild ersetzt")
-        _backup_thumbnail_version(rec, version_id)
-        _publish_thumbnail(db, recipe_id, staged_target, target)
+        from ..recipes.image_cache import image_publication_lock
+        with image_publication_lock(folder_p):
+            current = db.recipe_get(recipe_id)
+            if not current or current.get("deleted_at") is not None:
+                raise HTTPException(404, "Rezept nicht gefunden")
+            if _safe_recipe_folder(current) != folder_p:
+                raise HTTPException(409, "Der Rezeptordner wurde inzwischen geändert. Bitte erneut versuchen.")
+            version_id = _version_before(recipe_id, request, "Coverbild ersetzt")
+            _backup_thumbnail_version(current, version_id)
+            _publish_thumbnail(db, recipe_id, staged_target, target)
 
-        # Erst nach erfolgreichem atomaren Austausch alte Varianten entfernen.
-        for old in folder_p.glob("thumb.*"):
-            if old != target and old.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
-                try:
-                    old.unlink()
-                except OSError:
-                    pass
-        invalidate_thumbnail_cache(folder_p)
-        ensure_thumbnail(target, 400)
-        ensure_thumbnail(target, 800)
-        logger.info("thumbnail upload #%s '%s' → %s (%s B)", recipe_id, rec.get("name"), target.name, size)
+            # Sicherung, Bildwechsel und Cache-Veröffentlichung sehen denselben Stand.
+            for old in folder_p.glob("thumb.*"):
+                if old != target and old.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
+            invalidate_thumbnail_cache(folder_p)
+            ensure_thumbnail(target, 400)
+            ensure_thumbnail(target, 800)
+        logger.info("thumbnail upload #%s '%s' → %s (%s B)", recipe_id, current.get("name"), target.name, size)
         return {
             "ok": True,
             "thumbnail": target.name,
@@ -2008,18 +2034,13 @@ async def upload_thumbnail(
             "version_id": version_id,
         }
     finally:
-        if temp_path:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
         try:
             staged_target.unlink(missing_ok=True)
-        except (NameError, OSError):
+        except OSError:
             pass
 
 
-@router.post("/{recipe_id}/extract-frame", dependencies=[Depends(require_admin)])
+@router.post("/{recipe_id}/extract-frame", dependencies=[Depends(require_recipe_editor)])
 def extract_frame(
     recipe_id: int,
     request: Request,
@@ -2098,7 +2119,7 @@ def extract_frame(
             "version_id": version_id}
 
 
-@router.post("/{recipe_id}/verify", dependencies=[Depends(require_admin)])
+@router.post("/{recipe_id}/verify", dependencies=[Depends(require_recipe_editor)])
 def toggle_verify(recipe_id: int, request: Request,
                     verified: bool = Query(True)) -> Dict[str, Any]:
     """Markiert ausschließlich die Zutatenliste als manuell geprüft."""
@@ -2124,7 +2145,7 @@ def toggle_verify(recipe_id: int, request: Request,
     return {"ok": True, "verified": verified, "by": username}
 
 
-@router.post("/{recipe_id}/nutrition", dependencies=[Depends(require_admin)])
+@router.post("/{recipe_id}/nutrition", dependencies=[Depends(require_recipe_editor)])
 def compute_nutrition_for(recipe_id: int, request: Request) -> Dict[str, Any]:
     """On-Demand Nährwert-Berechnung für ein Rezept. KI-Single-Call.
     Setzt calories_per_serving + protein/carbs/fat_g + computed_at."""
@@ -2230,7 +2251,7 @@ def compute_nutrition_bulk(request: Request, limit: int = Query(50, ge=1, le=200
     }
 
 
-@router.post("/{recipe_id}/extract", dependencies=[Depends(require_admin)])
+@router.post("/{recipe_id}/extract", dependencies=[Depends(require_recipe_editor)])
 def extract_one(
     recipe_id: int,
     background_tasks: BackgroundTasks,
@@ -2257,10 +2278,6 @@ def extract_one(
         analyzer = build_analyzer(cfg.get("ai", default={}) or {})
     except Exception as e:
         raise HTTPException(500, f"Analyzer-Setup fehlgeschlagen: {e}")
-    claim_owner = f"nutrition:{recipe_id}:{time.time_ns()}"
-    if not db.recipe_claim_nutrition(recipe_id, claim_owner):
-        raise HTTPException(409, "Für dieses Rezept läuft bereits eine Nährwertberechnung")
-
     # Auch der manuelle Trigger darf bei kurzer/leerer Caption ein bereits
     # hochgeladenes Bild oder PDF als erste, günstige Quelle verwenden.
     if len(desc.strip()) < 20:
@@ -2271,13 +2288,8 @@ def extract_one(
         if media_text:
             desc = media_text
 
-    try:
-        with db.conn() as c:
-            tag_rows = c.execute("SELECT name FROM tags").fetchall()
-            existing_tags = [r[0] for r in tag_rows]
-            existing_canonical = db.ingredient_name_hints()
-    except Exception:
-        existing_tags, existing_canonical = [], []
+    from ..recipes.pdf_recipe_extract import existing_hints
+    existing_tags, existing_canonical = existing_hints(db, recipe_id)
 
     current_ingredients = db.recipe_ingredients_get(recipe_id)
     current_steps = db.recipe_steps_get(recipe_id)
@@ -2329,7 +2341,13 @@ def extract_one(
     )
     previous_auto_tags = [t["name"] for t in current_tags if t.get("auto")]
     all_auto_tags = sorted(set(previous_auto_tags) | set(ki_tags) | set(diet_tags))
-    final_status = "ok" if prepared and steps else "error"
+    from ..recipes.extraction_evidence import review_reasons
+    reasons = review_reasons(
+        {**content, "ingredients": extracted_ingredients if not current_ingredients else []},
+        getattr(video_result, "evidence_text", "") or desc,
+        threshold=float(cfg.get("ai", "confidence_threshold", default=.75) or .75),
+    )
+    final_status = "ok" if prepared and steps and not reasons else "error"
 
     _version_before(recipe_id, request, "KI-Inhalte neu extrahiert", source="ai")
     db.recipe_apply_extraction_result(
@@ -2347,6 +2365,8 @@ def extract_one(
     return {
         "ok": True,
         "status": final_status,
+        "needs_review": bool(reasons),
+        "review_reasons": reasons,
         "ingredients_count": len(prepared),
         "steps_count": len(steps),
         "servings": servings,
@@ -2378,7 +2398,7 @@ class DuplicatePayload(BaseModel):
     new_name: str = Field(min_length=1, max_length=200)
 
 
-@router.post("/{recipe_id}/duplicate", dependencies=[Depends(require_admin)])
+@router.post("/{recipe_id}/duplicate", dependencies=[Depends(require_recipe_editor)])
 def duplicate_recipe(recipe_id: int, payload: DuplicatePayload) -> Dict[str, Any]:
     from ..recipes.manage import safe_duplicate_recipe
 
@@ -2392,7 +2412,7 @@ def duplicate_recipe(recipe_id: int, payload: DuplicatePayload) -> Dict[str, Any
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.put("/{recipe_id}/rename", dependencies=[Depends(require_admin)])
+@router.put("/{recipe_id}/rename", dependencies=[Depends(require_recipe_editor)])
 def rename_recipe(recipe_id: int, payload: RenamePayload, request: Request):
     from ..recipes.manage import safe_rename_recipe
     _version_before(recipe_id, request, "Rezept umbenannt")
@@ -2413,11 +2433,11 @@ class DeletePayload(BaseModel):
     delete_files: bool = True
 
 
-@router.delete("/{recipe_id}", dependencies=[Depends(require_admin)])
+@router.delete("/{recipe_id}", dependencies=[Depends(require_recipe_editor)])
 def delete_recipe(recipe_id: int, request: Request, delete_files: bool = False, hard: bool = False):
     """Soft-Delete in Papierkorb (Default). Mit ?hard=true endgültig.
-    ?delete_files=true entfernt den Folder zusätzlich (auch beim Soft-Delete —
-    dann kann Restore die Files nicht zurückholen, nur den DB-Eintrag)."""
+    Soft-Delete verschiebt vorhandene Dateien in die wiederherstellbare
+    Quarantäne. Bei Hard-Delete steuert delete_files die Dateibereinigung."""
     from ..recipes.manage import safe_delete_recipe
     _version_before(recipe_id, request, "Rezept gelöscht" if hard else "In Papierkorb verschoben")
     try:
@@ -2452,7 +2472,7 @@ def trash_list(limit: int = Query(200, ge=1, le=500),
     return {"items": items, "total": total}
 
 
-@router.post("/{recipe_id}/restore", dependencies=[Depends(require_admin)])
+@router.post("/{recipe_id}/restore", dependencies=[Depends(require_recipe_editor)])
 def restore_recipe(recipe_id: int, request: Request) -> Dict[str, Any]:
     """Aus Papierkorb wiederherstellen (deleted_at = NULL)."""
     from ..recipes.manage import safe_restore_recipe
@@ -2480,20 +2500,26 @@ def empty_trash(delete_files: bool = True) -> Dict[str, Any]:
     from ..recipes.manage import safe_delete_recipe
     db = get_db()
     with db.conn() as c:
-        trash_ids = [
-            int(row["id"])
+        trash_items = [
+            dict(row)
             for row in c.execute(
-                "SELECT id FROM recipes WHERE deleted_at IS NOT NULL "
+                "SELECT id, deleted_at FROM recipes r WHERE deleted_at IS NOT NULL "
+                + ("AND " + db.recipe_visibility_sql() + " " if hasattr(db, "recipe_visibility_sql") else "") +
                 "ORDER BY deleted_at, id"
             ).fetchall()
         ]
     deleted = 0
     errors = []
-    for recipe_id in trash_ids:
+    for trash_item in trash_items:
+        recipe_id = int(trash_item["id"])
         item = db.recipe_get(recipe_id) or {"id": recipe_id}
         try:
-            safe_delete_recipe(db, recipe_id, delete_files=delete_files, hard=True)
-            deleted += 1
+            result = safe_delete_recipe(
+                db, recipe_id, delete_files=delete_files, hard=True,
+                only_deleted=True, expected_deleted_at=trash_item["deleted_at"],
+            )
+            if not result.get("skipped"):
+                deleted += 1
         except Exception as e:
             errors.append({"id": item["id"], "name": item.get("name"), "error": str(e)})
     logger.info(f"empty_trash: {deleted} purged, {len(errors)} errors")
@@ -2540,6 +2566,10 @@ def toggle_favorite(recipe_id: int) -> Dict[str, Any]:
     rec = db.recipe_get(recipe_id)
     if not rec:
         raise HTTPException(404, "Rezept nicht gefunden")
+    if hasattr(db, "save_recipe") and db.account_id > 0:
+        state = db.save_recipe(recipe_id, field="is_favorite")
+        _FACET_CACHE.clear()
+        return {"ok": True, "is_favorite": bool(state["is_favorite"])}
     new_state = 0 if rec.get("is_favorite") else 1
     with db.conn() as c:
         c.execute("UPDATE recipes SET is_favorite=? WHERE id=?", (new_state, recipe_id))
@@ -2554,13 +2584,45 @@ def set_rating(recipe_id: int, value: int = Query(..., ge=0, le=5,
     rec = db.recipe_get(recipe_id)
     if not rec:
         raise HTTPException(404, "Rezept nicht gefunden")
+    if hasattr(db, "save_recipe") and db.account_id > 0:
+        db.save_recipe(recipe_id, field="rating", value=value)
+        _FACET_CACHE.clear()
+        return {"ok": True, "rating": value}
     with db.conn() as c:
         c.execute("UPDATE recipes SET rating=? WHERE id=?", (value, recipe_id))
     return {"ok": True, "rating": value}
 
 
+@router.post("/{recipe_id}/save")
+def save_to_household(recipe_id: int):
+    db = get_db()
+    if not hasattr(db, "save_recipe") or db.account_id <= 0:
+        raise HTTPException(409, "Für eine eigene Sammlung bitte mit einem Konto anmelden")
+    try:
+        db.save_recipe(recipe_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    _FACET_CACHE.clear()
+    return {"ok": True, "recipe_id": recipe_id, "in_library": True}
+
+
+@router.delete("/{recipe_id}/save")
+def remove_from_household(recipe_id: int):
+    db = get_db()
+    if not hasattr(db, "remove_saved_recipe") or db.account_id <= 0:
+        raise HTTPException(409, "Für eine eigene Sammlung bitte mit einem Konto anmelden")
+    recipe = db.recipe_get(recipe_id)
+    if not recipe:
+        raise HTTPException(404, "Rezept nicht gefunden")
+    if recipe.get("owner_account_id") is not None:
+        raise HTTPException(409, "Private Rezepte können über den Papierkorb gelöscht werden")
+    db.remove_saved_recipe(recipe_id)
+    _FACET_CACHE.clear()
+    return {"ok": True, "recipe_id": recipe_id, "in_library": False}
+
+
 @router.get("/{recipe_id}/thumb")
-def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
+def get_thumb(recipe_id: int, request: Request, w: Optional[int] = Query(None, ge=64, le=2048,
               description="Optional: Breite in Pixel (z.B. 400). Resized via ffmpeg + cached on-disk.")):
     """Thumbnail-Endpoint. Mit ?w=400 wird das Original on-the-fly auf
     Breite 400px resized (Höhe proportional), Ergebnis als thumb-w400.jpg
@@ -2595,6 +2657,7 @@ def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
         images = sorted(
             p for p in folder.iterdir()
             if p.is_file() and not p.is_symlink()
+            and not p.name.startswith(".")
             and p.suffix.lower() in img_exts
             and not p.name.startswith("thumb-w")
         )
@@ -2604,6 +2667,7 @@ def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
             # PDF → erste Seite zu JPG rendern, on-disk cachen (pdf-page1.jpg)
             pdfs = sorted(p for p in folder.iterdir()
                           if p.is_file() and not p.is_symlink()
+                          and not p.name.startswith(".")
                           and p.suffix.lower() == ".pdf")
             if pdfs:
                 pdf = _safe_recipe_file(r, pdfs[0].name)
@@ -2631,13 +2695,19 @@ def get_thumb(recipe_id: int, w: Optional[int] = Query(None, ge=64, le=2048,
             logger.warning(f"thumb resize w={w} fail für #{recipe_id}: {e}")
             serve = src
 
-    mtime = src.stat().st_mtime  # ETag immer auf SOURCE-mtime, nicht Cache
+    mtime_ns = src.stat().st_mtime_ns  # Source-Revision, auch bei zwei Wechseln pro Sekunde
+    headers = {
+        "Cache-Control": "private, no-cache",
+        "ETag": f'"{mtime_ns}-{serve.stat().st_size}"',
+    }
+    # Revalidieren hält Bilder aktuell, ohne unveränderte Bilddaten erneut
+    # zu übertragen. Für GET gilt der schwache ETag-Vergleich.
+    validators = [tag.strip().removeprefix("W/") for tag in request.headers.get("if-none-match", "").split(",")]
+    if headers["ETag"] in validators or "*" in validators:
+        return Response(status_code=304, headers=headers)
     return FileResponse(
         str(serve),
-        headers={
-            "Cache-Control": "private, max-age=86400, stale-while-revalidate=604800",
-            "ETag": f'"{int(mtime)}-{serve.stat().st_size}"',
-        },
+        headers=headers,
     )
 
 

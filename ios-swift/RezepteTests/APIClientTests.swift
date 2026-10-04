@@ -3,6 +3,106 @@ import XCTest
 @testable import Rezepte
 
 final class APIClientTests: XCTestCase {
+    func testRegistrationUsesPublicEndpointAndInvitationToken() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "previous-token")
+        MockURLProtocol.respond(json: #"{"token":"new-token","username":"member","expires_in":1209600,"read_only":false}"#)
+        let response = try await client.register(username: "member", password: "synthetic-test-password",
+                                                 invitationToken: "https://example.de/register?invite=one-use-token")
+        XCTAssertEqual(response.token, "new-token")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/auth/register")
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        XCTAssertNil(MockURLProtocol.lastHeader("Authorization"))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: String])
+        XCTAssertEqual(body["invitation_token"], "one-use-token")
+        XCTAssertEqual(body["username"], "member")
+    }
+
+    func testLibraryScopeIsAppliedToListCountAndFacets() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "token")
+        var filters = RecipeFilters()
+        filters.library = .mine
+        MockURLProtocol.respond(json: #"{"total":0,"items":[]}"#)
+        _ = try await client.recipes(filters: filters)
+        XCTAssertEqual(MockURLProtocol.lastQueryItems()["library"], "mine")
+        MockURLProtocol.respond(json: #"{"total":0}"#)
+        _ = try await client.recipeCount(filters: filters)
+        XCTAssertEqual(MockURLProtocol.lastQueryItems()["library"], "mine")
+        MockURLProtocol.respond(json: #"{"types":[],"categories":[],"tags":[],"ingredients":[]}"#)
+        _ = try await client.recipeFacets(filters: filters)
+        XCTAssertEqual(MockURLProtocol.lastQueryItems()["library"], "mine")
+    }
+
+    func testGlobalRecipeIsSavedAndUnlinkedUsingReferenceEndpoint() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: #"{"ok":true,"recipe_id":42}"#)
+        _ = try await client.saveRecipe(id: 42, saved: true)
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/save")
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
+        _ = try await client.saveRecipe(id: 42, saved: false)
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/recipes/42/save")
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "DELETE")
+    }
+
+    func testPrivateImportReportsReusedGlobalRecipe() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: #"{"ok":true,"status":"linked_global","recipe_id":42}"#)
+        let response = try await client.importURL("https://recipes.example/soup")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: String])
+        XCTAssertEqual(body["visibility"], "private")
+        XCTAssertEqual(response.status, "linked_global")
+        XCTAssertEqual(response.recipeId, 42)
+    }
+
+    func testOldSignOutCannotClearNewAccountCredentials() async throws {
+        let client = APIClient()
+        let previous = UUID()
+        try await client.configure(server: "https://example.de", token: "previous", sessionID: previous)
+        try await client.configure(server: "https://example.de", token: "current", sessionID: UUID())
+        await client.clearAuthentication(ifSessionID: previous)
+        let request = try await client.imageRequest(recipeID: 42)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer current")
+        XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
+    }
+
+    func testLateSuccessAndUnauthorizedResponsesCannotCrossAccountChange() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        for status in [200, 401] {
+            try await client.configure(server: "https://example.de", token: "previous", sessionID: UUID())
+            MockURLProtocol.respond(body: #"{"username":"previous","full_access":false,"read_only":false}"#,
+                                    statusCode: status)
+            let started = expectation(description: "Request started before account change")
+            MockURLProtocol.suspendNextResponse { started.fulfill() }
+            defer { MockURLProtocol.resumeResponse() }
+            let previousRequest = Task { try await client.sessionInfo() }
+            await fulfillment(of: [started], timeout: 2)
+
+            try await client.configure(server: "https://example.de", token: "current", sessionID: UUID())
+            MockURLProtocol.resumeResponse()
+            do {
+                _ = try await previousRequest.value
+                XCTFail("Eine Antwort des vorherigen Kontos darf nicht übernommen werden")
+            } catch let error as APIError {
+                guard case .sessionChanged = error else {
+                    return XCTFail("Erwartet sessionChanged, war \(error)")
+                }
+            }
+            let currentRequest = try await client.imageRequest(recipeID: 42)
+            XCTAssertEqual(currentRequest.value(forHTTPHeaderField: "Authorization"), "Bearer current")
+        }
+    }
+
+    func testInvitationLinkPreservesServerBasePathAndEscapesToken() async throws {
+        let client = APIClient()
+        try await client.configure(server: "https://example.de/rezepte", token: "token")
+        let url = try await client.invitationURL(path: "/register?invite=a%2Bb")
+        XCTAssertEqual(url.path, "/rezepte/register")
+        XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "a+b")
+    }
+
     func testNormalizesServerURL() {
         XCTAssertEqual(
             APIClient.normalizedServerURL(" https://rezepte.example.de/ ")?.absoluteString,
@@ -829,6 +929,22 @@ final class MockURLProtocol: URLProtocol {
     nonisolated(unsafe) private static var responseURL: URL?
     nonisolated(unsafe) private static var requestBody = Data()
     nonisolated(unsafe) private static var requestMethod = ""
+    nonisolated(unsafe) private static var shouldSuspendResponse = false
+    nonisolated(unsafe) private static var requestStarted: (() -> Void)?
+    nonisolated(unsafe) private static var suspendedResponse: (() -> Void)?
+
+    static func suspendNextResponse(onStart: @escaping () -> Void) {
+        shouldSuspendResponse = true
+        requestStarted = onStart
+    }
+
+    static func resumeResponse() {
+        let delivery = suspendedResponse
+        suspendedResponse = nil
+        shouldSuspendResponse = false
+        requestStarted = nil
+        delivery?()
+    }
 
     static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
@@ -913,9 +1029,21 @@ final class MockURLProtocol: URLProtocol {
             client?.urlProtocolDidFinishLoading(self)
             return
         }
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Self.body)
-        client?.urlProtocolDidFinishLoading(self)
+        let responseBody = Self.body
+        let delivery = { [self] in
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: responseBody)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        if Self.shouldSuspendResponse {
+            Self.shouldSuspendResponse = false
+            Self.suspendedResponse = delivery
+            let started = Self.requestStarted
+            Self.requestStarted = nil
+            started?()
+        } else {
+            delivery()
+        }
     }
 
     override func stopLoading() {}

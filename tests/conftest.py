@@ -11,6 +11,11 @@ Strategy:
   brauchen keinen Login; dedizierte RBAC-Tests entfernen den Admin-Override.
 - TestClient von FastAPI für synchrone HTTP-Calls
 """
+from pathlib import Path
+from tools.test_sandbox import install_test_environment
+
+_TEST_SANDBOX = install_test_environment(Path(__file__).resolve().parents[1])
+
 # WICHTIG: diese Funktionen werden während Import UND TestClient-Lifespan
 # temporär ersetzt, weil:
 # - app.main ruft die Migrationen beim Lifespan-Start auf
@@ -18,15 +23,16 @@ Strategy:
 import app.auth as _auth
 
 import app.recipes.indexer as _indexer
+REAL_SYNC_FILESYSTEM = _indexer.sync_filesystem
 _indexer.sync_filesystem = lambda db=None: {"added": 0, "updated": 0}
 _indexer.ensure_extraction_running = lambda: False
 _indexer.is_extraction_running = lambda: False
 
-from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
 from app.db import Database
+Database.__init__.__defaults__ = (_TEST_SANDBOX / "fallback.db",)
 import app.db as db_module
 from app.auth import require_admin, require_auth
 
@@ -42,7 +48,7 @@ def test_db(tmp_path: Path) -> Database:
 
 
 @pytest.fixture
-def client(test_db: Database) -> TestClient:
+def client(test_db: Database, monkeypatch) -> TestClient:
     """FastAPI-TestClient mit Auth-Bypass.
 
     Wichtig: app wird HIER importiert (lazy), damit der Import nicht beim
@@ -60,6 +66,14 @@ def client(test_db: Database) -> TestClient:
         _auth.migrate_users_to_db = real_migrate_users
 
     app = app_main.app
+    from app.routes import api_auth
+    from app.security import LoginRateLimiter
+    monkeypatch.setattr(api_auth, "guest_limiter", LoginRateLimiter(max_fails=30, window_sec=300, ban_sec=300))
+    actor_limiter = LoginRateLimiter()
+    ip_limiter = LoginRateLimiter(max_fails=100)
+    for module in (app_main, api_auth):
+        monkeypatch.setattr(module, 'login_limiter', actor_limiter)
+        monkeypatch.setattr(module, 'login_ip_limiter', ip_limiter)
     real_main_migrate_security = app_main.migrate_security
     real_main_migrate_users = app_main.migrate_users_to_db
     real_pdf_migration = app_main.migrate_pdf_quality_defaults

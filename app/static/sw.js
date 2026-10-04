@@ -8,11 +8,19 @@
 //   niemals durch einen alten App-Shell-Stand umgangen werden.
 // - Ausschließlich öffentliche, unveränderliche Frontend-Assets erhalten einen
 //   Offline-Fallback.
-const CACHE_NAME = 'rezepte-static-v1.7.0-native-contracts';
+const CACHE_NAME = 'rezepte-static-v1.8.8-household-security';
 const STATIC_CACHE_URLS = [
   '/static/rezepte.css',
   '/static/app.js',
   '/static/runtime.js',
+  '/static/features/recipes.js',
+  '/static/features/cart.js',
+  '/static/features/meal-plan.js',
+  '/static/features/admin.js',
+  '/static/features/imports.js',
+  '/static/features/settings.js',
+  '/static/features/audit.js',
+  '/static/features/account.js',
   '/static/alpine.min.js',
   '/manifest.json',
 ];

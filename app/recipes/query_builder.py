@@ -36,6 +36,10 @@ def build_recipe_filters(
 ) -> Tuple[str, List[Any]]:
     params: List[Any] = []
     where: List[str] = []
+    if hasattr(db, "recipe_visibility_sql"):
+        where.append(db.recipe_visibility_sql())
+    favorite_sql = db.recipe_personal_sql("is_favorite") if hasattr(db, "recipe_personal_sql") else "r.is_favorite"
+    rating_sql = db.recipe_personal_sql("rating") if hasattr(db, "recipe_personal_sql") else "r.rating"
     if type:
         where.append("r.type = ?")
         params.append(type)
@@ -81,16 +85,16 @@ def build_recipe_filters(
         where.append("COALESCE(r.user_verified, 0) = ?")
         params.append(1 if verified else 0)
     if favorite_only:
-        where.append("r.is_favorite = 1")
+        where.append(f"{favorite_sql} = 1")
     rating_values = sorted(set(int(value) for value in (ratings or [])))
     if any(value < 0 or value > 5 for value in rating_values):
         raise ValueError("Bewertungen müssen zwischen 0 und 5 liegen")
     if rating_values:
         placeholders = ",".join("?" for _ in rating_values)
-        where.append(f"COALESCE(r.rating, 0) IN ({placeholders})")
+        where.append(f"COALESCE({rating_sql}, 0) IN ({placeholders})")
         params.extend(rating_values)
     elif min_rating > 0:
-        where.append("r.rating >= ?")
+        where.append(f"{rating_sql} >= ?")
         params.append(min_rating)
     if needs_manual_care is not None:
         # "Manuell pflegen" = keine Zutaten ODER keine Schritte. Dieselbe

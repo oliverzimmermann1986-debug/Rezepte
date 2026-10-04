@@ -1,7 +1,9 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useKeepAwake } from 'expo-keep-awake';
+import { useIsFocused } from '@react-navigation/native';
 import { SymbolView } from 'expo-symbols';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { ServingSelector } from '@/components/serving-selector';
 import { StepTimer } from '@/components/step-timer';
@@ -25,11 +27,18 @@ type ProgressPayload = {
   servings: number;
 };
 
+function CookingWakeLock() {
+  useKeepAwake('recipe-cooking', { suppressDeactivateWarnings: true });
+  return null;
+}
+
 export default function CookingModeScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const recipeId = Number(id);
   const router = useRouter();
-  const { username } = useAuth();
+  const isFocused = useIsFocused();
+  const { fontScale } = useWindowDimensions();
+  const { username, isGuest } = useAuth();
   const completionStorageKey = `cooking-completion-request:${encodeURIComponent(username || 'session')}:${recipeId}`;
   const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
   const [completed, setCompleted] = useState<number[]>([]);
@@ -95,7 +104,7 @@ export default function CookingModeScreen() {
         ? storedRequestId
         : createClientRequestId();
       completionRequestId.current = nextRequestId;
-      if (nextRequestId !== storedRequestId) {
+      if (!isGuest && nextRequestId !== storedRequestId) {
         void putApiCache(completionStorageKey, nextRequestId);
       }
       if (progressState.status === 'rejected') {
@@ -109,7 +118,7 @@ export default function CookingModeScreen() {
       if (!controller.signal.aborted) setLoading(false);
     });
     return () => controller.abort();
-  }, [completionStorageKey, recipeId]);
+  }, [completionStorageKey, isGuest, recipeId]);
 
   function rotateCompletionRequestId() {
     const nextRequestId = createClientRequestId();
@@ -128,6 +137,13 @@ export default function CookingModeScreen() {
     setCompleted(payload.completed_steps);
     setActiveStep(payload.active_step);
     setServings(payload.servings);
+    if (isGuest) {
+      mutationLocked.current = false;
+      setLastPayload(null);
+      setError('');
+      setSaveStatus('idle');
+      return;
+    }
     setLastPayload(payload);
     setError('');
     setSaveStatus('saving');
@@ -202,6 +218,13 @@ export default function CookingModeScreen() {
 
   async function resetProgress() {
     if (mutationLocked.current) return;
+    if (isGuest) {
+      setCompleted([]);
+      setActiveStep(0);
+      setLastPayload(null);
+      setSaveStatus('idle');
+      return;
+    }
     mutationLocked.current = true;
     setSaving(true);
     setError('');
@@ -230,7 +253,8 @@ export default function CookingModeScreen() {
 
   async function finishCooking() {
     if (
-      mutationLocked.current
+      isGuest
+      || mutationLocked.current
       || !recipe
       || servings == null
       || completed.length !== recipe.steps.length
@@ -272,6 +296,7 @@ export default function CookingModeScreen() {
 
   if (loading) return <Screen><StateView title="Kochmodus wird vorbereitet" loading /></Screen>;
   if (!recipe) return <Screen><StateView title="Kochmodus nicht verfügbar" message={error} action="Zurück" onAction={() => router.back()} /></Screen>;
+  if (!recipe.steps.length) return <Screen><StateView title="Zubereitungsschritte fehlen" message="Bitte ergänze zuerst die Schritte im Rezept." action="Zurück zum Rezept" onAction={() => router.back()} /></Screen>;
   if (servings == null) return <Screen><StateView title="Portionszahl fehlt" message="Bitte ergänze die Portionszahl im Rezept, bevor du den Kochmodus startest." action="Zurück zum Rezept" onAction={() => router.back()} /></Screen>;
 
   const originalServings = normalizedServings(recipe.servings) || servings;
@@ -283,6 +308,7 @@ export default function CookingModeScreen() {
 
   return (
     <>
+      {isFocused && <CookingWakeLock />}
       <Stack.Screen options={{ title: recipe.name }} />
       <Screen contentStyle={styles.content}>
         <View style={styles.progressHeader}>
@@ -306,6 +332,7 @@ export default function CookingModeScreen() {
         </View>
 
         {!!loadWarning && <Text accessibilityRole="alert" style={styles.warning}>{loadWarning}</Text>}
+        {isGuest && <Text style={styles.warning}>Gastzugang: Schritte und Timer kannst du hier nutzen. Fortschritt und Kochhistorie werden nicht gespeichert.</Text>}
 
         <ServingSelector
           value={servings}
@@ -367,7 +394,7 @@ export default function CookingModeScreen() {
         )}
 
         <View style={styles.sectionHeader}>
-          <Text style={sharedStyles.sectionTitle}>Zutaten</Text>
+          <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Zutaten</Text>
           <Pressable accessibilityRole="button" accessibilityState={{ expanded: showIngredients }} onPress={() => setShowIngredients(value => !value)} style={styles.inlineAction}>
             <Text style={styles.inlineActionText}>{showIngredients ? 'Ausblenden' : 'Anzeigen'}</Text>
           </Pressable>
@@ -383,7 +410,7 @@ export default function CookingModeScreen() {
           </View>
         )}
 
-        <Text style={sharedStyles.sectionTitle}>Alle Schritte</Text>
+        <Text accessibilityRole="header" style={sharedStyles.sectionTitle}>Alle Schritte</Text>
         <View style={styles.stepList}>
           {recipe.steps.map((step, index) => {
             const done = completed.includes(index);
@@ -401,13 +428,15 @@ export default function CookingModeScreen() {
                   pressed && styles.pressed,
                 ]}>
                 <SymbolView name={done ? 'checkmark.circle.fill' : 'circle'} size={22} weight="semibold" tintColor={done ? colors.success : colors.muted} />
-                <Text numberOfLines={2} style={[styles.stepRowText, done && styles.stepRowDone]}>{index + 1}. {step.instruction}</Text>
+                <Text numberOfLines={fontScale < 1.3 ? 2 : undefined} style={[styles.stepRowText, done && styles.stepRowDone]}>{index + 1}. {step.instruction}</Text>
               </Pressable>
             );
           })}
         </View>
 
-        {allDone ? (
+        {isGuest ? (
+          <Text style={styles.finishHint}>Zum Speichern deines Kochfortschritts bitte mit deinem Konto anmelden.</Text>
+        ) : allDone ? (
           <View style={styles.finishBlock}>
             <Text style={styles.finishTitle}>Alles erledigt</Text>
             <Text style={styles.finishText}>Der Abschluss trägt dieses Kochen in die Rezept-Historie ein und setzt den Fortschritt zurück.</Text>

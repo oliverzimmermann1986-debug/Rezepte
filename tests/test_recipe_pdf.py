@@ -1,10 +1,13 @@
 """PDF-Export und Dateifreigabe für einzelne Rezepte."""
 
 from io import BytesIO
+import re
 
 import pdfplumber
+import pytest
 
 from app.db import Database
+from app.recipes.recipe_pdf import build_recipe_pdf
 from tests.conftest import _create_recipe
 
 
@@ -67,3 +70,27 @@ def test_recipe_pdf_contains_ingredients_steps_and_metadata(
 
 def test_recipe_pdf_returns_404_for_unknown_recipe(client):
     assert client.get("/recipe/999999/pdf").status_code == 404
+
+
+@pytest.mark.parametrize("section", ["description", "ingredients", "steps"])
+def test_recipe_pdf_splits_long_content_without_losing_text(section):
+    lines = [f"Abschnitt {index:03d}: Zutaten vorbereiten und sorgfaeltig verruehren."
+             for index in range(120)]
+    long_text = "\n".join(lines)
+    recipe = {"name": "Langes Rezept", "ingredients": [], "steps": []}
+    if section == "description":
+        recipe[section] = long_text
+    elif section == "ingredients":
+        recipe[section] = [{"raw": long_text}]
+    else:
+        recipe[section] = [{"instruction": long_text}]
+
+    pdf = build_recipe_pdf(recipe)
+    assert pdf.startswith(b"%PDF-")
+    with pdfplumber.open(BytesIO(pdf)) as document:
+        assert len(document.pages) > 1
+        text = "\n".join(page.extract_text() or "" for page in document.pages)
+    text = re.sub(r"\s+", " ", text)
+    # Every part must survive the split, including the final continuation.
+    positions = [text.index(f"Abschnitt {index:03d}:") for index in range(120)]
+    assert positions == sorted(positions)

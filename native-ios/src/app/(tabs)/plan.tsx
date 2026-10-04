@@ -26,11 +26,13 @@ import {
   downloadFileToCache,
 } from '@/lib/api';
 import { apiCached, invalidateApiCache, invalidateApiCacheByPrefix } from '@/lib/cache';
+import { useAuth } from '@/lib/auth-context';
 import { MealPlan, MealPlanDay, MealPlanItem, RecipeListItem } from '@/lib/types';
 
 const RECIPE_PAGE_SIZE = 60;
 
 export default function PlanScreen() {
+  const { isGuest } = useAuth();
   const [plan, setPlan] = useState<MealPlan | null>(null);
   const [weekStart, setWeekStart] = useState('');
   const [loading, setLoading] = useState(true);
@@ -158,10 +160,11 @@ export default function PlanScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
+      {isGuest && <Text style={{ color: colors.muted, paddingHorizontal: space.md, paddingBottom: space.sm }}>Gastzugang · nur ansehen</Text>}
       <View style={styles.header}>
         <View>
           <Text style={styles.eyebrow}>ESSEN VORAUSPLANEN</Text>
-          <Text style={styles.title}>Wochenplan</Text>
+          <Text accessibilityRole="header" style={styles.title}>Wochenplan</Text>
         </View>
         <Text style={styles.count}>{plan?.summary.planned_meals || 0} Gerichte</Text>
       </View>
@@ -194,6 +197,7 @@ export default function PlanScreen() {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Rezept zu ${day.label} hinzufügen`}
+                disabled={isGuest}
                 onPress={() => setSelectedDay(day)}
                 style={styles.plus}>
                 <Text style={styles.plusText}>+</Text>
@@ -208,19 +212,20 @@ export default function PlanScreen() {
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={`Portionen für ${item.recipe_name} verringern`}
-                  disabled={item.planned_servings <= 1}
+                  disabled={isGuest || item.planned_servings <= 1}
                   onPress={() => changeServings(item, -1)}
                   style={[styles.smallButton, item.planned_servings <= 1 && styles.disabled]}><Text>−</Text></Pressable>
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={`Portionen für ${item.recipe_name} erhöhen`}
-                  disabled={item.planned_servings >= 24}
+                  disabled={isGuest || item.planned_servings >= 24}
                   onPress={() => changeServings(item, 1)}
                   style={[styles.smallButton, item.planned_servings >= 24 && styles.disabled]}><Text>+</Text></Pressable>
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={`${item.recipe_name} aus ${day.label} entfernen`}
                   onPress={() => remove(item)}
+                  disabled={isGuest}
                   style={styles.smallButton}><Text style={styles.remove}>×</Text></Pressable>
               </View>
             )) : <Text style={styles.emptyDay}>Noch nichts geplant</Text>}
@@ -233,7 +238,7 @@ export default function PlanScreen() {
             <PrimaryButton
               label="Wocheneinkauf erstellen"
               onPress={createCart}
-              disabled={!plan?.summary.shopping_items}
+              disabled={isGuest || !plan?.summary.shopping_items}
             />
             <PrimaryButton
               label={pdfBusy ? 'PDF wird vorbereitet …' : 'Wochenplan als PDF teilen'}

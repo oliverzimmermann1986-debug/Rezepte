@@ -119,7 +119,7 @@ export function AdminVersions({
           <Pressable onPress={detail ? () => setDetail(null) : onClose} style={styles.headerAction}>
             <Text style={styles.headerLink}>{detail ? 'Zurück' : 'Fertig'}</Text>
           </Pressable>
-          <Text style={styles.title}>{detail ? `Version v${detail.version_no}` : 'Versionen'}</Text>
+          <Text accessibilityRole="header" style={styles.title}>{detail ? `Version v${detail.version_no}` : 'Versionen'}</Text>
           <Pressable onPress={() => void load()} disabled={loading || !!detail} style={styles.headerAction}>
             <Text style={[styles.headerLink, (loading || !!detail) && styles.disabled]}>Laden</Text>
           </Pressable>

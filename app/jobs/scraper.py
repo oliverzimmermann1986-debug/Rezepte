@@ -96,10 +96,8 @@ def reset_history_cancel() -> None:
 
 
 def _sanitize(name: str) -> str:
-    name = (name or "").strip()
-    name = re.sub(r'[<>:"/\\|?*\n\r\t]', "", name)
-    name = re.sub(r"\s+", "_", name)
-    return name or "Unbekannt"
+    from ..core.safety import safe_path_component
+    return safe_path_component(name)
 
 
 def _has_usable_description(text: Optional[str], min_len: int) -> bool:
@@ -246,10 +244,20 @@ class ScraperJob:
             or not bool(getattr(self, "analyzer_enabled", False))
         ):
             return
+        recipe = self.db.recipe_get(int(recipe_id))
+        if recipe and recipe.get("thumb_filename"):
+            from ..core.safety import resolve_regular_file_under
+            folder = Path(recipe["folder_path"])
+            try:
+                resolve_regular_file_under(folder / str(recipe["thumb_filename"]), folder)
+            except (ValueError, OSError):
+                pass
+            else:
+                return
         try:
             self.db.background_task_enqueue(
                 "recipe_image_generate",
-                {"recipe_id": int(recipe_id), "batch_id": uuid.uuid4().hex},
+                {"recipe_id": int(recipe_id), "batch_id": uuid.uuid4().hex, "replace_existing": False},
                 dedupe_key=str(int(recipe_id)),
             )
         except Exception:
@@ -999,7 +1007,10 @@ class ScraperJob:
                 timeout=self.analyzer.timeout,
             )
             r.raise_for_status()
-            content = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "")
+            choice = (r.json().get("choices") or [{}])[0]
+            if choice.get("finish_reason") != "stop":
+                return None
+            content = choice.get("message", {}).get("content", "")
             if not content:
                 return None
             data = json.loads(content)
@@ -2829,7 +2840,11 @@ def get_scraper_job() -> "ScraperJob":
     if _job_instance is None:
         with _job_lock:
             if _job_instance is None:
-                _job_instance = ScraperJob()
+                from ..tenancy import HouseholdScope, household_context
+                from ..tenant_db import HouseholdDatabase
+                with household_context(None):
+                    _job_instance = ScraperJob()
+                _job_instance.db = HouseholdDatabase(_job_instance.db, HouseholdScope(0, is_admin=True), import_owner=None)
     return _job_instance
 
 

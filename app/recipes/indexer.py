@@ -529,6 +529,11 @@ def _extract_for_recipe(
     Übersetzung passiert — der Scraper macht das beim Save selbst.
     """
     rid = recipe["id"]
+    if recipe.get("owner_account_id") is not None:
+        from ..tenant_db import HouseholdDatabase
+        from ..tenancy import HouseholdScope
+        db = HouseholdDatabase(db, HouseholdScope(int(recipe["owner_account_id"])))
+        recipe = db.recipe_get(rid) or recipe
     desc = recipe.get("description") or ""
 
     # Wenn description leer/zu kurz: erst Media-Extract aus dem Folder versuchen
@@ -588,14 +593,8 @@ def _extract_for_recipe(
     # Tags/canonical ist das vernachlässigbar. Cached wir nicht, weil die
     # Liste sich während der Extraktion erweitert (frisch extrahierte
     # canonicals sollen den nächsten Calls helfen).
-    try:
-        with db.conn() as c:
-            tag_rows = c.execute("SELECT name FROM tags").fetchall()
-            existing_tags = [r[0] for r in tag_rows]
-            existing_canonical = db.ingredient_name_hints()
-    except Exception as e:
-        logger.warning(f"Rezept #{rid}: existing-Stammdaten-Lookup failed: {e}")
-        existing_tags, existing_canonical = [], []
+    from .pdf_recipe_extract import existing_hints
+    existing_tags, existing_canonical = existing_hints(db, rid)
 
     current_ingredients = db.recipe_ingredients_get(rid)
     current_steps = db.recipe_steps_get(rid)
@@ -677,7 +676,15 @@ def _extract_for_recipe(
     )
     previous_auto_tags = [t["name"] for t in current_tags if t.get("auto")]
     all_auto_tags = sorted(set(previous_auto_tags) | set(ki_tags) | set(diet_tags))
-    final_status = "ok" if prepared and steps else "error"
+    from .extraction_evidence import review_reasons
+    reasons = review_reasons(
+        {**content, "ingredients": extracted_ingredients if not current_ingredients else []},
+        getattr(video_result, "evidence_text", "") or desc,
+        threshold=float(ai_cfg.get("confidence_threshold") or .75),
+    )
+    final_status = "ok" if prepared and steps and not reasons else "error"
+    if reasons:
+        logger.warning("Rezept #%s: Quellbelege müssen geprüft werden (%s)", rid, len(reasons))
     applied = db.recipe_apply_extraction_result(
         rid,
         ingredients=extracted_ingredients,
@@ -704,7 +711,7 @@ def _extract_for_recipe(
     nutrition_msg = ""
     nutrition_owner = f"nutrition-extract:{rid}:{time.time_ns()}"
     try:
-        if len(prepared) >= 3 and not recipe.get("calories_per_serving"):
+        if final_status == "ok" and len(prepared) >= 3 and not recipe.get("calories_per_serving"):
             if not db.recipe_claim_nutrition(rid, nutrition_owner):
                 raise RuntimeError("Nährwert-Claim konnte nicht übernommen werden")
             nutrition_ingredients = db.recipe_ingredients_get(rid)

@@ -337,7 +337,9 @@ def _store_optimize_preview(payload: Dict[str, Any]) -> str:
                 key=lambda key: float(_optimize_previews[key]["created_at"]),
             )
             _optimize_previews.pop(oldest, None)
-        _optimize_previews[preview_id] = {"created_at": now, **payload}
+        from ..tenancy import CURRENT_HOUSEHOLD
+        scope = CURRENT_HOUSEHOLD.get()
+        _optimize_previews[preview_id] = {"created_at": now, "account_id": scope.account_id if scope else 0, **payload}
     return preview_id
 
 
@@ -384,6 +386,10 @@ def apply_cart_optimization(payload: OptimizeApply) -> Dict[str, Any]:
     now = time.monotonic()
     with _optimize_preview_lock:
         preview = _optimize_previews.get(payload.preview_id)
+        from ..tenancy import CURRENT_HOUSEHOLD
+        scope = CURRENT_HOUSEHOLD.get()
+        if preview and preview.get("account_id", 0) != (scope.account_id if scope else 0):
+            preview = None
         if preview and now - float(preview["created_at"]) > _OPTIMIZE_PREVIEW_TTL_SECONDS:
             _optimize_previews.pop(payload.preview_id, None)
             preview = None

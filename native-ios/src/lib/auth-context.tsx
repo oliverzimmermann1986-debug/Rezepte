@@ -89,6 +89,14 @@ async function purgeStoredSession() {
   await deleteStoredKeys(SESSION_KEYS);
 }
 
+async function clearExpiredSessionCaches() {
+  await Promise.allSettled([
+    clearApiCache(),
+    Image.clearMemoryCache(),
+    Image.clearDiskCache(),
+  ]);
+}
+
 async function purgeStoredSessionWithRetryMarker() {
   try {
     await purgeStoredSession();
@@ -154,6 +162,7 @@ type AuthContextValue = {
   serverUrl: string;
   username: string;
   isAdmin: boolean;
+  isGuest: boolean;
   cloudflareClientId: string;
   cloudflareClientSecret: string;
   sessionWarning: string;
@@ -166,8 +175,13 @@ type AuthContextValue = {
     nextCloudflareClientId: string,
     nextCloudflareClientSecret: string,
   ) => Promise<void>;
+  signInAsGuest: (server: string, clientId: string, clientSecret: string) => Promise<void>;
+  registerAccount: (server: string, username: string, password: string, clientId: string,
+                    clientSecret: string, invitationToken?: string) => Promise<void>;
   signOut: () => Promise<void>;
+  returnToLogin: () => Promise<void>;
   refreshSession: () => Promise<void>;
+  refreshHousehold: () => Promise<void>;
   retryAuthCleanup: () => Promise<void>;
 };
 
@@ -179,12 +193,14 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER);
   const [username, setUsername] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isGuest, setIsGuest] = useState(false);
   const [cloudflareClientId, setCloudflareClientId] = useState('');
   const [cloudflareClientSecret, setCloudflareClientSecret] = useState('');
   const [sessionWarning, setSessionWarning] = useState('');
   const [sessionChecking, setSessionChecking] = useState(false);
   const [authCleanupPending, setAuthCleanupPending] = useState(false);
   const sessionRefreshInFlight = useRef<Promise<void> | null>(null);
+  const authenticationInFlight = useRef(false);
 
   useEffect(() => {
     prepareSecureStorage()
@@ -202,6 +218,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
           : null;
         configureApi(server, storedToken, cloudflare, storedUsername || '');
         setToken(storedToken);
+        setIsGuest(Boolean(storedToken?.startsWith('guest.')));
         setServerUrl(server);
         setCloudflareClientId(storedClientId || '');
         setCloudflareClientSecret(storedClientSecret || '');
@@ -212,9 +229,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
               username: string;
               role?: string;
               is_admin?: boolean;
-            }>('/api/auth/session');
+            }>('/api/auth/session', {}, undefined, 5_000);
             setUsername(session.username);
             setIsAdmin(session.is_admin === true || session.role === 'admin');
+            setIsGuest(session.role === 'guest');
             await secureStorage.set(USERNAME_KEY, session.username);
           } catch (reason) {
             if (reason instanceof ApiError && reason.status === 401) {
@@ -226,9 +244,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
               }
               configureApi(server, null, cloudflare);
               setToken(null);
+              setIsGuest(false);
               setUsername('');
               setIsAdmin(false);
               setSessionWarning('Deine Sitzung ist abgelaufen. Der Gerätezugang bleibt gespeichert.');
+              await clearExpiredSessionCaches();
             } else if (reason instanceof ApiError && reason.status === 403) {
               // Cloudflare oder eine fehlende Backend-Berechtigung darf keine
               // gültigen Gerätezugangsdaten aus dem Schlüsselbund löschen.
@@ -244,6 +264,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       .catch(() => {
         configureApi('', null, null);
         setToken(null);
+        setIsGuest(false);
         setUsername('');
         setIsAdmin(false);
         setServerUrl(DEFAULT_SERVER);
@@ -267,6 +288,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       // in einem halb angemeldeten Zustand lassen.
       configureApi(serverUrl, null, cloudflare);
       setToken(null);
+      setIsGuest(false);
       setUsername('');
       setIsAdmin(false);
       setSessionWarning('Deine Sitzung ist abgelaufen. Bitte erneut anmelden.');
@@ -278,13 +300,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
         setAuthCleanupPending(true);
         setSessionWarning('Sitzung abgelaufen. Der Schlüsselbund konnte noch nicht vollständig bereinigt werden.');
       }
-      await clearApiCache().catch(() => undefined);
+      await clearExpiredSessionCaches();
     });
     return () => setUnauthorizedHandler(null);
   }, [cloudflareClientId, cloudflareClientSecret, ready, serverUrl]);
 
   const refreshSession = useCallback(async () => {
-    if (!ready || !token || !serverUrl) return;
+    if (!ready || !token || !serverUrl || authenticationInFlight.current) return;
     if (sessionRefreshInFlight.current) return sessionRefreshInFlight.current;
 
     const requestEpoch = currentApiSessionEpoch();
@@ -301,6 +323,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         if (!isApiSessionEpochCurrent(requestEpoch)) return;
         setUsername(session.username);
         setIsAdmin(session.is_admin === true || session.role === 'admin');
+        setIsGuest(session.role === 'guest');
         try {
           await secureStorage.set(USERNAME_KEY, session.username);
           setSessionWarning('');
@@ -318,6 +341,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
             : null;
           configureApi(serverUrl, null, cloudflare);
           setToken(null);
+          setIsGuest(false);
           setUsername('');
           setIsAdmin(false);
           setSessionWarning('Deine Sitzung ist abgelaufen. Bitte erneut anmelden.');
@@ -329,7 +353,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
             setAuthCleanupPending(true);
             setSessionWarning('Sitzung abgelaufen. Der Schlüsselbund konnte noch nicht vollständig bereinigt werden.');
           }
-          await clearApiCache().catch(() => undefined);
+          await clearExpiredSessionCaches();
         } else if (reason instanceof ApiError && reason.status === 403) {
           // Weder Rolle noch Cloudflare-Zugang bei einer vorübergehenden
           // Ablehnung verwerfen. Ein späterer Fokus/Retry prüft erneut.
@@ -374,6 +398,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
     password: string,
     nextCloudflareClientId: string,
     nextCloudflareClientSecret: string,
+    mode: 'login' | 'guest' | 'register' = 'login',
+    invitationToken = '',
   ) {
     const normalizedServer = normalizeServer(nextServer);
     const normalizedClientId = nextCloudflareClientId.trim();
@@ -384,43 +410,92 @@ export function AuthProvider({ children }: PropsWithChildren) {
     const cloudflare = normalizedClientId && normalizedClientSecret
       ? { clientId: normalizedClientId, clientSecret: normalizedClientSecret }
       : null;
-    configureApi(normalizedServer, null, cloudflare);
-    const result = await api<{
-      token: string;
-      username: string;
-      role?: string;
-      is_admin?: boolean;
-    }>('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ username: nextUsername.trim(), password }),
-    });
+    if (authenticationInFlight.current) throw new ApiError('Eine Anmeldung läuft bereits.', 0);
+    authenticationInFlight.current = true;
     try {
-      await clearApiCache();
-      await secureStorage.set(SERVER_KEY, normalizedServer);
-      if (normalizedClientId) await secureStorage.set(CLOUDFLARE_CLIENT_ID_KEY, normalizedClientId);
-      else await secureStorage.delete(CLOUDFLARE_CLIENT_ID_KEY);
-      if (normalizedClientSecret) await secureStorage.set(CLOUDFLARE_CLIENT_SECRET_KEY, normalizedClientSecret);
-      else await secureStorage.delete(CLOUDFLARE_CLIENT_SECRET_KEY);
-      await secureStorage.set(TOKEN_KEY, result.token);
-      await secureStorage.set(USERNAME_KEY, result.username);
-    } catch (reason) {
-      const cleanup = await Promise.allSettled([removeInstallMarker(), purgeStoredAuth()]);
-      if (cleanup.some(resultState => resultState.status === 'rejected')) {
-        setAuthCleanupPending(true);
+      configureApi(normalizedServer, null, cloudflare);
+      const attemptEpoch = currentApiSessionEpoch();
+      let result: { token: string; username: string; role?: string; is_admin?: boolean };
+      try {
+        result = await api<{
+          token: string;
+          username: string;
+          role?: string;
+          is_admin?: boolean;
+        }>(`/api/auth/${mode}`, {
+          method: 'POST',
+          body: JSON.stringify(mode === 'guest' ? {} : { username: nextUsername.trim(), password, invitation_token: invitationToken.trim() }),
+        });
+      } catch (reason) {
+        // Eine fehlgeschlagene Registrierung aus dem Gastkonto lässt dessen
+        // Lesesitzung aktiv. Ein zwischenzeitliches Abmelden bleibt wirksam.
+        if (token && isApiSessionEpochCurrent(attemptEpoch)) {
+          configureApi(serverUrl, token, cloudflareClientId && cloudflareClientSecret
+            ? { clientId: cloudflareClientId, clientSecret: cloudflareClientSecret } : null, username);
+        }
+        throw reason;
       }
-      configureApi('', null, null);
-      throw reason;
+      try {
+        await clearApiCache();
+        await secureStorage.set(SERVER_KEY, normalizedServer);
+        if (normalizedClientId) await secureStorage.set(CLOUDFLARE_CLIENT_ID_KEY, normalizedClientId);
+        else await secureStorage.delete(CLOUDFLARE_CLIENT_ID_KEY);
+        if (normalizedClientSecret) await secureStorage.set(CLOUDFLARE_CLIENT_SECRET_KEY, normalizedClientSecret);
+        else await secureStorage.delete(CLOUDFLARE_CLIENT_SECRET_KEY);
+        await secureStorage.set(TOKEN_KEY, result.token);
+        await secureStorage.set(USERNAME_KEY, result.username);
+        if (!isApiSessionEpochCurrent(attemptEpoch)) throw new ApiError('Die Anmeldung wurde beendet.', 401);
+      } catch (reason) {
+        const cleanup = await Promise.allSettled([removeInstallMarker(), purgeStoredAuth()]);
+        if (cleanup.some(resultState => resultState.status === 'rejected')) {
+          setAuthCleanupPending(true);
+        }
+        configureApi('', null, null);
+        setToken(null);
+        setIsGuest(false);
+        setUsername('');
+        setIsAdmin(false);
+        setCloudflareClientId('');
+        setCloudflareClientSecret('');
+        setSessionWarning('Anmeldung konnte auf dem Gerät nicht gespeichert werden. Bitte erneut anmelden.');
+        router.replace('/login');
+        throw reason;
+      }
+      configureApi(normalizedServer, result.token, cloudflare, result.username);
+      setServerUrl(normalizedServer);
+      setCloudflareClientId(normalizedClientId);
+      setCloudflareClientSecret(normalizedClientSecret);
+      setToken(result.token);
+      setIsGuest(result.role === 'guest');
+      setUsername(result.username);
+      setIsAdmin(result.is_admin === true || result.role === 'admin');
+      setSessionWarning('');
+      setAuthCleanupPending(false);
+      router.replace('/(tabs)');
+    } finally {
+      authenticationInFlight.current = false;
     }
-    configureApi(normalizedServer, result.token, cloudflare, result.username);
-    setServerUrl(normalizedServer);
-    setCloudflareClientId(normalizedClientId);
-    setCloudflareClientSecret(normalizedClientSecret);
-    setToken(result.token);
-    setUsername(result.username);
-    setIsAdmin(result.is_admin === true || result.role === 'admin');
+  }
+
+  async function returnToLogin() {
+    if (authenticationInFlight.current) return;
+    const cloudflare = cloudflareClientId && cloudflareClientSecret
+      ? { clientId: cloudflareClientId, clientSecret: cloudflareClientSecret } : null;
+    configureApi(serverUrl, null, cloudflare);
+    setToken(null);
+    setIsGuest(false);
+    setUsername('');
+    setIsAdmin(false);
     setSessionWarning('');
-    setAuthCleanupPending(false);
-    router.replace('/(tabs)');
+    router.replace('/login');
+    try {
+      await purgeStoredSessionWithRetryMarker();
+      setAuthCleanupPending(false);
+    } catch {
+      setAuthCleanupPending(true);
+      setSessionWarning('Die Gastsitzung konnte im Schlüsselbund noch nicht vollständig gelöscht werden.');
+    }
+    await Promise.allSettled([clearApiCache(), Image.clearMemoryCache(), Image.clearDiskCache()]);
   }
 
   async function signOut() {
@@ -432,6 +507,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       : Promise.resolve();
     configureApi('', null, null);
     setToken(null);
+    setIsGuest(false);
     setUsername('');
     setIsAdmin(false);
     setServerUrl(DEFAULT_SERVER);
@@ -487,14 +563,28 @@ export function AuthProvider({ children }: PropsWithChildren) {
     serverUrl,
     username,
     isAdmin,
+    isGuest,
     cloudflareClientId,
     cloudflareClientSecret,
     sessionWarning,
     sessionChecking,
     authCleanupPending,
     signIn,
+    signInAsGuest: (server: string, clientId: string, clientSecret: string) => signIn(server, '', '', clientId, clientSecret, 'guest'),
+    registerAccount: (server: string, name: string, password: string, clientId: string, clientSecret: string, invitationToken = '') =>
+      signIn(server, name, password, clientId, clientSecret, 'register', invitationToken),
     signOut,
+    returnToLogin,
     refreshSession,
+    refreshHousehold: async () => {
+      // A membership change invalidates in-flight reads and all stored content
+      // before the newly shared household can be displayed.
+      configureApi(serverUrl, token, { clientId: cloudflareClientId, clientSecret: cloudflareClientSecret }, username);
+      await clearApiCache();
+      await Image.clearDiskCache();
+      await Image.clearMemoryCache();
+      await refreshSession();
+    },
     retryAuthCleanup,
   };
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

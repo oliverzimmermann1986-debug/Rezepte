@@ -32,6 +32,7 @@ type RecipeFacets = {
   ingredients: { canonical_name: string; display_name: string; n: number }[];
 };
 type RecipeFilters = {
+  library: 'all' | 'global' | 'mine';
   type: string;
   categories: string[];
   tagIds: number[];
@@ -43,6 +44,7 @@ type RecipeFilters = {
 };
 
 const EMPTY_FILTERS: RecipeFilters = {
+  library: 'all',
   type: '',
   categories: [],
   tagIds: [],
@@ -55,6 +57,7 @@ const EMPTY_FILTERS: RecipeFilters = {
 const PAGE_SIZE = 60;
 
 function appendRecipeFilters(params: URLSearchParams, filters: RecipeFilters) {
+  if (filters.library !== 'all') params.set('library', filters.library);
   if (filters.type) params.set('type', filters.type);
   filters.categories.forEach(value => params.append('category', value));
   if (filters.favoriteOnly) params.set('favorite_only', 'true');
@@ -97,7 +100,7 @@ function FilterChip({ label, selected, onPress }: { label: string; selected: boo
 }
 
 export default function RecipesScreen() {
-  const { isAdmin, refreshSession, sessionChecking, sessionWarning, signOut } = useAuth();
+  const { isAdmin, isGuest, refreshSession, sessionChecking, sessionWarning, signOut } = useAuth();
   const [recipes, setRecipes] = useState<RecipeListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
@@ -331,8 +334,8 @@ export default function RecipesScreen() {
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.eyebrow}>DEINE KÜCHE</Text>
-          <Text style={styles.title}>Rezepte</Text>
+          <Text style={styles.eyebrow}>{isGuest ? 'GASTZUGANG · NUR ANSEHEN' : 'DEINE KÜCHE'}</Text>
+          <Text accessibilityRole="header" style={styles.title}>Rezepte</Text>
         </View>
         <View style={styles.headerActions}>
           <Text accessibilityLabel={`${total} Rezepte`} style={styles.count}>{total}</Text>
@@ -365,6 +368,12 @@ export default function RecipesScreen() {
           </Pressable>
         </View>
       )}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, paddingHorizontal: space.lg, paddingBottom: space.sm }}>
+        {([['all', 'Alle'], ['global', 'Global für alle'], ...(!isGuest ? [['mine', 'Mein Haushalt']] : [])] as const).map(([value, label]) => (
+          <FilterChip key={value} label={label} selected={filters.library === value}
+                      onPress={() => setFilters(current => ({ ...current, library: value as RecipeFilters['library'] }))} />
+        ))}
+      </View>
       <View style={styles.controls}>
         <TextInput
           accessibilityLabel="Rezepte durchsuchen"

@@ -11,9 +11,30 @@ Share Extension und Oberflächen sind native SwiftUI-Komponenten. Die vier
 Farbwelten lassen sich unter **Einstellungen** pro Gerät ändern.
 
 Über **Als Gast ansehen** ist kein separates Konto nötig. Der Gast erhält eine
-signierte, rein lesende Sitzung und sieht nur Archiv und Einstellungen. Import,
-Bearbeitung, Favoriten, Einkauf, Wochenplanung und Administration sind sowohl
-in der Oberfläche als auch serverseitig gesperrt.
+signierte, rein lesende Sitzung und sieht die globalen Rezepte. Einkauf und
+Wochenplanung zeigen eine Erklärung mit Anmeldung und Registrierung. Private
+Haushaltsdaten, Import, Bearbeitung, Favoriten und Administration bleiben für
+Gäste serverseitig gesperrt.
+
+Über **Konto erstellen** lässt sich ein eigener Haushalt registrieren. Unter
+**Einstellungen > Mein Haushalt & Einladungen** kann dessen Eigentümer eine
+zweite Person mit eigener Anmeldung einladen. Der einmal verwendbare Link gilt
+sieben Tage und lässt sich widerrufen. Ein bestehendes Konto kann denselben Link
+dort annehmen; seine privaten Rezepte und Listen gehen in den gemeinsamen Haushalt
+über. Der Link wird ausschließlich über die native Teilen-Funktion oder manuelles
+Kopieren weitergegeben.
+
+Das Archiv bietet **Alle**, **Global** und **Mein Haushalt**. Globale Rezepte
+werden über einen Verweis in der eigenen Sammlung gespeichert. Neue Importe
+bleiben standardmäßig privat. Ist ihr normalisierter Link bereits global
+vorhanden, speichert der Server den Verweis ohne erneuten Download oder KI-Lauf.
+Administratoren können ausdrücklich global importieren. Änderungen an globalen
+Rezepten bleiben Administratoren vorbehalten; eigene private Rezepte dürfen
+Haushaltsmitglieder bearbeiten.
+
+Beim Abmelden oder Haushaltswechsel werden die privaten Ansichten neu aufgebaut
+und Antwort-Caches geleert. Verspätete Antworten der vorherigen Sitzung werden
+verworfen, auch wenn sie erfolgreich sind oder eine abgelaufene Anmeldung melden.
 
 Offene Importe lassen sich nativ vollständig prüfen: Name, Beschreibung,
 Portionen, Zutaten, Mengen, Einheiten, Schritte und Timer bleiben editierbar.
@@ -99,7 +120,9 @@ dem Gerät installiert und als vertrauenswürdig markiert ist.
 ## Vor der App-Store-Einreichung testen
 
 1. Unit-Tests mit `Cmd-U` ausführen.
-2. Im iPhone-Simulator Login, Quellen-Eingang, Rezeptpass, Quellenwächter,
+2. Im iPhone-Simulator Registrierung, Gastzugang, Login, Haushaltseinladung,
+   Wechsel zwischen zwei Konten, globale Verweise, private Importe und die
+   Schreibsperre für globale Rezepte prüfen. Anschließend Quellen-Eingang, Rezeptpass, Quellenwächter,
    Substitutionslabor, Menü-Dirigent, Bildverlauf, Wochenplan, wiederkehrende
    Einkäufe, Admin-Einstellungen, Farbwelten und Einkaufskatalog prüfen. Bei
    aktiviertem Cloudflare Access auch Login mit
