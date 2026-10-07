@@ -17,7 +17,7 @@ Haushaltsdaten, Import, Bearbeitung, Favoriten und Administration bleiben für
 Gäste serverseitig gesperrt.
 
 Über **Konto erstellen** lässt sich ein eigener Haushalt registrieren. Unter
-**Einstellungen > Mein Haushalt & Einladungen** kann dessen Eigentümer eine
+**Einstellungen > Mein Konto > Mein Haushalt & Einladungen** kann dessen Eigentümer eine
 zweite Person mit eigener Anmeldung einladen. Der einmal verwendbare Link gilt
 sieben Tage und lässt sich widerrufen. Ein bestehendes Konto kann denselben Link
 dort annehmen; seine privaten Rezepte und Listen gehen in den gemeinsamen Haushalt
@@ -98,6 +98,39 @@ Registrierung, Haushaltseinladungen und der lesende Gastzugang verwenden dieselb
 App-Authentifizierung. Der Sitzungsschlüssel bleibt im iOS-Schlüsselbund und wird
 als Bearer-Token an geschützte API-, Bild- und PDF-Endpunkte gesendet.
 
+**Mein Konto** zeigt Benutzername und Rolle. Dort lassen sich das Passwort ändern
+oder einrichten, aktive Sitzungen einzeln oder gemeinsam abmelden und das eigene
+Konto löschen. Ein Passwortwechsel meldet alle Geräte ab. Der Server verhindert
+das Löschen des letzten Administrators und des letzten Haushaltsmitglieds, wenn
+noch Haushaltsdaten oder Importe vorhanden sind. Unter **Administration > Benutzer**
+können Administratoren Konten anlegen, Rollen und Aktivstatus ändern, Passwörter
+zurücksetzen sowie Sitzungen widerrufen. Benutzernamen werden nicht umbenannt.
+
+Apple und Google erscheinen nur, wenn der ausgewählte Server den Anbieter als
+aktiv meldet. Die Anmeldung öffnet `ASWebAuthenticationSession`; Provider-Schlüssel
+liegen ausschließlich auf dem Server. Der Client verwendet S256-PKCE und akzeptiert
+den Rückruf `de.mausbaeren.rezepte://auth/callback` ausschließlich für den aktuell
+gestarteten Flow. Ein einmaliger Code wird anschließend gegen die normale
+App-Sitzung getauscht. Dafür werden keine Provider-SDKs oder Apple-Sign-in-Entitlements
+eingebunden. Die App Group bleibt der Share-Importqueue vorbehalten.
+
+Unter **Mein Konto > Apple, Google & Anmeldeverfahren** können Konten verknüpft,
+erneut bestätigt und entfernt werden; mindestens ein Anmeldeverfahren bleibt
+erhalten. Konten ohne Passwort benötigen für geschützte Änderungen eine höchstens
+fünf Minuten alte Provider-Bestätigung. Eine erneute Bestätigung baut die
+kontogebundenen Ansichten mit der neuen Sitzung auf.
+Das erste Verknüpfen eines weiteren Anbieters verlangt das aktuelle Kontopasswort
+oder eine frische Provider-Bestätigung. Ein bereits verbundener Anbieter kann
+ohne Kontopasswort erneut bestätigt werden. Beim Entfernen einer Verknüpfung
+widerruft der Server alle über diesen Anbieter erstellten App-Sitzungen.
+
+Beim normalen Abmelden widerruft die App die aktuelle Serversitzung und entfernt
+den lokalen Schlüssel. Eine dauerhaft gespeicherte Abmeldeabsicht verhindert auch
+bei fehlgeschlagener Schlüsselbund-Löschung eine automatische Wiederanmeldung.
+Bei Netzwerkfehlern ist die lokale Abmeldung möglich; ein erfolgreicher Widerruf
+auf dem Server ist dann nicht bestätigt. Frühere Sitzungsschlüssel ohne einzelne
+Sitzungskennung benötigen nach dem Serverupdate einmalig eine neue Anmeldung.
+
 Cloudflare Access ist für den Rezepte-Server entfernt. Beim Start und Abmelden
 bereinigt die App frühere Gerätezugang-Einträge im Schlüsselbund. Echte Konto- und
 Gastsitzungen bleiben bei der Migration erhalten; der alte Platzhalter
@@ -130,6 +163,9 @@ dem Gerät installiert und als vertrauenswürdig markiert ist.
    Upgrade eine echte gespeicherte Sitzung sowie einen alten
    `cloudflare-access`-Platzhalter prüfen: Die echte Sitzung bleibt nutzbar,
    der Platzhalter führt zur App-Anmeldung ohne Gerätezugang-Felder.
+   Zusätzlich Profil, Passwortwechsel, Einzel-/Gesamtabmeldung, Adminbenutzer,
+   gesperrte Selbstlöschung sowie Apple-/Google-Abbruch, Verknüpfung und Rückkehr
+   aus dem Systembrowser mit aktivierter Testkonfiguration prüfen.
 3. Auf einem registrierten iPhone aus Xcode installieren.
 4. Über **Product > Archive** einen internen TestFlight-Build hochladen.
 

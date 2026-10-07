@@ -9,6 +9,7 @@ import { AdminBulkEditor } from '@/components/admin-bulk-editor';
 import { AdminDuplicates } from '@/components/admin-duplicates';
 import { AdminTrash } from '@/components/admin-trash';
 import { AdminVersions } from '@/components/admin-versions';
+import { AdminUsers } from '@/components/admin-users';
 import { PendingEditor } from '@/components/pending-editor';
 import { PrimaryButton, Screen, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
@@ -41,6 +42,7 @@ export default function AdminScreen() {
   const [failed, setFailed] = useState<FailedDownload[]>([]);
   const [selectedPending, setSelectedPending] = useState<PendingItem | null>(null);
   const [showVersions, setShowVersions] = useState(false);
+  const [showUsers, setShowUsers] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
   const [showBulkEditor, setShowBulkEditor] = useState(false);
   const [showAiSort, setShowAiSort] = useState(false);
@@ -214,6 +216,7 @@ export default function AdminScreen() {
       </View>
 
       {!!sessionWarning && <Text accessibilityRole="alert" style={styles.warning}>{sessionWarning}</Text>}
+      <PrimaryButton label="Benutzerverwaltung" onPress={() => setShowUsers(true)} />
 
       {loading && !overview && !pending.length && !failed.length ? (
         <StateView title="Status wird geladen" loading />
@@ -313,6 +316,7 @@ export default function AdminScreen() {
         }}
       />
       <AdminVersions visible={showVersions} onClose={() => setShowVersions(false)} onChanged={() => void load()} />
+      <AdminUsers visible={showUsers} onClose={() => setShowUsers(false)} />
       <AdminTrash visible={showTrash} onClose={() => setShowTrash(false)} onChanged={() => void load()} />
       <AdminAiSort
         visible={showAiSort}

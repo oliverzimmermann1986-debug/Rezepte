@@ -26,6 +26,7 @@ function harness(options = {}) {
   const stored = new Map(Object.entries(options.stored || {}));
   const read = [];
   const filesDeleted = [];
+  const files = options.files || new Map(options.marker === false ? [] : [['file://documents/.rezepte-install-v1', '1']]);
   const configs = [];
   const requests = [];
   const deleted = [];
@@ -37,7 +38,7 @@ function harness(options = {}) {
     useState: initial => {
       const index = stateIndex++;
       if (!(index in states)) states[index] = initial;
-      return [states[index], value => { states[index] = value; if (index === 0 && value) startup.resolve(); }];
+      return [states[index], value => { states[index] = typeof value === 'function' ? value(states[index]) : value; if (index === 0 && states[index]) startup.resolve(); }];
     },
     useRef: initial => ({ current: initial }),
     useEffect: fn => { effects.push(fn); }, useCallback: fn => fn,
@@ -49,9 +50,9 @@ function harness(options = {}) {
     'expo-constants': { expoConfig: { extra: { apiUrl: 'https://rezepte.test' } } },
     'expo-file-system/legacy': {
       documentDirectory: 'file://documents/',
-      getInfoAsync: async () => ({ exists: options.marker !== false }),
-      deleteAsync: async path => { filesDeleted.push(path); },
-      writeAsStringAsync: async () => {},
+      getInfoAsync: async path => ({ exists: files.has(path) }),
+      deleteAsync: async path => { filesDeleted.push(path); if (options.fileDeleteFailure?.(path)) throw new Error('file unavailable'); files.delete(path); },
+      writeAsStringAsync: async (path, value) => { if (options.fileWriteFailure?.(path)) throw new Error('file unavailable'); files.set(path, value); },
     },
     'expo-image': { Image: {
       clearMemoryCache: async () => { cleared.push('memory'); },
@@ -74,6 +75,10 @@ function harness(options = {}) {
       cleared.push('api');
       if (options.cacheFailure) throw new Error('cache unavailable');
     } },
+    './browser-auth': {
+      fetchIdentityProviders: async () => [],
+      providerAuthentication: async (...args) => options.providerRequest ? options.providerRequest(...args) : null,
+    },
     './api': {
       ApiError,
       configureApi: (...configuration) => { ++epoch; configs.push(configuration); },
@@ -96,7 +101,7 @@ function harness(options = {}) {
   const render = () => { stateIndex = 0; return module.exports.AuthProvider({ children: null }).props.value; };
   const context = render();
   const start = async () => { effects[0](); await startup.promise; };
-  return { context, render, start, states, configs, requests, deleted, routes, cleared, stored, read, filesDeleted, ApiError };
+  return { context, render, start, states, configs, requests, deleted, routes, cleared, stored, read, filesDeleted, files, ApiError };
 }
 
 test('failed registration restores the active guest session', async () => {
@@ -280,4 +285,72 @@ test('logout removes all legacy credentials and revokes the app session', async 
   assert.ok(h.deleted.includes('cloudflare-client-secret'));
   assert.equal(h.stored.size, 0);
   assert.deepEqual(h.cleared.sort(), ['api', 'disk', 'memory']);
+});
+
+test('failed keychain and install-marker deletion leaves durable logout intent that blocks restart', async () => {
+  const options = { stored: legacyStored(), deleteFailure: key => key === 'api-token', fileDeleteFailure: path => path.endsWith('.rezepte-install-v1') };
+  const h = harness(options);
+  await h.context.signOut();
+  assert.equal(h.states[1], null);
+  assert.equal(h.files.has('file://documents/.rezepte-logout-pending'), true);
+  const restarted = harness({ ...options, startup: true, files: h.files, stored: Object.fromEntries(h.stored) });
+  await restarted.start();
+  assert.equal(restarted.states[1], null);
+  assert.equal(restarted.requests.length, 0);
+  assert.equal(restarted.read.includes('api-token'), false);
+  assert.equal(restarted.render().authCleanupPending, true);
+});
+
+test('successful cleanup after restart consumes logout intent without restoring old token', async () => {
+  const files = new Map([['file://documents/.rezepte-install-v1', '1'], ['file://documents/.rezepte-logout-pending', '1']]);
+  const h = harness({ startup: true, stored: legacyStored(), files });
+  await h.start();
+  assert.equal(h.states[1], null);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.files.has('file://documents/.rezepte-logout-pending'), false);
+  assert.equal(h.stored.has('api-token'), false);
+});
+
+test('server logout failure is visible after local logout and all-device logout uses its own endpoint', async () => {
+  const h = harness({ request: async () => { throw new Error('offline'); } });
+  await h.context.signOut({ all: true });
+  assert.equal(h.states[1], null);
+  assert.equal(h.requests[0].path, '/api/auth/logout-all');
+  assert.match(h.render().sessionWarning, /Serverabmeldung konnte nicht bestätigt/);
+});
+
+test('already revoked session cleanup does not issue another logout or claim a network failure', async () => {
+  const h = harness();
+  await h.context.signOut({ localOnly: true, notice: 'Passwort gespeichert.' });
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.states[1], null);
+  assert.equal(h.render().sessionWarning, 'Passwort gespeichert.');
+});
+
+test('cancelled provider login restores the existing guest session without purging credentials', async () => {
+  const h = harness({ providerRequest: async () => null, stored: legacyStored('guest.original-token') });
+  await h.context.signInWithProvider('https://rezepte.test', 'apple');
+  assert.equal(h.configs.at(-1)[1], 'guest.original-token');
+  assert.equal(h.states[1], 'guest.original-token');
+  assert.equal(h.deleted.length, 0);
+});
+
+test('provider exchange uses the same secure storage and role setup as password login', async () => {
+  const h = harness({ providerRequest: async (provider, intent, invitation) => {
+    assert.equal(provider, 'google'); assert.equal(intent, 'login'); assert.equal(invitation, 'synthetic-invite');
+    return { token: 'provider-session', username: 'Federated', role: 'user' };
+  } });
+  await h.context.signInWithProvider('https://rezepte.test', 'google', 'synthetic-invite');
+  assert.equal(h.stored.get('api-token'), 'provider-session');
+  assert.equal(h.states[3], 'Federated');
+  assert.equal(h.states[4], false);
+  assert.equal(h.states[5], false);
+});
+
+test('provider login cannot activate a pseudo-session or link an anonymous guest', async () => {
+  const h = harness({ providerRequest: async () => ({ token: 'cloudflare-access', username: 'Bad', role: 'admin' }) });
+  await assert.rejects(h.context.signInWithProvider('https://rezepte.test', 'apple'), /keine gültige App-Sitzung/);
+  await assert.rejects(h.context.linkProvider('apple'), /zuerst mit deinem Konto/);
+  assert.equal(h.states[1], 'guest.original-token');
+  assert.equal(h.stored.size, 0);
 });

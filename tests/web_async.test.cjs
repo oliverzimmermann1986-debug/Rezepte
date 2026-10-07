@@ -16,7 +16,7 @@ function deferred() {
 
 function createApp(overrides = {}) {
   const context = vm.createContext({
-    window: {}, navigator: {}, console, AbortController, URLSearchParams, URL,
+    window: {}, navigator: {}, console, AbortController, URLSearchParams, URL, TextEncoder,
     setTimeout, clearTimeout, ...overrides,
   });
   for (const name of fs.readdirSync(path.join(root, 'features'))) {
@@ -623,4 +623,103 @@ test('a late account refresh cannot restore revoked invitations or old membershi
   assert.equal(app.account.data.members[0].username, 'Current');
   assert.equal(app.account.data.invitations.length, 0);
   assert.equal(app.account.loading, false);
+});
+
+test('normal users cannot call administrative account mutations', async () => {
+  const app = createApp({ confirm: () => true });
+  app.session = { loaded: true, role: 'user', is_admin: false };
+  app.users.draft = { username: 'Other', password: 'valid-password', role: 'admin' };
+  app.api = () => { throw new Error('Must not send an admin request'); };
+  await app.saveUser();
+  await app.deleteUser({ id: 5, username: 'Other' });
+  await app.revokeUserSessions({ id: 5, username: 'Other' });
+  await app.loadUsers();
+  assert.equal(app.users.error, '');
+  assert.equal(app.users.draft, null);
+});
+
+test('password policy counts Unicode characters and UTF-8 bytes', () => {
+  const app = createApp();
+  assert.equal(app.accountPasswordError('😀'.repeat(18)), '');
+  assert.match(app.accountPasswordError('😀'.repeat(19)), /72 UTF-8/);
+  assert.match(app.accountPasswordError('😀'.repeat(9)), /10 Zeichen/);
+});
+
+test('password change clears secrets and redirects only after success', async () => {
+  const routes = [], calls = [];
+  const app = createApp({ window: { location: { assign: value => routes.push(value) } } });
+  app.session = { loaded: true, role: 'user' };
+  app.account.currentPassword = 'current-private';
+  app.account.newPassword = app.account.confirmPassword = 'new-private-password';
+  app.api = async (method, path, body) => { calls.push({ method, path, body }); return { ok: true, reauthenticate: true }; };
+  await app.changeAccountPassword();
+  assert.equal(calls[0].path, '/api/account/password');
+  assert.equal(calls[0].body.current_password, 'current-private');
+  assert.equal(app.account.currentPassword, '');
+  assert.equal(app.account.newPassword, '');
+  assert.deepEqual(routes, ['/login?notice=password-changed']);
+});
+
+test('household deletion rejection remains visible without reporting success or navigating', async () => {
+  const routes = [];
+  const app = createApp({ confirm: () => true, window: { location: { assign: value => routes.push(value) } } });
+  app.session = { loaded: true, role: 'user' };
+  app.account.deletePassword = 'current-private';
+  app.api = async () => { throw new Error('Bitte zuerst eine weitere Person einladen.'); };
+  await app.deleteAccount();
+  assert.match(app.account.error, /weitere Person/);
+  assert.equal(app.account.deletePassword, '');
+  assert.equal(app.account.notice, '');
+  assert.deepEqual(routes, []);
+});
+
+test('admin create is single-flight and never sends empty optional password when editing', async () => {
+  const app = createApp({ confirm: () => true });
+  const calls = [], pending = deferred();
+  app.session = { loaded: true, role: 'admin', is_admin: true, username: 'Owner' };
+  app.loadUsers = async () => {};
+  app.editUser({ id: 4, username: 'Other', role: 'user', disabled: false });
+  app.users.draft.disabled = true;
+  app.api = (method, path, body) => { calls.push({ method, path, body }); return pending.promise; };
+  const first = app.saveUser();
+  await app.saveUser();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, 'PATCH');
+  assert.equal(calls[0].body.disabled, true);
+  assert.equal('password' in calls[0].body, false);
+  pending.resolve({ ok: true }); await first;
+  assert.equal(app.users.draft, null);
+  assert.equal(app.users.notice, 'Benutzer gespeichert.');
+});
+
+test('last-admin error keeps the edit form and clears its password', async () => {
+  const app = createApp({ confirm: () => true });
+  app.session = { loaded: true, role: 'admin', is_admin: true, username: 'Owner' };
+  app.editUser({ id: 1, username: 'Owner', role: 'admin' });
+  app.users.draft.role = 'user'; app.users.draft.password = 'private-new-password';
+  app.api = async () => { throw new Error('Der letzte Administrator muss erhalten bleiben.'); };
+  await app.saveUser();
+  assert.match(app.users.error, /letzte Administrator/);
+  assert.equal(app.users.draft.password, '');
+  assert.equal(app.users.draft.id, 1);
+});
+
+test('current session revoke redirects while another device revoke refreshes only', async () => {
+  const routes = [], paths = [];
+  const app = createApp({ confirm: () => true, window: { location: { assign: value => routes.push(value) } } });
+  app.session = { loaded: true, role: 'user' };
+  app.loadAccount = async () => {};
+  app.api = async (method, path) => { paths.push(path); return { ok: true }; };
+  await app.revokeAccountSession({ id: 'other', is_current: false });
+  assert.deepEqual(routes, []);
+  await app.revokeAccountSession({ id: 'current', is_current: true });
+  assert.deepEqual(routes, ['/login']);
+  assert.deepEqual(paths, ['/api/account/sessions/other', '/api/account/sessions/current']);
+});
+
+test('disabled and unknown identity providers never get link controls', () => {
+  const app = createApp();
+  app.account.providers = [{ id: 'apple', enabled: true }, { id: 'google', enabled: true }];
+  app.account.identities = [{ provider: 'apple' }];
+  assert.deepEqual(Array.from(app.availableAccountProviders(), provider => provider.id), ['google']);
 });

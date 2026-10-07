@@ -17,6 +17,8 @@ from ..auth import (
     request_is_guest,
     hash_password,
     request_user,
+    revoke_current_session,
+    validate_new_password,
 )
 from ..db import get_db
 from ..security import (LoginRateLimiter, client_ip, login_actor_key, login_limiter,
@@ -34,6 +36,7 @@ def _access_payload(username: str, *, read_only: bool = False) -> dict:
     bestehende Betreiber und bleibt deshalb Administrator. Reguläre DB-Konten
     werden ausschließlich anhand ihrer gespeicherten Rolle ausgewertet.
     """
+    user = None
     if read_only:
         role = ROLE_GUEST
     else:
@@ -43,6 +46,8 @@ def _access_payload(username: str, *, read_only: bool = False) -> dict:
             role = ROLE_USER
     is_admin = role == ROLE_ADMIN
     return {
+        "id": (user or {}).get("id"),
+        "password_enabled": bool((user or {}).get("password_hash")),
         "username": username,
         "role": role,
         "is_admin": is_admin,
@@ -72,9 +77,7 @@ class Registration(BaseModel):
     @field_validator("password")
     @classmethod
     def validate_password(cls, value):
-        if len(value.encode("utf-8")) > 72:
-            raise ValueError("Passwort darf höchstens 72 UTF-8-Bytes enthalten")
-        return value
+        return validate_new_password(value)
 
 
 @router.post("/register", status_code=201)
@@ -89,7 +92,7 @@ def register_account(payload: Registration, request: Request) -> dict:
     registration_limiter.record_fail(key)
     accounts.register(get_db(), payload.username, hash_password(payload.password),
                       invitation_token=payload.invitation_token.strip())
-    return {"token": create_session(payload.username), "token_type": "bearer",
+    return {"token": create_session(payload.username, request=request), "token_type": "bearer",
             "expires_in": 60 * 60 * 24 * 14, **_access_payload(payload.username)}
 
 
@@ -114,7 +117,7 @@ def native_login(payload: NativeLogin, request: Request) -> dict:
         raise HTTPException(401, "Benutzername oder Passwort falsch")
     login_limiter.record_success(limiter_key)
     return {
-        "token": create_session(username),
+        "token": create_session(username, request=request),
         "token_type": "bearer",
         "expires_in": 60 * 60 * 24 * 14,
         **_access_payload(username),
@@ -145,11 +148,13 @@ def guest_login(request: Request) -> dict:
 
 @router.post("/logout")
 def native_logout(request: Request) -> dict:
-    """Widerruft die aktuelle Benutzer-Sitzungsfamilie serverseitig.
+    """Widerruft ausschließlich die aktuelle Sitzung; auch ohne Token idempotent."""
+    return {"ok": True, "revoked": revoke_current_session(request)}
 
-    Das System führt bewusst keine einzelne Token-Tabelle. Deshalb werden beim
-    Abmelden alle noch offenen Sitzungen dieses Benutzers invalidiert.
-    """
+
+@router.post("/logout-all")
+def logout_all(request: Request) -> dict:
+    """Widerruft alle Sitzungen einschließlich des aktuellen Geräts."""
     if request_is_guest(request):
         return {"ok": True}
     username = request_user(request)

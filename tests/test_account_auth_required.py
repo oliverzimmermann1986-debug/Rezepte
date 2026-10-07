@@ -113,7 +113,10 @@ def test_real_login_keeps_persisted_role_and_logout_revokes(client, test_db, leg
     assert not auth.verify_session(payload["token"])
     after = test_db.user_get_by_name("local")
     assert after["password_hash"] == before["password_hash"]
-    assert after["session_version"] == before["session_version"] + 1
+    assert after["session_version"] == before["session_version"]
+    with test_db.conn() as connection:
+        assert connection.execute("SELECT revoked_at FROM user_sessions WHERE id=?",
+                                  (auth._session_payload(payload["token"])["sid"],)).fetchone()[0] is not None
     assert config.get("web", "secret_key") == original["web"]["secret_key"]
 
 

@@ -5,6 +5,7 @@ struct LoginView: View {
         case account
         case guest
         case registration
+        case provider(IdentityProvider)
     }
 
     @EnvironmentObject private var session: SessionStore
@@ -18,13 +19,17 @@ struct LoginView: View {
     @State private var invitationInput = ""
     @State private var workingAction: LoginAction?
     @State private var errorMessage: String?
+    @State private var providers: [AuthProvider] = []
+    @State private var providerLoadFailed = false
+    @State private var providerReloadID = UUID()
+    @State private var didInitialize = false
 
     private var canSubmit: Bool {
         !server.trimmingCharacters(in: .whitespaces).isEmpty
             && !username.trimmingCharacters(in: .whitespaces).isEmpty
             && !password.isEmpty
             && (!creatingAccount || (username.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3
-                && password.count >= 10 && password.utf8.count <= 72 && password == passwordConfirmation))
+                && AccountPasswordPolicy.accepts(password) && password == passwordConfirmation))
             && workingAction == nil
     }
 
@@ -78,6 +83,7 @@ struct LoginView: View {
                         }
                     }
                     .textFieldStyle(.roundedBorder)
+                    .disabled(workingAction != nil)
 
                     if let errorMessage {
                         Label(errorMessage, systemImage: "exclamationmark.circle.fill")
@@ -108,6 +114,29 @@ struct LoginView: View {
                         passwordConfirmation = ""
                     }
                     .disabled(workingAction != nil)
+
+                    if !providers.isEmpty {
+                        VStack(spacing: 12) {
+                            ForEach(providers) { provider in
+                                if let kind = provider.kind {
+                                    Button { Task { await signInWithProvider(kind) } } label: {
+                                        HStack {
+                                            if workingAction == .provider(kind) { ProgressView() }
+                                            if kind == .apple { Image(systemName: "apple.logo") }
+                                            Text("Mit \(kind.title) fortfahren").fontWeight(.semibold)
+                                        }
+                                        .frame(maxWidth: .infinity, minHeight: 48)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(workingAction != nil)
+                                }
+                            }
+                        }
+                    } else if providerLoadFailed {
+                        Button("Weitere Anmeldeverfahren erneut laden") { providerReloadID = UUID() }
+                            .font(.footnote)
+                            .disabled(workingAction != nil)
+                    }
 
                     VStack(spacing: 10) {
                         HStack {
@@ -152,7 +181,10 @@ struct LoginView: View {
             .background(theme.background)
             .onAppear {
                 clearIdleError()
-                creatingAccount = session.registrationRequested
+                if !didInitialize {
+                    creatingAccount = session.consumeRegistrationRequest()
+                    didInitialize = true
+                }
                 let reviewEnvironment = ProcessInfo.processInfo.environment
                 if reviewEnvironment["APP_REVIEW_AUTOMATION"] == "1" {
                     if server.isEmpty {
@@ -168,6 +200,7 @@ struct LoginView: View {
                     server = session.savedServer
                 }
             }
+            .task(id: "\(server)|\(providerReloadID)") { await loadProviders() }
             .onChange(of: scenePhase) { previous, current in
                 // Clear the old foreground's error before suspending. An
                 // in-flight action may still report a new error while inactive;
@@ -185,6 +218,43 @@ struct LoginView: View {
     private func clearIdleError() {
         guard workingAction == nil else { return }
         errorMessage = nil
+    }
+
+    private func loadProviders() async {
+        providers = []
+        providerLoadFailed = false
+        let requestedServer = server
+        guard let url = APIClient.normalizedServerURL(requestedServer), url.scheme == "https" else { return }
+        do {
+            try await Task.sleep(for: .milliseconds(350))
+            // Discovery must not replace the active SessionStore API configuration.
+            let discovery = APIClient()
+            try await discovery.configure(server: requestedServer, token: nil)
+            let response = try await discovery.authProviders()
+            try Task.checkCancellation()
+            guard server == requestedServer else { return }
+            providers = response.available
+        } catch is CancellationError {
+        } catch {
+            guard !Task.isCancelled, server == requestedServer else { return }
+            if let error = error as? APIError, case .server(404, _) = error { return }
+            providerLoadFailed = true
+        }
+    }
+
+    private func signInWithProvider(_ provider: IdentityProvider) async {
+        guard workingAction == nil, providers.contains(where: { $0.kind == provider && $0.enabled }) else { return }
+        workingAction = .provider(provider)
+        errorMessage = nil
+        defer { workingAction = nil }
+        do {
+            try await session.signInWithProvider(provider, server: server,
+                                                  invitationToken: creatingAccount ? invitationInput : "")
+        } catch is CancellationError {
+        } catch {
+            if let error = error as? APIError, case .sessionChanged = error { return }
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func submit() async {

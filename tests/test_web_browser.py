@@ -426,3 +426,96 @@ def test_failed_next_recipe_page_retains_cards_and_retries(web):
     expect(page.locator(".recipe-card-open")).to_have_count(2)
     expect(alert).to_be_hidden()
     assert errors == []
+
+
+def test_account_password_form_reports_failure_clears_secrets_and_redirects_after_success(web):
+    page, fixture, _, errors = web
+    fixture.role = 'user'
+    attempts = []
+    def change(route):
+        attempts.append(route.request.post_data_json)
+        if len(attempts) == 1:
+            route.fulfill(status=403, json={'detail': 'Aktuelles Passwort stimmt nicht.'})
+        else:
+            route.fulfill(json={'ok': True, 'reauthenticate': True})
+    page.route(ORIGIN + '/api/account/password', change)
+    page.route(ORIGIN + '/login*', lambda route: route.fulfill(body='<h1>Bitte anmelden</h1>', content_type='text/html'))
+    page.goto(ORIGIN + '/account')
+    page.get_by_text('Passwort ändern oder einrichten', exact=True).click()
+    form = page.locator('.account-security details').filter(has=page.get_by_text('Passwort ändern oder einrichten', exact=True))
+    form.get_by_label('Aktuelles Passwort', exact=True).fill('old-synthetic-password')
+    form.get_by_label('Neues Passwort', exact=True).fill('new-synthetic-password')
+    form.get_by_label('Neues Passwort wiederholen', exact=True).fill('new-synthetic-password')
+    form.get_by_role('button', name='Passwort speichern & neu anmelden').click()
+    expect(page.locator('.account-page .error')).to_contain_text('Aktuelles Passwort stimmt nicht.')
+    expect(form.get_by_label('Aktuelles Passwort', exact=True)).to_have_value('')
+    expect(form.get_by_label('Neues Passwort', exact=True)).to_have_value('')
+    assert page.url.endswith('/account')
+    form.get_by_label('Aktuelles Passwort', exact=True).fill('correct-synthetic-password')
+    form.get_by_label('Neues Passwort', exact=True).fill('new-synthetic-password')
+    form.get_by_label('Neues Passwort wiederholen', exact=True).fill('new-synthetic-password')
+    form.get_by_role('button', name='Passwort speichern & neu anmelden').click()
+    page.wait_for_url(ORIGIN + '/login?notice=password-changed')
+    assert len(attempts) == 2
+    assert errors == []
+
+
+def test_account_deletion_guard_is_visible_and_normal_user_has_no_admin_controls(web):
+    page, fixture, _, errors = web
+    fixture.role = 'user'
+    def profile(route):
+        if route.request.method == 'DELETE':
+            route.fulfill(status=409, json={'detail': 'Bitte zuerst eine weitere Person einladen.'})
+        else:
+            fixture.handle(route)
+    page.route(ORIGIN + '/api/account/profile', profile)
+    page.goto(ORIGIN + '/account')
+    expect(page.locator('.nav-item[title="Administration"]')).to_be_hidden()
+    page.get_by_text('Konto löschen', exact=True).click()
+    form = page.locator('.account-security details').filter(has=page.get_by_text('Konto löschen', exact=True))
+    form.get_by_label('Aktuelles Passwort').fill('synthetic-password')
+    page.once('dialog', lambda dialog: dialog.accept())
+    form.get_by_role('button', name='Mein Konto endgültig löschen').click()
+    expect(page.locator('.account-page .error')).to_contain_text('weitere Person einladen')
+    expect(form.get_by_label('Aktuelles Passwort')).to_have_value('')
+    assert page.url.endswith('/account')
+    assert errors == []
+
+
+def test_admin_user_creation_edit_and_server_guard_in_browser(web):
+    page, fixture, _, errors = web
+    users = [{'id': 1, 'username': 'GUI-Demo', 'role': 'admin', 'disabled': False, 'created_at': 1791000000, 'last_login_at': 1791000000}]
+    writes = []
+    def accounts(route):
+        method = route.request.method
+        if method == 'GET':
+            route.fulfill(json={'users': users})
+        elif method == 'POST':
+            body = route.request.post_data_json
+            writes.append(body)
+            users.append({'id': 2, 'username': body['username'], 'role': body['role'], 'disabled': False, 'created_at': 1791000000, 'last_login_at': None})
+            route.fulfill(json={'ok': True, 'id': 2})
+        elif method == 'PATCH':
+            writes.append(route.request.post_data_json)
+            route.fulfill(status=400, json={'detail': 'Der letzte Administrator muss erhalten bleiben.'})
+    page.route(ORIGIN + '/api/users**', accounts)
+    page.goto(ORIGIN)
+    page.locator('.nav-item[title="Administration"]').click()
+    page.locator('.admin-home-tile').filter(has_text='Benutzerverwaltung').click()
+    panel = page.locator("section[x-show=\"session.is_admin && page==='admin' && admin.tab==='users'\"]")
+    panel.get_by_role('button', name='Benutzer erstellen', exact=True).click()
+    panel.get_by_label('Benutzername', exact=True).fill('SyntheticUser')
+    panel.get_by_label('Passwort für Benutzer').fill('synthetic-new-password')
+    panel.get_by_role('button', name='Speichern', exact=True).click()
+    expect(panel.get_by_role('heading', name='SyntheticUser', exact=True)).to_be_visible()
+    assert writes[0]['role'] == 'user'
+    own = panel.locator('.card.account-session').filter(has_text='GUI-Demo')
+    expect(own.get_by_role('button', name='Löschen', exact=True)).to_be_disabled()
+    own.get_by_role('button', name='Bearbeiten', exact=True).click()
+    expect(panel.get_by_label('Benutzername', exact=True)).to_have_js_property('readOnly', True)
+    panel.get_by_label('Rolle', exact=True).select_option('user')
+    page.once('dialog', lambda dialog: dialog.accept())
+    panel.get_by_role('button', name='Speichern', exact=True).click()
+    expect(panel.locator('.error')).to_contain_text('letzte Administrator')
+    assert 'password' not in writes[-1]
+    assert errors == []

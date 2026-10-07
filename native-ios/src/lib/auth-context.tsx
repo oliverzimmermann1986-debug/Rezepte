@@ -23,6 +23,8 @@ import {
   setUnauthorizedHandler,
 } from './api';
 import { clearApiCache } from './cache';
+import { fetchIdentityProviders, LoginResult, providerAuthentication } from './browser-auth';
+import { IdentityProvider } from './account-management';
 
 const TOKEN_KEY = 'api-token';
 const SERVER_KEY = 'rezepte.server';
@@ -32,6 +34,7 @@ const USERNAME_KEY = 'rezepte.username';
 const INSTALL_MARKER = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}.rezepte-install-v1`
   : null;
+const LOGOUT_INTENT = FileSystem.documentDirectory ? `${FileSystem.documentDirectory}.rezepte-logout-pending` : null;
 const DEFAULT_SERVER = String(Constants.expoConfig?.extra?.apiUrl || '').replace(/\/+$/, '');
 const ALLOWED_SERVER_ORIGINS = new Set(
   [
@@ -102,7 +105,7 @@ async function purgeStoredSessionWithRetryMarker() {
   } catch (reason) {
     // Falls die Sitzung im Schlüsselbund verblieben ist, erzwingt ein
     // fehlender Marker beim nächsten Start eine vollständige Bereinigung.
-    await removeInstallMarker().catch(() => undefined);
+    await persistLogoutIntent().catch(() => undefined);
     throw reason;
   }
 }
@@ -115,16 +118,32 @@ async function writeInstallMarker() {
   if (INSTALL_MARKER) await FileSystem.writeAsStringAsync(INSTALL_MARKER, '1');
 }
 
+async function persistLogoutIntent() {
+  // A positive tombstone survives failed Keychain deletion. The absent install
+  // marker is an independent fallback; startup checks both before reading tokens.
+  const results = await Promise.allSettled([
+    LOGOUT_INTENT ? FileSystem.writeAsStringAsync(LOGOUT_INTENT, '1') : Promise.reject(new Error('Kein App-Speicher')),
+    INSTALL_MARKER ? removeInstallMarker() : Promise.reject(new Error('Kein App-Speicher')),
+  ]);
+  if (results.every(result => result.status === 'rejected')) throw new Error('Abmeldeabsicht konnte nicht gespeichert werden.');
+}
+
+async function finishAuthCleanup() {
+  await writeInstallMarker();
+  if (LOGOUT_INTENT) await FileSystem.deleteAsync(LOGOUT_INTENT, { idempotent: true });
+}
+
 async function prepareSecureStorage() {
-  if (!INSTALL_MARKER) return;
+  if (!INSTALL_MARKER) throw new Error('App-Speicher für sichere Anmeldung nicht verfügbar.');
   const marker = await FileSystem.getInfoAsync(INSTALL_MARKER);
-  if (marker.exists) return;
+  const logout = LOGOUT_INTENT ? await FileSystem.getInfoAsync(LOGOUT_INTENT) : null;
+  if (marker.exists && !logout?.exists) return;
 
   // iOS kann Keychain-Einträge über eine Deinstallation hinweg behalten. App-Daten
   // hingegen werden entfernt; ein fehlender Marker kennzeichnet daher die erste
   // Ausführung dieser Installation und darf keine alte Sitzung wiederverwenden.
   await purgeStoredAuth();
-  await writeInstallMarker();
+  await finishAuthCleanup();
 }
 
 function normalizeServer(value: string) {
@@ -173,7 +192,10 @@ type AuthContextValue = {
   signInAsGuest: (server: string) => Promise<void>;
   registerAccount: (server: string, username: string, password: string,
                     invitationToken?: string) => Promise<void>;
-  signOut: () => Promise<void>;
+  loadProviders: (server: string, signal?: AbortSignal) => Promise<IdentityProvider[]>;
+  signInWithProvider: (server: string, provider: 'apple' | 'google', invitationToken?: string) => Promise<void>;
+  linkProvider: (provider: 'apple' | 'google', currentPassword?: string) => Promise<void>;
+  signOut: (options?: { all?: boolean; localOnly?: boolean; notice?: string }) => Promise<void>;
   returnToLogin: () => Promise<void>;
   refreshSession: () => Promise<void>;
   refreshHousehold: () => Promise<void>;
@@ -390,6 +412,47 @@ export function AuthProvider({ children }: PropsWithChildren) {
     return () => subscription.remove();
   }, [ready, refreshSession, token]);
 
+  async function activateSession(result: LoginResult, normalizedServer: string, attemptEpoch: number) {
+    if (typeof result?.token !== 'string' || !result.token.trim() || result.token.trim() === 'cloudflare-access') throw new ApiError('Der Server hat keine gültige App-Sitzung geliefert. Bitte später erneut anmelden.', 502);
+    try {
+      await clearApiCache();
+      await secureStorage.set(SERVER_KEY, normalizedServer);
+      await secureStorage.set(TOKEN_KEY, result.token);
+      await secureStorage.set(USERNAME_KEY, result.username);
+      await finishAuthCleanup();
+      if (!isApiSessionEpochCurrent(attemptEpoch)) throw new ApiError('Die Anmeldung wurde beendet.', 401);
+    } catch (reason) {
+      const cleanup = await Promise.allSettled([removeInstallMarker(), purgeStoredAuth()]);
+      if (cleanup.some(resultState => resultState.status === 'rejected')) {
+        setAuthCleanupPending(true);
+      }
+      configureApi('', null);
+      setToken(null);
+      setIsGuest(false);
+      setUsername('');
+      setIsAdmin(false);
+      setSessionWarning('Anmeldung konnte auf dem Gerät nicht gespeichert werden. Bitte erneut anmelden.');
+      router.replace('/login');
+      throw reason;
+    }
+    let legacyCleanupPending = false;
+    try {
+      await deleteStoredKeys(LEGACY_ACCESS_KEYS);
+    } catch {
+      legacyCleanupPending = true;
+    }
+    if (!isApiSessionEpochCurrent(attemptEpoch)) throw new ApiError('Die Anmeldung wurde beendet.', 401);
+    configureApi(normalizedServer, result.token, result.username);
+    setServerUrl(normalizedServer);
+    setToken(result.token);
+    setIsGuest(result.role === 'guest');
+    setUsername(result.username);
+    setIsAdmin(result.is_admin === true || result.role === 'admin');
+    setSessionWarning(legacyCleanupPending ? 'Alte Zugangsdaten konnten noch nicht vollständig aus dem Schlüsselbund entfernt werden.' : '');
+    setAuthCleanupPending(legacyCleanupPending);
+    router.replace('/(tabs)');
+  }
+
   async function signIn(
     nextServer: string,
     nextUsername: string,
@@ -425,43 +488,25 @@ export function AuthProvider({ children }: PropsWithChildren) {
         }
         throw reason;
       }
-      try {
-        await clearApiCache();
-        await secureStorage.set(SERVER_KEY, normalizedServer);
-        await secureStorage.set(TOKEN_KEY, result.token);
-        await secureStorage.set(USERNAME_KEY, result.username);
-        if (!isApiSessionEpochCurrent(attemptEpoch)) throw new ApiError('Die Anmeldung wurde beendet.', 401);
-      } catch (reason) {
-        const cleanup = await Promise.allSettled([removeInstallMarker(), purgeStoredAuth()]);
-        if (cleanup.some(resultState => resultState.status === 'rejected')) {
-          setAuthCleanupPending(true);
-        }
-        configureApi('', null);
-        setToken(null);
-        setIsGuest(false);
-        setUsername('');
-        setIsAdmin(false);
-        setSessionWarning('Anmeldung konnte auf dem Gerät nicht gespeichert werden. Bitte erneut anmelden.');
-        router.replace('/login');
-        throw reason;
-      }
-      let legacyCleanupPending = false;
-      try {
-        await deleteStoredKeys(LEGACY_ACCESS_KEYS);
-      } catch {
-        legacyCleanupPending = true;
-      }
-      if (!isApiSessionEpochCurrent(attemptEpoch)) throw new ApiError('Die Anmeldung wurde beendet.', 401);
-      configureApi(normalizedServer, result.token, result.username);
-      setServerUrl(normalizedServer);
-      setToken(result.token);
-      setIsGuest(result.role === 'guest');
-      setUsername(result.username);
-      setIsAdmin(result.is_admin === true || result.role === 'admin');
-      setSessionWarning(legacyCleanupPending ? 'Alte Zugangsdaten konnten noch nicht vollständig aus dem Schlüsselbund entfernt werden.' : '');
-      setAuthCleanupPending(legacyCleanupPending);
-      router.replace('/(tabs)');
+      await activateSession(result, normalizedServer, attemptEpoch);
     } finally {
+      authenticationInFlight.current = false;
+    }
+  }
+
+  async function authenticateProvider(nextServer: string, provider: 'apple' | 'google', intent: 'login' | 'link', invitationToken = '', currentPassword = '') {
+    const normalizedServer = normalizeServer(nextServer);
+    if (authenticationInFlight.current) throw new ApiError('Eine Anmeldung läuft bereits.', 0);
+    if (intent === 'link' && (!token || isGuest)) throw new ApiError('Bitte zuerst mit deinem Konto anmelden.', 401);
+    authenticationInFlight.current = true;
+    if (intent === 'login') configureApi(normalizedServer, null);
+    const epoch = currentApiSessionEpoch();
+    let activated = false;
+    try {
+      const result = await providerAuthentication(provider, intent, invitationToken, currentPassword);
+      if (result) { await activateSession(result, normalizedServer, epoch); activated = true; }
+    } finally {
+      if (!activated && isApiSessionEpochCurrent(epoch)) configureApi(serverUrl, token, username);
       authenticationInFlight.current = false;
     }
   }
@@ -485,20 +530,26 @@ export function AuthProvider({ children }: PropsWithChildren) {
     await Promise.allSettled([clearApiCache(), Image.clearMemoryCache(), Image.clearDiskCache()]);
   }
 
-  async function signOut() {
+  async function signOut(options: { all?: boolean; localOnly?: boolean; notice?: string } = {}) {
+    if (authenticationInFlight.current) return;
+    authenticationInFlight.current = true;
+    // Persist intent before touching stored credentials; a restart must never
+    // resurrect a session whose Keychain deletion failed.
+    const intent = await persistLogoutIntent().then(() => true, () => false);
     // Der Request startet noch mit einem Schnappschuss der alten Sitzung. Die
     // UI wird unmittelbar danach lokal abgemeldet; eine verspätete Antwort
     // gehört dank Session-Epoch weiterhin zur alten Sitzung.
-    const serverLogout = token
-      ? api('/api/auth/logout', { method: 'POST' }).catch(() => undefined)
-      : Promise.resolve();
+    const serverLogout = token && !options.localOnly
+      ? api(options.all ? '/api/auth/logout-all' : '/api/auth/logout', { method: 'POST' }).then(() => true, reason => !options.all && reason instanceof ApiError && reason.status === 401)
+      : Promise.resolve(true);
     configureApi('', null);
+    const logoutEpoch = currentApiSessionEpoch();
     setToken(null);
     setIsGuest(false);
     setUsername('');
     setIsAdmin(false);
     setServerUrl(DEFAULT_SERVER);
-    setSessionWarning('');
+    setSessionWarning(options.notice || '');
     router.replace('/login');
     const storageCleanup = (async () => {
       try {
@@ -509,22 +560,26 @@ export function AuthProvider({ children }: PropsWithChildren) {
         if (markerResult.status === 'rejected' || purgeResult.status === 'rejected') {
           throw new Error('Schlüsselbund-Bereinigung unvollständig');
         }
-        await writeInstallMarker();
+        await finishAuthCleanup();
         setAuthCleanupPending(false);
       } catch {
         // Der fehlende Installationsmarker erzwingt beim nächsten Start einen
         // erneuten Löschversuch, bevor alte Zugangsdaten gelesen werden.
         setAuthCleanupPending(true);
-        setSessionWarning('Abgemeldet. Einige Schlüsselbund-Daten konnten noch nicht gelöscht werden.');
+        setSessionWarning(intent ? 'Lokal abgemeldet. Gespeicherte Zugangsdaten werden beim nächsten Start erneut gelöscht.' : 'Lokal abgemeldet. Zugangsdaten konnten nicht sicher gelöscht werden; bitte die App-Daten entfernen.');
       }
     })();
     await Promise.allSettled([
-      serverLogout,
       storageCleanup,
       clearApiCache(),
       Image.clearMemoryCache(),
       Image.clearDiskCache(),
     ]);
+    const revoked = await serverLogout;
+    if (!revoked && isApiSessionEpochCurrent(logoutEpoch)) {
+      setSessionWarning(current => `${current ? current + ' ' : ''}Lokal abgemeldet. Die Serverabmeldung konnte nicht bestätigt werden. Melde dich erneut an und beende die Sitzung unter „Angemeldete Geräte“.`);
+    }
+    authenticationInFlight.current = false;
   }
 
   async function retryAuthCleanup() {
@@ -539,7 +594,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       if (cleanup.some(resultState => resultState.status === 'rejected')) {
         throw new Error('Schlüsselbund-Bereinigung unvollständig');
       }
-      await writeInstallMarker();
+      await finishAuthCleanup();
       setAuthCleanupPending(false);
       setSessionWarning('');
     } catch {
@@ -562,6 +617,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
     signInAsGuest: (server: string) => signIn(server, '', '', 'guest'),
     registerAccount: (server: string, name: string, password: string, invitationToken = '') =>
       signIn(server, name, password, 'register', invitationToken),
+    loadProviders: (server: string, signal?: AbortSignal) => fetchIdentityProviders(normalizeServer(server), signal),
+    signInWithProvider: (server: string, provider: 'apple' | 'google', invitationToken = '') => authenticateProvider(server, provider, 'login', invitationToken),
+    linkProvider: (provider: 'apple' | 'google', currentPassword = '') => authenticateProvider(serverUrl, provider, 'link', '', currentPassword),
     signOut,
     returnToLogin,
     refreshSession,

@@ -63,6 +63,11 @@ struct AdminView: View {
                 }
 
                 Section("System") {
+                    if session.supports("account-management-v1") {
+                        NavigationLink { AdminUsersView() } label: {
+                            Label("Benutzer", systemImage: "person.2")
+                        }
+                    }
                     if session.supports("native-admin-config-v1") {
                         NavigationLink {
                             AdminSettingsView().environmentObject(session)
@@ -231,8 +236,9 @@ struct AdminView: View {
                         Label("Datenschutz", systemImage: "hand.raised")
                     }
                     Button("Abmelden", role: .destructive) {
-                        session.signOut()
+                        Task { await session.logOut() }
                     }
+                    .disabled(session.isEndingSession)
                 }
             }
             .overlay {

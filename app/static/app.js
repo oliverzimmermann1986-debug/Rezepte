@@ -11,7 +11,8 @@ function scrapperApp() {
     ...window.RezepteFeatures["account"](),
     page: 'recipes',
     session: { username: '', role: 'user', is_admin: false, full_access: false, loaded: false },
-    account: { imports: [], data: null, loading: false, error: '', busy: false, invitation: null, joinToken: '', _loadGeneration: 0, _loadController: null },
+    account: { imports: [], data: null, profile: null, sessions: [], identities: [], providers: [], loading: false, error: '', notice: '', busy: false, currentPassword: '', newPassword: '', confirmPassword: '', deletePassword: '', invitation: null, joinToken: '', _loadGeneration: 0, _loadController: null },
+    users: { items: [], loading: false, busy: false, error: '', notice: '', search: '', draft: null, _loadGeneration: 0 },
     systemInfo: { version: '', capabilities: [], loaded: false, backendOutdated: false },
     admin: {
       tab: 'home',
@@ -61,6 +62,8 @@ function scrapperApp() {
         if (this.session.loaded) this.showToast('Administratorrechte erforderlich', 'err');
       }
       this.page = targetPage;
+      if (targetPage !== 'account') this.clearAccountPasswords();
+      if (targetPage !== 'admin') this.users.draft = null;
       if (this.browser?.show) this.browser.show = false;
       if (this.recipeDetail?.show) this.closeRecipeDetail();
 

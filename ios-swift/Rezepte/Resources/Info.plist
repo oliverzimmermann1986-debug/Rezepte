@@ -22,6 +22,15 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>de.mausbaeren.rezepte.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array><string>de.mausbaeren.rezepte</string></array>
+		</dict>
+	</array>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.food-drink</string>
 	<key>UILaunchScreen</key>

@@ -8,7 +8,7 @@
 //   niemals durch einen alten App-Shell-Stand umgangen werden.
 // - Ausschließlich öffentliche, unveränderliche Frontend-Assets erhalten einen
 //   Offline-Fallback.
-const CACHE_NAME = 'rezepte-static-v1.8.9-account-auth';
+const CACHE_NAME = 'rezepte-static-v1.9.0-account-management';
 const STATIC_CACHE_URLS = [
   '/static/rezepte.css',
   '/static/app.js',

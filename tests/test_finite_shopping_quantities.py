@@ -50,7 +50,9 @@ def _restore_schema_265(database):
     with database.conn() as connection:
         for name in sorted(TRIGGERS):
             connection.execute(f"DROP TRIGGER {name}")
-        connection.execute("DELETE FROM schema_migrations WHERE version=266")
+        for table in ("oidc_identities", "oidc_flows", "oidc_exchanges", "oidc_revocations", "user_sessions"):
+            connection.execute(f"DROP TABLE IF EXISTS {table}")
+        connection.execute("DELETE FROM schema_migrations WHERE version>=266")
 
 
 @pytest.mark.parametrize("raw_value", ["NaN", "Infinity", "-Infinity", '"NaN"', '"Infinity"', "1e999"])
@@ -324,7 +326,7 @@ def test_v266_migration_only_clears_invalid_amounts_preserving_households_and_ba
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == CURRENT_SCHEMA_VERSION
-    backups = list((tmp_path / "backups").glob("pre-migration-v265-to-v266-*.db"))
+    backups = list((tmp_path / "backups").glob(f"pre-migration-v265-to-v{CURRENT_SCHEMA_VERSION}-*.db"))
     assert len(backups) == 1
     with sqlite3.connect(backups[0]) as backup:
         assert backup.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 265
@@ -335,7 +337,7 @@ def test_v266_migration_only_clears_invalid_amounts_preserving_households_and_ba
     for _ in range(2):
         Database(path)
     assert {table: _rows(upgraded, table) for table in TABLES} == expected
-    assert len(list((tmp_path / "backups").glob("pre-migration-v265-to-v266-*.db"))) == 1
+    assert len(list((tmp_path / "backups").glob(f"pre-migration-v265-to-v{CURRENT_SCHEMA_VERSION}-*.db"))) == 1
     with upgraded.conn() as connection:
         trigger_names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
         assert TRIGGERS <= trigger_names

@@ -169,6 +169,81 @@ actor APIClient {
         try await send("/api/auth/logout", method: "POST", body: EmptyBody())
     }
 
+    func logoutAll() async throws -> APIResult {
+        try await send("/api/auth/logout-all", method: "POST", body: EmptyBody())
+    }
+
+    func accountProfile() async throws -> AccountProfile {
+        try await send("/api/account/profile")
+    }
+
+    func changePassword(current: String, new: String) async throws -> APIResult {
+        try await send("/api/account/password", method: "POST",
+                       body: ["current_password": current, "new_password": new])
+    }
+
+    func deleteAccount(currentPassword: String) async throws -> APIResult {
+        try await send("/api/account/profile", method: "DELETE", body: ["current_password": currentPassword])
+    }
+
+    func accountSessions() async throws -> AccountSessions {
+        try await send("/api/account/sessions")
+    }
+
+    func revokeSession(id: String) async throws -> APIResult {
+        // Session IDs are opaque. Reject separators instead of turning them into another route.
+        guard !id.isEmpty, id.rangeOfCharacter(from: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_").inverted) == nil else {
+            throw APIError.invalidResponse("Sitzungskennung")
+        }
+        return try await send("/api/account/sessions/\(id)", method: "DELETE")
+    }
+
+    func users() async throws -> AdminUsers { try await send("/api/users") }
+
+    func createUser(username: String, password: String, role: AccountRole) async throws -> APIResult {
+        try await send("/api/users", method: "POST",
+                       body: ["username": username, "password": password, "role": role.rawValue])
+    }
+
+    func updateUser(id: Int, patch: AdminUserPatch) async throws -> APIResult {
+        try await send("/api/users/\(id)", method: "PATCH", body: patch)
+    }
+
+    func deleteUser(id: Int) async throws -> APIResult {
+        try await send("/api/users/\(id)", method: "DELETE")
+    }
+
+    func revokeUserSessions(id: Int) async throws -> APIResult {
+        try await send("/api/users/\(id)/revoke-sessions", method: "POST", body: EmptyBody())
+    }
+
+    func authProviders() async throws -> AuthProviders {
+        try await send("/api/auth/providers", authenticated: false)
+    }
+
+    func startNativeAuth(provider: IdentityProvider, intent: NativeAuthIntent, challenge: String,
+                         invitationToken: String? = nil, currentPassword: String? = nil) async throws -> NativeAuthStart {
+        try await send("/api/auth/\(provider.rawValue)/start", method: "POST",
+                       body: NativeAuthStartPayload(intent: intent, codeChallenge: challenge,
+                           invitationToken: invitationToken.map { HouseholdInvitationInput.token(from: $0) }.flatMap { $0.isEmpty ? nil : $0 },
+                           currentPassword: intent == .link ? currentPassword : nil),
+                       authenticated: intent == .link)
+    }
+
+    func exchangeNativeAuth(code: String, verifier: String) async throws -> LoginResponse {
+        try await send("/api/auth/exchange", method: "POST",
+                       body: NativeAuthExchangePayload(code: code, codeVerifier: verifier), authenticated: false)
+    }
+
+    func accountIdentities() async throws -> AccountIdentities {
+        try await send("/api/account/identities")
+    }
+
+    func unlinkIdentity(provider: IdentityProvider, currentPassword: String) async throws -> APIResult {
+        try await send("/api/account/identities/\(provider.rawValue)", method: "DELETE",
+                       body: ["current_password": currentPassword])
+    }
+
     func account() async throws -> HouseholdAccount {
         try await send("/api/account")
     }

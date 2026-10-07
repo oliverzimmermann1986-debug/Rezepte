@@ -101,7 +101,7 @@
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
-        <span x-text="'v' + (systemInfo.version || '1.8.9')"></span>
+        <span x-text="'v' + (systemInfo.version || '1.9.0')"></span>
         <form method="post" action="/logout" class="logout-form">
           <button type="submit" class="sidebar-logout-button">Abmelden</button>
         </form>
@@ -135,6 +135,54 @@
       </div>
       <p x-show="account.loading" role="status">Konto wird geladen …</p>
       <div x-show="account.error" role="alert" class="error"><span x-text="account.error"></span> <button type="button" class="btn" @click="loadAccount()">Erneut laden</button></div>
+      <p x-show="account.notice" role="status" x-text="account.notice"></p>
+      <div x-show="canWrite() && account.profile" class="card account-security">
+        <h2>Anmeldung &amp; Sicherheit</h2>
+        <p><strong x-text="account.profile?.username"></strong> · <span x-text="account.profile?.role==='admin' ? 'Administrator' : 'Benutzer'"></span></p>
+        <p class="muted" x-text="'Konto erstellt: ' + formatTs(account.profile?.created_at)"></p>
+        <details @toggle="if (!$el.open) clearAccountPasswords()">
+          <summary>Passwort ändern oder einrichten</summary>
+          <form @submit.prevent="changeAccountPassword()" class="account-form">
+            <p>Nach dem Speichern musst du dich auf allen Geräten erneut anmelden. Mindestens 10 Zeichen, höchstens 72 UTF-8-Bytes.</p>
+            <p x-show="!account.profile?.password_enabled">Ohne bisheriges Passwort bitte zuvor erneut mit Apple oder Google anmelden. Die Bestätigung gilt fünf Minuten.</p>
+            <label x-show="account.profile?.password_enabled">Aktuelles Passwort<input type="password" x-model="account.currentPassword" autocomplete="current-password" :required="account.profile?.password_enabled" :disabled="account.busy"></label>
+            <label>Neues Passwort<input type="password" x-model="account.newPassword" autocomplete="new-password" required :disabled="account.busy"></label>
+            <label>Neues Passwort wiederholen<input type="password" x-model="account.confirmPassword" autocomplete="new-password" required :disabled="account.busy"></label>
+            <button class="btn btn-primary" type="submit" :disabled="account.busy">Passwort speichern &amp; neu anmelden</button>
+          </form>
+        </details>
+        <details @toggle="if (!$el.open) clearAccountPasswords()">
+          <summary>Verknüpfte Anmeldungen</summary>
+          <p class="muted" x-show="!account.identities.length && !account.providers.length">Apple und Google sind auf diesem Server derzeit nicht eingerichtet.</p>
+          <label x-show="account.profile?.password_enabled && (account.identities.length || account.providers.length)">Aktuelles Passwort zum Verknüpfen oder Trennen<input type="password" x-model="account.currentPassword" autocomplete="current-password" :disabled="account.busy"></label>
+          <p x-show="!account.profile?.password_enabled && account.identities.length">Zum Trennen bitte innerhalb der letzten fünf Minuten mit Apple oder Google angemeldet sein. Eine Anmeldemöglichkeit muss bestehen bleiben.</p>
+          <template x-for="identity in account.identities" :key="identity.provider">
+            <div class="account-session"><span x-text="(identity.provider==='apple' ? 'Apple' : 'Google') + (identity.email ? ' · ' + identity.email : '')"></span><form x-show="account.providers.some(provider => provider.id===identity.provider)" method="post" :action="'/auth/' + identity.provider + '/link'"><button class="btn btn-secondary" type="submit" :disabled="account.busy">Erneut bestätigen</button></form><button class="btn btn-secondary" type="button" @click="unlinkAccountProvider(identity.provider)" :disabled="account.busy">Verknüpfung trennen</button></div>
+          </template>
+          <template x-for="provider in availableAccountProviders()" :key="provider.id">
+            <form method="post" :action="'/auth/' + provider.id + '/link'"><input type="hidden" name="current_password" :value="account.currentPassword"><button class="btn btn-secondary" type="submit" :disabled="account.busy" x-text="provider.name + ' verknüpfen'"></button></form>
+          </template>
+        </details>
+        <details>
+          <summary>Angemeldete Geräte</summary>
+          <p class="muted">Beende einzelne Sitzungen, wenn du ein Gerät nicht mehr nutzt oder nicht wiedererkennst.</p>
+          <button class="btn btn-secondary" type="button" @click="loadAccount()" :disabled="account.busy || account.loading">Sitzungen aktualisieren</button>
+          <template x-for="item in account.sessions" :key="item.id">
+            <div class="account-session"><div><strong x-text="item.client_label || 'Unbekanntes Gerät'"></strong> <span x-show="item.is_current">· Diese Sitzung</span><p class="muted" x-text="'Zuletzt aktiv: ' + formatTs(item.last_seen_at) + ' · gültig bis ' + formatTs(item.expires_at)"></p></div><button class="btn btn-secondary" type="button" @click="revokeAccountSession(item)" :disabled="account.busy">Sitzung beenden</button></div>
+          </template>
+          <p x-show="!account.sessions.length && !account.loading">Keine aktiven Sitzungen gefunden.</p>
+          <button class="btn btn-danger" type="button" @click="logoutAllAccountSessions()" :disabled="account.busy">Auf allen Geräten abmelden</button>
+        </details>
+        <details @toggle="if (!$el.open) clearAccountPasswords()">
+          <summary>Konto löschen</summary>
+          <form @submit.prevent="deleteAccount()" class="account-form">
+            <p>Dein Benutzerkonto wird endgültig gelöscht. Enthält dein Haushalt Daten, muss zuerst eine weitere Person beitreten. Der letzte Administrator kann nicht gelöscht werden.</p>
+            <label x-show="account.profile?.password_enabled">Aktuelles Passwort<input type="password" x-model="account.deletePassword" autocomplete="current-password" :required="account.profile?.password_enabled" :disabled="account.busy"></label>
+            <p x-show="!account.profile?.password_enabled">Bitte zuvor erneut mit Apple oder Google anmelden. Die Bestätigung gilt fünf Minuten.</p>
+            <button class="btn btn-danger" type="submit" :disabled="account.busy">Mein Konto endgültig löschen</button>
+          </form>
+        </details>
+      </div>
       <div x-show="account.data?.is_guest" class="card">
         <h2>Als Gast ansehen</h2><p>Du kannst die globalen Rezepte lesen. Mit einem Konto bekommst du eine eigene Sammlung, Einkaufsliste und einen Wochenplan und kannst eine zweite Person einladen.</p>
         <a class="btn btn-primary" href="/register">Konto erstellen</a> <a class="btn btn-secondary" href="/login">Anmelden</a>
@@ -185,6 +233,7 @@
         </div>
 
         <nav class="admin-home-grid" aria-label="Admin-Bereiche">
+          <button class="admin-home-tile" @click="selectAdminTab('users')"><span class="admin-home-icon">◎</span><strong>Benutzerverwaltung</strong><small>Konten, Rollen und Sitzungen</small></button>
           <button class="admin-home-tile" @click="selectAdminTab('import')"><span class="admin-home-icon">⇧</span><strong>Importzentrale</strong><small>Importe, Jobs und Fehler</small></button>
           <button class="admin-home-tile" @click="selectAdminTab('quality')"><span class="admin-home-icon">✓</span><strong>Qualität</strong><small>Audit und KI-Findings</small></button>
           <button class="admin-home-tile" @click="selectAdminTab('versions')"><span class="admin-home-icon">◇</span><strong>Versionen</strong><small>Änderungen wiederherstellen</small></button>
@@ -495,6 +544,29 @@
     </section>
 
     <!-- ========== CONFIG ========== -->
+    <section x-show="session.is_admin && page==='admin' && admin.tab==='users'" class="admin-panel">
+      <div class="page-head"><h1>Benutzerverwaltung</h1><button class="btn btn-primary" @click="editUser()" :disabled="users.busy">Benutzer erstellen</button></div>
+      <p>Administratoren verwalten Konten und das System. Benutzer können Rezepte und ihren Haushalt nutzen.</p>
+      <p x-show="users.error" class="error" role="alert" x-text="users.error"></p>
+      <p x-show="users.notice" role="status" x-text="users.notice"></p>
+      <p x-show="users.loading" role="status">Benutzer werden geladen …</p>
+      <div class="account-form"><label>Benutzer suchen<input type="search" x-model="users.search" autocomplete="off"></label><button class="btn btn-secondary" @click="loadUsers()" :disabled="users.busy || users.loading">Aktualisieren</button></div>
+      <template x-if="users.draft">
+        <form class="card account-form" @submit.prevent="saveUser()">
+          <h2 x-text="users.draft.id ? 'Benutzer bearbeiten' : 'Benutzer erstellen'"></h2>
+          <label>Benutzername<input x-model="users.draft.username" :readonly="!!users.draft.id" :disabled="users.busy" required autocomplete="off" minlength="3" maxlength="32" pattern="[a-zA-Z0-9_.-]{3,32}"></label>
+          <label>Rolle<select aria-label="Rolle" x-model="users.draft.role" :disabled="users.busy"><option value="user">Benutzer</option><option value="admin">Administrator</option></select></label>
+          <label x-show="users.draft.id"><input type="checkbox" x-model="users.draft.disabled" :disabled="users.busy || users.draft.username===session.username"> Konto deaktiviert</label>
+          <label x-text="users.draft.id ? 'Neues Passwort (optional)' : 'Passwort'"></label><input aria-label="Passwort für Benutzer" type="password" x-model="users.draft.password" autocomplete="new-password" :required="!users.draft.id" :disabled="users.busy">
+          <p class="muted">Mindestens 10 Zeichen, höchstens 72 UTF-8-Bytes. Ein neues Passwort oder geänderte Rechte beenden bestehende Sitzungen.</p>
+          <div><button class="btn btn-primary" type="submit" :disabled="users.busy">Speichern</button> <button class="btn btn-secondary" type="button" @click="users.draft=null" :disabled="users.busy">Abbrechen</button></div>
+        </form>
+      </template>
+      <template x-for="item in filteredUsers()" :key="item.id">
+        <div class="card account-session"><div><h2 x-text="item.username + (item.username===session.username ? ' · Du' : '')"></h2><p x-text="(item.role==='admin' ? 'Administrator' : 'Benutzer') + (item.disabled ? ' · deaktiviert' : ' · aktiv')"></p><p class="muted" x-text="'Erstellt: ' + formatTs(item.created_at) + ' · letzte Anmeldung: ' + (item.last_login_at ? formatTs(item.last_login_at) : 'noch nie')"></p></div><div class="account-user-actions"><button class="btn btn-secondary" @click="editUser(item)" :disabled="users.busy">Bearbeiten</button><button class="btn btn-secondary" @click="revokeUserSessions(item)" :disabled="users.busy">Alle Sitzungen beenden</button><button class="btn btn-danger" @click="deleteUser(item)" :disabled="users.busy || item.username===session.username">Löschen</button></div></div>
+      </template>
+      <p x-show="!users.loading && !users.error && !filteredUsers().length">Keine passenden Benutzer.</p>
+    </section>
     <section x-show="page==='admin' && admin.tab==='settings'" class="admin-panel">
       <div class="page-head">
         <div>
@@ -515,8 +587,7 @@
             <div class="head">Web-Interface</div>
             <div class="body">
               <div class="row">
-                <div class="field"><label>Benutzer</label><input x-model="config.web.username"></div>
-                <div class="field"><label>Passwort</label><input type="password" x-model="config.web.password"><div class="hint">leer lassen → unverändert</div></div>
+                <div class="field"><p>Deine Anmeldung und dein Passwort verwaltest du unter „Mein Konto“.</p><button type="button" class="btn btn-secondary" @click="navTo('account')">Mein Konto öffnen</button></div>
               </div>
               <div class="row">
                 <div class="field"><label>Host</label><input x-model="config.web.bind_host"></div>

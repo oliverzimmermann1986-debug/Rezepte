@@ -9,6 +9,7 @@ requests==2.34.2
 python-dotenv==1.2.3
 jinja2==3.1.6
 bcrypt==4.2.0
+PyJWT[crypto]==2.15.1
 beautifulsoup4==4.12.3
 pdfplumber==0.11.10
 reportlab==4.4.3

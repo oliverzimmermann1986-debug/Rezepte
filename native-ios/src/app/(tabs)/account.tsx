@@ -4,6 +4,8 @@ import React, { useCallback, useRef, useState } from 'react';
 import { Share, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { PrimaryButton, Screen } from '@/components/ui';
+import { AccountSecurity } from '@/components/account-security';
+import { passwordProblem } from '@/lib/account-management';
 import { colors, radii, space } from '@/constants/design';
 import { api, currentApiSessionEpoch, isApiSessionEpochCurrent } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
@@ -80,7 +82,7 @@ export default function AccountScreen() {
   }
 
   async function createAccount() {
-    if (password !== confirmation) throw new Error('Passwörter stimmen nicht überein.');
+    const problem = passwordProblem(password, confirmation); if (problem) throw new Error(problem);
     await registerAccount(serverUrl, name, password, tokenValue());
     setPassword('');
     setConfirmation('');
@@ -94,6 +96,7 @@ export default function AccountScreen() {
       <Text style={styles.note}>{isGuest ? 'Gastzugang · nur ansehen' : username}</Text>
       <Text style={styles.note}>Globale Rezepte sind für alle sichtbar. Private Rezepte, Favoriten, Bewertungen, Einkauf und Wochenplan gehören zu deinem Haushalt.</Text>
       {!!error && <View style={styles.card}><Text accessibilityRole="alert" style={styles.error}>{error}</Text><PrimaryButton label="Erneut laden" onPress={() => void load()} /></View>}
+      {!isGuest && <AccountSecurity />}
       {isGuest ? (
         <View style={styles.card}>
           <Text style={styles.heading}>Konto erstellen</Text>

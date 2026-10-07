@@ -8,7 +8,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from ..auth import hash_password, is_hashed, request_user, require_admin
+from ..auth import hash_password, is_hashed, request_user, require_admin, validate_new_password
 from ..config_store import get_config
 from ..core.webhook import normalize_server_base_url
 from ..jobs.scraper import invalidate_scraper_job
@@ -89,8 +89,10 @@ def _update_config_locked(payload: Dict[str, Any], request: Request):
         and incoming_password != MASKED
         and not is_hashed(incoming_password)
     ):
-        if len(incoming_password) < 8:
-            raise HTTPException(400, "Passwort muss mindestens 8 Zeichen haben")
+        try:
+            validate_new_password(incoming_password)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         new_password_hash = hash_password(incoming_password)
         _set(merged, ("web", "password"), new_password_hash)
         current_version = int(_get(current, ("web", "session_version")) or 0)

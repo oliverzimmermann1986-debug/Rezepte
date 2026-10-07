@@ -5,7 +5,7 @@ def test_native_login_returns_bearer_session(client, test_db, monkeypatch):
     monkeypatch.setattr(api_auth, "check_credentials", lambda username, password: (
         username == "anna" and password == "geheim"
     ))
-    monkeypatch.setattr(api_auth, "create_session", lambda username: f"token-for-{username}")
+    monkeypatch.setattr(api_auth, "create_session", lambda username, request=None: f"token-for-{username}")
 
     response = client.post(
         "/api/auth/login",
@@ -17,6 +17,8 @@ def test_native_login_returns_bearer_session(client, test_db, monkeypatch):
         "token": "token-for-anna",
         "token_type": "bearer",
         "expires_in": 1209600,
+        "id": test_db.user_get_by_name("anna")["id"],
+        "password_enabled": True,
         "username": "anna",
         "role": "user",
         "is_admin": False,
@@ -122,6 +124,8 @@ def test_native_session_accepts_authenticated_request(client, test_db, monkeypat
 
     assert response.status_code == 200
     assert response.json() == {
+        "id": test_db.user_get_by_name("anna")["id"],
+        "password_enabled": True,
         "username": "anna",
         "role": "user",
         "is_admin": False,
@@ -198,7 +202,7 @@ def test_guest_can_read_recipes_but_cannot_write(client, monkeypatch):
     assert admin_response.json()["detail"] == "Der Gastzugang ist schreibgeschützt."
 
 
-def test_native_logout_revokes_server_sessions(client, monkeypatch):
+def test_native_logout_all_revokes_server_sessions(client, monkeypatch):
     import app.routes.api_auth as api_auth
 
     class FakeDb:
@@ -211,7 +215,7 @@ def test_native_logout_revokes_server_sessions(client, monkeypatch):
     monkeypatch.setattr(api_auth, "get_db", lambda: FakeDb())
 
     response = client.post(
-        "/api/auth/logout",
+        "/api/auth/logout-all",
         headers={"Authorization": "Bearer valid-token"},
     )
     assert response.status_code == 200

@@ -21,12 +21,24 @@ struct LoginResponse: Codable {
     let username: String
     let expiresIn: Int
     let readOnly: Bool?
+    let id: Int?
+    let role: AccountRole?
+    let isAdmin: Bool?
+    let passwordEnabled: Bool?
 }
 
 struct SessionResponse: Codable {
     let username: String
     let fullAccess: Bool?
     let readOnly: Bool?
+    let id: Int?
+    let role: AccountRole?
+    let isAdmin: Bool?
+    let passwordEnabled: Bool?
+
+    var effectiveRole: AccountRole {
+        role ?? ((readOnly ?? false) ? .guest : ((fullAccess ?? false) ? .admin : .user))
+    }
 }
 
 enum RecipeLibrary: String, CaseIterable, Identifiable, Codable, Sendable {

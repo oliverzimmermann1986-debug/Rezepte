@@ -64,6 +64,17 @@ test('guest logout and writes after switching to a normal account are available'
   assert.equal(h.calls[1].options.headers.get('Authorization'), 'Bearer user-test-token');
 });
 
+test('logout acknowledgement survives intentional local invalidation without invalidating a newer login', async () => {
+  const h = harness();
+  let unauthorized = 0;
+  h.api.setUnauthorizedHandler(() => { ++unauthorized; });
+  const pending = h.api.api('/api/auth/logout', { method: 'POST' });
+  h.api.configureApi('https://rezepte.test', null);
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(unauthorized, 0);
+});
+
 test('a real user named Gast cannot share the guest cache namespace', () => {
   const h = harness();
   const guestNamespace = h.api.apiCacheNamespace();

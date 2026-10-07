@@ -12,8 +12,9 @@
         this.navTo('recipes', { updateUrl: false });
         return;
       }
-      const allowed = new Set(['home','import','quality','versions','pdf','search','maintenance','master','settings','trash']);
+      const allowed = new Set(['home','import','quality','versions','pdf','search','maintenance','master','settings','trash','users']);
       this.admin.tab = allowed.has(tab) ? tab : 'home';
+      if (this.admin.tab !== 'users') this.users.draft = null;
       this.page = 'admin';
       if (updateUrl && window.history?.replaceState) {
         const target = this.admin.tab === 'home'
@@ -33,6 +34,7 @@
         case 'master': this.loadMaster(); break;
         case 'settings': this.loadConfig(); break;
         case 'trash': this.loadTrash(); break;
+        case 'users': this.loadUsers(); break;
       }
     },
 
@@ -48,6 +50,7 @@
         master: 'Stammdaten',
         settings: 'Einstellungen',
         trash: 'Papierkorb',
+        users: 'Benutzerverwaltung',
       })[this.admin.tab] || 'Administration';
     },
 

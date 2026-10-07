@@ -8,6 +8,7 @@ from __future__ import annotations
 import hmac
 import logging
 import secrets
+import time
 from contextvars import ContextVar
 from typing import Optional
 
@@ -41,6 +42,15 @@ _SESSION_LOOKUP = ContextVar("session_lookup", default=None)
 # -------------------- Passwort-Hashing --------------------
 def hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("ascii")
+
+
+def validate_new_password(value: str) -> str:
+    """Shared policy for newly chosen passwords; existing hashes are unchanged."""
+    if len(value) < 10:
+        raise ValueError("Passwort muss mindestens 10 Zeichen enthalten")
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("Passwort darf höchstens 72 UTF-8-Bytes enthalten")
+    return value
 
 
 def is_hashed(value: str) -> bool:
@@ -186,13 +196,12 @@ def _serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret, salt="scrapper-auth")
 
 
-def create_session(username: str) -> str:
+def create_session(username: str, request: Optional[Request] = None, auth_method: str = "password",
+                   expected_identity: Optional[dict] = None) -> str:
     """Erstellt eine widerrufbare Session.
 
-    DB-Benutzer tragen ihre aktuelle ``session_version`` im Token. Ein
-    Passwortwechsel oder eine Aktivstatusänderung erhöht die Version und macht
-    damit alle vorherigen Cookies sofort ungültig. Der Legacy-Config-Benutzer
-    bleibt für noch nicht migrierte Installationen kompatibel.
+    Each DB login gets its own opaque ID. The account version still revokes all
+    sessions on security changes. Only a real login sets authenticated_at.
     """
     from .db import get_db
 
@@ -200,12 +209,23 @@ def create_session(username: str) -> str:
     if user:
         if user.get("disabled"):
             raise ValueError("Benutzerkonto ist deaktiviert")
+        if auth_method not in {"password", "apple", "google"}:
+            raise ValueError("Unbekanntes Anmeldeverfahren")
+        session_id = secrets.token_urlsafe(32)
+        agent = str(getattr(request, "headers", {}).get("user-agent", ""))
+        client_label = " ".join(agent.split())[:160] or "Unbekanntes Gerät"
+        user = get_db().session_create(int(user["id"]), session_id, lifetime=SESSION_MAX_AGE,
+                                      client_label=client_label, auth_method=auth_method,
+                                      expected_identity=expected_identity)
         payload = {
             "user": str(user["username"]),
             "uid": int(user["id"]),
             "ver": int(user.get("session_version") or 0),
+            "sid": session_id,
         }
     else:
+        if expected_identity is not None:
+            raise ValueError("Das angemeldete Konto hat sich geändert")
         db = get_db()
         with db.conn() as c:
             if c.execute("SELECT 1 FROM users LIMIT 1").fetchone():
@@ -307,6 +327,19 @@ def session_user(token: str) -> Optional[str]:
                     return None
             except (TypeError, ValueError):
                 return None
+            session_id = data.get("sid")
+            if not isinstance(session_id, str) or not session_id:
+                return None  # Pre-267 DB tokens require one fresh login.
+            session = get_db().session_get_active(session_id, int(user["id"]))
+            if session is None:
+                return None
+            if time.time() - session["last_seen_at"] >= 300:
+                try:
+                    get_db().session_touch(session_id)
+                except Exception:
+                    # Activity metadata is best-effort; the authorization read
+                    # above remains mandatory and fails closed on DB errors.
+                    logger.warning("Sitzungsaktivität konnte nicht aktualisiert werden", exc_info=True)
             sink = _SESSION_LOOKUP.get()
             if sink is not None:
                 sink["user"] = dict(user)
@@ -343,6 +376,27 @@ def session_user(token: str) -> Optional[str]:
 
 def verify_session(token: str) -> bool:
     return session_user(token) is not None
+
+
+def request_session(request: Request) -> Optional[dict]:
+    """Return only this authenticated user's active server-side session."""
+    if request_is_guest(request) or not request_user(request):
+        return None
+    payload = _session_payload(_request_token(request)) or {}
+    if not isinstance(payload.get("sid"), str) or not isinstance(payload.get("uid"), int):
+        return None
+    from .db import get_db
+    return get_db().session_get_active(payload["sid"], payload["uid"])
+
+
+def revoke_current_session(request: Request) -> bool:
+    session = request_session(request)
+    if session is None:
+        return False
+    from .db import get_db
+    revoked = get_db().session_revoke(session["user_id"], session["id"])
+    clear_request_auth_cache(request)
+    return revoked
 
 
 def _require_auth(request: Request) -> None:

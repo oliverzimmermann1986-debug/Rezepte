@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 266
+CURRENT_SCHEMA_VERSION = 268
 RECIPE_VARIANT_PENDING_STATUS = "variant_pending"
 _READ_CONNECTION = ContextVar('recipe_read_connection', default=None)
 
@@ -1482,6 +1482,26 @@ class Database:
                     ''')
             c.execute('INSERT INTO schema_migrations(version, name, applied_at) VALUES(266, ?, ?)',
                       ('finite_shopping_quantities', time.time()))
+
+        if not c.execute('SELECT 1 FROM schema_migrations WHERE version=267').fetchone():
+            c.execute('''CREATE TABLE IF NOT EXISTS user_sessions (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                session_version INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                authenticated_at REAL NOT NULL,
+                last_seen_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                revoked_at REAL,
+                client_label TEXT NOT NULL,
+                auth_method TEXT NOT NULL
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, expires_at)')
+            c.execute('INSERT INTO schema_migrations(version, name, applied_at) VALUES(267, ?, ?)',
+                      ('individual_user_sessions', time.time()))
+
+        from .oidc import migrate_oidc
+        migrate_oidc(c)
 
     @contextmanager
     def read_snapshot(self):
@@ -4334,7 +4354,66 @@ class Database:
                 "SELECT id, username, role, disabled, created_at, last_login_at "
                 "FROM users ORDER BY username"
             ).fetchall()
-            return [dict(r) for r in rows]
+            return [{**dict(r), "disabled": bool(r["disabled"])} for r in rows]
+
+    def session_create(self, user_id: int, session_id: str, *, lifetime: int,
+                       client_label: str, auth_method: str, expected_identity: Optional[dict] = None) -> dict:
+        now = time.time()
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            user = c.execute("SELECT * FROM users WHERE id=? AND disabled=0", (user_id,)).fetchone()
+            if user is None:
+                raise ValueError("Benutzerkonto ist nicht verfügbar")
+            if expected_identity is not None:
+                # Finish the provider handoff and issue the session against the
+                # same immutable identity under one writer lock. A concurrent
+                # delete/recreate, unlink or global revocation must win safely.
+                if (expected_identity.get("user_id") != user["id"]
+                        or expected_identity.get("version") != user["session_version"]
+                        or expected_identity.get("provider") != auth_method
+                        or not c.execute("SELECT 1 FROM oidc_identities WHERE user_id=? AND provider=? AND subject=?",
+                                         (user["id"], auth_method, expected_identity.get("subject"))).fetchone()):
+                    raise ValueError("Die Anmeldeverknüpfung hat sich geändert. Bitte erneut anmelden")
+            # Tokens are never stored. Invalid session metadata has no further use.
+            c.execute("DELETE FROM user_sessions WHERE user_id=? AND (expires_at<=? OR revoked_at IS NOT NULL "
+                      "OR session_version!=?)", (user_id, now, user["session_version"]))
+            c.execute("INSERT INTO user_sessions(id,user_id,session_version,created_at,authenticated_at,"
+                      "last_seen_at,expires_at,client_label,auth_method) VALUES(?,?,?,?,?,?,?,?,?)",
+                      (session_id, user_id, user["session_version"], now, now, now, now + lifetime,
+                       client_label, auth_method))
+            return dict(user)
+
+    def session_get_active(self, session_id: str, user_id: int) -> Optional[Dict[str, Any]]:
+        now = time.time()
+        with self.conn() as c:
+            row = c.execute("SELECT s.* FROM user_sessions s JOIN users u ON u.id=s.user_id "
+                            "WHERE s.id=? AND s.user_id=? AND s.revoked_at IS NULL AND s.expires_at>? "
+                            "AND u.disabled=0 AND s.session_version=u.session_version",
+                            (session_id, user_id, now)).fetchone()
+            return dict(row) if row else None
+
+    def session_touch(self, session_id: str) -> None:
+        # Authentication may also run inside a read-only compound snapshot.
+        if _READ_CONNECTION.get() is not None:
+            return
+        now = time.time()
+        with self.conn() as c:
+            c.execute("UPDATE user_sessions SET last_seen_at=? WHERE id=? AND last_seen_at<? "
+                      "AND revoked_at IS NULL AND expires_at>?", (now, session_id, now - 300, now))
+
+    def session_list(self, user_id: int) -> List[Dict[str, Any]]:
+        with self.conn() as c:
+            return [dict(row) for row in c.execute(
+                "SELECT s.id,s.created_at,s.last_seen_at,s.expires_at,s.client_label "
+                "FROM user_sessions s JOIN users u ON u.id=s.user_id "
+                "WHERE s.user_id=? AND s.revoked_at IS NULL AND s.expires_at>? "
+                "AND s.session_version=u.session_version AND u.disabled=0 ORDER BY s.created_at DESC,s.id",
+                (user_id, time.time()))]
+
+    def session_revoke(self, user_id: int, session_id: str) -> bool:
+        with self.conn() as c:
+            return c.execute("UPDATE user_sessions SET revoked_at=? WHERE id=? AND user_id=? "
+                             "AND revoked_at IS NULL", (time.time(), session_id, user_id)).rowcount > 0
 
     def recipes_claim_pending_nutrition(
         self, *, limit: int, owner: str,
@@ -4408,6 +4487,7 @@ class Database:
         password_hash: Optional[str] = None,
         role: Optional[str] = None,
         disabled: Optional[bool] = None,
+        expected_version: Optional[int] = None,
     ) -> bool:
         """Ändert Auth-Felder atomar und widerruft bestehende Sitzungen."""
         if role is not None and role not in {"user", "admin"}:
@@ -4417,11 +4497,17 @@ class Database:
             # Demote/Disable/Delete liest erst nach unserem Commit.
             c.execute("BEGIN IMMEDIATE")
             current = c.execute(
-                "SELECT role, disabled FROM users WHERE id=?",
+                "SELECT role, disabled, session_version FROM users WHERE id=?",
                 (user_id,),
             ).fetchone()
             if current is None:
+                if expected_version is not None:
+                    from fastapi import HTTPException
+                    raise HTTPException(409, "Dein Konto wurde inzwischen geändert. Bitte erneut anmelden und bestätigen.")
                 return False
+            if expected_version is not None and (current["disabled"] or current["session_version"] != expected_version):
+                from fastapi import HTTPException
+                raise HTTPException(409, "Dein Konto wurde inzwischen geändert. Bitte erneut anmelden und bestätigen.")
             next_role = role if role is not None else str(current["role"])
             next_disabled = (
                 bool(disabled) if disabled is not None else bool(current["disabled"])
@@ -4453,8 +4539,8 @@ class Database:
                 )
             return True
 
-    def user_set_password(self, user_id: int, password_hash: str) -> None:
-        self.user_update_security(user_id, password_hash=password_hash)
+    def user_set_password(self, user_id: int, password_hash: str, *, expected_version: Optional[int] = None) -> None:
+        self.user_update_security(user_id, password_hash=password_hash, expected_version=expected_version)
 
     def user_set_role(self, user_id: int, role: str) -> None:
         """Setzt die Rolle und widerruft dabei bestehende Sitzungen."""
@@ -4463,7 +4549,7 @@ class Database:
     def user_set_disabled(self, user_id: int, disabled: bool) -> None:
         self.user_update_security(user_id, disabled=disabled)
 
-    def user_delete(self, user_id: int) -> bool:
+    def user_delete(self, user_id: int, *, expected_version: Optional[int] = None) -> bool:
         from .tenancy import user_household_guard
         from fastapi import HTTPException
         with user_household_guard(self, user_id, require_active_user=False) as locked_account, self.conn() as c:
@@ -4472,11 +4558,13 @@ class Database:
             if (int(member[0]) if member else None) != locked_account:
                 raise HTTPException(409, "Der Haushalt hat sich geändert. Bitte erneut versuchen.")
             current = c.execute(
-                "SELECT role, disabled FROM users WHERE id=?",
+                "SELECT role, disabled, session_version FROM users WHERE id=?",
                 (user_id,),
             ).fetchone()
             if current is None:
                 return False
+            if expected_version is not None and (current["disabled"] or current["session_version"] != expected_version):
+                raise HTTPException(409, "Dein Konto wurde inzwischen geändert. Bitte erneut anmelden und bestätigen.")
             self._assert_admin_survives(
                 c,
                 current,
@@ -4507,6 +4595,8 @@ class Database:
                                      "AND json_extract(payload_json,'$.account_id')=? LIMIT 1", (account[0],)).fetchone()
                     if populated or busy:
                         raise HTTPException(409, "Das letzte Mitglied eines Haushalts mit Daten oder laufenden Importen kann nicht gelöscht werden. Bitte zuerst eine zweite Person aufnehmen.")
+            from .oidc import queue_deleted_user
+            queue_deleted_user(c, user_id)
             c.execute("DELETE FROM users WHERE id=?", (user_id,))
             return True
 
@@ -4526,6 +4616,11 @@ class Database:
                 (username,),
             )
             return cur.rowcount > 0
+
+    def user_revoke_sessions_by_id(self, user_id: int) -> bool:
+        with self.conn() as c:
+            return c.execute("UPDATE users SET session_version=session_version+1 WHERE id=?",
+                             (user_id,)).rowcount > 0
 
     def user_count_active_admins(self) -> int:
         """Verhindert Lockout: vor delete/disable/role-change prüfen dass

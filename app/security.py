@@ -319,9 +319,13 @@ class SameOriginMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
             has_cookie_auth = bool(request.cookies.get("scrapper_session"))
-            origin_required_path = request.url.path in {"/login", "/login/guest", "/register", "/logout", "/share/resolve"}
+            origin_required_path = request.url.path in {"/login", "/login/guest", "/register", "/logout", "/share/resolve",
+                                                        "/auth/apple/link", "/auth/google/link"}
             has_bearer = request.headers.get("authorization", "").lower().startswith("bearer ")
-            if (origin_required_path or has_cookie_auth) and not has_bearer and not _same_origin(request):
+            # Apple's form_post cannot carry our Origin. Its handler instead
+            # requires one-use state and a separate Secure HttpOnly browser binding.
+            apple_callback = request.method.upper() == "POST" and request.url.path == "/api/auth/apple/callback"
+            if not apple_callback and (origin_required_path or has_cookie_auth) and not has_bearer and not _same_origin(request):
                 return JSONResponse(
                     {"detail": "Ungültige Anfrageherkunft"},
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -335,6 +339,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         resp: Response = await call_next(request)
+        if request.url.path.startswith(("/api/auth/", "/api/account/", "/api/users")):
+            resp.headers["Cache-Control"] = "no-store"
         resp.headers.setdefault("X-Frame-Options", "DENY")
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
         # Nur die Herkunft, keine Pfade/Einladungstokens als Referrer.

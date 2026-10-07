@@ -191,8 +191,11 @@ export async function api<T>(
         headers,
         signal: timeoutSignal,
       });
-      assertApiSessionEpochCurrent(requestEpoch);
-      if (response.status === 401 && requestHadAuth && path !== '/api/auth/login') {
+      const logoutResponse = path === '/api/auth/logout' || path === '/api/auth/logout-all';
+      // Logout intentionally invalidates local state before the server replies.
+      // Its acknowledgement belongs to the captured token, never the new session.
+      if (!logoutResponse) assertApiSessionEpochCurrent(requestEpoch);
+      if (response.status === 401 && requestHadAuth && path !== '/api/auth/login' && !logoutResponse) {
         await notifyUnauthorized(requestEpoch);
       }
       return readResponse<T>(response);

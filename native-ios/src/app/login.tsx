@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -16,6 +16,7 @@ import { colors, radii, space } from '@/constants/design';
 import { ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { openExternalUrl } from '@/lib/external-links';
+import { IdentityProvider, passwordProblem } from '@/lib/account-management';
 
 export default function LoginScreen() {
   const {
@@ -26,6 +27,8 @@ export default function LoginScreen() {
     signInAsGuest,
     registerAccount,
     retryAuthCleanup,
+    loadProviders,
+    signInWithProvider,
   } = useAuth();
   const [server, setServer] = useState(storedServer);
   const [username, setUsername] = useState('');
@@ -35,6 +38,20 @@ export default function LoginScreen() {
   const [registration, setRegistration] = useState(false);
   const [confirmation, setConfirmation] = useState('');
   const [invitationToken, setInvitationToken] = useState('');
+  const [providers, setProviders] = useState<IdentityProvider[]>([]);
+  const [providersError, setProvidersError] = useState(false);
+  const [providersRetry, setProvidersRetry] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setProviders([]); setProvidersError(false);
+    const timer = setTimeout(() => {
+      void loadProviders(server, controller.signal).then(items => { if (!controller.signal.aborted) setProviders(items); }).catch(() => { if (!controller.signal.aborted) setProvidersError(true); });
+    }, 350);
+    return () => { clearTimeout(timer); controller.abort(); };
+    // Auth context methods are recreated on state updates; reload only when the
+    // selected server changes or the user explicitly retries.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server, providersRetry]);
 
   async function submit() {
     if (busy || !server.trim() || !username.trim() || !password) return;
@@ -42,7 +59,7 @@ export default function LoginScreen() {
     setError('');
     try {
       if (registration) {
-        if (password !== confirmation) throw new ApiError('Passwörter stimmen nicht überein.', 0);
+        const problem = passwordProblem(password, confirmation); if (problem) throw new ApiError(problem, 0);
         const invite = invitationToken.trim();
         const token = invite.includes('://') ? new URL(invite).searchParams.get('invite') || '' : invite;
         if (invite && !token) throw new ApiError('Im Link fehlt der Einladungscode.', 0);
@@ -51,6 +68,7 @@ export default function LoginScreen() {
     } catch (reason) {
       setError(reason instanceof ApiError ? reason.message : 'Verbindung zum Server fehlgeschlagen.');
     } finally {
+      setPassword(''); setConfirmation('');
       setBusy(false);
     }
   }
@@ -118,6 +136,16 @@ export default function LoginScreen() {
           </>}
           <PrimaryButton label={registration ? 'Zur Anmeldung' : 'Konto erstellen'} onPress={() => { setRegistration(!registration); setError(''); setPassword(''); setConfirmation(''); }} disabled={busy} />
           <PrimaryButton label="Als Gast ansehen" disabled={busy} onPress={() => { setBusy(true); setError(''); void signInAsGuest(server).catch(reason => setError(reason instanceof Error ? reason.message : 'Gastzugang fehlgeschlagen.')).finally(() => setBusy(false)); }} />
+          {providers.map(provider => <PrimaryButton key={provider.id} label={`Mit ${provider.name} fortfahren`} disabled={busy} onPress={() => {
+            setBusy(true); setError(''); setPassword(''); setConfirmation('');
+            void (async () => {
+              const invite = invitationToken.trim();
+              const invitation = registration && invite ? (invite.includes('://') ? new URL(invite).searchParams.get('invite') || '' : invite) : '';
+              if (registration && invite && !invitation) throw new Error('Im Link fehlt der Einladungscode.');
+              await signInWithProvider(server, provider.id, invitation);
+            })().catch(reason => setError(reason instanceof Error ? reason.message : 'Anmeldung fehlgeschlagen.')).finally(() => setBusy(false));
+          }} />)}
+          {providersError && <PrimaryButton label="Weitere Anmeldemöglichkeiten erneut laden" disabled={busy} onPress={() => setProvidersRetry(value => value + 1)} />}
           {!!sessionWarning && (
             <View style={styles.warningBox}>
               <Text accessibilityRole="alert" style={styles.warning}>{sessionWarning}</Text>

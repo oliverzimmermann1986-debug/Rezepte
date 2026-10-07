@@ -392,4 +392,5 @@ def test_swiftui_guest_login_is_read_only_across_navigation_and_recipe_actions()
     assert "Gastzugang · Rezept nur ansehen" in detail
     assert detail.count("if !session.readOnly") >= 4
     assert 'Section("Gastzugang")' in settings
-    assert 'value: session.readOnly ? "Nur lesen" : "Bearbeiten"' in settings
+    assert 'LabeledContent("Rolle", value: session.role.title)' in settings
+    assert 'readOnly = role == .guest' in session

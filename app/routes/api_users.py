@@ -9,7 +9,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ..auth import ROLE_USER, hash_password, require_admin
+from ..auth import ROLE_USER, hash_password, require_admin, validate_new_password
 from ..db import LastActiveAdminError, get_db
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(require_admin)])
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,32}$")
-MIN_PW_LEN = 8
+MIN_PW_LEN = 10
 
 
 def _validate_username(u: str) -> str:
@@ -30,8 +30,10 @@ def _validate_username(u: str) -> str:
 
 
 def _validate_password(p: str) -> None:
-    if not p or len(p) < MIN_PW_LEN:
-        raise HTTPException(400, f"Passwort: mindestens {MIN_PW_LEN} Zeichen")
+    try:
+        validate_new_password(p)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 
@@ -42,7 +44,7 @@ def list_users():
 
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=32)
-    password: str = Field(..., min_length=MIN_PW_LEN)
+    password: str = Field(..., min_length=MIN_PW_LEN, max_length=72)
     role: Literal["user", "admin"] = ROLE_USER
 
 
@@ -78,7 +80,7 @@ def create_user(payload: UserCreate, current=Depends(require_admin)):
 
 
 class UserUpdate(BaseModel):
-    password: Optional[str] = None
+    password: Optional[str] = Field(default=None, max_length=72)
     disabled: Optional[bool] = None
     role: Optional[Literal["user", "admin"]] = None
 
@@ -157,3 +159,11 @@ def delete_user(user_id: int, current=Depends(require_admin)):
         raise HTTPException(404, "User nicht gefunden")
     logger.info(f"User '{target['username']}' gelöscht von '{current.get('username')}'")
     return {"ok": True, "deleted": target["username"]}
+
+
+@router.post("/{user_id}/revoke-sessions")
+def revoke_user_sessions(user_id: int):
+    db = get_db()
+    if not db.user_revoke_sessions_by_id(user_id):
+        raise HTTPException(404, "User nicht gefunden")
+    return {"ok": True}

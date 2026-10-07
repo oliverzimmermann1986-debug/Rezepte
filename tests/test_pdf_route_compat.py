@@ -75,18 +75,12 @@ def test_browser_logout_revokes_server_sessions(client, monkeypatch):
 
     revoked = []
 
-    class FakeDb:
-        def user_revoke_sessions(self, username):
-            revoked.append(username)
-            return True
-
-    monkeypatch.setattr(main, "request_user", lambda _request: "anna")
-    monkeypatch.setattr(main, "get_db", lambda: FakeDb())
+    monkeypatch.setattr(main, "revoke_current_session", lambda request: revoked.append(request.url.path))
 
     response = client.post("/logout", headers={"Origin": "http://testserver"}, follow_redirects=False)
 
     assert response.status_code == 303
-    assert revoked == ["anna"]
+    assert revoked == ["/logout"]
 
 
 def test_logout_ignores_legacy_external_redirect(client, monkeypatch):

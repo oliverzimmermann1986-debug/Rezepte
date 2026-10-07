@@ -12,6 +12,9 @@ final class SessionStore: ObservableObject {
 
     @Published private(set) var state: State = .checking
     @Published private(set) var username = ""
+    @Published private(set) var userID: Int?
+    @Published private(set) var role: AccountRole = .guest
+    @Published private(set) var passwordEnabled = false
     @Published private(set) var fullAccess = false
     @Published private(set) var readOnly = false
     @Published private(set) var serverVersion = ""
@@ -22,10 +25,19 @@ final class SessionStore: ObservableObject {
     @Published private(set) var isEndingSession = false
     @Published var alertMessage: String?
 
-    let api = APIClient()
-    private let defaults = UserDefaults.standard
-    private let tokenAccount = "api-token"
+    let api: APIClient
+    private let defaults: UserDefaults
+    private let persistence: LocalSessionPersistence
+    private let webAuthentication: any NativeAuthenticating
     private let serverKey = "server-url"
+
+    init(api: APIClient = APIClient(), defaults: UserDefaults = .standard,
+         persistence: LocalSessionPersistence? = nil, webAuthentication: (any NativeAuthenticating)? = nil) {
+        self.api = api
+        self.defaults = defaults
+        self.persistence = persistence ?? LocalSessionPersistence(defaults: defaults)
+        self.webAuthentication = webAuthentication ?? NativeWebAuthentication()
+    }
 
     var savedServer: String {
         defaults.string(forKey: serverKey) ?? ""
@@ -35,7 +47,7 @@ final class SessionStore: ObservableObject {
         removeLegacyAccessCredentials()
         let expectedIdentity = identity
         guard !savedServer.isEmpty,
-              let token = KeychainStore.read(account: tokenAccount) else {
+              let token = persistence.restoredToken() else {
             state = .signedOut
             return
         }
@@ -49,6 +61,7 @@ final class SessionStore: ObservableObject {
             guard identity == expectedIdentity else { return }
             apply(session)
             await refreshSystemInfo()
+            guard identity == expectedIdentity else { return }
             if !readOnly { await drainSharedImports() }
         } catch {
             if identity == expectedIdentity { signOut() }
@@ -102,6 +115,7 @@ final class SessionStore: ObservableObject {
     }
 
     func signOut() {
+        webAuthentication.cancel()
         let previousIdentity = identity
         if !readOnly, !username.isEmpty {
             for url in SharedImportQueue.all() { SharedImportQueue.remove(url) }
@@ -109,9 +123,12 @@ final class SessionStore: ObservableObject {
         identity = UUID()
         URLCache.shared.removeAllCachedResponses()
         Task { await api.clearAuthentication(ifSessionID: previousIdentity) }
-        KeychainStore.delete(account: tokenAccount)
+        persistence.signOut()
         removeLegacyAccessCredentials()
         username = ""
+        userID = nil
+        role = .guest
+        passwordEnabled = false
         fullAccess = false
         readOnly = false
         serverVersion = ""
@@ -126,6 +143,12 @@ final class SessionStore: ObservableObject {
         registrationRequested = true
     }
 
+    func consumeRegistrationRequest() -> Bool {
+        let requested = registrationRequested
+        registrationRequested = false
+        return requested
+    }
+
     func logOut() async {
         guard case .signedIn = state, !isEndingSession else { return }
         let expectedIdentity = identity
@@ -135,8 +158,62 @@ final class SessionStore: ObservableObject {
         if identity == expectedIdentity { signOut() }
     }
 
+    func logOutEverywhere() async throws {
+        guard case .signedIn = state, !isEndingSession else { return }
+        let expectedIdentity = identity
+        isEndingSession = true
+        defer { isEndingSession = false }
+        _ = try await api.logoutAll()
+        guard identity == expectedIdentity else { throw APIError.sessionChanged }
+        signOut()
+    }
+
+    func signInWithProvider(_ provider: IdentityProvider, server: String, invitationToken: String = "") async throws {
+        identity = UUID()
+        let expectedIdentity = identity
+        try await api.configure(server: server, token: nil, sessionID: expectedIdentity)
+        try await authenticateProvider(provider, intent: .login, server: server,
+                                       invitationToken: invitationToken, expectedIdentity: expectedIdentity)
+    }
+
+    func linkProvider(_ provider: IdentityProvider, currentPassword: String? = nil) async throws {
+        guard case .signedIn = state, !readOnly else { throw APIError.unauthenticated }
+        try await authenticateProvider(provider, intent: .link, server: savedServer,
+                                       invitationToken: "", expectedIdentity: identity, currentPassword: currentPassword)
+    }
+
+    private func authenticateProvider(_ provider: IdentityProvider, intent: NativeAuthIntent, server: String,
+                                      invitationToken: String, expectedIdentity: UUID, currentPassword: String? = nil) async throws {
+        let proof = try NativeAuthProof.make()
+        let start = try await api.startNativeAuth(provider: provider, intent: intent,
+                                                 challenge: proof.challenge, invitationToken: invitationToken,
+                                                 currentPassword: currentPassword)
+        try Task.checkCancellation()
+        guard identity == expectedIdentity else { throw APIError.sessionChanged }
+        guard !start.flowId.isEmpty else { throw NativeAuthError.invalidCallback }
+        let callback = try await webAuthentication.authenticate(url: NativeAuthCallback.authorizationURL(start.authorizationUrl))
+        try Task.checkCancellation()
+        guard identity == expectedIdentity else { throw APIError.sessionChanged }
+        let code = try NativeAuthCallback.code(from: callback, expectedFlow: start.flowId)
+        let response = try await api.exchangeNativeAuth(code: code, verifier: proof.verifier)
+        try Task.checkCancellation()
+        guard identity == expectedIdentity else { throw APIError.sessionChanged }
+        // Linking creates a new server session too; remount account-bound views.
+        identity = UUID()
+        let activatedIdentity = identity
+        do {
+            try await activate(server: server, token: response.token, expectedIdentity: activatedIdentity)
+        } catch {
+            if identity == activatedIdentity, intent == .link {
+                signOut()
+                alertMessage = error.localizedDescription
+            }
+            throw error
+        }
+    }
+
     func householdDidChange() async throws {
-        guard let token = KeychainStore.read(account: tokenAccount) else { throw APIError.unauthenticated }
+        guard let token = persistence.restoredToken() else { throw APIError.unauthenticated }
         identity = UUID()
         let expectedIdentity = identity
         try await api.configure(server: savedServer, token: token, sessionID: expectedIdentity)
@@ -184,20 +261,24 @@ final class SessionStore: ObservableObject {
         )
         let activeSession = try await api.sessionInfo()
         guard identity == expectedIdentity else { throw APIError.sessionChanged }
-        try KeychainStore.save(token, account: tokenAccount)
+        try persistence.activate(token)
         defaults.set(
             server.trimmingCharacters(in: .whitespacesAndNewlines),
             forKey: serverKey
         )
         apply(activeSession)
         await refreshSystemInfo()
+        guard identity == expectedIdentity else { throw APIError.sessionChanged }
         if !readOnly { await drainSharedImports() }
     }
 
     private func apply(_ session: SessionResponse) {
         username = session.username
-        fullAccess = session.fullAccess ?? false
-        readOnly = session.readOnly ?? false
+        userID = session.id
+        role = session.effectiveRole
+        fullAccess = role == .admin
+        readOnly = role == .guest
+        passwordEnabled = session.passwordEnabled ?? (role != .guest)
         state = .signedIn
     }
 

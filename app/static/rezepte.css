@@ -5809,3 +5809,12 @@ a { color: var(--accent-deep); }
 .household-import { display:grid; gap:12px; margin-bottom:18px; padding:18px; }
 .household-import .btn { justify-self:start; }
 @media(max-width:480px) { .library-bar label { flex:1 1 100%; } .library-bar select { width:100%; } .library-bar .btn { width:100%; } }
+
+/* Account controls stay usable on narrow screens and with long device names. */
+.account-security details { padding: 1rem 0; border-top: 1px solid var(--border, #ddd); }
+.account-security summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
+.account-form { display: grid; gap: .85rem; margin: 1rem 0; max-width: 42rem; }
+.account-form label, .account-security label { display: grid; gap: .35rem; }
+.account-session { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin: .8rem 0; }
+.account-session > div { min-width: 0; overflow-wrap: anywhere; }
+.account-user-actions { display: flex; flex-wrap: wrap; gap: .5rem; }

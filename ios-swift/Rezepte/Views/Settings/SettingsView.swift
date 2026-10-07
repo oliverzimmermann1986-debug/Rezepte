@@ -85,11 +85,13 @@ struct SettingsView: View {
                 }
 
                 Section("Konto") {
-                    if session.supports("household-invitations-v1") {
+                    if !session.readOnly, session.supports("account-management-v1") {
+                        NavigationLink("Mein Konto") { AccountProfileView() }
+                    } else if session.supports("household-invitations-v1") {
                         NavigationLink("Mein Haushalt & Einladungen") { HouseholdAccountView() }
                     }
                     LabeledContent("Angemeldet als", value: session.username)
-                    LabeledContent("Zugriff", value: session.readOnly ? "Nur lesen" : "Bearbeiten")
+                    LabeledContent("Rolle", value: session.role.title)
                     Button {
                         Task {
                             do {

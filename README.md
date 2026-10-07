@@ -684,6 +684,12 @@ existieren. Seine bisherigen Zugangsdaten bleiben erhalten; Benutzer und Kennwö
 werden nicht neu angelegt oder zurückgesetzt. Danach ist eine persönliche Anmeldung
 oder der lesende Gastzugang erforderlich.
 
+Ab 1.9.0 bieten Web und Apps eine eigene Kontoseite mit Passwortänderung,
+Gerätesitzungen und Kontolöschung sowie eine Benutzerverwaltung für Administratoren.
+Apple und Google können als zusätzliche Anmeldewege eingerichtet werden.
+Einrichtung, erneute Anmeldung nach dem Upgrade und Grenzen stehen in der
+[Kontoverwaltung](docs/account-management.md).
+
 Ab 1.8.9 ersetzt kein Proxy die eigene Anmeldung. Alte Einstellungen
 `web.auth_disabled` und `web.external_logout_url` werden beim Laden ignoriert
 und beim Speichern entfernt. Das Update erhält Konten, Kennwörter und den

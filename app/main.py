@@ -23,10 +23,10 @@ from . import __version__
 from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, check_credentials,
                     GUEST_MAX_AGE, request_is_guest,
                     create_session, migrate_security, migrate_users_to_db,
-                    request_user, require_auth, verify_session)
+                    request_user, require_auth, verify_session, revoke_current_session)
 from .config_store import get_config, migrate_pdf_quality_defaults
 from .db import get_db
-from .routes import (api_account, api_admin, api_audit, api_auth, api_browse, api_config, api_einkauf, api_events, api_hdd,
+from .routes import (api_account, api_admin, api_audit, api_auth, api_oidc, api_browse, api_config, api_einkauf, api_events, api_hdd,
                      api_history, api_jobs, api_master, api_metrics, api_pending, api_recipes,
                      api_meal_plan, api_schedule, api_share, api_shopping, api_stats, api_test,
                      api_users, sharing)
@@ -100,6 +100,24 @@ if _file_handler is not None:
     _logging_handlers.insert(0, _file_handler)
 logging.basicConfig(level=logging.INFO, handlers=_logging_handlers)
 logger = logging.getLogger(__name__)
+
+
+class ProviderCallbackLogFilter(logging.Filter):
+    """OAuth authorization codes must not land in Uvicorn access logs."""
+
+    def filter(self, record):
+        if isinstance(record.args, tuple) and len(record.args) == 5:
+            values = list(record.args)
+            path = values[2]
+            if isinstance(path, str) and path.split("?", 1)[0] in {
+                "/api/auth/apple/callback", "/api/auth/google/callback"
+            }:
+                values[2] = path.split("?", 1)[0]
+                record.args = tuple(values)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(ProviderCallbackLogFilter())
 if _file_log_error is not None:
     logger.warning(
         "File-Logging unter %s nicht verfügbar; verwende Console-Logging: %s",
@@ -256,6 +274,19 @@ def _purge_old_trash_items(days: int = 30):
             logger.warning(f"trash-purge #{it['id']} '{it.get('name')}' fail: {e}")
 
 
+async def _provider_revocation_loop(db):
+    import asyncio
+    from .oidc import retry_revocations
+
+    while True:
+        try:
+            await asyncio.to_thread(retry_revocations, db, 1)
+        except Exception:
+            # Do not include provider responses or credentials in logs.
+            logger.warning("Ausstehender Anbieter-Widerruf wird später erneut versucht")
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def _lifespan(app):
     import asyncio
@@ -278,9 +309,13 @@ async def _lifespan(app):
     _sd_notify("READY=1")
     logger.info("App ready (workers running, sd_notify READY=1 sent)")
     watchdog_task = asyncio.create_task(_watchdog_loop(), name="systemd-watchdog")
+    provider_task = asyncio.create_task(_provider_revocation_loop(db), name="provider-revocations")
     try:
         yield
     finally:
+        provider_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await provider_task
         watchdog_task.cancel()
         with suppress(asyncio.CancelledError):
             await watchdog_task
@@ -356,6 +391,8 @@ async def _lifespan(app):
 # -------- FastAPI --------
 APP_VERSION = __version__
 APP_CAPABILITIES = [
+    "account-management-v1",
+    "provider-auth-v1",
     "admin-center",
     "ai-shopping-optimization",
     "shopping-categories",
@@ -454,6 +491,7 @@ def serve_manifest():
 # API-Routen
 app.include_router(api_admin.session_router)
 app.include_router(api_auth.router)
+app.include_router(api_oidc.router)
 app.include_router(api_account.router)
 app.include_router(api_admin.router)
 app.include_router(api_config.router)
@@ -515,6 +553,7 @@ LOGIN_HTML = """\
   <label>Benutzer<input name="username" autocomplete="username" required></label>
   <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
   <button type="submit">Anmelden</button>
+  {providers}
   <a class="btn btn-secondary" href="/register">Konto erstellen</a>
   <button type="submit" formaction="/login/guest" formnovalidate>Als Gast ansehen</button>
   <p class="muted">Gäste können Rezepte, Einkauf und Wochenplan ansehen. Änderungen bleiben angemeldeten Konten vorbehalten.</p>
@@ -537,9 +576,25 @@ def _safe_next(value: str) -> str:
     return value
 
 
+def _provider_login_links(invitation: str = "") -> str:
+    from .oidc import available_providers
+    suffix = "?invitation_token=" + quote(invitation, safe="") if invitation else ""
+    return "".join('<a class="btn btn-secondary" href="/auth/' + item["id"] + '/start' + suffix +
+                   '">Mit ' + item["name"] + ' anmelden</a>' for item in available_providers() if item["enabled"])
+
+
+def _login_html(*, error: str, next: str):
+    return LOGIN_HTML.format(error=error, next=next, providers=_provider_login_links())
+
+
 @app.get("/login", response_class=HTMLResponse)
-def login_page(next: str = "/"):
-    return LOGIN_HTML.format(error="", next=html.escape(_safe_next(next), quote=True))
+def login_page(next: str = "/", provider_error: str = "", logout_warning: str = "", notice: str = ""):
+    error = '<p class="error">Die Anbieter-Anmeldung konnte nicht abgeschlossen werden. Bitte erneut versuchen.</p>' if provider_error else ""
+    if notice == "password-changed" and not provider_error:
+        error = '<p role="status">Passwort geändert. Bitte mit deinem neuen Passwort anmelden.</p>'
+    if logout_warning:
+        error = '<p class="error">Auf diesem Gerät abgemeldet. Der Server konnte die Sitzung noch nicht widerrufen. Bitte nach erneuter Anmeldung unter Mein Konto die alte Sitzung beenden.</p>'
+    return _login_html(error=error, next=html.escape(_safe_next(next), quote=True))
 
 
 @app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
@@ -567,6 +622,12 @@ Quellenlinks sowie hochgeladene Bilder und PDF-Dokumente gehören. Das Passwort
 wird zur Anmeldung oder Registrierung verschlüsselt an den Rezepteserver
 übertragen. Der Server speichert einen Passwort-Hash; die App speichert das
 Passwort nicht.</p>
+<p>Bei der optionalen Anmeldung mit Apple oder Google speichert der Server die
+Anbieterkennung und, falls freigegeben, die bestätigte E-Mail-Adresse. Ein
+Widerrufsschlüssel wird verschlüsselt gespeichert. Passwörter von Apple oder
+Google erhält die App nicht. Unter „Mein Konto“ können Verknüpfungen und
+Gerätesitzungen verwaltet werden. Sitzungen enthalten Zeitpunkt, Ablauf und
+eine vom Gerät gemeldete Bezeichnung.</p>
 <p>Eine Gastanmeldung benötigt keinen Benutzernamen und erlaubt nur das Lesen
 der globalen Rezepte. Private Haushaltsdaten sind für Gäste nicht sichtbar.
 Ein registriertes Konto kann eine zweite Person mit
@@ -641,7 +702,7 @@ def login(
     if blocked:
         logger.warning("Login vorübergehend gesperrt (%ss)", remaining)
         return HTMLResponse(
-            LOGIN_HTML.format(
+            _login_html(
                 error=f'<p class="error">⛔ Zu viele Fehlversuche. '
                       f'Erneut probieren in {remaining // 60 + 1} min.</p>',
                 next=html.escape(_safe_next(next), quote=True),
@@ -655,7 +716,7 @@ def login(
         login_limiter.record_fail(actor_key)
         logger.warning("Login abgelehnt: ungültige Zugangsdaten")
         return HTMLResponse(
-            LOGIN_HTML.format(
+            _login_html(
                 error='<p class="error">❌ Login fehlgeschlagen</p>',
                 next=html.escape(_safe_next(next), quote=True),
             ),
@@ -666,13 +727,13 @@ def login(
     # gegen ein anderes (z.B. Admin-)Konto nicht zurücksetzen.
     login_limiter.record_success(actor_key)
     try:
-        token = create_session(username)
+        token = create_session(username, request=request)
     except ValueError:
         # Konto kann zwischen Credential-Prüfung und Session-Erstellung
         # deaktiviert oder gelöscht worden sein.
         logger.warning("Session-Erstellung nach erfolgreichem Login abgelehnt: Konto nicht mehr aktiv")
         return HTMLResponse(
-            LOGIN_HTML.format(
+            _login_html(
                 error='<p class="error">❌ Konto ist nicht mehr aktiv</p>',
                 next=html.escape(_safe_next(next), quote=True),
             ),
@@ -700,6 +761,7 @@ def _registration_page(invitation: str = "", username: str = "", error: str = ""
               "ERROR": '<p class="error" role="alert">' + html.escape(error) + '</p>' if error else ""}
     for name, value in values.items():
         source = source.replace("{" + name + "}", value)
+    source = source.replace("</form>", _provider_login_links(invitation) + "</form>")
     return HTMLResponse(source, status_code=code, headers={"Cache-Control": "no-store", "Referrer-Policy": "strict-origin"})
 
 
@@ -733,16 +795,14 @@ def register_browser(request: Request, username: str = Form(...), password: str 
 
 @app.post("/logout")
 def logout(request: Request):
-    if not request_is_guest(request):
-        username = request_user(request)
-        if username:
-            try:
-                get_db().user_revoke_sessions(username)
-            except Exception:
-                # Cookie lokal trotzdem entfernen. Ein DB-Ausfall darf den
-                # Nutzer nicht in einer scheinbar unlösbaren Sitzung halten.
-                logger.exception("Serversitzung beim Browser-Logout nicht widerrufen")
-    resp = RedirectResponse(url="/login", status_code=303)
+    server_failed = False
+    try:
+        revoke_current_session(request)
+    except Exception:
+        # Clear the local cookie even when the server cannot persist revocation.
+        logger.warning("Serversitzung beim Browser-Logout nicht widerrufen")
+        server_failed = True
+    resp = RedirectResponse(url="/login?logout_warning=1" if server_failed else "/login", status_code=303)
     resp.delete_cookie(SESSION_COOKIE, path="/")
     # Löscht insbesondere Cache Storage alter Service-Worker-Versionen. Private
     # Rezeptdaten dürfen auf gemeinsam genutzten Geräten nicht nach Logout
@@ -819,6 +879,11 @@ def _contains_nonfinite_number(value) -> bool:
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = exc.errors()
+    if request.url.path.startswith(("/api/auth/", "/api/account/", "/api/users", "/auth/")):
+        # Validation responses must not echo passwords, provider codes or verifiers.
+        return JSONResponse({"detail": [{key: error[key] for key in ("loc", "msg", "type") if key in error}
+                                         for error in errors]}, status_code=422,
+                            headers={"Cache-Control": "no-store"})
     if any(error.get('type') == 'finite_number' for error in errors) or _contains_nonfinite_number(errors):
         # Pydantics Fehler enthält den ungültigen Wert selbst. Infinity/NaN
         # können auch in einer Fehlerantwort nicht als JSON serialisiert werden.

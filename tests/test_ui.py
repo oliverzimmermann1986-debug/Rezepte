@@ -279,9 +279,13 @@ def test_admin_ui_is_private_and_backend_has_explicit_roles():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     users_api = (ROOT / "app" / "routes" / "api_users.py").read_text(encoding="utf-8")
     assert "Privater Admin-Bereich" in html
-    assert "Benutzer-Verwaltung" not in html
-    assert "loadUsers" not in js
-    assert "createUser" not in js
+    assert "Benutzerverwaltung" in html
+    assert "loadUsers" in js
+    assert "saveUser" in js
+    assert "session.is_admin && page==='admin' && admin.tab==='users'" in html
+    assert "if (!this.session.is_admin || this.users.busy) return" in js
+    assert 'x-model="config.web.password"' not in html
+    assert 'x-model="config.web.username"' not in html
     assert 'Literal["user", "admin"]' in users_api
 
 

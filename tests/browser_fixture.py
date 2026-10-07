@@ -90,6 +90,15 @@ class WebFixture:
                                        "data_scope": "global_read_only" if self.role == "guest" else "household"})
         if path == "/api/account/imports":
             return route.fulfill(json={"items": []})
+        if path == "/api/account/profile":
+            return route.fulfill(json={"id": 1, "username": "GUI-Demo", "role": self.role,
+                                       "created_at": 1791000000, "last_login_at": 1791000000,
+                                       "password_enabled": True})
+        if path == "/api/account/sessions":
+            return route.fulfill(json={"sessions": [{"id": "current", "created_at": 1791000000,
+                "last_seen_at": 1791000000, "expires_at": 4102444800, "client_label": "Testbrowser", "is_current": True}]})
+        if path == "/api/account/identities":
+            return route.fulfill(json={"identities": [], "providers": []})
         if path == "/api/account/invitations" and method == "POST":
             invitation = {"id": 1, "created_at": 1791000000, "expires_at": 4102444800, "revoked_at": None, "accepted_at": None}
             self.account_invitations = [invitation]
