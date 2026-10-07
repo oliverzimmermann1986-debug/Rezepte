@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
-from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, check_credentials,
+from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, password_login_identity,
                     GUEST_MAX_AGE, request_is_guest,
                     create_session, migrate_security, migrate_users_to_db,
                     request_user, require_auth, verify_session, revoke_current_session)
@@ -711,7 +711,8 @@ def login(
             headers={"Retry-After": str(remaining + 1)},
         )
 
-    if not check_credentials(username, password):
+    credentials = password_login_identity(username, password)
+    if credentials is None:
         login_ip_limiter.record_fail(ip_key)
         login_limiter.record_fail(actor_key)
         logger.warning("Login abgelehnt: ungültige Zugangsdaten")
@@ -725,20 +726,20 @@ def login(
 
     # Ein erfolgreicher Low-Privilege-Login darf die IP-weiten Fehlversuche
     # gegen ein anderes (z.B. Admin-)Konto nicht zurücksetzen.
-    login_limiter.record_success(actor_key)
     try:
-        token = create_session(username, request=request)
+        token = create_session(username, request=request, expected_credentials=credentials)
     except ValueError:
         # Konto kann zwischen Credential-Prüfung und Session-Erstellung
-        # deaktiviert oder gelöscht worden sein.
+        # geändert, deaktiviert oder gelöscht worden sein.
         logger.warning("Session-Erstellung nach erfolgreichem Login abgelehnt: Konto nicht mehr aktiv")
         return HTMLResponse(
             _login_html(
-                error='<p class="error">❌ Konto ist nicht mehr aktiv</p>',
+                error='<p class="error">❌ Konto hat sich geändert. Bitte erneut anmelden.</p>',
                 next=html.escape(_safe_next(next), quote=True),
             ),
             status_code=401,
         )
+    login_limiter.record_success(actor_key)
     resp = RedirectResponse(url=_safe_next(next), status_code=303)
     _set_session_cookie(resp, token, request)
     return resp

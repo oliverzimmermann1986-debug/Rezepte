@@ -38,6 +38,140 @@ def _headers(token):
     return {"Authorization": "Bearer " + token}
 
 
+@pytest.mark.parametrize("endpoint", ["native", "web"])
+@pytest.mark.parametrize("admin_action", ["reset", "recreate", "disable", "role", "revoke", "delete"])
+@pytest.mark.parametrize("race_stage", ["verification", "session_insert"])
+def test_password_login_rejects_account_changed_during_verification(account_api, monkeypatch, endpoint, admin_action, race_stage):
+    client, db, user_id, _ = account_api
+    client.headers.pop("Authorization", None)
+    client.cookies.clear()
+    replacement_hash = auth.hash_password("replacement-password")
+    original_verify = auth.verify_password
+    original_create = db.session_create
+    changed = False
+
+    def change_account():
+        nonlocal changed
+        assert not changed
+        changed = True
+        if admin_action == "reset":
+            db.user_set_password(user_id, replacement_hash)
+        elif admin_action == "disable":
+            db.user_set_disabled(user_id, True)
+        elif admin_action == "role":
+            db.user_update_security(user_id, role="admin")
+        elif admin_action == "revoke":
+            db.user_revoke_sessions("anna")
+        else:
+            assert db.user_delete(user_id)
+            if admin_action == "recreate":
+                assert db.user_create("anna", replacement_hash) != user_id
+
+    def verify_then_change_account(plain, stored):
+        accepted = original_verify(plain, stored)
+        if accepted and plain == "old-pass" and not changed:
+            change_account()
+        return accepted
+
+    def create_after_account_change(*args, **kwargs):
+        change_account()
+        return original_create(*args, **kwargs)
+
+    if race_stage == "verification":
+        monkeypatch.setattr(auth, "verify_password", verify_then_change_account)
+    else:
+        monkeypatch.setattr(db, "session_create", create_after_account_change)
+    if endpoint == "native":
+        response = client.post("/api/auth/login", json={"username": "anna", "password": "old-pass"})
+        token = response.json().get("token", "")
+    else:
+        response = client.post("/login", data={"username": "anna", "password": "old-pass"},
+                               headers={"Origin": "http://testserver"}, follow_redirects=False)
+        token = response.cookies.get(auth.SESSION_COOKIE, "")
+    assert changed
+    current_user = db.user_get_by_name("anna")
+    if admin_action in {"reset", "recreate"}:
+        assert current_user["password_hash"] == replacement_hash
+    accepted_session = bool(token and auth.session_user(token) == "anna")
+    assert response.status_code == 401, f"status={response.status_code}; stale password issued valid session={accepted_session}"
+    assert not token
+    assert not current_user or not db.session_list(current_user["id"])
+
+
+@pytest.mark.parametrize("admin_action", ["reset", "recreate"])
+def test_registration_session_is_bound_to_inserted_account(account_api, monkeypatch, admin_action):
+    client, db, _, _ = account_api
+    original_register = accounts.register
+    replacement_hash = auth.hash_password("replacement-password")
+
+    def register_then_change_account(*args, **kwargs):
+        user_id = original_register(*args, **kwargs)
+        if admin_action == "reset":
+            db.user_set_password(user_id, replacement_hash)
+        else:
+            assert db.user_delete(user_id)
+            assert db.user_create("new-person", replacement_hash) != user_id
+        return user_id
+
+    monkeypatch.setattr(accounts, "register", register_then_change_account)
+    response = client.post("/api/auth/register", json={"username": "new-person", "password": "registration-password"})
+    assert response.status_code == 401 and "token" not in response.json()
+    assert not db.session_list(db.user_get_by_name("new-person")["id"])
+
+
+@pytest.mark.parametrize("endpoint", ["native", "web"])
+def test_unchanged_password_login_verifies_once_and_issues_session(account_api, monkeypatch, endpoint):
+    client, db, _, _ = account_api
+    client.headers.pop("Authorization", None)
+    original_verify = auth.verify_password
+    checks = []
+
+    def verify(plain, stored):
+        checks.append(plain == "old-pass")
+        return original_verify(plain, stored)
+
+    monkeypatch.setattr(auth, "verify_password", verify)
+    if endpoint == "native":
+        response = client.post("/api/auth/login", json={"username": "ANNA", "password": "old-pass"})
+        assert response.status_code == 200
+        token = response.json()["token"]
+    else:
+        response = client.post("/login", data={"username": "ANNA", "password": "old-pass"},
+                               headers={"Origin": "http://testserver"}, follow_redirects=False)
+        assert response.status_code == 303
+        token = response.cookies[auth.SESSION_COOKIE]
+    assert checks == [True]
+    assert auth.session_user(token) == "anna"
+    assert "password_hash" not in auth._session_payload(token)
+
+
+@pytest.mark.parametrize("change", [None, "password", "version", "migrated_user"])
+def test_legacy_password_identity_remains_bound_to_verified_config(test_db, monkeypatch, password_hash, change):
+    values = {("web", "username"): "legacy-admin", ("web", "password"): password_hash,
+              ("web", "secret_key"): "legacy-password-snapshot-test-key-" * 3,
+              ("web", "session_version"): 0}
+
+    class Config:
+        def get(self, *keys, default=None):
+            return values.get(keys, default)
+
+    monkeypatch.setattr(auth, "get_config", lambda: Config())
+    proof = auth.password_login_identity("legacy-admin", "old-pass")
+    assert proof and proof["legacy"]
+    if change == "password":
+        values[("web", "password")] = "replacement-password"
+    elif change == "version":
+        values[("web", "session_version")] = 1
+    elif change == "migrated_user":
+        test_db.user_create("legacy-admin", password_hash, role="admin")
+    if change:
+        with pytest.raises(ValueError):
+            auth.create_session("legacy-admin", expected_credentials=proof)
+    else:
+        token = auth.create_session("legacy-admin", expected_credentials=proof)
+        assert auth.session_user(token) == "legacy-admin"
+
+
 def test_profile_and_session_payload_use_stable_user_identity(account_api):
     client, db, user_id, _ = account_api
     profile = client.get("/api/account/profile")

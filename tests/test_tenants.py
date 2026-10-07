@@ -182,7 +182,7 @@ def test_failed_browser_login_does_not_log_entered_username_or_ip(households, mo
     client, db, users, login = households
     from app import main
     from app.security import LoginRateLimiter
-    monkeypatch.setattr(main, "check_credentials", lambda *_args: False)
+    monkeypatch.setattr(main, "password_login_identity", lambda *_args: None)
     monkeypatch.setattr(main, "login_limiter", LoginRateLimiter())
     monkeypatch.setattr(main, "client_ip", lambda _request: "192.0.2.123")
     response = client.post("/login", data={"username": "accidentally-pasted-private-value", "password": "test-value"},

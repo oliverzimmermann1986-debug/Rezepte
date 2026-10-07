@@ -10,7 +10,7 @@ from ..auth import (
     ROLE_GUEST,
     ROLE_USER,
     GUEST_MAX_AGE,
-    check_credentials,
+    password_login_identity,
     create_guest_session,
     create_session,
     guest_access_payload,
@@ -90,9 +90,15 @@ def register_account(payload: Registration, request: Request) -> dict:
         raise HTTPException(429, "Zu viele Registrierungsversuche. Bitte später erneut versuchen",
                             headers={"Retry-After": str(remaining + 1)})
     registration_limiter.record_fail(key)
-    accounts.register(get_db(), payload.username, hash_password(payload.password),
-                      invitation_token=payload.invitation_token.strip())
-    return {"token": create_session(payload.username, request=request), "token_type": "bearer",
+    password_hash = hash_password(payload.password)
+    user_id = accounts.register(get_db(), payload.username, password_hash,
+                                invitation_token=payload.invitation_token.strip())
+    try:
+        token = create_session(payload.username, request=request,
+                               expected_credentials={"user_id": user_id, "version": 0, "password_hash": password_hash})
+    except ValueError as exc:
+        raise HTTPException(401, "Das Konto hat sich geändert. Bitte erneut anmelden") from exc
+    return {"token": token, "token_type": "bearer",
             "expires_in": 60 * 60 * 24 * 14, **_access_payload(payload.username)}
 
 
@@ -111,13 +117,18 @@ def native_login(payload: NativeLogin, request: Request) -> dict:
             f"Zu viele Login-Versuche. Erneut versuchen in {remaining + 1} Sekunden.",
             headers={"Retry-After": str(remaining + 1)},
         )
-    if not check_credentials(username, payload.password):
+    credentials = password_login_identity(username, payload.password)
+    if credentials is None:
         login_ip_limiter.record_fail(ip_key)
         login_limiter.record_fail(limiter_key)
         raise HTTPException(401, "Benutzername oder Passwort falsch")
+    try:
+        token = create_session(username, request=request, expected_credentials=credentials)
+    except ValueError as exc:
+        raise HTTPException(401, "Das Konto hat sich geändert. Bitte erneut anmelden") from exc
     login_limiter.record_success(limiter_key)
     return {
-        "token": create_session(username, request=request),
+        "token": token,
         "token_type": "bearer",
         "expires_in": 60 * 60 * 24 * 14,
         **_access_payload(username),

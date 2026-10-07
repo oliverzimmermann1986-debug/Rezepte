@@ -46,8 +46,8 @@ def test_login_lock_is_shared_between_html_and_native_but_not_all_nat_users(clie
         monkeypatch.setattr(module, 'login_limiter', actor)
         monkeypatch.setattr(module, 'login_ip_limiter', ip_limit)
         monkeypatch.setattr(module, 'client_ip', lambda _request: '192.0.2.100')
-        monkeypatch.setattr(module, 'check_credentials', lambda name, pw: pw == 'valid-test-password')
-        monkeypatch.setattr(module, 'create_session', lambda name, request=None: 'test-token-' + name)
+        monkeypatch.setattr(module, 'password_login_identity', lambda name, pw: {'user_id': 1} if pw == 'valid-test-password' else None)
+        monkeypatch.setattr(module, 'create_session', lambda name, request=None, expected_credentials=None: 'test-token-' + name)
     test_db.user_create('nat-other', 'unused')
     for index in range(5):
         if index % 2:

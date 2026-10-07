@@ -70,8 +70,12 @@ def verify_password(plain: str, stored: str) -> bool:
     return hmac.compare_digest(plain.encode("utf-8"), str(stored).encode("utf-8"))
 
 
-def check_credentials(username: str, password: str) -> bool:
-    """Prüft Login. Ablauf:
+def password_login_identity(username: str, password: str) -> Optional[dict]:
+    """Prüft das Passwort und bindet den Nachweis an diesen Kontostand.
+
+    Der Aufrufer muss diesen Snapshot bei der Session-Erstellung übergeben;
+    ein späterer erneuter Lookup nur nach Namen wäre nach einem Reset unsicher.
+    Ablauf:
       1. DB-User suchen (Multi-User-Pfad). Bei Match und !disabled → ok.
       2. Fallback auf config.web.{username,password} (Backwards-Compat für
          frische Installs ohne DB-Migration und für vor-Migrations-State).
@@ -82,14 +86,16 @@ def check_credentials(username: str, password: str) -> bool:
     if user_row:
         if user_row.get("disabled"):
             verify_password(password, _DUMMY_PASSWORD_HASH)
-            return False
+            return None
         if verify_password(password, user_row["password_hash"]):
             try:
                 db.user_update_last_login(int(user_row["id"]))
             except Exception:
                 pass  # Login darf nicht failen weil last_login_at-update bricht
-            return True
-        return False
+            return {"user_id": int(user_row["id"]),
+                    "version": int(user_row.get("session_version") or 0),
+                    "password_hash": user_row["password_hash"]}
+        return None
 
     # Auch unbekannte Namen durchlaufen genau einen bcrypt-Check. Damit ist
     # die Existenz eines aktiven Kontos nicht über einen groben Timing-Sprung
@@ -101,13 +107,21 @@ def check_credentials(username: str, password: str) -> bool:
     # ein admin in der DB — dann läuft alles über den DB-Pfad.
     with db.conn() as c:
         if c.execute("SELECT 1 FROM users LIMIT 1").fetchone():
-            return False
+            return None
     cfg = get_config()
     cfg_u = str(cfg.get("web", "username", default="admin"))
     cfg_p = cfg.get("web", "password", default="") or ""
+    cfg_version = int(cfg.get("web", "session_version", default=0) or 0)
     user_ok = hmac.compare_digest(str(username).encode("utf-8"), cfg_u.encode("utf-8"))
     pass_ok = verify_password(password, cfg_p)
-    return user_ok and pass_ok
+    if user_ok and pass_ok:
+        return {"legacy": True, "username": cfg_u, "version": cfg_version, "password_hash": cfg_p}
+    return None
+
+
+def check_credentials(username: str, password: str) -> bool:
+    """Bool-kompatible Passwortprüfung; Login-Routen verwenden den Snapshot."""
+    return password_login_identity(username, password) is not None
 
 
 def migrate_users_to_db() -> None:
@@ -197,7 +211,8 @@ def _serializer() -> URLSafeTimedSerializer:
 
 
 def create_session(username: str, request: Optional[Request] = None, auth_method: str = "password",
-                   expected_identity: Optional[dict] = None) -> str:
+                   expected_identity: Optional[dict] = None,
+                   expected_credentials: Optional[dict] = None) -> str:
     """Erstellt eine widerrufbare Session.
 
     Each DB login gets its own opaque ID. The account version still revokes all
@@ -216,7 +231,8 @@ def create_session(username: str, request: Optional[Request] = None, auth_method
         client_label = " ".join(agent.split())[:160] or "Unbekanntes Gerät"
         user = get_db().session_create(int(user["id"]), session_id, lifetime=SESSION_MAX_AGE,
                                       client_label=client_label, auth_method=auth_method,
-                                      expected_identity=expected_identity)
+                                      expected_identity=expected_identity,
+                                      expected_credentials=expected_credentials)
         payload = {
             "user": str(user["username"]),
             "uid": int(user["id"]),
@@ -224,7 +240,7 @@ def create_session(username: str, request: Optional[Request] = None, auth_method
             "sid": session_id,
         }
     else:
-        if expected_identity is not None:
+        if expected_identity is not None or (expected_credentials is not None and not expected_credentials.get("legacy")):
             raise ValueError("Das angemeldete Konto hat sich geändert")
         db = get_db()
         with db.conn() as c:
@@ -232,12 +248,18 @@ def create_session(username: str, request: Optional[Request] = None, auth_method
                 raise ValueError("Unbekannter Benutzer")
         cfg = get_config()
         cfg_user = str(cfg.get("web", "username", default="admin"))
+        cfg_version = int(cfg.get("web", "session_version", default=0) or 0)
         if not hmac.compare_digest(str(username), cfg_user):
             raise ValueError("Unbekannter Benutzer")
+        if expected_credentials is not None:
+            if (auth_method != "password" or expected_credentials.get("username") != cfg_user
+                    or expected_credentials.get("version") != cfg_version
+                    or expected_credentials.get("password_hash") != (cfg.get("web", "password", default="") or "")):
+                raise ValueError("Die Zugangsdaten haben sich geändert. Bitte erneut anmelden")
         payload = {
             "user": cfg_user,
             "legacy": True,
-            "ver": int(cfg.get("web", "session_version", default=0) or 0),
+            "ver": cfg_version,
         }
     return _serializer().dumps(payload)
 

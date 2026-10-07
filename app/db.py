@@ -4357,13 +4357,22 @@ class Database:
             return [{**dict(r), "disabled": bool(r["disabled"])} for r in rows]
 
     def session_create(self, user_id: int, session_id: str, *, lifetime: int,
-                       client_label: str, auth_method: str, expected_identity: Optional[dict] = None) -> dict:
+                       client_label: str, auth_method: str, expected_identity: Optional[dict] = None,
+                       expected_credentials: Optional[dict] = None) -> dict:
         now = time.time()
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
             user = c.execute("SELECT * FROM users WHERE id=? AND disabled=0", (user_id,)).fetchone()
             if user is None:
                 raise ValueError("Benutzerkonto ist nicht verfügbar")
+            if expected_credentials is not None:
+                # bcrypt ran outside this writer lock. Bind that successful
+                # check to the exact account before issuing a new session.
+                if (auth_method != "password" or expected_credentials.get("legacy")
+                        or expected_credentials.get("user_id") != user["id"]
+                        or expected_credentials.get("version") != user["session_version"]
+                        or expected_credentials.get("password_hash") != user["password_hash"]):
+                    raise ValueError("Die Zugangsdaten haben sich geändert. Bitte erneut anmelden")
             if expected_identity is not None:
                 # Finish the provider handoff and issue the session against the
                 # same immutable identity under one writer lock. A concurrent

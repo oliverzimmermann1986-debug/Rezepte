@@ -2,10 +2,10 @@ def test_native_login_returns_bearer_session(client, test_db, monkeypatch):
     import app.routes.api_auth as api_auth
 
     test_db.user_create("anna", "unused-test-hash", role="user")
-    monkeypatch.setattr(api_auth, "check_credentials", lambda username, password: (
-        username == "anna" and password == "geheim"
+    monkeypatch.setattr(api_auth, "password_login_identity", lambda username, password: (
+        {"user_id": 1} if username == "anna" and password == "geheim" else None
     ))
-    monkeypatch.setattr(api_auth, "create_session", lambda username, request=None: f"token-for-{username}")
+    monkeypatch.setattr(api_auth, "create_session", lambda username, request=None, expected_credentials=None: f"token-for-{username}")
 
     response = client.post(
         "/api/auth/login",
@@ -30,7 +30,7 @@ def test_native_login_returns_bearer_session(client, test_db, monkeypatch):
 def test_native_login_rejects_bad_credentials(client, monkeypatch):
     import app.routes.api_auth as api_auth
 
-    monkeypatch.setattr(api_auth, "check_credentials", lambda *_: False)
+    monkeypatch.setattr(api_auth, "password_login_identity", lambda *_: None)
 
     response = client.post(
         "/api/auth/login",
@@ -57,7 +57,7 @@ def test_native_login_rate_limits_repeated_failures(client, monkeypatch):
             self.failures.discard(key)
 
     monkeypatch.setattr(api_auth, "login_limiter", FakeLimiter())
-    monkeypatch.setattr(api_auth, "check_credentials", lambda *_: False)
+    monkeypatch.setattr(api_auth, "password_login_identity", lambda *_: None)
 
     assert client.post(
         "/api/auth/login", json={"username": "anna", "password": "falsch"}
@@ -79,7 +79,7 @@ def test_native_login_checks_password_with_legacy_proxy_settings(client, monkeyp
 
     monkeypatch.setattr(auth, "get_config", lambda: LegacyConfig())
     monkeypatch.setattr(security, "request_is_from_trusted_proxy", lambda _request: True)
-    monkeypatch.setattr(api_auth, "check_credentials", lambda *_: False)
+    monkeypatch.setattr(api_auth, "password_login_identity", lambda *_: None)
     monkeypatch.setattr(api_auth, "create_session", lambda _username: (_ for _ in ()).throw(
         AssertionError("No session may be issued for bad credentials")))
 
