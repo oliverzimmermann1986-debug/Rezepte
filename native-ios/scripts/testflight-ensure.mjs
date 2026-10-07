@@ -1,9 +1,130 @@
 import { readFile } from "node:fs/promises";
 import { sign } from "node:crypto";
+import { pathToFileURL } from "node:url";
 
 const API_ORIGIN = "https://api.appstoreconnect.apple.com";
 const DEFAULT_TIMEOUT_SECONDS = 20 * 60;
 const DEFAULT_POLL_SECONDS = 15;
+export const EXTERNAL_GROUP_ID = "876c2be9-8c62-4708-a9f9-27c2caf77fb2";
+
+async function allPages(request, path) {
+  const items = [];
+  const seen = new Set();
+  while (path) {
+    const url = new URL(path, API_ORIGIN);
+    if (url.origin !== API_ORIGIN || url.username || url.password || url.hash || !url.pathname.startsWith('/v1/') || seen.has(url.href)) throw new Error('Unsafe or repeated App Store Connect pagination link.');
+    seen.add(url.href);
+    const result = await request(url.pathname + url.search);
+    if (!Array.isArray(result?.data)) throw new Error('Invalid App Store Connect collection response.');
+    items.push(...result.data);
+    path = result.links?.next || null;
+  }
+  return items;
+}
+
+function resourceBody(type, buildId) {
+  return JSON.stringify({ data: { type, relationships: { build: { data: { type: 'builds', id: buildId } } } } });
+}
+
+function reviewStateOf(reviews) {
+  if (reviews.length > 1) throw new Error('Ambiguous beta review submissions for the selected build.');
+  const state = reviews[0]?.attributes?.betaReviewState || null;
+  if (state && !['WAITING_FOR_REVIEW', 'IN_REVIEW', 'APPROVED'].includes(state)) throw new Error(`External testing blocked by beta review: ${state}.`);
+  return state;
+}
+
+// Only this existing private group is authorized. No tester/group creation and
+// no public-link or App Store publication endpoints belong to this operation.
+export async function ensureExternalDistribution({ request, build, appId, whatToTest }) {
+  if (build?.type !== 'builds' || !build.id || build.attributes?.processingState !== 'VALID' || build.attributes?.expired) throw new Error('External testing requires the exact unexpired VALID build.');
+  if (build.attributes?.buildAudienceType !== 'APP_STORE_ELIGIBLE') throw new Error('Build is not eligible for external TestFlight testing.');
+  const group = (await request(`/v1/betaGroups/${EXTERNAL_GROUP_ID}`))?.data;
+  const groupApp = (await request(`/v1/betaGroups/${EXTERNAL_GROUP_ID}/app`))?.data;
+  const buildApp = (await request(`/v1/builds/${encodeURIComponent(build.id)}/app`))?.data;
+  if (group?.id !== EXTERNAL_GROUP_ID || group.type !== 'betaGroups' || group.attributes?.isInternalGroup !== false || group.attributes?.name !== 'Privater Test') throw new Error('Expected the existing external group Privater Test.');
+  if (groupApp?.type !== 'apps' || groupApp.id !== appId || buildApp?.type !== 'apps' || buildApp.id !== appId) throw new Error('External group and build must belong to the requested app.');
+
+  const buildPath = `/v1/builds/${encodeURIComponent(build.id)}`;
+  const checkNotificationScope = async () => {
+    const groups = await allPages(request, `${buildPath}/betaGroups?fields%5BbetaGroups%5D=name,isInternalGroup&limit=200`);
+    const individuals = await allPages(request, `${buildPath}/individualTesters?limit=200`);
+    if (groups.some(item => item.id !== EXTERNAL_GROUP_ID) || individuals.length) throw new Error('Build has other assigned groups or individual testers; notification scope is not exclusively Privater Test.');
+  };
+  await checkNotificationScope();
+  const testers = await allPages(request, `/v1/betaGroups/${EXTERNAL_GROUP_ID}/betaTesters?fields%5BbetaTesters%5D=state&limit=200`);
+  if (!testers.length) throw new Error('Privater Test has no existing testers; no invitations will be created.');
+  let detail = (await request(`${buildPath}/buildBetaDetail`))?.data;
+  if (!detail?.id || detail.type !== 'buildBetaDetails') throw new Error('Missing build beta details.');
+  const reviewsPath = `/v1/betaAppReviewSubmissions?filter%5Bbuild%5D=${encodeURIComponent(build.id)}&limit=200`;
+  let reviews = await allPages(request, reviewsPath);
+  let reviewState = reviewStateOf(reviews);
+  const allowed = new Set(['READY_FOR_BETA_SUBMISSION', 'WAITING_FOR_BETA_REVIEW', 'IN_BETA_REVIEW', 'BETA_APPROVED', 'READY_FOR_BETA_TESTING', 'IN_BETA_TESTING']);
+  if (!allowed.has(detail.attributes?.externalBuildState) || reviewState === 'REJECTED') throw new Error(`External testing blocked: ${detail.attributes?.externalBuildState || 'UNKNOWN'}; review: ${reviewState || 'NONE'}.`);
+
+  // Inspect existing review data without logging or replacing personal details.
+  const localizations = await allPages(request, `/v1/apps/${appId}/betaAppLocalizations?limit=200`);
+  const reviewDetail = (await request(`/v1/apps/${appId}/betaAppReviewDetail`))?.data?.attributes;
+  const missing = [];
+  if (!localizations.length || localizations.some(item => !item.attributes?.description?.trim())) missing.push('betaAppLocalizations.description');
+  if (!localizations.some(item => item.attributes?.feedbackEmail?.trim())) missing.push('betaAppLocalizations.feedbackEmail');
+  for (const name of ['contactFirstName', 'contactLastName', 'contactEmail', 'contactPhone']) if (!reviewDetail?.[name]?.trim()) missing.push(`betaAppReviewDetails.${name}`);
+  if (reviewDetail?.demoAccountRequired === true) for (const name of ['demoAccountName', 'demoAccountPassword']) if (!reviewDetail[name]?.trim()) missing.push(`betaAppReviewDetails.${name}`);
+  if (typeof reviewDetail?.demoAccountRequired !== 'boolean') missing.push('betaAppReviewDetails.demoAccountRequired');
+  if (!whatToTest?.trim() || whatToTest.length > 4000) missing.push('build.whatToTest');
+  if (missing.length) throw new Error(`Missing beta review metadata: ${missing.join(', ')}`);
+
+  const notes = await allPages(request, `${buildPath}/betaBuildLocalizations?limit=200`);
+  const german = notes.find(item => item.attributes?.locale === 'de-DE');
+  const relationship = `/v1/betaGroups/${EXTERNAL_GROUP_ID}/relationships/builds`;
+  let assigned = (await allPages(request, `${relationship}?limit=200`)).some(item => item.id === build.id);
+  if (german?.attributes?.whatsNew !== whatToTest.trim()) {
+    // ASC names the localized What to Test property whatsNew.
+    await request(german ? `/v1/betaBuildLocalizations/${encodeURIComponent(german.id)}` : '/v1/betaBuildLocalizations', {
+      method: german ? 'PATCH' : 'POST',
+      body: JSON.stringify({ data: { type: 'betaBuildLocalizations', ...(german ? { id: german.id } : {}), attributes: { whatsNew: whatToTest.trim(), ...(german ? {} : { locale: 'de-DE' }) }, ...(german ? {} : { relationships: { build: { data: { type: 'builds', id: build.id } } } }) } }),
+    });
+  }
+  if (!assigned) {
+    await request(relationship, { method: 'POST', body: JSON.stringify({ data: [{ type: 'builds', id: build.id }] }) });
+    assigned = (await allPages(request, `${relationship}?limit=200`)).some(item => item.id === build.id);
+  }
+  if (!assigned) throw new Error('External group assignment was not confirmed by Apple.');
+  await checkNotificationScope();
+  if (detail.attributes?.autoNotifyEnabled !== true) {
+    await request(`/v1/buildBetaDetails/${encodeURIComponent(detail.id)}`, { method: 'PATCH', body: JSON.stringify({ data: { type: 'buildBetaDetails', id: detail.id, attributes: { autoNotifyEnabled: true } } }) });
+    const confirmation = (await request(`${buildPath}/buildBetaDetail`))?.data;
+    if (confirmation?.attributes?.autoNotifyEnabled !== true) throw new Error('Apple did not confirm automatic notification for the private test build.');
+  }
+  let submitted = false;
+  if (detail.attributes?.externalBuildState === 'READY_FOR_BETA_SUBMISSION' && !reviewState) {
+    try {
+      await request('/v1/betaAppReviewSubmissions', { method: 'POST', body: resourceBody('betaAppReviewSubmissions', build.id) });
+      submitted = true;
+    } catch (error) {
+      // Another authorized run may have submitted the same build concurrently.
+      if (error.status !== 409) throw error;
+      reviews = await allPages(request, reviewsPath);
+      if (!reviewStateOf(reviews)) throw error;
+    }
+  }
+  detail = (await request(`${buildPath}/buildBetaDetail`))?.data;
+  reviews = await allPages(request, reviewsPath);
+  reviewState = reviewStateOf(reviews);
+  let notificationSent = false;
+  if (detail?.attributes?.externalBuildState === 'READY_FOR_BETA_TESTING') {
+    await checkNotificationScope();
+    await request('/v1/buildBetaNotifications', { method: 'POST', body: resourceBody('buildBetaNotifications', build.id) });
+    notificationSent = true;
+    detail = (await request(`${buildPath}/buildBetaDetail`))?.data;
+  }
+  const state = detail?.attributes?.externalBuildState || 'UNKNOWN';
+  if (!allowed.has(state) || reviewState === 'REJECTED') throw new Error(`External testing blocked after submission: ${state}; review: ${reviewState || 'NONE'}.`);
+  return { externalGroupAssigned: true, externalGroupId: EXTERNAL_GROUP_ID, externalGroupName: group.attributes.name,
+    externalTesterCount: testers.length, externalBuildState: state, betaReviewState: reviewState,
+    betaReviewSubmitted: submitted, externalAutoNotifyEnabled: detail?.attributes?.autoNotifyEnabled === true,
+    externalNotificationSent: notificationSent, externalTestingAvailable: state === 'IN_BETA_TESTING',
+    externalStatus: state === 'IN_BETA_TESTING' ? 'TESTING' : ['WAITING_FOR_BETA_REVIEW', 'IN_BETA_REVIEW'].includes(state) || ['WAITING_FOR_REVIEW', 'IN_REVIEW'].includes(reviewState) || submitted ? 'REVIEW_PENDING' : 'NOT_YET_TESTING' };
+}
 
 function required(name) {
   const value = process.env[name]?.trim();
@@ -58,11 +179,13 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function compactApiError(payload, fallback) {
+export function compactApiError(payload, fallback) {
   if (!payload || !Array.isArray(payload.errors)) return fallback;
-  return payload.errors
-    .map((error) => [error.status, error.code, error.title, error.detail].filter(Boolean).join(" "))
-    .join(" | ");
+  // Apple's free-form title/detail may echo review contact or demo values.
+  // Keep HTTP context and machine error codes only; never log payload fields.
+  const codes = payload.errors.map(error => error.code)
+    .filter(code => typeof code === 'string' && /^[A-Z][A-Z0-9_.-]{0,99}$/.test(code));
+  return codes.length ? `${fallback} (${[...new Set(codes)].join(', ')})` : fallback;
 }
 
 async function main() {
@@ -73,6 +196,8 @@ async function main() {
   const buildNumber = required("ASC_BUILD_NUMBER");
   const marketingVersion = required("ASC_MARKETING_VERSION");
   const assignInternalGroup = booleanEnvironment("ASC_ASSIGN_INTERNAL_GROUP");
+  const assignExternalGroup = booleanEnvironment("ASC_ASSIGN_EXTERNAL_GROUP");
+  if (assignExternalGroup && assignInternalGroup) throw new Error('Choose either internal or external group assignment.');
   const allowExistingBuild = booleanEnvironment("ASC_ALLOW_EXISTING_BUILD");
   const uploadStartedAtRaw = process.env.ASC_UPLOAD_STARTED_AT?.trim();
   if (!allowExistingBuild && !uploadStartedAtRaw) {
@@ -89,6 +214,7 @@ async function main() {
 
   async function request(path, options = {}) {
     const response = await fetch(`${API_ORIGIN}${path}`, {
+      signal: AbortSignal.timeout(30_000),
       ...options,
       headers: {
         Authorization: `Bearer ${createToken({ issuerId, keyId, privateKey })}`,
@@ -108,7 +234,9 @@ async function main() {
     }
     if (!response.ok) {
       const fallback = `${options.method ?? "GET"} ${path} returned HTTP ${response.status}`;
-      throw new Error(compactApiError(payload, fallback));
+      const error = new Error(compactApiError(payload, fallback));
+      error.status = response.status;
+      throw error;
     }
     return payload;
   }
@@ -122,7 +250,7 @@ async function main() {
       "filter[version]": buildNumber,
       "filter[preReleaseVersion.platform]": "IOS",
       "filter[preReleaseVersion.version]": marketingVersion,
-      "fields[builds]": "version,uploadedDate,processingState,expired,preReleaseVersion",
+      "fields[builds]": "version,uploadedDate,processingState,expired,preReleaseVersion,buildAudienceType",
       "fields[preReleaseVersions]": "version,platform",
       include: "preReleaseVersion",
       limit: "20",
@@ -138,6 +266,7 @@ async function main() {
       const preReleaseId = candidate.relationships?.preReleaseVersion?.data?.id;
       const preRelease = preReleaseVersions.get(preReleaseId);
       if (
+        candidate.attributes?.version !== buildNumber ||
         preRelease?.version !== marketingVersion ||
         preRelease?.platform !== "IOS"
       ) {
@@ -217,6 +346,9 @@ async function main() {
     }
   }
 
+  const external = assignExternalGroup
+    ? await ensureExternalDistribution({ request, build, appId, whatToTest: await readFile(new URL('./testflight-what-to-test-1.9.0.txt', import.meta.url), 'utf8') })
+    : { externalGroupAssigned: false };
   console.log(
     JSON.stringify(
       {
@@ -232,6 +364,7 @@ async function main() {
         groupHasAccessToAllBuilds: group?.attributes?.hasAccessToAllBuilds ?? null,
         testerCount,
         testerStates,
+        ...external,
       },
       null,
       2,
@@ -239,7 +372,7 @@ async function main() {
   );
 }
 
-main().catch((error) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error) => {
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });

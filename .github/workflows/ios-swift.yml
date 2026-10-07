@@ -8,6 +8,11 @@ on:
         required: false
         default: false
         type: boolean
+      assign_external_group:
+        description: "Build für die bestehende externe Gruppe Privater Test einreichen und nach Freigabe verteilen"
+        required: false
+        default: false
+        type: boolean
       build_number:
         description: "CFBundleVersion für diesen Upload (leer = automatisch aus Laufnummer und Versuch)"
         required: false
@@ -17,6 +22,8 @@ on:
     paths:
       - "ios-swift/**"
       - "native-ios/scripts/testflight-ensure.mjs"
+      - "native-ios/scripts/testflight-ensure.test.mjs"
+      - "native-ios/scripts/testflight-what-to-test-1.9.0.txt"
       - "app/main.py"
       - "app/auth.py"
       - "app/db.py"
@@ -28,6 +35,8 @@ on:
     paths:
       - "ios-swift/**"
       - "native-ios/scripts/testflight-ensure.mjs"
+      - "native-ios/scripts/testflight-ensure.test.mjs"
+      - "native-ios/scripts/testflight-what-to-test-1.9.0.txt"
       - "app/main.py"
       - "app/auth.py"
       - "app/db.py"
@@ -57,6 +66,14 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Use Node.js for TestFlight contract tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.4
+
+      - name: Verify TestFlight distribution guards without network
+        run: node --test ../native-ios/scripts/testflight-ensure.test.mjs
 
       - name: Install pinned XcodeGen
         shell: bash
@@ -360,6 +377,7 @@ jobs:
           ASC_MARKETING_VERSION: "1.2.0"
           ASC_UPLOAD_STARTED_AT: ${{ steps.upload.outputs.started_at }}
           ASC_ASSIGN_INTERNAL_GROUP: "false"
+          ASC_ASSIGN_EXTERNAL_GROUP: ${{ inputs.assign_external_group && 'true' || 'false' }}
         run: |
           set -euo pipefail
           export ASC_API_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_API_KEY_ID.p8"

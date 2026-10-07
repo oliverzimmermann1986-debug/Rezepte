@@ -1,0 +1,7 @@
+Bitte die Kontoverwaltung mit Backend 1.9.0 prüfen:
+• Mein Konto: Kontodaten und Haushaltsfunktionen öffnen.
+• Passwort ändern und anschließend erneut anmelden.
+• Angemeldete Geräte prüfen, einzelne Sitzungen beenden und auf allen Geräten abmelden.
+• Als Administrator Benutzer erstellen, Rollen ändern, Konten deaktivieren und geschützte Löschvorgänge prüfen.
+• Mengen bestehender Einkaufsartikel ändern, zum Beispiel von 4 auf 2.
+Apple- und Google-Anmeldung sowie Kontoverknüpfungen sind nur verfügbar, wenn der jeweilige Anbieter auf dem Server eingerichtet und aktiviert wurde.
