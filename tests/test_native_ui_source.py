@@ -190,7 +190,9 @@ def test_testflight_group_assignment_requires_explicit_workflow_input():
     assert 'include: "preReleaseVersion"' in ensure
     assert "preReleaseVersion" in ensure
     assert '"filter[preReleaseVersion.version]": marketingVersion' in ensure
-    assert "preRelease?.version !== marketingVersion" in ensure
+    assert "version?.version !== marketingVersion" in ensure
+    assert "version.platform !== 'IOS'" in ensure
+    assert "build = selectExactBuild(buildsPayload, { buildNumber, marketingVersion, uploadStartedAt });" in ensure
     assert "uploadedAt >= uploadStartedAt" in ensure
     assert "if (assignInternalGroup)" in ensure
     assert "hasAccessToAllBuilds" in ensure
