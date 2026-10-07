@@ -25,6 +25,7 @@ test('duplicate exact build matches fail closed', () => {
 test('API diagnostics never expose contact or demo data from free-form errors', () => {
   const message = compactApiError({ errors: [{ status: '409', code: 'ENTITY_ERROR.ATTRIBUTE.REQUIRED', title: 'Private Reviewer', detail: 'demo-password contact@example.invalid' }, { code: 'echoed secret' }] }, 'POST /v1/betaAppReviewSubmissions returned HTTP 409');
   assert.equal(message, 'POST /v1/betaAppReviewSubmissions returned HTTP 409 (ENTITY_ERROR.ATTRIBUTE.REQUIRED)');
+  assert.equal(compactApiError({ errors: [{ code: 'PARAMETER_ERROR.INVALID', source: { parameter: 'filter[builds]' }, detail: 'private-value' }] }, 'HTTP 400'), 'HTTP 400 (PARAMETER_ERROR.INVALID); parameters: filter[builds]');
 });
 function fixture(options = {}) {
   const writes = [], calls = [];
@@ -45,11 +46,11 @@ function fixture(options = {}) {
     if (method === 'GET' && path === `/v1/betaGroups/${EXTERNAL_GROUP_ID}`) return { data: { type: 'betaGroups', id: options.groupId || EXTERNAL_GROUP_ID, attributes: { name: options.groupName || 'Privater Test', isInternalGroup: !!options.internal } } };
     if (path === `/v1/betaGroups/${EXTERNAL_GROUP_ID}/app`) return { data: { type: 'apps', id: options.groupApp || 'app-exact' } };
     if (path === '/v1/builds/build-exact/app') return { data: { type: 'apps', id: options.buildApp || 'app-exact' } };
-    if (path === '/v1/betaGroups') {
-      assert.equal(url.searchParams.get('filter[app]'), 'app-exact');
-      assert.equal(url.searchParams.get('filter[builds]'), build.id);
-      return { data: options.otherGroup ? [{ id: 'unrelated-group' }] : assigned ? [{ id: EXTERNAL_GROUP_ID }] : [] };
-    }
+    if (path === '/v1/apps/app-exact/betaGroups') return { data: [
+      { type: 'betaGroups', id: EXTERNAL_GROUP_ID, attributes: { isInternalGroup: false } },
+      ...(options.otherGroup || options.unrelatedGroup || options.internalAll ? [{ type: 'betaGroups', id: 'unrelated-group', attributes: { isInternalGroup: !!options.internalAll, hasAccessToAllBuilds: !!options.internalAll } }] : []),
+    ] };
+    if (path === '/v1/betaGroups/unrelated-group/relationships/builds') return { data: options.otherGroup ? [{ type: 'builds', id: build.id }] : [] };
     if (path === '/v1/builds/build-exact/individualTesters') return { data: options.individuals ? [{ id: 'unrelated-tester' }] : [] };
     if (path === `/v1/betaGroups/${EXTERNAL_GROUP_ID}/betaTesters`) return { data: options.noTesters ? [] : [{ id: 'existing-tester', attributes: { state: 'ACCEPTED' } }] };
     if (path === '/v1/builds/build-exact/buildBetaDetail') return { data: { type: 'buildBetaDetails', id: 'detail-exact', attributes: { externalBuildState: state, autoNotifyEnabled: autoNotify } } };
@@ -106,6 +107,20 @@ test('repeating a pending review is idempotent and never creates a second invita
   assert.equal(f.writes.length, count);
   assert.equal(second.betaReviewSubmitted, false);
   assert.equal(second.externalStatus, 'REVIEW_PENDING');
+});
+
+test('group scope uses documented app and build linkages, allowing unrelated unassigned groups', async () => {
+  const f = fixture({ unrelatedGroup: true });
+  assert.equal((await f.run()).externalStatus, 'REVIEW_PENDING');
+  assert.ok(f.calls.some(call => call.path === '/v1/apps/app-exact/betaGroups'));
+  assert.ok(f.calls.some(call => call.path === '/v1/betaGroups/unrelated-group/relationships/builds'));
+  assert.ok(!f.calls.some(call => call.path === '/v1/betaGroups' || call.path === '/v1/builds/build-exact/betaGroups'));
+});
+
+test('existing internal all-builds groups are reported without removing or changing them', async () => {
+  const f = fixture({ internalAll: true });
+  await assert.rejects(f.run(), /"isInternalGroup":true,"hasAccessToAllBuilds":true/);
+  assert.equal(f.writes.length, 0);
 });
 
 test('approved ready build notifies existing testers once and verifies testing state', async () => {

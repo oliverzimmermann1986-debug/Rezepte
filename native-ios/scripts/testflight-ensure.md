@@ -46,9 +46,12 @@ zur Gruppenzuordnung nennt keine Voraussetzung eines bereits genehmigten
 Reviews. Das Skript folgt diesem Ablauf; die konkrete API-Annahme wird im
 Lauf geprüft, nicht aus den Mocktests abgeleitet. `APP_STORE_ELIGIBLE` und alle
 verwendeten externen Statuswerte sind mit Apples aktuellen API-Enums abgeglichen.
-Die Gruppenzuordnung wird über `GET /v1/betaGroups` mit `filter[app]` und
-`filter[builds]` gelesen. Die Beziehung `Build.betaGroups` besitzt keinen
-dokumentierten direkten GET-Endpunkt; dieser lieferte im ersten Lauf HTTP 403.
+Die Gruppenzuordnung wird über `GET /v1/apps/{id}/betaGroups` und die jeweilige
+`GET /v1/betaGroups/{id}/relationships/builds`-Liste gelesen. Die Beziehung
+`Build.betaGroups` besitzt keinen dokumentierten direkten GET-Endpunkt (HTTP403
+im ersten Lauf); die dokumentierte Collection-Filterkombination mit
+`filter[builds]` lieferte in der Live-API HTTP400. Unbekannte Zuordnungen werden
+mit Gruppen-ID und internen/All-Builds-Flags gemeldet, ohne Gruppen zu entfernen.
 
 `processingState: VALID` bestätigt nur die Apple-Verarbeitung. Das Ergebnis
 nennt zusätzlich `externalBuildState`, `betaReviewState`, Gruppenzuordnung und
@@ -69,6 +72,8 @@ Apple-Quellen (geprüft am 07.10.2026):
 - [Externe Tester und Reviewvoraussetzungen](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers)
 - [Build einer Gruppe zuordnen](https://developer.apple.com/documentation/appstoreconnectapi/post-v1-betagroups-_id_-relationships-builds)
 - [Gruppen nach App und Build filtern](https://developer.apple.com/documentation/appstoreconnectapi/get-v1-betagroups)
+- [Gruppen einer App lesen](https://developer.apple.com/documentation/appstoreconnectapi/get-v1-apps-_id_-betagroups)
+- [Build-Zuordnungen einer Gruppe lesen](https://developer.apple.com/documentation/appstoreconnectapi/get-v1-betagroups-_id_-relationships-builds)
 - [Beta-Review einreichen](https://developer.apple.com/documentation/appstoreconnectapi/post-v1-betaappreviewsubmissions)
 - [Build-Teststatus lesen](https://developer.apple.com/documentation/appstoreconnectapi/get-v1-builds-_id_-buildbetadetail)
 - [Bestehende Tester benachrichtigen](https://developer.apple.com/documentation/appstoreconnectapi/post-v1-buildbetanotifications)

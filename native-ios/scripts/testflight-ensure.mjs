@@ -46,12 +46,20 @@ export async function ensureExternalDistribution({ request, build, appId, whatTo
 
   const buildPath = `/v1/builds/${encodeURIComponent(build.id)}`;
   const checkNotificationScope = async () => {
-    // ASC exposes the reverse lookup through the betaGroups collection;
-    // GET /builds/{id}/betaGroups is not a supported read endpoint.
-    const groupQuery = new URLSearchParams({ 'filter[app]': appId, 'filter[builds]': build.id, 'fields[betaGroups]': 'name,isInternalGroup', limit: '200' });
-    const groups = await allPages(request, `/v1/betaGroups?${groupQuery}`);
+    // Read the app's actual groups and each build linkage. Apple's live API
+    // rejected the documented betaGroups filter[builds] query with HTTP 400.
+    const groups = await allPages(request, `/v1/apps/${encodeURIComponent(appId)}/betaGroups?limit=200`);
+    const otherAssignments = [];
+    for (const candidate of groups) {
+      if (candidate.type !== 'betaGroups' || !candidate.id) throw new Error('Invalid app beta group response.');
+      if (candidate.id === EXTERNAL_GROUP_ID) continue;
+      const builds = await allPages(request, `/v1/betaGroups/${encodeURIComponent(candidate.id)}/relationships/builds?limit=200`);
+      if (candidate.attributes?.hasAccessToAllBuilds === true || builds.some(item => item.id === build.id)) {
+        otherAssignments.push({ id: candidate.id, isInternalGroup: candidate.attributes?.isInternalGroup ?? null, hasAccessToAllBuilds: candidate.attributes?.hasAccessToAllBuilds ?? null });
+      }
+    }
     const individuals = await allPages(request, `${buildPath}/individualTesters?limit=200`);
-    if (groups.some(item => item.id !== EXTERNAL_GROUP_ID) || individuals.length) throw new Error('Build has other assigned groups or individual testers; notification scope is not exclusively Privater Test.');
+    if (otherAssignments.length || individuals.length) throw new Error(`Build notification scope is not exclusively Privater Test: other groups=${JSON.stringify(otherAssignments)}; individual tester count=${individuals.length}.`);
   };
   await checkNotificationScope();
   const testers = await allPages(request, `/v1/betaGroups/${EXTERNAL_GROUP_ID}/betaTesters?fields%5BbetaTesters%5D=state&limit=200`);
@@ -188,7 +196,10 @@ export function compactApiError(payload, fallback) {
   // Keep HTTP context and machine error codes only; never log payload fields.
   const codes = payload.errors.map(error => error.code)
     .filter(code => typeof code === 'string' && /^[A-Z][A-Z0-9_.-]{0,99}$/.test(code));
-  return codes.length ? `${fallback} (${[...new Set(codes)].join(', ')})` : fallback;
+  const parameters = payload.errors.map(error => error.source?.parameter)
+    .filter(parameter => typeof parameter === 'string' && /^[A-Za-z][A-Za-z0-9_.\[\]-]{0,99}$/.test(parameter));
+  return (codes.length ? `${fallback} (${[...new Set(codes)].join(', ')})` : fallback)
+    + (parameters.length ? `; parameters: ${[...new Set(parameters)].join(', ')}` : '');
 }
 
 export function selectExactBuild(payload, { buildNumber, marketingVersion, uploadStartedAt }) {
