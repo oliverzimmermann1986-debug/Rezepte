@@ -6,6 +6,8 @@ const API_ORIGIN = "https://api.appstoreconnect.apple.com";
 const DEFAULT_TIMEOUT_SECONDS = 20 * 60;
 const DEFAULT_POLL_SECONDS = 15;
 export const EXTERNAL_GROUP_ID = "876c2be9-8c62-4708-a9f9-27c2caf77fb2";
+// Existing internal distribution verified on build 11601; preserve its access.
+export const EXISTING_INTERNAL_ALL_BUILDS_GROUP_ID = "5b41ef54-1e4f-4c3b-98e6-294d6db16233";
 
 async function allPages(request, path) {
   const items = [];
@@ -45,21 +47,28 @@ export async function ensureExternalDistribution({ request, build, appId, whatTo
   if (groupApp?.type !== 'apps' || groupApp.id !== appId || buildApp?.type !== 'apps' || buildApp.id !== appId) throw new Error('External group and build must belong to the requested app.');
 
   const buildPath = `/v1/builds/${encodeURIComponent(build.id)}`;
+  let existingInternalGroups = [];
   const checkNotificationScope = async () => {
     // Read the app's actual groups and each build linkage. Apple's live API
     // rejected the documented betaGroups filter[builds] query with HTTP 400.
     const groups = await allPages(request, `/v1/apps/${encodeURIComponent(appId)}/betaGroups?limit=200`);
     const otherAssignments = [];
+    const preserved = [];
     for (const candidate of groups) {
       if (candidate.type !== 'betaGroups' || !candidate.id) throw new Error('Invalid app beta group response.');
       if (candidate.id === EXTERNAL_GROUP_ID) continue;
+      if (candidate.id === EXISTING_INTERNAL_ALL_BUILDS_GROUP_ID && candidate.attributes?.isInternalGroup === true && candidate.attributes?.hasAccessToAllBuilds === true) {
+        preserved.push({ id: candidate.id, isInternalGroup: true, hasAccessToAllBuilds: true });
+        continue;
+      }
       const builds = await allPages(request, `/v1/betaGroups/${encodeURIComponent(candidate.id)}/relationships/builds?limit=200`);
       if (candidate.attributes?.hasAccessToAllBuilds === true || builds.some(item => item.id === build.id)) {
         otherAssignments.push({ id: candidate.id, isInternalGroup: candidate.attributes?.isInternalGroup ?? null, hasAccessToAllBuilds: candidate.attributes?.hasAccessToAllBuilds ?? null });
       }
     }
     const individuals = await allPages(request, `${buildPath}/individualTesters?limit=200`);
-    if (otherAssignments.length || individuals.length) throw new Error(`Build notification scope is not exclusively Privater Test: other groups=${JSON.stringify(otherAssignments)}; individual tester count=${individuals.length}.`);
+    if (otherAssignments.length || individuals.length) throw new Error(`Build notification scope exceeds Privater Test and the existing internal all-builds group: other groups=${JSON.stringify(otherAssignments)}; individual tester count=${individuals.length}.`);
+    existingInternalGroups = preserved;
   };
   await checkNotificationScope();
   const testers = await allPages(request, `/v1/betaGroups/${EXTERNAL_GROUP_ID}/betaTesters?fields%5BbetaTesters%5D=state&limit=200`);
@@ -131,6 +140,7 @@ export async function ensureExternalDistribution({ request, build, appId, whatTo
   const state = detail?.attributes?.externalBuildState || 'UNKNOWN';
   if (!allowed.has(state) || reviewState === 'REJECTED') throw new Error(`External testing blocked after submission: ${state}; review: ${reviewState || 'NONE'}.`);
   return { externalGroupAssigned: true, externalGroupId: EXTERNAL_GROUP_ID, externalGroupName: group.attributes.name,
+    existingInternalAllBuildsGroups: existingInternalGroups,
     externalTesterCount: testers.length, externalBuildState: state, betaReviewState: reviewState,
     betaReviewSubmitted: submitted, externalAutoNotifyEnabled: detail?.attributes?.autoNotifyEnabled === true,
     externalNotificationSent: notificationSent, externalTestingAvailable: state === 'IN_BETA_TESTING',

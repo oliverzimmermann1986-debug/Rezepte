@@ -35,7 +35,16 @@ werden nur für den gewählten Build als `de-DE` angelegt oder aktualisiert.
 Buildzuordnung und Revieweinreichung sind wiederholbar: bestehende Zuordnung,
 laufendes Review und bereits freigegebene Builds werden erkannt. Die API-Antwort
 wird nach der Zuordnung erneut gelesen. Vor Benachrichtigungen dürfen dem Build
-keine anderen Gruppen oder einzelnen Tester zugewiesen sein. Für die bestehende
+keine anderen externen Gruppen oder einzelnen Tester zugewiesen sein. Erlaubt
+bleibt die bereits bestehende interne All-Builds-Gruppe mit der verifizierten ID
+`5b41ef54-1e4f-4c3b-98e6-294d6db16233`, sofern `isInternalGroup` und
+`hasAccessToAllBuilds` weiterhin beide `true` sind. Jede andere interne Gruppe
+bleibt gesperrt. Diese Ausnahme erhält die bereits autorisierte interne
+Verteilung und verändert keine Gruppe oder Mitgliedschaft. Apple beschreibt
+`buildBetaNotifications` als Benachrichtigung an alle zugeordneten Betatester;
+es wird keine Beschränkung auf externe Tester behauptet. Die erhaltene interne
+Gruppe wird im Ergebnis unter `existingInternalAllBuildsGroups` ausgewiesen.
+Für die bestehende
 private Gruppe wird die automatische Benachrichtigung nach Freigabe aktiviert.
 Ist der Build schon freigegeben und bereit, wird die Testbenachrichtigung
 ausgelöst; ein bereits laufender Test wird nicht erneut benachrichtigt.

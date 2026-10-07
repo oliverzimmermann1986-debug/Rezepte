@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ensureExternalDistribution, EXTERNAL_GROUP_ID, compactApiError, selectExactBuild } from './testflight-ensure.mjs';
+import { ensureExternalDistribution, EXTERNAL_GROUP_ID, EXISTING_INTERNAL_ALL_BUILDS_GROUP_ID, compactApiError, selectExactBuild } from './testflight-ensure.mjs';
 
 const NOTES = 'Backend 1.9.0: Mein Konto, Passwort, Sitzungen, Benutzerverwaltung und Einkaufsmengen prüfen.';
 test('existing-build selection never substitutes another build, version or platform', () => {
@@ -48,9 +48,11 @@ function fixture(options = {}) {
     if (path === '/v1/builds/build-exact/app') return { data: { type: 'apps', id: options.buildApp || 'app-exact' } };
     if (path === '/v1/apps/app-exact/betaGroups') return { data: [
       { type: 'betaGroups', id: EXTERNAL_GROUP_ID, attributes: { isInternalGroup: false } },
+      ...(options.knownInternal ? [{ type: 'betaGroups', id: EXISTING_INTERNAL_ALL_BUILDS_GROUP_ID, attributes: { isInternalGroup: true, hasAccessToAllBuilds: true, ...options.knownInternal } }] : []),
       ...(options.otherGroup || options.unrelatedGroup || options.internalAll ? [{ type: 'betaGroups', id: 'unrelated-group', attributes: { isInternalGroup: !!options.internalAll, hasAccessToAllBuilds: !!options.internalAll } }] : []),
     ] };
     if (path === '/v1/betaGroups/unrelated-group/relationships/builds') return { data: options.otherGroup ? [{ type: 'builds', id: build.id }] : [] };
+    if (path === `/v1/betaGroups/${EXISTING_INTERNAL_ALL_BUILDS_GROUP_ID}/relationships/builds`) return { data: [{ type: 'builds', id: build.id }] };
     if (path === '/v1/builds/build-exact/individualTesters') return { data: options.individuals ? [{ id: 'unrelated-tester' }] : [] };
     if (path === `/v1/betaGroups/${EXTERNAL_GROUP_ID}/betaTesters`) return { data: options.noTesters ? [] : [{ id: 'existing-tester', attributes: { state: 'ACCEPTED' } }] };
     if (path === '/v1/builds/build-exact/buildBetaDetail') return { data: { type: 'buildBetaDetails', id: 'detail-exact', attributes: { externalBuildState: state, autoNotifyEnabled: autoNotify } } };
@@ -117,10 +119,22 @@ test('group scope uses documented app and build linkages, allowing unrelated una
   assert.ok(!f.calls.some(call => call.path === '/v1/betaGroups' || call.path === '/v1/builds/build-exact/betaGroups'));
 });
 
-test('existing internal all-builds groups are reported without removing or changing them', async () => {
+test('unknown internal all-builds groups are reported without removing or changing them', async () => {
   const f = fixture({ internalAll: true });
   await assert.rejects(f.run(), /"isInternalGroup":true,"hasAccessToAllBuilds":true/);
   assert.equal(f.writes.length, 0);
+});
+
+test('only the verified existing internal all-builds group is preserved with both flags', async () => {
+  const f = fixture({ knownInternal: {} });
+  const result = await f.run();
+  assert.deepEqual(result.existingInternalAllBuildsGroups, [{ id: EXISTING_INTERNAL_ALL_BUILDS_GROUP_ID, isInternalGroup: true, hasAccessToAllBuilds: true }]);
+  assert.ok(!f.writes.some(write => write.path.includes(EXISTING_INTERNAL_ALL_BUILDS_GROUP_ID)));
+  for (const knownInternal of [{ isInternalGroup: false }, { hasAccessToAllBuilds: false }]) {
+    const changed = fixture({ knownInternal });
+    await assert.rejects(changed.run(), /notification scope/);
+    assert.equal(changed.writes.length, 0);
+  }
 });
 
 test('approved ready build notifies existing testers once and verifies testing state', async () => {
