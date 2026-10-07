@@ -546,6 +546,20 @@ struct CartResponse: Codable {
     let items: [CartItem]
 }
 
+enum CartAmountError: LocalizedError, Equatable {
+    case invalidAmount
+    case incompatibleUnits
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidAmount:
+            return "Bitte eine gültige Menge größer als 0 eingeben."
+        case .incompatibleUnits:
+            return "Die Einheit dieses Artikels ist nicht eindeutig. Bitte die Einkaufsliste neu laden."
+        }
+    }
+}
+
 struct CartItem: Codable, Identifiable, Hashable {
     let id: Int
     var name: String
@@ -554,10 +568,48 @@ struct CartItem: Codable, Identifiable, Hashable {
     var checked: Bool
     let category: String?
     let icon: String?
+    var amountBase: Double? = nil
+    var unitBase: String? = nil
+
+    /// PATCH /api/cart/{id} accepts the stored base amount, not the rounded display value.
+    func baseAmount(forDisplayAmountText text: String) throws -> Double {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), value.isFinite, value > 0 else {
+            throw CartAmountError.invalidAmount
+        }
+        let displayUnit = (unit ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let storedUnit = (unitBase ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let units: [String: (family: String, factor: Double)] = [
+            "mg": ("mass", 0.001), "g": ("mass", 1), "kg": ("mass", 1000),
+            "ml": ("volume", 1), "cl": ("volume", 10),
+            "dl": ("volume", 100), "l": ("volume", 1000),
+        ]
+        let factor: Double
+        if let displayed = units[displayUnit] {
+            guard let stored = units[storedUnit], stored.family == displayed.family,
+                  storedUnit == (stored.family == "mass" ? "g" : "ml") else {
+                throw CartAmountError.incompatibleUnits
+            }
+            factor = displayed.factor / stored.factor
+        } else {
+            // Counts, spoons and unitless entries are never converted. Older
+            // responses may omit base metadata for these unambiguous units.
+            guard units[storedUnit] == nil, storedUnit.isEmpty || storedUnit == displayUnit else {
+                throw CartAmountError.incompatibleUnits
+            }
+            factor = 1
+        }
+        let baseAmount = value * factor
+        guard baseAmount.isFinite, baseAmount > 0 else {
+            throw CartAmountError.invalidAmount
+        }
+        return baseAmount
+    }
 
     var displayText: String {
         let quantity = amount.map {
-            $0.rounded() == $0 ? String(Int($0)) : String(format: "%.2f", $0)
+            $0.rounded() == $0 ? String(format: "%.0f", $0) : String(format: "%.2f", $0)
         }
         return [quantity, unit, name]
             .compactMap { $0 }

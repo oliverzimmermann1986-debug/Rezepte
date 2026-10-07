@@ -546,6 +546,15 @@ actor APIClient {
         )
     }
 
+    func updateCartItemAmount(id: Int, amount: Double) async throws -> APIResult {
+        guard amount.isFinite, amount > 0 else { throw CartAmountError.invalidAmount }
+        return try await send(
+            "/api/cart/\(id)",
+            method: "PATCH",
+            body: CartAmountUpdatePayload(amount: amount)
+        )
+    }
+
     func deleteCartItem(id: Int) async throws -> APIResult {
         try await send("/api/cart/\(id)", method: "DELETE")
     }
@@ -1234,6 +1243,7 @@ private struct AddCartPayload: Codable {
     let category: String?
 }
 private struct CartUpdatePayload: Codable { let checked: Bool }
+private struct CartAmountUpdatePayload: Codable { let amount: Double }
 private struct ClearCartPayload: Codable { let onlyChecked: Bool }
 private struct RecurringCartPayload: Codable {
     let name: String

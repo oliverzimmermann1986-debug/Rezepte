@@ -26,6 +26,7 @@ struct CartView: View {
     @State private var recurringErrorMessage: String?
     @State private var recurringNotice: String?
     @State private var addErrorMessage: String?
+    @State private var amountEditor: CartItem?
     @State private var recurringEditor: RecurringDraft?
     @State private var recurringToDelete: RecurringCartItem?
     @State private var showShoppingTools = false
@@ -89,6 +90,11 @@ struct CartView: View {
                         }
                         .accessibilityLabel("Wiederkehrenden Einkauf anlegen")
                     }
+                }
+            }
+            .sheet(item: $amountEditor) { item in
+                CartAmountEditorView(item: item) { amount in
+                    try await saveAmount(item, amount: amount)
                 }
             }
             .sheet(item: $recurringEditor) { draft in
@@ -360,25 +366,40 @@ struct CartView: View {
     }
 
     private func cartRow(_ item: CartItem) -> some View {
-        Button {
-            Task { await toggle(item) }
-        } label: {
-            HStack(spacing: 12) {
-                Text(item.icon ?? "🛒")
-                    .font(.title3)
-                    .frame(width: 30)
-                    .saturation(item.checked ? 0 : 1)
-                Image(systemName: item.checked ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(item.checked ? theme.success : theme.accent)
-                Text(item.displayText)
-                    .strikethrough(item.checked)
-                    .foregroundStyle(item.checked ? Color.secondary : Color.primary)
-                Spacer()
+        HStack(spacing: 4) {
+            Button {
+                Task { await toggle(item) }
+            } label: {
+                HStack(spacing: 12) {
+                    Text(item.icon ?? "🛒")
+                        .font(.title3)
+                        .frame(width: 30)
+                        .saturation(item.checked ? 0 : 1)
+                    Image(systemName: item.checked ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(item.checked ? theme.success : theme.accent)
+                    Text(item.displayText)
+                        .strikethrough(item.checked)
+                        .foregroundStyle(item.checked ? Color.secondary : Color.primary)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            Button {
+                amountEditor = item
+            } label: {
+                Image(systemName: "pencil")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Menge von \(item.name) bearbeiten")
+            .accessibilityIdentifier("cart.edit-amount.\(item.id)")
         }
-        .buttonStyle(.plain)
     }
 
     private func recurringRow(_ item: RecurringCartItem) -> some View {
@@ -528,6 +549,22 @@ struct CartView: View {
         }
     }
 
+    private func saveAmount(_ item: CartItem, amount: Double) async throws {
+        let expectedIdentity = session.identity
+        do {
+            _ = try await session.api.updateCartItemAmount(id: item.id, amount: amount)
+            let updatedCart = try await session.api.cart()
+            guard session.identity == expectedIdentity else { throw APIError.sessionChanged }
+            items = updatedCart.items
+        } catch {
+            if session.identity == expectedIdentity,
+               let apiError = error as? APIError, case .unauthenticated = apiError {
+                session.handle(error)
+            }
+            throw error
+        }
+    }
+
     private func delete(_ offsets: IndexSet, from visibleItems: [CartItem]) {
         let ids = offsets.map { visibleItems[$0].id }
         Task {
@@ -642,6 +679,103 @@ struct CartView: View {
         categories.first(where: { $0.name == name })?.icon
             ?? items.compactMap(\.icon).first
             ?? "🛒"
+    }
+}
+
+private struct CartAmountEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var amountText: String
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    @FocusState private var amountFocused: Bool
+
+    let item: CartItem
+    let onSave: (Double) async throws -> Void
+
+    init(item: CartItem, onSave: @escaping (Double) async throws -> Void) {
+        self.item = item
+        self.onSave = onSave
+        let text = item.amount.map { String($0) } ?? ""
+        _amountText = State(initialValue: text.hasSuffix(".0") ? String(text.dropLast(2)) : text)
+    }
+
+    private var hasChanges: Bool {
+        let text = amountText.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+        if let amount = Double(text), let original = item.amount {
+            return amount != original
+        }
+        return !text.isEmpty || item.amount != nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    HStack {
+                        TextField("Menge", text: $amountText)
+                            .keyboardType(.decimalPad)
+                            .focused($amountFocused)
+                            .accessibilityLabel("Menge")
+                            .accessibilityIdentifier("cart.amount")
+                            .disabled(isSaving)
+                        if let unit = item.unit?.nilIfEmpty {
+                            Text(unit)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text(item.name)
+                }
+
+                if let errorMessage {
+                    Section {
+                        Label(errorMessage, systemImage: "exclamationmark.circle.fill")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("Menge bearbeiten")
+            .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled(isSaving)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Abbrechen") { dismiss() }
+                        .disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task { await save() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if isSaving { ProgressView() }
+                            Text("Speichern")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .disabled(isSaving || !hasChanges)
+                    .accessibilityIdentifier("cart.save-amount")
+                }
+            }
+            .onAppear { amountFocused = true }
+            .onChange(of: amountText) { _, _ in
+                if !isSaving { errorMessage = nil }
+            }
+        }
+    }
+
+    private func save() async {
+        guard !isSaving, hasChanges else { return }
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+        do {
+            let baseAmount = try item.baseAmount(forDisplayAmountText: amountText)
+            try await onSave(baseAmount)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 

@@ -771,6 +771,60 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(payload["unit"] as? String, "l")
     }
 
+    func testCartAmountUpdateSendsOnlyAmountAndPreservesAuthentication() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+
+        _ = try await client.updateCartItemAmount(id: 42, amount: 2)
+
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/42")
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "PATCH")
+        XCTAssertEqual(MockURLProtocol.lastHeader("Authorization"), "Bearer token")
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any]
+        )
+        XCTAssertEqual(Set(payload.keys), Set(["amount"]))
+        XCTAssertEqual(payload["amount"] as? Double, 2)
+    }
+
+    func testCartReadThenAmountUpdateUsesStoredUnitInsteadOfRoundedRatio() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: #"{"items":[{"id":42,"name":"Mehl","amount":1.5,"amount_base":1499,"unit":"kg","unit_base":"g","checked":true}]}"#)
+        let response = try await client.cart()
+        let item = try XCTUnwrap(response.items.first)
+        XCTAssertEqual(item.amountBase, 1499)
+        XCTAssertEqual(item.unitBase, "g")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+
+        _ = try await client.updateCartItemAmount(id: item.id,
+                                                  amount: item.baseAmount(forDisplayAmountText: "2"))
+
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any]
+        )
+        XCTAssertEqual(Set(payload.keys), Set(["amount"]))
+        XCTAssertEqual(payload["amount"] as? Double, 2000)
+    }
+
+    func testCartAmountUpdateRejectsInvalidAmountsBeforeSendingARequest() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "token")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+        _ = try await client.setCartItem(id: 42, checked: true)
+
+        for amount in [0, -2, Double.nan, Double.infinity, -Double.infinity] {
+            do {
+                _ = try await client.updateCartItemAmount(id: 99, amount: amount)
+                XCTFail("Invalid amounts must not reach the server")
+            } catch {
+                XCTAssertEqual(error as? CartAmountError, .invalidAmount)
+            }
+            XCTAssertEqual(MockURLProtocol.lastPath(), "/api/cart/42")
+        }
+    }
+
     func testRecurringCartDecodesScheduleAndSQLiteBoolean() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
