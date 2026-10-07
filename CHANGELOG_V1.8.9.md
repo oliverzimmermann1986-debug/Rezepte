@@ -19,3 +19,5 @@ Die bereits vorbereitete Mengenprüfung ist enthalten: Ungültige oder unendlich
 Einkaufsmengen erhalten eine verständliche Antwort mit HTTP 422. Schema 266
 schützt auch direkte Datenbankschreibvorgänge; vorhandene ungültige Mengen werden
 geleert, während Artikel, Herkunft und Haushaltszuordnung erhalten bleiben.
+Die Übernahme der Zutaten eines Rezepts ist atomar: Eine ungültige Menge
+hinterlässt weder einen teilweise gefüllten Warenkorb noch Katalogänderungen.

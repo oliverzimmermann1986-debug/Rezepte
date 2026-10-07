@@ -7,10 +7,18 @@ import pytest
 from app.db import CURRENT_SCHEMA_VERSION, Database
 
 
+def _remove_schema266_triggers(connection):
+    # Eine Legacy-Fixture darf beim Entfernen der Migration deren DDL nicht behalten.
+    for table in ("shopping_cart", "shopping_recurring"):
+        for operation in ("insert", "update"):
+            connection.execute(f"DROP TRIGGER {table}_finite_amount_{operation}")
+
+
 def test_overlapping_initializers_create_one_verified_migration_backup(tmp_path):
     path = tmp_path / "recipes.db"
     initial = Database(path)
     with initial.conn() as connection:
+        _remove_schema266_triggers(connection)
         connection.execute(
             "DELETE FROM schema_migrations WHERE version=?",
             (CURRENT_SCHEMA_VERSION,),
@@ -88,6 +96,7 @@ def test_cooking_completion_dedupe_table_is_recreated_on_upgrade(tmp_path):
     database = Database(path)
     with database.conn() as connection:
         connection.execute("DROP TABLE recipe_cooking_completion_requests")
+        _remove_schema266_triggers(connection)
         connection.execute(
             "DELETE FROM schema_migrations WHERE version=?",
             (CURRENT_SCHEMA_VERSION,),
@@ -135,6 +144,7 @@ def test_upgrade_normalizes_existing_recipe_display_names(tmp_path):
             "UPDATE recipes SET name='Omas__Kuchen_' WHERE id=?",
             (recipe_id,),
         )
+        _remove_schema266_triggers(connection)
         connection.execute(
             "DELETE FROM schema_migrations WHERE version >= ?",
             (230,),

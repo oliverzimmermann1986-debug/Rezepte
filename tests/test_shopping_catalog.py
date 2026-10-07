@@ -264,6 +264,10 @@ def test_ingredient_cleanup_migration_recanonicalizes_existing_rows(tmp_path):
         ],
     )
     with database.conn() as connection:
+        # Der simulierte Altstand enthält noch keine Schema-266-Mengentrigger.
+        for table in ("shopping_cart", "shopping_recurring"):
+            for operation in ("insert", "update"):
+                connection.execute(f"DROP TRIGGER {table}_finite_amount_{operation}")
         connection.execute("DELETE FROM schema_migrations WHERE version>=260")
 
     migrated = Database(path)

@@ -129,6 +129,10 @@ def test_schema_migration_backfills_existing_recipes_and_creates_backup(tmp_path
     recipe_id = int(recipe["id"])
     _insert_ingredients(db, recipe_id, SAFE_INGREDIENTS)
     with db.conn() as connection:
+        # Der simulierte Altstand enthält noch keine Schema-266-Mengentrigger.
+        for table in ("shopping_cart", "shopping_recurring"):
+            for operation in ("insert", "update"):
+                connection.execute(f"DROP TRIGGER {table}_finite_amount_{operation}")
         connection.execute("DELETE FROM schema_migrations WHERE version>=240")
 
     migrated = Database(db_path)
