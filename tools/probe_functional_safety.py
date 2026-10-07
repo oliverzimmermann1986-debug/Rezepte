@@ -46,11 +46,15 @@ def main() -> None:
         db = Database(root / "probe.db")
         db_module._db = db
         store = get_config()
-        for value in ("false", "true", 1, None):
+        from starlette.requests import Request
+        request = Request({"type": "http", "method": "GET", "path": "/api/session",
+                           "headers": [(b"authorization", b"Bearer cloudflare-access")],
+                           "client": ("127.0.0.1", 1234)})
+        for value in ("false", "true", 1, None, True, False):
             store.set("web", "auth_disabled", value)
-            assert auth.auth_disabled() is False
-        store.set("web", "auth_disabled", False)
-        checks["auth_strings_fail_closed"] = True
+            assert "auth_disabled" not in store.get("web")
+            assert auth.request_user(request) is None
+        checks["legacy_proxy_auth_cannot_bypass_login"] = True
         for line, amount in (("1.5 kg Mehl", 1.5), ("1.000 g Mehl", 1000),
                              ("1/2 Bund Petersilie", .5), ("1 1/2 EL Olivenöl", 1.5), ("½ TL Salz", .5)):
             assert parse_ingredient_lines("Zutaten:\n" + line)[0]["amount"] == amount

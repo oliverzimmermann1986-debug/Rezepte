@@ -31,7 +31,7 @@ def main():
         cfg['ai']['image_generation']['enabled'] = False
         cfg['ai']['video_fallback']['enabled'] = False
         cfg['ai']['auto_translate'] = False
-        cfg['web'].update(auth_disabled=False, username='synthetic-operator',
+        cfg['web'].update(username='synthetic-operator',
                           password='synthetic-probe-unused-password', secret_key='synthetic-probe-' + 's' * 48,
                           trusted_proxies=[])
         config_file = root / 'config.yaml'
@@ -113,11 +113,15 @@ def main():
         database.recipe_soft_delete(rid)
         with database.conn() as c:
             c.execute('UPDATE recipes SET source_url=NULL WHERE id=?', (rid,))
-            c.execute('DELETE FROM schema_migrations WHERE version=265')
+            # Reconstruct schema 264 without the later finite-quantity triggers.
+            for table in ('shopping_cart', 'shopping_recurring'):
+                for operation in ('insert', 'update'):
+                    c.execute(f'DROP TRIGGER {table}_finite_amount_{operation}')
+            c.execute('DELETE FROM schema_migrations WHERE version>=265')
             c.execute('ALTER TABLE background_tasks DROP COLUMN recovery_attempts')
         upgraded = Database(database.path)
         assert upgraded.recipe_get(rid)['source_url'] == 'https://example.invalid/synthetic'
-        backup = list((root / 'backups').glob('pre-migration-v264-to-v265-*.db'))
+        backup = list((root / 'backups').glob(f'pre-migration-v264-to-v{CURRENT_SCHEMA_VERSION}-*.db'))
         assert len(backup) == 1
         with closing(sqlite3.connect(backup[0])) as c:
             assert c.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 264

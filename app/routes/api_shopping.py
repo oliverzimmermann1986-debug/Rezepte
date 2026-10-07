@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, FiniteFloat
 
 from ..auth import require_auth
 from ..config_store import get_config
@@ -120,7 +120,7 @@ class CookPayload(BaseModel):
     dürfen für gestaffelte App-/Server-Rollouts beide Werte schicken; der Server
     berechnet den Faktor aus ``servings`` und prüft die Übereinstimmung.
     """
-    multiplier: Optional[float] = Field(default=None, gt=0, le=100)
+    multiplier: Optional[FiniteFloat] = Field(default=None, gt=0, le=100)
     servings: Optional[int] = Field(default=None, ge=1, le=50)
 
 
@@ -170,7 +170,7 @@ def cook_recipe(recipe_id: int, payload: Optional[CookPayload] = None):
 
 class AddItem(BaseModel):
     name: str
-    amount: Optional[float] = None
+    amount: Optional[FiniteFloat] = None
     unit: Optional[str] = None
     category: Optional[str] = None
 
@@ -196,7 +196,7 @@ def add_item(payload: AddItem):
 
 class RecurringCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    amount: Optional[float] = Field(default=None, gt=0)
+    amount: Optional[FiniteFloat] = Field(default=None, gt=0)
     default_unit: Optional[str] = Field(default=None, max_length=40)
     category: Optional[str] = Field(default=None, max_length=100)
     interval_days: int = Field(default=7, ge=1, le=3650)
@@ -206,7 +206,7 @@ class RecurringCreate(BaseModel):
 
 class RecurringUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    amount: Optional[float] = Field(default=None, gt=0)
+    amount: Optional[FiniteFloat] = Field(default=None, gt=0)
     default_unit: Optional[str] = Field(default=None, max_length=40)
     category: Optional[str] = Field(default=None, max_length=100)
     interval_days: Optional[int] = Field(default=None, ge=1, le=3650)
@@ -291,7 +291,7 @@ def run_recurring():
 # ── Update / Delete ─────────────────────────────────────────────────────
 
 class CartUpdate(BaseModel):
-    amount: Optional[float] = None
+    amount: Optional[FiniteFloat] = None
     checked: Optional[bool] = None
     name: Optional[str] = None
 

@@ -294,12 +294,10 @@ def merge_households(c, source: int, target: int) -> None:
 
 
 def scope_for_request(request: Request) -> HouseholdScope | None:
-    from .auth import auth_disabled, cached_request_user, request_is_guest, request_user
+    from .auth import cached_request_user, request_is_guest, request_user
     from .db import get_db
     if request_is_guest(request):
         return HouseholdScope(-1, is_guest=True)
-    if auth_disabled():
-        return HouseholdScope(0, is_admin=True)
     username = request_user(request)
     db = get_db()
     user = cached_request_user(request) or (db.user_get_by_name(username) if username else None)

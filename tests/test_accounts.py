@@ -15,8 +15,6 @@ from app.security import LoginRateLimiter
 def account_client(client, test_db, monkeypatch):
     from app.main import app
 
-    monkeypatch.setattr(auth, "auth_disabled", lambda: False)
-    monkeypatch.setattr(api_auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(auth, "_serializer", lambda: URLSafeTimedSerializer("account-test-key-" * 4))
     monkeypatch.setattr(api_auth, "registration_limiter", LoginRateLimiter())
     test_db.user_create("operator", "fake-hash", role="admin")
@@ -43,7 +41,6 @@ def test_public_registration_creates_user_without_admin_privileges(account_clien
 
 
 def test_registration_cannot_bootstrap_an_admin(client, test_db, monkeypatch):
-    monkeypatch.setattr(api_auth, "auth_disabled", lambda: False)
     response = client.post("/api/auth/register", json={"username": "outsider", "password": "strong-test-password"})
     assert response.status_code == 503
     assert test_db.user_get_by_name("outsider") is None
@@ -179,6 +176,10 @@ def test_account_schema_upgrade_preserves_data_and_does_not_repeat_backups(tmp_p
     with previous.conn() as connection:
         for table in ("account_invitations", "account_members", "user_accounts"):
             connection.execute("DROP TABLE " + table)
+        # Der simulierte Altstand muss auch die späteren Schema-266-Trigger entfernen.
+        for table in ("shopping_cart", "shopping_recurring"):
+            for operation in ("insert", "update"):
+                connection.execute(f"DROP TRIGGER {table}_finite_amount_{operation}")
         connection.execute("DELETE FROM schema_migrations WHERE version>=231")
         connection.execute("UPDATE recipes SET name='Eigener__Bestandsname_' WHERE id=?", (recipe_id,))
     current = Database(path)

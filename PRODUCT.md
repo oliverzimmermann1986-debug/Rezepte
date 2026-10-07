@@ -25,7 +25,7 @@ Kein Rezept-Manager, in den man Rezepte tippt, sondern eine **Auffang-Anlage fü
 ## Operating Context
 
 - systemd-Timer alle 30 Minuten (`*:0/30`) oder manueller Start im Web-UI; File-Locks verhindern Doppelläufe zwischen Web und CLI.
-- Externe Erreichbarkeit über Cloudflare-Tunnel + Cloudflare Access als MFA-Layer.
+- Externe Erreichbarkeit über HTTPS und optional Cloudflare-Tunnel; Anmeldung und Rollenprüfung erfolgen immer im Rezeptserver.
 - Kochen am Handy (native iOS-App oder PWA, iOS-Safe-Area, Bottom-Navigation); Verwalten am Desktop oder in der Admin-Zentrale der App.
 - Einkaufsliste entsteht aus Rezept-Zutaten und wird über `canonical_name` zu einem Eintrag pro Zutat verschmolzen.
 - Zusätzliche Quelle neben Video: PDF-/Scan-Import mit Ausrichtung, OCR, Randbeschnitt und Seiteneditor.
@@ -44,7 +44,8 @@ widerrufbar. Jeder Haushalt ist ein getrennter Mandant. Globale Rezepte sind fü
 private Rezepte, Sammlung, Favoriten, Bewertungen, Kochverlauf, Einkauf und
 Wochenplan gehören zum Haushalt. Private Importe vorhandener globaler Links
 speichern einen Verweis ohne erneuten Download. Gastzugang und Registrierung
-erfordern aktivierte Kontenanmeldung (`web.auth_disabled: false`).
+verwenden die eigene Kontenverwaltung. Ein vertrauenswürdiger Proxy ersetzt
+keine Sitzung; Cloudflare-Gerätezugangsdaten sind im Rezeptclient nicht nötig.
 
 ## Brand Commitments
 

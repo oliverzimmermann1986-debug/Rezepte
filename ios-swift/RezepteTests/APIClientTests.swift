@@ -13,6 +13,8 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/auth/register")
         XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
         XCTAssertNil(MockURLProtocol.lastHeader("Authorization"))
+        XCTAssertNil(MockURLProtocol.lastHeader("CF-Access-Client-Id"))
+        XCTAssertNil(MockURLProtocol.lastHeader("CF-Access-Client-Secret"))
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: String])
         XCTAssertEqual(body["invitation_token"], "one-use-token")
         XCTAssertEqual(body["username"], "member")
@@ -178,29 +180,22 @@ final class APIClientTests: XCTestCase {
         }
     }
 
-    func testCloudflareCredentialsRequireBothValues() throws {
-        XCTAssertNil(try CloudflareAccessCredentials(clientID: "", clientSecret: ""))
-        XCTAssertThrowsError(
-            try CloudflareAccessCredentials(clientID: "client-id", clientSecret: "")
-        ) { error in
-            guard let apiError = error as? APIError,
-                  case .incompleteCloudflareCredentials = apiError else {
-                return XCTFail("Erwartet incompleteCloudflareCredentials, war \(error)")
+    func testLegacyAccessPseudoTokenCannotConfigureASession() async throws {
+        let client = APIClient()
+        do {
+            try await client.configure(server: "https://example.de", token: "cloudflare-access")
+            XCTFail("Der alte Platzhalter darf keine App-Sitzung authentifizieren")
+        } catch let error as APIError {
+            guard case .unauthenticated = error else {
+                return XCTFail("Erwartet unauthenticated, war \(error)")
             }
         }
     }
 
-    func testCloudflareHeadersAreSentOnNativeLogin() async throws {
+    func testNativeLoginUsesAccountCredentialsWithoutAccessHeaders() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
-        let cloudflare = try XCTUnwrap(
-            CloudflareAccessCredentials(clientID: "device.access", clientSecret: "device-secret")
-        )
-        try await client.configure(
-            server: "https://example.de",
-            token: nil,
-            cloudflareCredentials: cloudflare
-        )
+        try await client.configure(server: "https://example.de", token: "previous-token")
         MockURLProtocol.respond(json: """
         {"token":"api-token","username":"oliver","expires_in":1209600}
         """)
@@ -208,9 +203,12 @@ final class APIClientTests: XCTestCase {
         let response = try await client.login(username: "oliver", password: "password")
 
         XCTAssertEqual(response.token, "api-token")
-        XCTAssertEqual(MockURLProtocol.lastHeader("CF-Access-Client-Id"), "device.access")
-        XCTAssertEqual(MockURLProtocol.lastHeader("CF-Access-Client-Secret"), "device-secret")
+        XCTAssertNil(MockURLProtocol.lastHeader("CF-Access-Client-Id"))
+        XCTAssertNil(MockURLProtocol.lastHeader("CF-Access-Client-Secret"))
         XCTAssertNil(MockURLProtocol.lastHeader("Authorization"))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: String])
+        XCTAssertEqual(body["username"], "oliver")
+        XCTAssertEqual(body["password"], "password")
     }
 
     func testGuestLoginUsesUnauthenticatedReadOnlyEndpoint() async throws {
@@ -228,23 +226,18 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/auth/guest")
         XCTAssertNil(MockURLProtocol.lastHeader("Authorization"))
+        XCTAssertNil(MockURLProtocol.lastHeader("CF-Access-Client-Id"))
+        XCTAssertNil(MockURLProtocol.lastHeader("CF-Access-Client-Secret"))
     }
 
-    func testCloudflareAndBearerHeadersAreSentTogether() async throws {
+    func testProtectedImagesUseOnlyTheAppBearerToken() async throws {
         let client = APIClient()
-        let cloudflare = try XCTUnwrap(
-            CloudflareAccessCredentials(clientID: "device.access", clientSecret: "device-secret")
-        )
-        try await client.configure(
-            server: "https://example.de",
-            token: "api-token",
-            cloudflareCredentials: cloudflare
-        )
+        try await client.configure(server: "https://example.de", token: "api-token")
 
         let request = try await client.imageRequest(recipeID: 42)
 
-        XCTAssertEqual(request.value(forHTTPHeaderField: "CF-Access-Client-Id"), "device.access")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "CF-Access-Client-Secret"), "device-secret")
+        XCTAssertNil(request.value(forHTTPHeaderField: "CF-Access-Client-Id"))
+        XCTAssertNil(request.value(forHTTPHeaderField: "CF-Access-Client-Secret"))
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer api-token")
     }
 
@@ -266,41 +259,100 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
     }
 
-    func testCloudflareLoginPageGetsSpecificError() async throws {
+    func testRedirectedHTMLLoginPageIsAnInvalidAPIResponse() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
         try await client.configure(server: "https://example.de", token: nil)
         MockURLProtocol.respond(
-            body: "<html>Cloudflare Access</html>",
+            body: "<html>Proxy login</html>",
             headers: ["Content-Type": "text/html"],
-            responseURL: URL(string: "https://team.cloudflareaccess.com/cdn-cgi/access/login/example.de")
+            responseURL: URL(string: "https://proxy.example.de/login")
         )
 
         do {
             _ = try await client.login(username: "oliver", password: "password") as LoginResponse
-            XCTFail("Cloudflare-Loginseite darf nicht als API-Antwort gelten")
+            XCTFail("HTML-Anmeldung darf nicht als API-Antwort gelten")
         } catch let error as APIError {
-            guard case .cloudflareAccessRequired = error else {
-                return XCTFail("Erwartet cloudflareAccessRequired, war \(error)")
+            guard case let .invalidResponse(endpoint) = error else {
+                return XCTFail("Erwartet invalidResponse, war \(error)")
             }
+            XCTAssertEqual(endpoint, "/api/auth/login")
         }
     }
 
-    func testCloudflareHTMLOnOriginalHostGetsSpecificError() async throws {
+    func testHTMLOnOriginalHostIsAnInvalidAPIResponse() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
         try await client.configure(server: "https://example.de", token: nil)
         MockURLProtocol.respond(
-            body: "<html><title>Cloudflare Access</title><a href='/cdn-cgi/access/login'>Login</a></html>",
+            body: "<html><title>Serverwartung</title></html>",
             headers: ["Content-Type": "text/html; charset=utf-8"]
         )
 
         do {
             _ = try await client.login(username: "oliver", password: "password") as LoginResponse
-            XCTFail("Cloudflare-HTML darf nicht als API-Antwort gelten")
+            XCTFail("HTML darf nicht als API-Antwort gelten")
         } catch let error as APIError {
-            guard case .cloudflareAccessRequired = error else {
-                return XCTFail("Erwartet cloudflareAccessRequired, war \(error)")
+            guard case .invalidResponse = error else {
+                return XCTFail("Erwartet invalidResponse, war \(error)")
+            }
+        }
+    }
+
+    func testHTMLDownloadsAreRejectedEvenWithIncorrectContentType() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "api-token")
+        for contentType in ["text/html; charset=utf-8", "application/pdf"] {
+            MockURLProtocol.respond(
+                body: "  <!DOCTYPE html><html>Serverwartung</html>",
+                headers: ["Content-Type": contentType]
+            )
+            do {
+                _ = try await client.mealPlanPDF(start: "2026-10-05")
+                XCTFail("Eine HTML-Seite darf nicht als PDF gespeichert werden")
+            } catch let error as APIError {
+                guard case let .invalidResponse(endpoint) = error else {
+                    return XCTFail("Erwartet invalidResponse, war \(error)")
+                }
+                XCTAssertEqual(endpoint, "/api/meal-plan/pdf")
+            }
+        }
+    }
+
+    func testPDFDownloadRetainsBearerAuthentication() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "api-token")
+        let pdf = "%PDF-1.7\nsynthetic test document"
+        MockURLProtocol.respond(body: pdf, headers: ["Content-Type": "application/pdf"])
+
+        let data = try await client.mealPlanPDF(start: "2026-10-05")
+
+        XCTAssertEqual(data, Data(pdf.utf8))
+        XCTAssertEqual(MockURLProtocol.lastHeader("Authorization"), "Bearer api-token")
+        XCTAssertNil(MockURLProtocol.lastHeader("CF-Access-Client-Id"))
+        XCTAssertNil(MockURLProtocol.lastHeader("CF-Access-Client-Secret"))
+    }
+
+    func testHTMLErrorResponsesPreserveHTTPStatusHandling() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "api-token")
+        for status in [401, 403, 503] {
+            MockURLProtocol.respond(body: "<html>Request failed</html>", statusCode: status,
+                                    headers: ["Content-Type": "text/html"])
+            do {
+                _ = try await client.sessionInfo()
+                XCTFail("HTTP-Fehler muss weitergegeben werden")
+            } catch let error as APIError {
+                if status == 401 {
+                    guard case .unauthenticated = error else {
+                        return XCTFail("Erwartet unauthenticated, war \(error)")
+                    }
+                } else {
+                    guard case let .server(actualStatus, _) = error else {
+                        return XCTFail("Erwartet server, war \(error)")
+                    }
+                    XCTAssertEqual(actualStatus, status)
+                }
             }
         }
     }

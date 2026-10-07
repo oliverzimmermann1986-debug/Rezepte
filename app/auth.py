@@ -345,22 +345,6 @@ def verify_session(token: str) -> bool:
     return session_user(token) is not None
 
 
-def auth_disabled() -> bool:
-    """Login-Abfrage per Config abschaltbar (web.auth_disabled: true).
-
-    SICHERHEIT: Damit ist die App für JEDEN erreichbar, der sie netzwerkseitig
-    sieht — inkl. Löschen von Rezepten und Config-Zugriff. Nur vertretbar,
-    wenn davor eine eigene Zugriffskontrolle liegt (z.B. Cloudflare Access
-    auf dem öffentlichen Hostname) und das LAN vertrauenswürdig ist.
-    """
-    try:
-        # Nur ein echter YAML/JSON-Boolean darf die Anmeldung abschalten.
-        # Insbesondere "false", "0" und beliebige andere Strings sind truthy.
-        return (get_config().get("web") or {}).get("auth_disabled", False) is True
-    except Exception:
-        return False
-
-
 def _require_auth(request: Request) -> None:
     if _request_token(request).startswith("guest.") and not request_is_guest(request):
         raise HTTPException(401, "Gastsitzung abgelaufen")
@@ -368,11 +352,6 @@ def _require_auth(request: Request) -> None:
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             raise HTTPException(403, "Der Gastzugang ist schreibgeschützt.")
         return
-    if auth_disabled():
-        from .security import request_is_from_trusted_proxy
-        if request_is_from_trusted_proxy(request):
-            return
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Unsichere direkte Verbindung")
     is_api = request.url.path.startswith("/api/")
     if not request_user(request):
         if is_api:
@@ -409,9 +388,6 @@ def request_user(request: Request) -> Optional[str]:
         return "Gast"
     if _request_token(request).startswith("guest."):
         return None
-    if auth_disabled():
-        from .security import request_is_from_trusted_proxy
-        return "local" if request_is_from_trusted_proxy(request) else None
     token = _request_token(request)
     state = getattr(request, "state", None)
     snapshot = getattr(state, "_verified_session", None)
@@ -431,26 +407,13 @@ def request_user(request: Request) -> Optional[str]:
 def _require_admin(request: Request) -> dict:
     """Verlangt eine aktive Sitzung mit der Rolle ``admin``.
 
-    Im expliziten ``auth_disabled``-Betrieb bleibt der lokale/Cloudflare-
-    geschützte Kompatibilitätsbenutzer Administrator. Eine noch nicht in die
-    Datenbank migrierte Config-Sitzung wird ebenfalls als Legacy-Admin
+    Eine noch nicht in die Datenbank migrierte Config-Sitzung wird als Legacy-Admin
     akzeptiert, damit ein Upgrade den Betreiber nicht aussperrt.
     """
     if request_is_guest(request):
         raise HTTPException(403, "Der Gastzugang ist schreibgeschützt.")
     if _request_token(request).startswith("guest."):
         raise HTTPException(401, "Gastsitzung abgelaufen")
-    if auth_disabled():
-        from .security import request_is_from_trusted_proxy
-        if not request_is_from_trusted_proxy(request):
-            raise HTTPException(403, "Unsichere direkte Verbindung")
-        return {
-            "username": "local",
-            "role": ROLE_ADMIN,
-            "disabled": False,
-            "full_access": True,
-        }
-
     username = request_user(request)
     if not username:
         raise HTTPException(401, "Authentication required")

@@ -20,7 +20,7 @@ def test_web_service_never_trusts_forwarded_headers_from_every_peer():
     assert "ExecStart=/opt/scrapper/venv/bin/uvicorn" not in unit
     separate_proxy = readme.split(
         "#### Variante B — cloudflared in eigenem Container", 1
-    )[1].split("#### Cloudflare Access", 1)[0]
+    )[1].split("#### Anmeldung am Rezeptserver", 1)[0]
     assert "SCRAPPER_FORWARDED_ALLOW_IPS=127.0.0.1" in separate_proxy
     assert "192.168.1.<cloudflared-ip>/32" in separate_proxy
     assert "trusted_proxies:" in separate_proxy

@@ -24,9 +24,12 @@ Beim ersten Start werden Server-Adresse, Benutzername und Passwort abgefragt.
 Die Release-App verbindet sich ausschließlich mit den in `app.json` unter
 `extra.allowedApiUrls` freigegebenen HTTPS-Rezeptservern. Aktuell sind das der
 Produktionsserver und der isolierte App-Review-Server; beliebige Hosts bleiben
-gesperrt. Sitzungstoken und optionale Cloudflare-Service-Zugangsdaten
-liegen im iOS-Schlüsselbund und werden beim Abmelden zusammen mit privaten
-Bildcaches entfernt; die Serversitzung wird widerrufen.
+gesperrt. Die App meldet sich direkt am Rezeptserver mit Benutzername und
+Passwort oder als Gast an. Sitzungstoken liegen im iOS-Schlüsselbund und werden
+beim Abmelden zusammen mit privaten Bildcaches entfernt; die Serversitzung wird
+widerrufen. Alte Cloudflare-Access-Zugangsdaten werden beim Start und Abmelden
+gelöscht. Bestehende App-Sitzungen bleiben beim Upgrade erhalten; der frühere
+Platzhalter `cloudflare-access` verlangt eine neue Anmeldung.
 
 ## Funktionsumfang
 

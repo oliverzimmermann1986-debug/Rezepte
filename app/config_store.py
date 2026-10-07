@@ -28,6 +28,7 @@ class ConfigStore:
             if DEFAULT_CONFIG_PATH.exists():
                 with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as source:
                     self._data = yaml.safe_load(source) or {}
+                self._discard_retired_auth_settings()
                 self.save()
                 return
             else:
@@ -35,10 +36,22 @@ class ConfigStore:
                 return
         with open(self.path, "r", encoding="utf-8") as f:
             self._data = yaml.safe_load(f) or {}
+        self._discard_retired_auth_settings()
         try:
             os.chmod(self.path, 0o600)
         except OSError:
             pass
+
+    def _discard_retired_auth_settings(self) -> None:
+        """Legacy proxy-only login settings have no runtime or save effect.
+
+        Loading old installations remains compatible and preserves credentials,
+        session signing keys, and the separate Einkauf service-token settings.
+        """
+        web = self._data.get("web")
+        if isinstance(web, dict):
+            web.pop("auth_disabled", None)
+            web.pop("external_logout_url", None)
 
     def reload(self) -> None:
         with self._lock:
@@ -86,11 +99,13 @@ class ConfigStore:
                     cur[k] = {}
                 cur = cur[k]
             cur[keys[-1]] = value
+            self._discard_retired_auth_settings()
 
     def replace(self, new_data: Dict[str, Any]) -> None:
         """Komplette Config ersetzen (für Web-Edit)."""
         with self._lock:
-            self._data = new_data
+            self._data = self._deepcopy(new_data)
+            self._discard_retired_auth_settings()
 
     def save(self) -> None:
         with self._lock:

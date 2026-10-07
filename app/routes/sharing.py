@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel, Field
 
-from ..auth import auth_disabled, request_user, require_auth
+from ..auth import request_user, require_auth
 from ..config_store import get_config
 from ..core.safety import resolve_directory_under, resolve_regular_file_under
 from ..db import get_db
@@ -378,7 +378,7 @@ def create_share_link(recipe_id: int, payload: ShareRequest, request: Request):
         "sid": share_id,
         "exp": expires_at,
     })
-    created_by = "local" if auth_disabled() else (request_user(request) or "unknown")
+    created_by = request_user(request) or "unknown"
     db.recipe_share_link_create(
         share_id,
         recipe_id,

@@ -9,7 +9,6 @@ from app import auth
 def guest(client, monkeypatch):
     from app.main import app
 
-    monkeypatch.setattr(auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(auth, "_serializer", lambda: URLSafeTimedSerializer("guest-test-key-" * 4))
     old = dict(app.dependency_overrides)
     app.dependency_overrides.pop(auth.require_auth, None)
@@ -72,7 +71,8 @@ def test_tampered_guest_token_is_rejected(guest):
 
 
 def test_guest_never_inherits_proxy_admin_access(guest, monkeypatch):
-    monkeypatch.setattr(auth, "auth_disabled", lambda: True)
+    from app import security
+    monkeypatch.setattr(security, "request_is_from_trusted_proxy", lambda _request: True)
     assert guest.get("/api/session").json()["role"] == "guest"
     assert guest.post("/api/cart/add", json={"name": "blocked"}).status_code == 403
     assert guest.get("/api/users").status_code == 403
@@ -81,16 +81,15 @@ def test_guest_never_inherits_proxy_admin_access(guest, monkeypatch):
     assert guest.get("/api/users").status_code == 401
 
 
-def test_guest_entry_requires_trusted_proxy_in_single_user_mode(client, monkeypatch):
-    from app.routes import api_auth
+def test_guest_entry_and_registration_do_not_require_a_proxy(client, test_db, monkeypatch):
+    from app import security
 
-    monkeypatch.setattr(api_auth, "auth_disabled", lambda: True)
-    monkeypatch.setattr(api_auth, "request_is_from_trusted_proxy", lambda _request: False)
-    assert client.post("/api/auth/guest").status_code == 403
-    monkeypatch.setattr(api_auth, "request_is_from_trusted_proxy", lambda _request: True)
+    test_db.user_create("operator", "unused", role="admin")
+    monkeypatch.setattr(security, "request_is_from_trusted_proxy", lambda _request: False)
     result = client.post("/api/auth/guest")
     assert result.status_code == 200 and result.json()["role"] == "guest"
-    assert client.post("/api/auth/register", json={"username": "blocked", "password": "strong-test-password"}).status_code == 409
+    result = client.post("/api/auth/register", json={"username": "new-user", "password": "strong-test-password"})
+    assert result.status_code == 201 and result.json()["role"] == "user"
 
 
 def test_expired_guest_session_is_rejected(guest, monkeypatch):

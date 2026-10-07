@@ -142,7 +142,8 @@ def enable_accounts(app: Path) -> dict:
     if len(str(web.get("secret_key") or "")) < 32:
         raise ValueError("Kontenanmeldung benötigt den eingerichteten Sitzungsschlüssel")
     metadata = _metadata(path)
-    web["auth_disabled"] = False
+    web.pop("auth_disabled", None)
+    web.pop("external_logout_url", None)
     temporary = path.with_name(f".release-auth-{uuid.uuid4().hex}.yaml")
     try:
         temporary.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")

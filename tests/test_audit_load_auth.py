@@ -48,7 +48,6 @@ def test_login_lock_is_shared_between_html_and_native_but_not_all_nat_users(clie
         monkeypatch.setattr(module, 'client_ip', lambda _request: '192.0.2.100')
         monkeypatch.setattr(module, 'check_credentials', lambda name, pw: pw == 'valid-test-password')
         monkeypatch.setattr(module, 'create_session', lambda name: 'test-token-' + name)
-        monkeypatch.setattr(module, 'auth_disabled', lambda: False)
     test_db.user_create('nat-other', 'unused')
     for index in range(5):
         if index % 2:
@@ -229,7 +228,11 @@ def test_schema265_failure_rolls_back_data_and_new_column(test_db, tmp_path, mon
     test_db.recipe_soft_delete(row['id'])
     with test_db.conn() as c:
         c.execute('UPDATE recipes SET source_url=NULL WHERE id=?', (row['id'],))
-        c.execute('DELETE FROM schema_migrations WHERE version=265')
+        # Simulate schema 264 completely, including absence of later triggers.
+        for table in ('shopping_cart', 'shopping_recurring'):
+            for operation in ('insert', 'update'):
+                c.execute(f'DROP TRIGGER {table}_finite_amount_{operation}')
+        c.execute('DELETE FROM schema_migrations WHERE version>=265')
         c.execute('ALTER TABLE background_tasks DROP COLUMN recovery_attempts')
     original = Database._migrate
     def interrupted(c):

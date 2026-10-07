@@ -28,7 +28,6 @@ def _request(token):
 
 @pytest.fixture
 def admin_session(test_db, monkeypatch):
-    monkeypatch.setattr(auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(auth, "_serializer", lambda: URLSafeTimedSerializer("request-performance-test" * 3))
     uid = test_db.user_create("request-admin", "unused", role="admin")
     accounts.view(test_db, uid)

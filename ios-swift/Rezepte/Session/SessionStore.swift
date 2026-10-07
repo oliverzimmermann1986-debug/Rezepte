@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import OSLog
 
 @MainActor
 final class SessionStore: ObservableObject {
@@ -24,23 +25,14 @@ final class SessionStore: ObservableObject {
     let api = APIClient()
     private let defaults = UserDefaults.standard
     private let tokenAccount = "api-token"
-    private let cloudflareClientIDAccount = "cloudflare-client-id"
-    private let cloudflareClientSecretAccount = "cloudflare-client-secret"
     private let serverKey = "server-url"
 
     var savedServer: String {
         defaults.string(forKey: serverKey) ?? ""
     }
 
-    var savedCloudflareClientID: String {
-        KeychainStore.read(account: cloudflareClientIDAccount) ?? ""
-    }
-
-    var savedCloudflareClientSecret: String {
-        KeychainStore.read(account: cloudflareClientSecretAccount) ?? ""
-    }
-
     func restore() async {
+        removeLegacyAccessCredentials()
         let expectedIdentity = identity
         guard !savedServer.isEmpty,
               let token = KeychainStore.read(account: tokenAccount) else {
@@ -48,14 +40,9 @@ final class SessionStore: ObservableObject {
             return
         }
         do {
-            let cloudflareCredentials = try CloudflareAccessCredentials(
-                clientID: savedCloudflareClientID,
-                clientSecret: savedCloudflareClientSecret
-            )
             try await api.configure(
                 server: savedServer,
                 token: token,
-                cloudflareCredentials: cloudflareCredentials,
                 sessionID: expectedIdentity
             )
             let session = try await api.sessionInfo()
@@ -71,67 +58,47 @@ final class SessionStore: ObservableObject {
     func signIn(
         server: String,
         username: String,
-        password: String,
-        cloudflareClientID: String,
-        cloudflareClientSecret: String
+        password: String
     ) async throws {
         identity = UUID()
         let expectedIdentity = identity
-        let cloudflareCredentials = try CloudflareAccessCredentials(
-            clientID: cloudflareClientID,
-            clientSecret: cloudflareClientSecret
-        )
         try await api.configure(
             server: server,
             token: nil,
-            cloudflareCredentials: cloudflareCredentials,
             sessionID: expectedIdentity
         )
         let response = try await api.login(username: username, password: password)
         try await activate(
             server: server,
             token: response.token,
-            cloudflareCredentials: cloudflareCredentials,
             expectedIdentity: expectedIdentity
         )
     }
 
-    func signInAsGuest(
-        server: String,
-        cloudflareClientID: String,
-        cloudflareClientSecret: String
-    ) async throws {
+    func signInAsGuest(server: String) async throws {
         identity = UUID()
         let expectedIdentity = identity
-        let cloudflareCredentials = try CloudflareAccessCredentials(
-            clientID: cloudflareClientID,
-            clientSecret: cloudflareClientSecret
-        )
         try await api.configure(
             server: server,
             token: nil,
-            cloudflareCredentials: cloudflareCredentials,
             sessionID: expectedIdentity
         )
         let response = try await api.guestLogin()
         try await activate(
             server: server,
             token: response.token,
-            cloudflareCredentials: cloudflareCredentials,
             expectedIdentity: expectedIdentity
         )
     }
 
     func register(
-        server: String, username: String, password: String, invitationToken: String,
-        cloudflareClientID: String, cloudflareClientSecret: String
+        server: String, username: String, password: String, invitationToken: String
     ) async throws {
         identity = UUID()
         let expectedIdentity = identity
-        let cloudflare = try CloudflareAccessCredentials(clientID: cloudflareClientID, clientSecret: cloudflareClientSecret)
-        try await api.configure(server: server, token: nil, cloudflareCredentials: cloudflare, sessionID: expectedIdentity)
+        try await api.configure(server: server, token: nil, sessionID: expectedIdentity)
         let response = try await api.register(username: username, password: password, invitationToken: invitationToken)
-        try await activate(server: server, token: response.token, cloudflareCredentials: cloudflare, expectedIdentity: expectedIdentity)
+        try await activate(server: server, token: response.token, expectedIdentity: expectedIdentity)
     }
 
     func signOut() {
@@ -143,6 +110,7 @@ final class SessionStore: ObservableObject {
         URLCache.shared.removeAllCachedResponses()
         Task { await api.clearAuthentication(ifSessionID: previousIdentity) }
         KeychainStore.delete(account: tokenAccount)
+        removeLegacyAccessCredentials()
         username = ""
         fullAccess = false
         readOnly = false
@@ -169,16 +137,18 @@ final class SessionStore: ObservableObject {
 
     func householdDidChange() async throws {
         guard let token = KeychainStore.read(account: tokenAccount) else { throw APIError.unauthenticated }
-        let cloudflare = try CloudflareAccessCredentials(clientID: savedCloudflareClientID, clientSecret: savedCloudflareClientSecret)
         identity = UUID()
         let expectedIdentity = identity
-        try await api.configure(server: savedServer, token: token, cloudflareCredentials: cloudflare, sessionID: expectedIdentity)
+        try await api.configure(server: savedServer, token: token, sessionID: expectedIdentity)
         let current = try await api.sessionInfo()
         guard identity == expectedIdentity else { throw APIError.sessionChanged }
         apply(current)
     }
 
     func refreshAccess() async {
+        // A locked keychain may reject cleanup during startup. Retry on each
+        // foreground entry without discarding a genuine account session.
+        removeLegacyAccessCredentials()
         guard case .signedIn = state else { return }
         let expectedIdentity = identity
         do {
@@ -190,33 +160,31 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func saveCloudflareCredentials(_ credentials: CloudflareAccessCredentials?) throws {
-        guard let credentials else {
-            KeychainStore.delete(account: cloudflareClientIDAccount)
-            KeychainStore.delete(account: cloudflareClientSecretAccount)
-            return
+    private func removeLegacyAccessCredentials() {
+        let completed = LegacyAccessMigration.removeCredentials(
+            read: { KeychainStore.read(account: $0) },
+            delete: { KeychainStore.delete(account: $0) }
+        )
+        if !completed {
+            Logger(subsystem: "de.mausbaeren.rezepte", category: "session")
+                .warning("Retired device credentials could not be fully removed; cleanup will retry.")
         }
-        try KeychainStore.save(credentials.clientID, account: cloudflareClientIDAccount)
-        try KeychainStore.save(credentials.clientSecret, account: cloudflareClientSecretAccount)
     }
 
     private func activate(
         server: String,
         token: String,
-        cloudflareCredentials: CloudflareAccessCredentials?,
         expectedIdentity: UUID
     ) async throws {
         guard identity == expectedIdentity else { throw APIError.sessionChanged }
         try await api.configure(
             server: server,
             token: token,
-            cloudflareCredentials: cloudflareCredentials,
             sessionID: expectedIdentity
         )
         let activeSession = try await api.sessionInfo()
         guard identity == expectedIdentity else { throw APIError.sessionChanged }
         try KeychainStore.save(token, account: tokenAccount)
-        try saveCloudflareCredentials(cloudflareCredentials)
         defaults.set(
             server.trimmingCharacters(in: .whitespacesAndNewlines),
             forKey: serverKey

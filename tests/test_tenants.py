@@ -41,7 +41,6 @@ def test_thumbnail_revalidation_remains_authenticated_and_household_scoped(house
 @pytest.fixture
 def households(client, test_db, monkeypatch):
     from app.main import app
-    monkeypatch.setattr(auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(auth, "_serializer", lambda: URLSafeTimedSerializer("tenant-test-key-" * 4))
     old = dict(app.dependency_overrides)
     app.dependency_overrides.pop(auth.require_auth, None)
@@ -616,10 +615,10 @@ def test_upgrade_keeps_legacy_rows_ids_and_creates_backup(tmp_path, monkeypatch,
     current_migrate = Database._migrate
 
     def build_legacy_fixture(connection):
-        # Diese Fixture lässt die Haushaltsmigration bewusst aus. Folgemigration
-        # 265 benötigt deren source_url-Spalte und darf hier noch nicht laufen.
-        connection.execute("INSERT INTO schema_migrations(version,name,applied_at) "
-                           "VALUES(265,'synthetic-fixture-skip',0)")
+        # Diese Fixture lässt Haushalts- und Folgemigrationen bewusst aus.
+        # 265 benötigt source_url; 266 darf im alten Schema keine Trigger anlegen.
+        connection.executemany("INSERT INTO schema_migrations(version,name,applied_at) "
+                               "VALUES(?,'synthetic-fixture-skip',0)", [(265,), (266,)])
         current_migrate(connection)
 
     with monkeypatch.context() as patch:
@@ -677,9 +676,8 @@ def test_upgrade_keeps_legacy_rows_ids_and_creates_backup(tmp_path, monkeypatch,
 def test_private_import_without_household_is_rejected_instead_of_published_globally(households, monkeypatch):
     client, db, users, login = households
     login("operator")
-    monkeypatch.setattr(auth, "auth_disabled", lambda: True)
-    from app import security
-    monkeypatch.setattr(security, "request_is_from_trusted_proxy", lambda _request: True)
+    import app.tenancy as tenancy
+    monkeypatch.setattr(tenancy, "scope_for_request", lambda _request: HouseholdScope(0, is_admin=True))
     response = client.post("/api/pending/import-url", json={"url": "https://recipes.example/must-remain-private", "visibility": "private"})
     assert response.status_code == 409
     assert db.pending_list() == [] and db.recipe_count() == 0

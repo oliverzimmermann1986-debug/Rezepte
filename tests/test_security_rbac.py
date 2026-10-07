@@ -91,7 +91,6 @@ def test_normal_user_cannot_access_admin_route_groups(
     from app.main import app
 
     test_db.user_create("friend", auth.hash_password("friend-password"), role="user")
-    monkeypatch.setattr(auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(auth, "request_user", lambda _request: "friend")
     app.dependency_overrides.pop(require_admin, None)
     try:

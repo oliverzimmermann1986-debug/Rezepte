@@ -20,7 +20,7 @@ type OwnImport = { url: string; name?: string; suggestion: { type?: string; cate
   ingredients?: unknown[]; steps?: unknown[]; servings?: number | null } };
 
 export default function AccountScreen() {
-  const { username, isAdmin, isGuest, serverUrl, cloudflareClientId, cloudflareClientSecret, registerAccount, signOut, returnToLogin, refreshHousehold } = useAuth();
+  const { username, isAdmin, isGuest, serverUrl, registerAccount, signOut, returnToLogin, refreshHousehold } = useAuth();
   const [account, setAccount] = useState<Account | null>(null);
   const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [busy, setBusy] = useState(false);
@@ -81,7 +81,7 @@ export default function AccountScreen() {
 
   async function createAccount() {
     if (password !== confirmation) throw new Error('Passwörter stimmen nicht überein.');
-    await registerAccount(serverUrl, name, password, cloudflareClientId, cloudflareClientSecret, tokenValue());
+    await registerAccount(serverUrl, name, password, tokenValue());
     setPassword('');
     setConfirmation('');
     setInvitation(null);

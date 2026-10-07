@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 265
+CURRENT_SCHEMA_VERSION = 266
 RECIPE_VARIANT_PENDING_STATUS = "variant_pending"
 _READ_CONNECTION = ContextVar('recipe_read_connection', default=None)
 
@@ -1456,6 +1456,32 @@ class Database:
                     c.execute('UPDATE recipes SET source_url=? WHERE id=?', (canonical_source(source), row[0]))
             c.execute('INSERT INTO schema_migrations(version, name, applied_at) VALUES(265, ?, ?)',
                       ('independent_worker_recovery_and_trash_sources', time.time()))
+
+        if not c.execute('SELECT 1 FROM schema_migrations WHERE version=266').fetchone():
+            # Auch ein endlicher Eingangswert kann beim Umrechnen oder Summieren
+            # überlaufen. Die letzte Schreibgrenze schützt sämtliche Cart-Writer.
+            # Bereits beschädigte Mengen bleiben als Artikel ohne Mengenangabe
+            # erhalten; Herkunft, Häkchen und Haushaltszuordnung ändern sich nicht.
+            invalid_amount = (
+                "amount IS NOT NULL AND (typeof(amount) NOT IN ('integer', 'real') "
+                "OR abs(amount) > 1.7976931348623157e308)"
+            )
+            for table in ('shopping_cart', 'shopping_recurring'):
+                c.execute(f'UPDATE {table} SET amount=NULL WHERE {invalid_amount}')
+                for operation in ('INSERT', 'UPDATE'):
+                    c.execute(f'''
+                        CREATE TRIGGER {table}_finite_amount_{operation.lower()}
+                        BEFORE {operation} ON {table}
+                        WHEN NEW.amount IS NOT NULL AND (
+                            typeof(NEW.amount) NOT IN ('integer', 'real')
+                            OR abs(NEW.amount) > 1.7976931348623157e308
+                        )
+                        BEGIN
+                            SELECT RAISE(ABORT, 'shopping_quantity_not_finite');
+                        END
+                    ''')
+            c.execute('INSERT INTO schema_migrations(version, name, applied_at) VALUES(266, ?, ?)',
+                      ('finite_shopping_quantities', time.time()))
 
     @contextmanager
     def read_snapshot(self):
@@ -5109,11 +5135,12 @@ class Database:
             return len(items)
 
     def cart_merge_many(self, items: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Fügt aggregierte Wochenplan-Zutaten atomar zum Warenkorb hinzu.
+        """Fügt Rezept- oder Wochenplan-Zutaten atomar zum Warenkorb hinzu.
 
         Bestehende manuelle Einträge bleiben erhalten. Gleiche Canonical-/
         Einheiten-Paare werden summiert und erneut als offen markiert.
         """
+        from .recipes.shopping_catalog import product_defaults
         added = 0
         merged = 0
         now = time.time()
@@ -5123,6 +5150,7 @@ class Database:
                 name = item.get("name") or "?"
                 canonical = item.get("canonical_name")
                 unit = item.get("unit")
+                resolved_category = product_defaults(name, canonical, item.get("category"))["category"]
                 if canonical:
                     if unit is None:
                         existing = c.execute(
@@ -5151,15 +5179,16 @@ class Database:
                         if recipe_id not in old_sources:
                             old_sources.append(recipe_id)
                     c.execute(
-                        "UPDATE shopping_cart SET amount=?, checked=0, source_recipe_ids=? WHERE id=?",
-                        (new_amount, json.dumps(old_sources), existing["id"]),
+                        "UPDATE shopping_cart SET amount=?, checked=0, source_recipe_ids=?, "
+                        "category=COALESCE(category, ?) WHERE id=?",
+                        (new_amount, json.dumps(old_sources), resolved_category, existing["id"]),
                     )
                     merged += 1
                 else:
                     c.execute(
                         "INSERT INTO shopping_cart "
-                        "(name, canonical_name, amount, unit, checked, added_at, source_recipe_ids) "
-                        "VALUES (?, ?, ?, ?, 0, ?, ?)",
+                        "(name, canonical_name, amount, unit, checked, added_at, source_recipe_ids, category) "
+                        "VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
                         (
                             name,
                             canonical,
@@ -5167,9 +5196,14 @@ class Database:
                             unit,
                             now,
                             json.dumps(source_ids),
+                            resolved_category,
                         ),
                     )
                     added += 1
+                self._shopping_product_upsert_conn(
+                    c, canonical_name=canonical, display_name=name,
+                    category=resolved_category, default_unit=unit,
+                )
         return {"added": added, "merged": merged}
 
     def cart_update(self, item_id: int, *, amount: Optional[float] = None,

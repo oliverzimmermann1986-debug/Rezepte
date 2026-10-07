@@ -16,12 +16,8 @@
 web:
   username: admin
   password: changeme
-  # Nur aktivieren, wenn davor eine eigene Zugriffskontrolle wie Cloudflare
-  # Access liegt. Der Logout nutzt dann /cdn-cgi/access/logout.
-  auth_disabled: false
-  # Optional für andere vorgeschaltete Login-Dienste. Erlaubt sind lokale
-  # Pfade oder vollständige HTTPS-URLs.
-  external_logout_url: ""
+  # Anmeldung und Rollen werden immer von der Anwendung geprüft.
+  # Ein vorgeschalteter Reverse-Proxy oder Tunnel ersetzt keine Sitzung.
   # Öffentliche Basis für widerrufbare Rezept-Links. Verhindert, dass ein
   # manipuliertes Host-Header-Ziel in einen neu erstellten Link gelangt.
   public_url: ""  # z. B. https://rezepte.example.com

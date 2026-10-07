@@ -20,7 +20,6 @@ from ..auth import (
     ROLE_ADMIN,
     ROLE_GUEST,
     ROLE_USER,
-    auth_disabled,
     request_is_guest,
     require_admin,
     require_auth,
@@ -164,8 +163,6 @@ def _exclusive_pdf_endpoint(func: _PdfEndpoint) -> _PdfEndpoint:
 
 
 def _username(request: Request) -> str:
-    if auth_disabled():
-        return "local"
     return request_user(request) or "unknown"
 
 
@@ -178,16 +175,15 @@ def current_session(request: Request) -> Dict[str, Any]:
         return guest_access_payload()
     username = _username(request)
     read_only = request_is_guest(request)
-    authentication_disabled = auth_disabled()
-    user = None if authentication_disabled or read_only else get_db().user_get_by_name(username)
+    user = get_db().user_get_by_name(username)
     # Eine gültige Legacy-Config-Sitzung existiert nur solange noch kein
     # DB-Benutzer angelegt wurde. Sie war historisch der Betreiber-Account und
-    # bleibt deshalb für das Upgrade ein Administrator. Im lokalen Modus gilt
-    # derselbe Vertrag. Alle DB-Benutzer werden dagegen fail-closed anhand der
+    # bleibt deshalb für das Upgrade ein Administrator. Alle DB-Benutzer
+    # werden dagegen fail-closed anhand der
     # persistierten Rolle ausgewertet.
     if read_only:
         role = ROLE_GUEST
-    elif authentication_disabled or user is None:
+    elif user is None:
         role = ROLE_ADMIN
     else:
         role = str(user.get("role") or ROLE_USER)

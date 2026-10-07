@@ -62,7 +62,6 @@ def test_health_and_system_info_report_build_version(client):
 def test_logout_clears_browser_state_and_redirects_to_login(client, monkeypatch):
     import app.main as main
 
-    monkeypatch.setattr(main, "auth_disabled", lambda: False)
     response = client.post("/logout", headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
@@ -81,7 +80,6 @@ def test_browser_logout_revokes_server_sessions(client, monkeypatch):
             revoked.append(username)
             return True
 
-    monkeypatch.setattr(main, "auth_disabled", lambda: False)
     monkeypatch.setattr(main, "request_user", lambda _request: "anna")
     monkeypatch.setattr(main, "get_db", lambda: FakeDb())
 
@@ -91,16 +89,19 @@ def test_browser_logout_revokes_server_sessions(client, monkeypatch):
     assert revoked == ["anna"]
 
 
-def test_logout_delegates_to_cloudflare_when_internal_auth_is_disabled(
-    client, monkeypatch
-):
+def test_logout_ignores_legacy_external_redirect(client, monkeypatch):
     import app.main as main
 
-    monkeypatch.setattr(main, "auth_disabled", lambda: True)
+    class LegacyConfig:
+        def get(self, *keys, default=None):
+            return {("web",): {"auth_disabled": True},
+                    ("web", "external_logout_url"): "https://external.invalid/logout"}.get(keys, default)
+
+    monkeypatch.setattr(main, "get_config", lambda: LegacyConfig())
     response = client.post("/logout", headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert response.status_code == 303
-    assert response.headers["location"] == "/cdn-cgi/access/logout"
-    assert response.headers["clear-site-data"] == '"cache", "storage"'
+    assert response.headers["location"] == "/login"
+    assert response.headers["clear-site-data"] == '\"cache\", \"storage\"'
 
 
 def test_deep_health_route_requires_authentication():

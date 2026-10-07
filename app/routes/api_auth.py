@@ -10,7 +10,6 @@ from ..auth import (
     ROLE_GUEST,
     ROLE_USER,
     GUEST_MAX_AGE,
-    auth_disabled,
     check_credentials,
     create_guest_session,
     create_session,
@@ -21,7 +20,7 @@ from ..auth import (
 )
 from ..db import get_db
 from ..security import (LoginRateLimiter, client_ip, login_actor_key, login_limiter,
-                        login_ip_limiter, request_is_from_trusted_proxy)
+                        login_ip_limiter)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 registration_limiter = LoginRateLimiter(max_fails=10, window_sec=600, ban_sec=600)
@@ -37,8 +36,6 @@ def _access_payload(username: str, *, read_only: bool = False) -> dict:
     """
     if read_only:
         role = ROLE_GUEST
-    elif auth_disabled():
-        role = ROLE_ADMIN
     else:
         user = get_db().user_get_by_name(username)
         role = (user or {}).get("role") or ROLE_ADMIN
@@ -84,8 +81,6 @@ class Registration(BaseModel):
 def register_account(payload: Registration, request: Request) -> dict:
     from .. import accounts
 
-    if auth_disabled():
-        raise HTTPException(409, "Für die Registrierung muss die Kontenanmeldung aktiviert sein")
     key = "register:" + client_ip(request)
     blocked, remaining = registration_limiter.is_blocked(key)
     if blocked:
@@ -113,16 +108,6 @@ def native_login(payload: NativeLogin, request: Request) -> dict:
             f"Zu viele Login-Versuche. Erneut versuchen in {remaining + 1} Sekunden.",
             headers={"Retry-After": str(remaining + 1)},
         )
-    if auth_disabled():
-        if not request_is_from_trusted_proxy(request):
-            raise HTTPException(403, "Unsichere direkte Verbindung")
-        login_limiter.record_success(limiter_key)
-        return {
-            "token": "cloudflare-access",
-            "token_type": "bearer",
-            "expires_in": 60 * 60 * 24 * 14,
-            **_access_payload("local"),
-        }
     if not check_credentials(username, payload.password):
         login_ip_limiter.record_fail(ip_key)
         login_limiter.record_fail(limiter_key)
@@ -148,8 +133,6 @@ def native_session(request: Request) -> dict:
 
 @router.post("/guest")
 def guest_login(request: Request) -> dict:
-    if auth_disabled() and not request_is_from_trusted_proxy(request):
-        raise HTTPException(403, "Unsichere direkte Verbindung")
     key = "guest:" + client_ip(request)
     blocked, remaining = guest_limiter.is_blocked(key)
     if blocked:
@@ -171,8 +154,6 @@ def native_logout(request: Request) -> dict:
         return {"ok": True}
     username = request_user(request)
     if not username:
-        return {"ok": True}
-    if request_is_guest(request) or auth_disabled():
         return {"ok": True}
     revoked = get_db().user_revoke_sessions(username)
     return {"ok": True, "revoked": revoked}

@@ -20,8 +20,6 @@ import { openExternalUrl } from '@/lib/external-links';
 export default function LoginScreen() {
   const {
     serverUrl: storedServer,
-    cloudflareClientId: storedCloudflareClientId,
-    cloudflareClientSecret: storedCloudflareClientSecret,
     sessionWarning,
     authCleanupPending,
     signIn,
@@ -32,11 +30,6 @@ export default function LoginScreen() {
   const [server, setServer] = useState(storedServer);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [cloudflareClientId, setCloudflareClientId] = useState(storedCloudflareClientId);
-  const [cloudflareClientSecret, setCloudflareClientSecret] = useState(storedCloudflareClientSecret);
-  const [showCloudflare, setShowCloudflare] = useState(
-    Boolean(storedCloudflareClientId || storedCloudflareClientSecret),
-  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [registration, setRegistration] = useState(false);
@@ -53,8 +46,8 @@ export default function LoginScreen() {
         const invite = invitationToken.trim();
         const token = invite.includes('://') ? new URL(invite).searchParams.get('invite') || '' : invite;
         if (invite && !token) throw new ApiError('Im Link fehlt der Einladungscode.', 0);
-        await registerAccount(server, username, password, cloudflareClientId, cloudflareClientSecret, token);
-      } else await signIn(server, username, password, cloudflareClientId, cloudflareClientSecret);
+        await registerAccount(server, username, password, token);
+      } else await signIn(server, username, password);
     } catch (reason) {
       setError(reason instanceof ApiError ? reason.message : 'Verbindung zum Server fehlgeschlagen.');
     } finally {
@@ -118,49 +111,13 @@ export default function LoginScreen() {
             onSubmitEditing={submit}
             style={styles.input}
           />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ expanded: showCloudflare }}
-            onPress={() => setShowCloudflare((value) => !value)}
-            style={styles.cloudflareToggle}>
-            <Text style={styles.cloudflareToggleText}>🛡 Cloudflare-Gerätezugang</Text>
-            <Text style={styles.cloudflareChevron}>{showCloudflare ? '−' : '+'}</Text>
-          </Pressable>
           {registration && <>
             <TextInput accessibilityLabel="Passwort wiederholen" secureTextEntry textContentType="newPassword" placeholder="Passwort wiederholen" value={confirmation} onChangeText={setConfirmation} style={styles.input} />
             <TextInput accessibilityLabel="Einladungscode oder Link" autoCapitalize="none" autoCorrect={false} placeholder="Einladungscode oder Link (optional)" value={invitationToken} onChangeText={setInvitationToken} style={styles.input} />
             <Text style={styles.subtitle}>Mindestens 10 Zeichen. Jeder meldet sich mit eigenem Passwort an.</Text>
           </>}
           <PrimaryButton label={registration ? 'Zur Anmeldung' : 'Konto erstellen'} onPress={() => { setRegistration(!registration); setError(''); setPassword(''); setConfirmation(''); }} disabled={busy} />
-          <PrimaryButton label="Als Gast ansehen" disabled={busy} onPress={() => { setBusy(true); setError(''); void signInAsGuest(server, cloudflareClientId, cloudflareClientSecret).catch(reason => setError(reason instanceof Error ? reason.message : 'Gastzugang fehlgeschlagen.')).finally(() => setBusy(false)); }} />
-          {showCloudflare && (
-            <View style={styles.cloudflarePanel}>
-              <TextInput
-                accessibilityLabel="Cloudflare Client-ID"
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="Cloudflare Client-ID"
-                placeholderTextColor={colors.muted}
-                value={cloudflareClientId}
-                onChangeText={setCloudflareClientId}
-                style={styles.input}
-              />
-              <TextInput
-                accessibilityLabel="Cloudflare Client-Secret"
-                autoCapitalize="none"
-                autoCorrect={false}
-                secureTextEntry
-                placeholder="Cloudflare Client-Secret"
-                placeholderTextColor={colors.muted}
-                value={cloudflareClientSecret}
-                onChangeText={setCloudflareClientSecret}
-                style={styles.input}
-              />
-              <Text style={styles.cloudflareHint}>
-                Beide Werte werden im iOS-Schlüsselbund gespeichert und bei jeder Serveranfrage gesendet.
-              </Text>
-            </View>
-          )}
+          <PrimaryButton label="Als Gast ansehen" disabled={busy} onPress={() => { setBusy(true); setError(''); void signInAsGuest(server).catch(reason => setError(reason instanceof Error ? reason.message : 'Gastzugang fehlgeschlagen.')).finally(() => setBusy(false)); }} />
           {!!sessionWarning && (
             <View style={styles.warningBox}>
               <Text accessibilityRole="alert" style={styles.warning}>{sessionWarning}</Text>
@@ -180,7 +137,7 @@ export default function LoginScreen() {
             onPress={submit}
             disabled={busy || !server.trim() || !username.trim() || !password || (registration && (!confirmation || password.length < 10))}
           />
-          <Text style={styles.privacy}>Passwort wird nicht gespeichert. Sitzung und Gerätezugang liegen im iOS-Schlüsselbund.</Text>
+          <Text style={styles.privacy}>Dein Passwort wird nicht gespeichert. Die Sitzung liegt im iOS-Schlüsselbund.</Text>
           <Pressable accessibilityRole="link" onPress={() => void openPrivacy()} style={styles.privacyLinkButton}>
             <Text style={styles.privacyLink}>Datenschutzhinweise ansehen</Text>
           </Pressable>
@@ -223,17 +180,6 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 16,
   },
-  cloudflareToggle: {
-    minHeight: 44,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 4,
-  },
-  cloudflareToggleText: { color: colors.text, fontSize: 15, fontWeight: '700' },
-  cloudflareChevron: { color: colors.text, fontSize: 24, lineHeight: 28 },
-  cloudflarePanel: { gap: 10 },
-  cloudflareHint: { color: colors.muted, fontSize: 12, lineHeight: 17 },
   warningBox: { gap: 8, padding: 12, borderRadius: radii.sm, backgroundColor: colors.warningSurface },
   warning: { color: colors.text, lineHeight: 20 },
   cleanupButton: { minHeight: 44, justifyContent: 'center' },

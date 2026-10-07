@@ -22,7 +22,6 @@ from tests.test_tenants import _recipe, households  # noqa: F401
 def test_deleted_creators_name_cannot_take_over_household_shares(households, monkeypatch):
     client, db, users, login = households
     monkeypatch.setattr(sharing, "_serializer", lambda: URLSafeTimedSerializer("lifecycle-share-key-" * 4, salt=sharing.SHARE_SALT))
-    monkeypatch.setattr(api_auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(api_auth, "registration_limiter", LoginRateLimiter())
     rid = _recipe(db, "StableShare", "https://recipes.example/stable-share")
     login("anna")

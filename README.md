@@ -27,7 +27,7 @@ separaten E-Mail-Postfächern (Rezepte + Hochzeit). Plattformmedien werden nicht
 heruntergeladen. Unvollständige Eingänge bleiben mit ihrem Original-Link zur
 manuellen Bearbeitung erhalten.
 
-Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Starten, Pending-Auflösung, Logs, Historie). Externe Erreichbarkeit ist explizit für **Cloudflare-Tunnel + Cloudflare Access** (MFA-Layer) ausgelegt.
+Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Starten, Pending-Auflösung, Logs, Historie). Für die externe Erreichbarkeit kann ein **Cloudflare-Tunnel** verwendet werden. Web- und iOS-App melden sich direkt mit einem eigenen Rezeptkonto an.
 
 
 ## Oberfläche
@@ -164,10 +164,10 @@ Konfiguration bleibt für den alten Einbenutzermodus erhalten.
 Einladungen speichern nur den Hash des Tokens; der kopierbare Link wird
 ausschließlich beim Erstellen angezeigt.
 
-Für Gastzugang und Registrierung muss `web.auth_disabled: false` gelten. Im
-Proxybetrieb mit `auth_disabled: true` wird jeder Besucher als Administrator
-behandelt; dort sind diese Einstiege deshalb gesperrt. Cloudflare Access bleibt
-eine zusätzliche Zugangsgrenze und wird durch eine Einladung nicht umgangen.
+Die Kontenanmeldung gilt auch hinter einem vertrauenswürdigen Proxy. Der
+frühere Schalter `web.auth_disabled` wird ignoriert und beim Speichern entfernt;
+er kann keine Anmeldung oder Rollenprüfung mehr umgehen. Gastzugang und
+Registrierung verwenden die eigenen, serverseitig begrenzten Endpunkte.
 
 Die Konto- und Haushaltstabellen wurden mit Schema **261** angelegt. Schema
 **262** ergänzt stabile Freigabeeigentümer und die Importkontingente. Schema
@@ -254,7 +254,7 @@ Der uvicorn-Bind ist standardmäßig **`127.0.0.1:8000`**. Abweichungen werden
 nur root-verwaltet in `/etc/scrapper/web.env` konfiguriert. Damit macht eine
 Neuinstallation den Port nicht unbeabsichtigt im LAN erreichbar.
 
-### 3. Cloudflare-Tunnel + Access (empfohlen)
+### 3. Cloudflare-Tunnel und eigene Anmeldung
 
 #### Variante A — cloudflared im selben Container
 
@@ -315,8 +315,6 @@ cloudflared-Peer. Nur die Anwendung wertet dessen Forwarded-Header aus:
 
 ```yaml
 web:
-  # Nur bei vorgeschaltetem Cloudflare Access aktivieren.
-  auth_disabled: true
   trusted_proxies:
     - 127.0.0.1/32
     - "::1/128"
@@ -338,15 +336,23 @@ ufw default allow outgoing
 ufw enable
 ```
 
-#### Cloudflare Access (für beide Varianten)
+#### Anmeldung am Rezeptserver
 
-Im **Cloudflare Zero Trust Dashboard → Access → Applications**:
-1. **Add an application → Self-hosted**
-2. Application Domain: `scrapper.deine-domain.tld`
-3. **Policy** anlegen: Action=Allow, Include=Email(s), optional Require=TOTP
-4. (Optional) Country-Restriction auf dein Land
+Web, SwiftUI und Expo verwenden Benutzername und Passwort des Rezeptkontos.
+Der Tunnel übernimmt die HTTPS-Erreichbarkeit; eigene Sitzungen und Rollen
+bleiben immer erforderlich. Der lesende Gastzugang ist ausdrücklich begrenzt.
+Für den Rezeptserver ist keine Cloudflare-Access-Anwendung erforderlich.
 
-Damit hast du MFA vor der App, **ohne** die App selbst anzupassen.
+Beim Umstieg zuerst einen vorhandenen Administratorzugang prüfen und dann die
+Access-Anwendung für den Rezeptserver einschließlich zugehöriger Pfadausnahmen
+entfernen. Alte Gerätezugangsdaten werden beim App-Start aus dem Schlüsselbund
+gelöscht; bestehende echte Rezept-Sitzungen bleiben erhalten. Abmelden widerruft
+die Sitzung und führt zur App-Anmeldung zurück.
+
+Die optionale Verbindung zum eigenständigen Einkaufsdienst kann weiterhin
+Cloudflare-Service-Zugangsdaten benötigen. Diese gehören ausschließlich in
+`einkauf.cf_access_client_id` und `einkauf.cf_access_client_secret`; sie werden
+nicht für die Anmeldung am Rezeptserver verwendet.
 
 ### 4. Konfiguration
 
@@ -609,7 +615,7 @@ Abbruch und Sitzungswechsel; sie ersetzen keinen Test auf einem iPhone.
 
 ## Lizenz / Verantwortung
 
-Self-hosted Setup. Vor produktivem Einsatz: das Hardening-Checklist im `data/config.yaml` durchgehen, Initial-Passwort ändern, Cloudflare-Access (oder ein Äquivalent) davorstellen und Updates über `proxmox/install.sh` beziehungsweise `proxmox/update-local.sh` einspielen.
+Self-hosted Setup. Vor produktivem Einsatz: die Sicherheitskonfiguration in `data/config.yaml` prüfen, Initial-Passwort ändern, HTTPS über einen Reverse-Proxy oder Tunnel einrichten und Updates über `proxmox/install.sh` beziehungsweise `proxmox/update-local.sh` einspielen. Die eigene Kontenanmeldung bleibt immer aktiv.
 
 KI-Inhalte werden an OpenAI übermittelt. Der Betreiber muss vor produktiver
 Nutzung die passende Rechtsgrundlage sowie die erforderlichen Datenschutz-
@@ -671,12 +677,17 @@ Die vorherige Aktivität der Import- und Backup-Timer bleibt erhalten;
 ausgeschaltete Timer werden nicht aktiviert. Auf der Review-Instanz bleibt der
 Import-Timer ausgeschaltet.
 
-Für den Wechsel vom bisherigen Cloudflare-Einzelbenutzerbetrieb auf Haushalte
+Für den Wechsel vom bisherigen Proxy-Einzelbenutzerbetrieb auf Haushalte
 das Update mit `sudo ENABLE_HOUSEHOLD_AUTH=1 bash proxmox/update-local.sh`
 aufrufen. Dafür muss der konfigurierte Betreiber bereits als aktiver Administrator
 existieren. Seine bisherigen Zugangsdaten bleiben erhalten; Benutzer und Kennwörter
 werden nicht neu angelegt oder zurückgesetzt. Danach ist eine persönliche Anmeldung
 oder der lesende Gastzugang erforderlich.
+
+Ab 1.8.9 ersetzt kein Proxy die eigene Anmeldung. Alte Einstellungen
+`web.auth_disabled` und `web.external_logout_url` werden beim Laden ignoriert
+und beim Speichern entfernt. Das Update erhält Konten, Kennwörter und den
+vorhandenen Sitzungsschlüssel. Details: [CHANGELOG_V1.8.9.md](CHANGELOG_V1.8.9.md).
 
 ### PDF-Rezeptdaten
 

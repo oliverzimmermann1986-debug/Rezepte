@@ -15,9 +15,6 @@ struct LoginView: View {
     @State private var creatingAccount = false
     @State private var passwordConfirmation = ""
     @State private var invitationInput = ""
-    @State private var cloudflareClientID = ""
-    @State private var cloudflareClientSecret = ""
-    @State private var showsCloudflareAccess = false
     @State private var workingAction: LoginAction?
     @State private var errorMessage: String?
 
@@ -81,25 +78,6 @@ struct LoginView: View {
                     }
                     .textFieldStyle(.roundedBorder)
 
-                    DisclosureGroup(isExpanded: $showsCloudflareAccess) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            TextField("Cloudflare Client-ID", text: $cloudflareClientID)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                            SecureField("Cloudflare Client-Secret", text: $cloudflareClientSecret)
-                                .textContentType(.password)
-                            Text("Der Gerätezugang wird sicher im iOS-Schlüsselbund gespeichert und bei jeder Serveranfrage an Cloudflare gesendet.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.top, 12)
-                        .textFieldStyle(.roundedBorder)
-                    } label: {
-                        Label("Cloudflare-Gerätezugang", systemImage: "shield.lefthalf.filled")
-                            .font(.headline)
-                            .foregroundStyle(theme.ink)
-                    }
-
                     if let errorMessage {
                         Label(errorMessage, systemImage: "exclamationmark.circle.fill")
                             .font(.subheadline)
@@ -162,7 +140,7 @@ struct LoginView: View {
                     }
 
                     Label(
-                        "Das Passwort wird nicht gespeichert. Cloudflare-Gerätezugang und Sitzungsschlüssel liegen geschützt im iOS-Schlüsselbund.",
+                        "Das Passwort wird nicht gespeichert. Dein Sitzungsschlüssel liegt geschützt im iOS-Schlüsselbund.",
                         systemImage: "lock.shield"
                     )
                     .font(.footnote)
@@ -187,13 +165,6 @@ struct LoginView: View {
                 } else if server.isEmpty {
                     server = session.savedServer
                 }
-                if cloudflareClientID.isEmpty {
-                    cloudflareClientID = session.savedCloudflareClientID
-                }
-                if cloudflareClientSecret.isEmpty {
-                    cloudflareClientSecret = session.savedCloudflareClientSecret
-                }
-                showsCloudflareAccess = !cloudflareClientID.isEmpty || !cloudflareClientSecret.isEmpty
             }
         }
     }
@@ -210,8 +181,7 @@ struct LoginView: View {
         do {
             try await session.register(
                 server: server, username: username.trimmingCharacters(in: .whitespacesAndNewlines),
-                password: password, invitationToken: invitationInput,
-                cloudflareClientID: cloudflareClientID, cloudflareClientSecret: cloudflareClientSecret
+                password: password, invitationToken: invitationInput
             )
             password = ""
             passwordConfirmation = ""
@@ -229,9 +199,7 @@ struct LoginView: View {
             try await session.signIn(
                 server: server,
                 username: username,
-                password: password,
-                cloudflareClientID: cloudflareClientID,
-                cloudflareClientSecret: cloudflareClientSecret
+                password: password
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -244,11 +212,7 @@ struct LoginView: View {
         errorMessage = nil
         defer { workingAction = nil }
         do {
-            try await session.signInAsGuest(
-                server: server,
-                cloudflareClientID: cloudflareClientID,
-                cloudflareClientSecret: cloudflareClientSecret
-            )
+            try await session.signInAsGuest(server: server)
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -270,7 +270,8 @@ def test_logout_controls_work_without_javascript_on_desktop_and_mobile():
     assert 'href="/logout"' not in html
     assert ".mobile-logout-button" in css
     assert ".sidebar-logout-button" in css
-    assert 'x-model="config.web.external_logout_url"' in html
+    assert 'config.web.external_logout_url' not in html
+    assert '/cdn-cgi/access/logout' not in html
 
 
 def test_admin_ui_is_private_and_backend_has_explicit_roles():

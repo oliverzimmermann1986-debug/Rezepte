@@ -460,7 +460,6 @@ def test_normal_user_is_rejected_by_admin_dependency(test_db: Database, monkeypa
 
     test_db.user_create("mitglied", "not-used", role="user")
     monkeypatch.setattr(auth, "session_user", lambda token: "mitglied")
-    monkeypatch.setattr(auth, "auth_disabled", lambda: False)
 
     class Request:
         cookies = {auth.SESSION_COOKIE: "valid"}
@@ -476,7 +475,6 @@ def test_current_session_exposes_persisted_user_role(client, test_db: Database, 
     import app.routes.api_admin as admin_api
 
     test_db.user_create("mitglied", "not-used", role="user")
-    monkeypatch.setattr(admin_api, "auth_disabled", lambda: False)
     monkeypatch.setattr(admin_api, "request_user", lambda request: "mitglied")
 
     response = client.get("/api/session")
@@ -491,27 +489,20 @@ def test_current_session_exposes_persisted_user_role(client, test_db: Database, 
     }
 
 
-def test_current_session_treats_auth_disabled_as_local_admin(client, monkeypatch):
-    import app.routes.api_admin as admin_api
+def test_current_session_requires_authentication(client):
+    from app import auth
+    from app.main import app
 
-    monkeypatch.setattr(admin_api, "auth_disabled", lambda: True)
-
+    app.dependency_overrides.pop(auth.require_auth, None)
     response = client.get("/api/session")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "username": "local",
-        "role": "admin",
-        "is_admin": True,
-        "full_access": True,
-        "read_only": False,
-    }
+    assert response.status_code == 401
 
 
-def test_direct_admin_routes_render_requested_start_page(client, monkeypatch):
-    import app.main as main
+def test_direct_admin_routes_render_requested_start_page(client, test_db):
+    from app import auth
 
-    monkeypatch.setattr(main, "auth_disabled", lambda: True)
+    test_db.user_create("admin-route", "unused", role="admin")
+    client.cookies.set(auth.SESSION_COOKIE, auth.create_session("admin-route"))
     admin = client.get("/admin")
     assert admin.status_code == 200
     assert 'data-initial-page="admin"' in admin.text

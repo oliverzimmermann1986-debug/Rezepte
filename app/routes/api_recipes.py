@@ -141,9 +141,7 @@ def _safe_recipe_file(recipe: Dict[str, Any], filename: str) -> Path:
 
 
 def _actor(request: Request) -> str:
-    from ..auth import auth_disabled, request_user
-    if auth_disabled():
-        return "local"
+    from ..auth import request_user
     return request_user(request) or "unknown"
 
 

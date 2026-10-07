@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import accounts
-from ..auth import auth_disabled, request_is_guest, request_user, require_auth
+from ..auth import request_is_guest, request_user, require_auth
 from ..db import get_db
 
 router = APIRouter(prefix="/api/account", tags=["account"], dependencies=[Depends(require_auth)])
@@ -12,8 +12,6 @@ router = APIRouter(prefix="/api/account", tags=["account"], dependencies=[Depend
 def _user(request: Request):
     if request_is_guest(request):
         raise HTTPException(403, "Bitte zuerst ein Konto erstellen oder anmelden")
-    if auth_disabled():
-        raise HTTPException(409, "Bitte die Kontenanmeldung aktivieren")
     user = get_db().user_get_by_name(request_user(request) or "")
     if not user or user["disabled"]:
         raise HTTPException(401, "Bitte erneut anmelden")

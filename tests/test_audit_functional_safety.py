@@ -12,21 +12,20 @@ from app.config_store import ConfigStore
 from app.recipes.pdf_recipe_extract import parse_ingredient_lines
 
 
-@pytest.mark.parametrize("value", ["false", "true", "0", "off", "invalid", 1, None, False])
-def test_auth_setting_never_uses_truthiness(tmp_path, monkeypatch, value):
+@pytest.mark.parametrize("value", ["false", "true", "0", "off", "invalid", 1, None, False, True])
+def test_retired_auth_setting_is_discarded(tmp_path, value):
     config = ConfigStore(tmp_path / "config.yaml")
     config.replace({"web": {"auth_disabled": value}})
-    monkeypatch.setattr(auth, "get_config", lambda: config)
-    assert auth.auth_disabled() is False
+    assert "auth_disabled" not in config.get("web")
     config.set("web", "auth_disabled", True)
-    assert auth.auth_disabled() is True
+    assert "auth_disabled" not in config.get("web")
 
 
-@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, {}, []])
-def test_config_api_rejects_non_boolean_auth_without_saving(client, tmp_path, monkeypatch, value):
+@pytest.mark.parametrize("value", [True, "false", "true", 0, 1, None, {}, []])
+def test_config_api_rejects_disabled_or_invalid_auth_without_saving(client, tmp_path, monkeypatch, value):
     from app.routes import api_config
     config = ConfigStore(tmp_path / "config.yaml")
-    original = {"web": {"auth_disabled": False}, "paths": {}}
+    original = {"web": {}, "paths": {}}
     config.replace(original)
     config.save()
     previous = config.path.read_bytes()

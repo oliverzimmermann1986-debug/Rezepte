@@ -93,7 +93,8 @@ def add_recipe_to_cart(db, recipe_id: int, multiplier: float = 1.0) -> Dict[str,
 
     ingredients = db.recipe_ingredients_get(recipe_id)
     excluded = db.shopping_excluded_canonicals()
-    counters = {"added": 0, "merged": 0, "skipped": 0}
+    skipped = 0
+    items = []
     for ing in ingredients:
         name = ing.get("name") or ""
         canon = canonical_for_existing(name, ing.get("canonical_name"))
@@ -101,10 +102,10 @@ def add_recipe_to_cart(db, recipe_id: int, multiplier: float = 1.0) -> Dict[str,
             # Zutat ohne erkennbaren Namen — überspringen (passiert nicht,
             # weil canonical_name in der DB seit Migration 1 immer gesetzt
             # wird, aber defensiv)
-            counters["skipped"] += 1
+            skipped += 1
             continue
         if canon.strip().lower() in excluded:
-            counters["skipped"] += 1
+            skipped += 1
             continue
 
         amount = ing.get("amount")
@@ -113,20 +114,18 @@ def add_recipe_to_cart(db, recipe_id: int, multiplier: float = 1.0) -> Dict[str,
         unit = normalize_unit(ing.get("unit"))
         base_unit, base_amount = to_base(unit, amount)
 
-        # War schon was im Cart mit selber canonical+unit?
-        existed = db.cart_find_mergeable(canon, base_unit)
-        db.cart_add_or_merge(
-            name=TOMATO_SHOPPING_NAME if canon == TOMATO_CANONICAL else name or canon,
-            canonical_name=canon,
-            amount=base_amount,
-            unit=base_unit,
-            source_recipe_id=recipe_id,
-        )
-        if existed:
-            counters["merged"] += 1
-        else:
-            counters["added"] += 1
-    return counters
+        items.append({
+            "name": TOMATO_SHOPPING_NAME if canon == TOMATO_CANONICAL else name or canon,
+            "canonical_name": canon,
+            "amount": base_amount,
+            "unit": base_unit,
+            "source_recipe_ids": [recipe_id],
+        })
+
+    # Alle Zutaten und Katalogänderungen gehören in dieselbe Transaktion.
+    # Auch ein Überlauf erst beim zweiten Merge darf keine Teilmenge speichern.
+    # Die Reihenfolge bleibt erhalten, damit doppelte Zutaten wie bisher zählen.
+    return {**db.cart_merge_many(items), "skipped": skipped}
 
 
 def aggregate_recipes_for_cart(

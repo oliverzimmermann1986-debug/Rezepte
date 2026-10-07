@@ -91,19 +91,21 @@ open Rezepte.xcodeproj
 Danach in Xcode unter **Signing & Capabilities** das eigene Apple-Team wählen.
 Die Serveradresse wird beim ersten Start eingegeben.
 
-## Cloudflare Access
+## Anmeldung und Sitzungen
 
-Für einen durch Cloudflare Access geschützten Server unterstützt die App einen
-eigenen Service Token pro Gerät. Client-ID und Client-Secret werden beim Login
-unter **Cloudflare-Gerätezugang** eingegeben, ausschließlich im iOS-Schlüsselbund
-gespeichert und als `CF-Access-Client-Id` beziehungsweise
-`CF-Access-Client-Secret` bei jeder Serveranfrage mitgesendet.
+Die App meldet sich mit Benutzername und Passwort direkt beim Rezepte-Server an.
+Registrierung, Haushaltseinladungen und der lesende Gastzugang verwenden dieselbe
+App-Authentifizierung. Der Sitzungsschlüssel bleibt im iOS-Schlüsselbund und wird
+als Bearer-Token an geschützte API-, Bild- und PDF-Endpunkte gesendet.
 
-In Cloudflare Zero Trust braucht die geschützte Anwendung zusätzlich zur
-normalen Browser-Policy eine **Service Auth**-Policy für diesen Service Token.
-Die Zugangsdaten dürfen nicht in den Quellcode, in GitHub-Secrets für den Build
-oder fest in das App-Bundle geschrieben werden. Für jedes Gerät sollte ein
-eigener, einzeln widerrufbarer Token verwendet werden.
+Cloudflare Access ist für den Rezepte-Server entfernt. Beim Start und Abmelden
+bereinigt die App frühere Gerätezugang-Einträge im Schlüsselbund. Echte Konto- und
+Gastsitzungen bleiben bei der Migration erhalten; der alte Platzhalter
+`cloudflare-access` wird verworfen und erfordert eine neue App-Anmeldung.
+
+Die getrennte Cloudflare-Konfiguration des externen Einkauf-Dienstes bleibt in
+den Admin-Einstellungen verfügbar. Der Rezepte-Server verwendet diese Zugangsdaten
+ausschließlich für seine Anfragen an den Einkauf-Dienst.
 
 ## Der Server muss HTTPS sprechen
 
@@ -124,9 +126,10 @@ dem Gerät installiert und als vertrauenswürdig markiert ist.
    Wechsel zwischen zwei Konten, globale Verweise, private Importe und die
    Schreibsperre für globale Rezepte prüfen. Anschließend Quellen-Eingang, Rezeptpass, Quellenwächter,
    Substitutionslabor, Menü-Dirigent, Bildverlauf, Wochenplan, wiederkehrende
-   Einkäufe, Admin-Einstellungen, Farbwelten und Einkaufskatalog prüfen. Bei
-   aktiviertem Cloudflare Access auch Login mit
-   gültigem sowie absichtlich ungültigem Geräte-Token testen.
+   Einkäufe, Admin-Einstellungen, Farbwelten und Einkaufskatalog prüfen. Beim
+   Upgrade eine echte gespeicherte Sitzung sowie einen alten
+   `cloudflare-access`-Platzhalter prüfen: Die echte Sitzung bleibt nutzbar,
+   der Platzhalter führt zur App-Anmeldung ohne Gerätezugang-Felder.
 3. Auf einem registrierten iPhone aus Xcode installieren.
 4. Über **Product > Archive** einen internen TestFlight-Build hochladen.
 

@@ -5,19 +5,22 @@ Startet mit:  uvicorn app.main:app --host 127.0.0.1 --port 8000
 from __future__ import annotations
 
 import logging
+import math
 import os
 import html
+import sqlite3
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 from fastapi import Depends, FastAPI, Form, Request, status
-from fastapi.exceptions import HTTPException
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
-from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, auth_disabled, check_credentials,
+from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, check_credentials,
                     GUEST_MAX_AGE, request_is_guest,
                     create_session, migrate_security, migrate_users_to_db,
                     request_user, require_auth, verify_session)
@@ -536,8 +539,6 @@ def _safe_next(value: str) -> str:
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(next: str = "/"):
-    if auth_disabled():
-        return RedirectResponse(url="/", status_code=303)
     return LOGIN_HTML.format(error="", next=html.escape(_safe_next(next), quote=True))
 
 
@@ -577,9 +578,8 @@ Kochverläufe, Einkäufe und Planungen. Globale Rezepte sind für alle lesbar.
 Ein privater Import eines schon global vorhandenen Links legt einen Verweis
 auf das bestehende Rezept an.</p>
 <h2>Speicherung und Übertragung</h2>
-<p>Das Sitzungstoken und – falls Cloudflare Access verwendet wird – die vom
-Nutzer eingegebenen Cloudflare-Gerätezugangsdaten werden im iOS-Schlüsselbund
-gespeichert. Das eigentliche Passwort wird nicht gespeichert. Die Kommunikation
+<p>Das Sitzungstoken wird im iOS-Schlüsselbund gespeichert. Das eigentliche
+Passwort wird nicht gespeichert. Die Kommunikation
 erfolgt über HTTPS direkt mit dem eingetragenen Rezepteserver. Die App enthält
 keine Werbung, keine Telemetrie und keine Analyse-SDKs.</p>
 <h2>KI-gestützte Verarbeitung</h2>
@@ -615,12 +615,11 @@ sofort widerrufen werden.</p>
 <h2>Löschung und Auskunft</h2>
 <p>Rezepte und Kontodaten werden vom Betreiber des privaten Servers verwaltet.
 Anfragen zu Auskunft oder Löschung sind an diesen Betreiber zu richten. Durch
-Abmelden werden Sitzungstoken, Cloudflare-Zugangsdaten und private
-Bildcaches vom iPhone entfernt; reguläre Serversitzungen werden widerrufen.
+Abmelden werden Sitzungstoken und private Bildcaches vom iPhone entfernt;
+reguläre Serversitzungen werden widerrufen.
 Gastsitzungen laufen spätestens nach 24 Stunden ab. Beim Wechsel von Gast zur
-Anmeldung bleiben Server-Adresse und Cloudflare-Gerätezugang auf dem Gerät
-gespeichert.</p>
-<p><small>Stand: 4. Oktober 2026</small></p>
+Anmeldung bleibt die Server-Adresse auf dem Gerät gespeichert.</p>
+<p><small>Stand: 7. Oktober 2026</small></p>
 </main></body></html>"""
     )
 
@@ -732,30 +731,9 @@ def register_browser(request: Request, username: str = Form(...), password: str 
     return response
 
 
-def _logout_target() -> str:
-    """Ziel passend zur aktiven Authentifizierungsgrenze wählen."""
-    if not auth_disabled():
-        return "/login"
-
-    configured = str(
-        get_config().get("web", "external_logout_url", default="") or ""
-    ).strip()
-    if configured:
-        parsed = urlsplit(configured)
-        is_local_path = configured.startswith("/") and not configured.startswith("//")
-        is_https_url = parsed.scheme == "https" and bool(parsed.netloc)
-        if is_local_path or is_https_url:
-            return configured
-        logger.warning("Unsichere web.external_logout_url ignoriert: %r", configured)
-
-    # Offizieller Logout-Endpunkt für Cloudflare Access. Ein relativer Pfad
-    # funktioniert unabhängig vom öffentlichen Hostnamen der Installation.
-    return "/cdn-cgi/access/logout"
-
-
 @app.post("/logout")
 def logout(request: Request):
-    if not auth_disabled() and not request_is_guest(request):
+    if not request_is_guest(request):
         username = request_user(request)
         if username:
             try:
@@ -764,7 +742,7 @@ def logout(request: Request):
                 # Cookie lokal trotzdem entfernen. Ein DB-Ausfall darf den
                 # Nutzer nicht in einer scheinbar unlösbaren Sitzung halten.
                 logger.exception("Serversitzung beim Browser-Logout nicht widerrufen")
-    resp = RedirectResponse(url=_logout_target(), status_code=303)
+    resp = RedirectResponse(url="/login", status_code=303)
     resp.delete_cookie(SESSION_COOKIE, path="/")
     # Löscht insbesondere Cache Storage alter Service-Worker-Versionen. Private
     # Rezeptdaten dürfen auf gemeinsam genutzten Geräten nicht nach Logout
@@ -789,7 +767,7 @@ def _static_version() -> str:
 def _render_spa(request: Request, *, initial_page: str = "recipes",
                 initial_admin_tab: str = "home"):
     token = request.cookies.get(SESSION_COOKIE, "")
-    if not auth_disabled() and (not token or not verify_session(token)):
+    if not token or not verify_session(token):
         next_path = request.url.path or "/"
         return RedirectResponse(url=f"/login?next={next_path}", status_code=303)
 
@@ -828,6 +806,37 @@ def home(request: Request):
 
 
 # -------- Exception-Handler --------
+def _contains_nonfinite_number(value) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_contains_nonfinite_number(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_nonfinite_number(item) for item in value)
+    return False
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    if any(error.get('type') == 'finite_number' for error in errors) or _contains_nonfinite_number(errors):
+        # Pydantics Fehler enthält den ungültigen Wert selbst. Infinity/NaN
+        # können auch in einer Fehlerantwort nicht als JSON serialisiert werden.
+        return JSONResponse(status_code=422, content={
+            'detail': 'Bitte gib eine gültige, endliche Menge ein.',
+        })
+    return await request_validation_exception_handler(request, exc)
+
+
+@app.exception_handler(sqlite3.IntegrityError)
+async def quantity_exception_handler(request: Request, exc: sqlite3.IntegrityError):
+    if str(exc) != 'shopping_quantity_not_finite':
+        raise exc
+    return JSONResponse(status_code=422, content={
+        'detail': 'Die Menge ist zu groß oder ungültig. Bitte prüfe die Mengenangabe.',
+    })
+
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == status.HTTP_303_SEE_OTHER and "Location" in (exc.headers or {}):

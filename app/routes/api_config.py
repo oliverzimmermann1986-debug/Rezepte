@@ -39,8 +39,10 @@ def _update_config_locked(payload: Dict[str, Any], request: Request):
     authenticated_username = request_user(request)
 
     present, auth_setting = _incoming_path_value(payload, ("web", "auth_disabled"))
-    if present and not isinstance(auth_setting, bool):
-        raise HTTPException(400, "web.auth_disabled muss true oder false als Boolean sein")
+    # Older clients may still send false. The former proxy-login bypass can
+    # never be re-enabled, including through a full legacy configuration PUT.
+    if present and auth_setting is not False:
+        raise HTTPException(400, "Die Kontenanmeldung kann nicht deaktiviert werden")
 
     # Laufzeit-/Datenpfade definieren die Sicherheitsgrenzen für Browse,
     # Audit, PDF und Backups. Sie dürfen nicht über eine HTTP-Anfrage auf '/'
@@ -95,7 +97,7 @@ def _update_config_locked(payload: Dict[str, Any], request: Request):
         _set(merged, ("web", "session_version"), current_version + 1)
 
     authenticated_user = None
-    if new_password_hash and authenticated_username and authenticated_username != "local":
+    if new_password_hash and authenticated_username:
         from ..db import get_db
         authenticated_user = get_db().user_get_by_name(authenticated_username)
         if authenticated_user:

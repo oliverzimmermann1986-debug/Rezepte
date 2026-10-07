@@ -8,10 +8,9 @@ Prüfung.
 Auth: KEIN Session-Cookie (ein Kurzbefehl kann keins liefern), stattdessen ein
 individuelles, nur gehasht gespeichertes Intake-Token. Das Klartext-Token wird
 nur beim Erstellen ausgegeben. Header ``X-Share-Token`` oder Body-Feld ``token``.
-Der Endpoint liegt zusätzlich hinter
-Cloudflare Access — der Kurzbefehl muss also entweder CF-Service-Token-Header
-(CF-Access-Client-Id/Secret) mitschicken, oder es existiert eine CF-Bypass-Policy
-für ``/api/share``.
+Cloudflare-Gerätezugangsdaten sind für den Rezeptserver nicht erforderlich.
+Das Intake-Token gewährt ausschließlich den Zugriff auf diesen Import-Endpunkt,
+nicht auf Rezepte, Haushalt oder Administration.
 
 Sicherheit: Der Intake ist standardmäßig deaktiviert, hat IP-/Token-Limits und
 eine begrenzte Queue. Deaktivieren löscht das Token sofort.

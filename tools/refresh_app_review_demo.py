@@ -97,7 +97,6 @@ def _assert_sanitized_config(config_path: Path, public_url: str) -> None:
         raise RuntimeError("Abbruch: Review-Konfiguration ist kein YAML-Objekt.")
 
     expected: tuple[tuple[tuple[str, ...], Any], ...] = (
-        (("web", "auth_disabled"), False),
         (("web", "public_url"), public_url),
         (("mail", "recipe", "enabled"), False),
         (("mail", "recipe", "username"), ""),

@@ -278,12 +278,10 @@ def client_ip(request: Request) -> str:
 
 
 def request_is_from_trusted_proxy(request: Request) -> bool:
-    """Ob der unmittelbare TCP-Peer als lokale Auth-Grenze konfiguriert ist.
+    """Ob Forwarded-Header des unmittelbaren TCP-Peers vertraut werden.
 
-    Im ``auth_disabled``-Betrieb darf nicht schon die bloße Erreichbarkeit des
-    Uvicorn-Ports Administratorrechte verleihen. Standardmäßig sind daher nur
-    Loopback-Peers zugelassen; weitere Proxy-Netze müssen explizit konfiguriert
-    werden.
+    Standardmäßig sind nur Loopback-Peers zugelassen; weitere Proxy-Netze
+    müssen explizit konfiguriert werden. Dies gewährt keine Benutzerrechte.
     """
     peer_text = request.client.host if request.client else ""
     peer = _parsed_ip(peer_text)

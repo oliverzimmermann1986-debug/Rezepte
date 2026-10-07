@@ -2,7 +2,6 @@ def test_native_login_returns_bearer_session(client, test_db, monkeypatch):
     import app.routes.api_auth as api_auth
 
     test_db.user_create("anna", "unused-test-hash", role="user")
-    monkeypatch.setattr(api_auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(api_auth, "check_credentials", lambda username, password: (
         username == "anna" and password == "geheim"
     ))
@@ -29,7 +28,6 @@ def test_native_login_returns_bearer_session(client, test_db, monkeypatch):
 def test_native_login_rejects_bad_credentials(client, monkeypatch):
     import app.routes.api_auth as api_auth
 
-    monkeypatch.setattr(api_auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(api_auth, "check_credentials", lambda *_: False)
 
     response = client.post(
@@ -57,7 +55,6 @@ def test_native_login_rate_limits_repeated_failures(client, monkeypatch):
             self.failures.discard(key)
 
     monkeypatch.setattr(api_auth, "login_limiter", FakeLimiter())
-    monkeypatch.setattr(api_auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(api_auth, "check_credentials", lambda *_: False)
 
     assert client.post(
@@ -70,42 +67,28 @@ def test_native_login_rate_limits_repeated_failures(client, monkeypatch):
     assert blocked.headers["retry-after"] == "13"
 
 
-def test_native_login_uses_cloudflare_as_only_auth_when_local_auth_is_disabled(
-    client, monkeypatch
-):
+def test_native_login_checks_password_with_legacy_proxy_settings(client, monkeypatch):
+    from app import auth, security
     import app.routes.api_auth as api_auth
 
-    monkeypatch.setattr(api_auth, "auth_disabled", lambda: True)
-    monkeypatch.setattr(api_auth, "request_is_from_trusted_proxy", lambda _request: True)
+    class LegacyConfig:
+        def get(self, *keys, default=None):
+            return {("web",): {"auth_disabled": True}}.get(keys, default)
+
+    monkeypatch.setattr(auth, "get_config", lambda: LegacyConfig())
+    monkeypatch.setattr(security, "request_is_from_trusted_proxy", lambda _request: True)
     monkeypatch.setattr(api_auth, "check_credentials", lambda *_: False)
-    monkeypatch.setattr(
-        api_auth,
-        "create_session",
-        lambda username: (_ for _ in ()).throw(AssertionError("must not be called")),
-    )
+    monkeypatch.setattr(api_auth, "create_session", lambda _username: (_ for _ in ()).throw(
+        AssertionError("No session may be issued for bad credentials")))
 
-    response = client.post(
-        "/api/auth/login",
-        json={"username": "oliver", "password": "nicht-ausgewertet"},
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "token": "cloudflare-access",
-        "token_type": "bearer",
-        "expires_in": 1209600,
-        "username": "local",
-        "role": "admin",
-        "is_admin": True,
-        "full_access": True,
-        "read_only": False,
-    }
+    response = client.post("/api/auth/login", json={"username": "oliver", "password": "wrong"})
+    assert response.status_code == 401
+    assert "token" not in response.json()
 
 
 def test_native_guest_login_creates_no_database_user(client, test_db, monkeypatch):
     import app.routes.api_auth as api_auth
 
-    monkeypatch.setattr(api_auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(api_auth, "create_guest_session", lambda: "signed-guest-token")
 
     response = client.post("/api/auth/guest")
@@ -223,7 +206,6 @@ def test_native_logout_revokes_server_sessions(client, monkeypatch):
             assert username == "anna"
             return True
 
-    monkeypatch.setattr(api_auth, "auth_disabled", lambda: False)
     monkeypatch.setattr(api_auth, "request_is_guest", lambda _request: False)
     monkeypatch.setattr(api_auth, "request_user", lambda _request: "anna")
     monkeypatch.setattr(api_auth, "get_db", lambda: FakeDb())
@@ -247,7 +229,6 @@ def test_privacy_page_is_public_and_describes_native_data_handling(client):
 def test_login_next_value_is_html_escaped(client, monkeypatch):
     import app.main as main
 
-    monkeypatch.setattr(main, "auth_disabled", lambda: False)
     response = client.get(
         "/login",
         params={"next": '/\"><script>alert(1)</script>'},

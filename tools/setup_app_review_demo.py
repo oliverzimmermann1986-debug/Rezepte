@@ -244,9 +244,9 @@ def _assert_empty_review_data(db: Database, recipe_root: Path) -> None:
 def _sanitize_config(config_path: Path, public_url: str, trusted_proxy_cidr: str) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     web = config.setdefault("web", {})
+    web.pop("auth_disabled", None)
+    web.pop("external_logout_url", None)
     web.update({
-        "auth_disabled": False,
-        "external_logout_url": "",
         "public_url": public_url,
         "trusted_proxies": ["127.0.0.1/32", "::1/128", trusted_proxy_cidr],
     })

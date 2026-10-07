@@ -19,8 +19,13 @@ function deferred() {
 
 function harness(options = {}) {
   let epoch = 0;
-  const states = [true, 'guest.original-token', 'https://rezepte.test', 'Gast', false, true, 'device-id', 'device-secret'];
+  const states = options.startup ? [] : [true, 'guest.original-token', 'https://rezepte.test', 'Gast', false, true];
   let stateIndex = 0;
+  const effects = [];
+  const startup = deferred();
+  const stored = new Map(Object.entries(options.stored || {}));
+  const read = [];
+  const filesDeleted = [];
   const configs = [];
   const requests = [];
   const deleted = [];
@@ -32,25 +37,38 @@ function harness(options = {}) {
     useState: initial => {
       const index = stateIndex++;
       if (!(index in states)) states[index] = initial;
-      return [states[index], value => { states[index] = value; }];
+      return [states[index], value => { states[index] = value; if (index === 0 && value) startup.resolve(); }];
     },
     useRef: initial => ({ current: initial }),
-    useEffect: () => {}, useCallback: fn => fn,
+    useEffect: fn => { effects.push(fn); }, useCallback: fn => fn,
     createElement: (_component, props) => ({ props }),
   };
   const dependencies = {
     react,
     'react-native': { AppState: {} },
     'expo-constants': { expoConfig: { extra: { apiUrl: 'https://rezepte.test' } } },
-    'expo-file-system/legacy': { documentDirectory: null },
+    'expo-file-system/legacy': {
+      documentDirectory: 'file://documents/',
+      getInfoAsync: async () => ({ exists: options.marker !== false }),
+      deleteAsync: async path => { filesDeleted.push(path); },
+      writeAsStringAsync: async () => {},
+    },
     'expo-image': { Image: {
       clearMemoryCache: async () => { cleared.push('memory'); },
       clearDiskCache: async () => { cleared.push('disk'); },
     } },
     'expo-router': { router: { replace: route => routes.push(route) } },
     'expo-secure-store': {
-      setItemAsync: async (key, value) => { if (options.storageFailure && key === 'api-token') throw new Error('keychain unavailable'); },
-      deleteItemAsync: async key => { deleted.push(key); },
+      getItemAsync: async key => { read.push(key); return stored.get(key) || null; },
+      setItemAsync: async (key, value) => {
+        if (options.storageFailure && key === 'api-token') throw new Error('keychain unavailable');
+        stored.set(key, value);
+      },
+      deleteItemAsync: async key => {
+        deleted.push(key);
+        if (options.deleteFailure?.(key)) throw new Error('keychain unavailable');
+        stored.delete(key);
+      },
     },
     './cache': { clearApiCache: async () => {
       cleared.push('api');
@@ -75,47 +93,86 @@ function harness(options = {}) {
     require: name => { if (!(name in dependencies)) throw new Error(`Unexpected import: ${name}`); return dependencies[name]; },
     URL, __DEV__: true,
   });
-  const context = module.exports.AuthProvider({ children: null }).props.value;
-  return { context, states, configs, requests, deleted, routes, cleared, ApiError };
+  const render = () => { stateIndex = 0; return module.exports.AuthProvider({ children: null }).props.value; };
+  const context = render();
+  const start = async () => { effects[0](); await startup.promise; };
+  return { context, render, start, states, configs, requests, deleted, routes, cleared, stored, read, filesDeleted, ApiError };
 }
 
-test('failed registration restores the active guest and device access', async () => {
+test('failed registration restores the active guest session', async () => {
   const h = harness({ request: async () => { throw new Error('duplicate username'); } });
-  await assert.rejects(h.context.registerAccount('https://rezepte.test', 'Partner', 'password-test', 'device-id', 'device-secret'), /duplicate username/);
+  await assert.rejects(h.context.registerAccount('https://rezepte.test', 'Partner', 'password-test'), /duplicate username/);
   assert.equal(h.configs.at(-1)[1], 'guest.original-token');
-  assert.equal(h.configs.at(-1)[2].clientSecret, 'device-secret');
+  assert.equal(h.configs.at(-1)[2], 'Gast');
   assert.equal(h.states[1], 'guest.original-token');
   assert.equal(h.deleted.length, 0);
+});
+
+test('fresh legacy backend responses cannot activate or persist login, guest or registration sessions', async () => {
+  for (const token of ['cloudflare-access', '  cloudflare-access\n']) {
+    for (const mode of ['login', 'guest', 'register']) {
+      const h = harness({ startup: true, request: async () => ({ token, username: 'Legacy admin', role: 'admin', is_admin: true }) });
+      const operation = mode === 'guest'
+        ? h.context.signInAsGuest('https://rezepte.test')
+        : mode === 'register'
+          ? h.context.registerAccount('https://rezepte.test', 'Partner', 'password-test')
+          : h.context.signIn('https://rezepte.test', 'Partner', 'password-test');
+      await assert.rejects(operation, error => error.status === 502 && /keine gültige App-Sitzung/.test(error.message));
+      assert.equal(h.requests[0].path, `/api/auth/${mode}`);
+      assert.equal(h.states[1], null);
+      assert.equal(h.states[4], false);
+      assert.equal(h.states[5], false);
+      assert.equal(h.stored.size, 0);
+      assert.equal(h.configs.at(-1)[1], null);
+      assert.deepEqual(h.cleared, []);
+      assert.deepEqual(h.deleted, []);
+      assert.deepEqual(h.routes, []);
+    }
+  }
+});
+
+test('a legacy registration result preserves the prior guest session and private caches', async () => {
+  const stored = { 'api-token': 'guest.original-token', 'rezepte.username': 'Gast' };
+  const h = harness({ stored, request: async () => ({ token: ' cloudflare-access ', username: 'Legacy admin', role: 'admin', is_admin: true }) });
+  await assert.rejects(h.context.registerAccount('https://rezepte.test', 'Partner', 'password-test'), /keine gültige App-Sitzung/);
+  assert.equal(h.configs.at(-1)[1], 'guest.original-token');
+  assert.equal(h.states[1], 'guest.original-token');
+  assert.equal(h.states[3], 'Gast');
+  assert.equal(h.states[4], false);
+  assert.equal(h.states[5], true);
+  assert.deepEqual(Object.fromEntries(h.stored), stored);
+  assert.deepEqual(h.cleared, []);
+  assert.deepEqual(h.deleted, []);
+  assert.deepEqual(h.routes, []);
 });
 
 test('focus refresh cannot log out the guest while registration is pending', async () => {
   const pending = deferred();
   const h = harness({ request: () => pending.promise });
-  const registration = h.context.registerAccount('https://rezepte.test', 'Partner', 'password-test', 'device-id', 'device-secret');
+  const registration = h.context.registerAccount('https://rezepte.test', 'Partner', 'password-test', 'invite-test');
   await h.context.refreshSession();
   assert.equal(h.requests.length, 1);
   assert.equal(h.requests[0].path, '/api/auth/register');
+  assert.equal(JSON.parse(h.requests[0].init.body).invitation_token, 'invite-test');
   pending.resolve({ token: 'registered-session', username: 'Partner', role: 'user' });
   await registration;
   assert.equal(h.states[1], 'registered-session');
   assert.equal(h.states[5], false);
 });
 
-test('switching from guest to login deletes the session and retains device credentials', async () => {
+test('switching from guest to login deletes the session and legacy credentials', async () => {
   const h = harness();
   await h.context.returnToLogin();
-  assert.deepEqual(h.deleted.sort(), ['api-token', 'rezepte.username']);
+  assert.deepEqual(h.deleted.sort(), ['api-token', 'cloudflare-client-id', 'cloudflare-client-secret', 'rezepte.username']);
   assert.equal(h.states[1], null);
-  assert.equal(h.states[6], 'device-id');
-  assert.equal(h.states[7], 'device-secret');
   assert.equal(h.configs.at(-1)[1], null);
-  assert.equal(h.configs.at(-1)[2].clientSecret, 'device-secret');
+  assert.equal(h.configs.at(-1).length, 2);
   assert.equal(h.routes.at(-1), '/login');
 });
 
 test('keychain failure after registration leaves no active or partially stored session', async () => {
   const h = harness({ storageFailure: true });
-  await assert.rejects(h.context.registerAccount('https://rezepte.test', 'Partner', 'password-test', 'device-id', 'device-secret'), /keychain unavailable/);
+  await assert.rejects(h.context.registerAccount('https://rezepte.test', 'Partner', 'password-test'), /keychain unavailable/);
   assert.equal(h.states[1], null);
   assert.equal(h.states[5], false);
   assert.equal(h.configs.at(-1)[1], null);
@@ -138,4 +195,89 @@ test('network failure preserves the session and private caches for retry', async
   assert.equal(h.states[1], 'guest.original-token');
   assert.deepEqual(h.cleared, []);
   assert.deepEqual(h.deleted, []);
+});
+
+function legacyStored(token = 'user-existing-session') {
+  return {
+    'api-token': token,
+    'rezepte.server': 'https://rezepte.test',
+    'rezepte.username': 'Partner',
+    'cloudflare-client-id': 'retired-id',
+    'cloudflare-client-secret': 'retired-secret',
+  };
+}
+
+test('upgrade removes legacy credentials without reading them or replacing a valid user session', async () => {
+  const h = harness({ startup: true, stored: legacyStored() });
+  await h.start();
+  assert.equal(h.states[0], true);
+  assert.equal(h.states[1], 'user-existing-session');
+  assert.equal(h.stored.get('api-token'), 'user-existing-session');
+  assert.equal(h.requests[0].path, '/api/auth/session');
+  assert.deepEqual(h.configs[0], ['https://rezepte.test', 'user-existing-session', 'Partner']);
+  assert.deepEqual(h.deleted.sort(), ['cloudflare-client-id', 'cloudflare-client-secret']);
+  assert.ok(h.read.every(key => !key.startsWith('cloudflare')));
+  assert.deepEqual(h.cleared, []);
+});
+
+test('upgrade keeps an offline guest session and cached recipes', async () => {
+  const h = harness({ startup: true, stored: legacyStored('guest.existing-session'), request: async () => { throw new Error('offline'); } });
+  await h.start();
+  assert.equal(h.states[1], 'guest.existing-session');
+  assert.equal(h.states[5], true);
+  assert.equal(h.stored.get('api-token'), 'guest.existing-session');
+  assert.deepEqual(h.cleared, []);
+});
+
+test('upgrade rejects the legacy pseudo-session before any API request and purges private caches', async () => {
+  const h = harness({ startup: true, stored: legacyStored('cloudflare-access') });
+  await h.start();
+  assert.equal(h.states[1], null);
+  assert.equal(h.states[3], '');
+  assert.equal(h.states[4], false);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.configs[0][1], null);
+  assert.ok(!h.stored.has('api-token'));
+  assert.ok(!h.stored.has('rezepte.username'));
+  assert.ok(!h.stored.has('cloudflare-client-secret'));
+  assert.equal(h.stored.get('rezepte.server'), 'https://rezepte.test');
+  assert.deepEqual(h.cleared.sort(), ['api', 'disk', 'memory']);
+});
+
+test('failed credential cleanup and retry preserve the valid signed-in session', async () => {
+  let rejectLegacy = true;
+  const h = harness({ startup: true, stored: legacyStored(), deleteFailure: key => rejectLegacy && key === 'cloudflare-client-secret' });
+  await h.start();
+  assert.equal(h.states[1], 'user-existing-session');
+  assert.equal(h.render().authCleanupPending, true);
+  assert.equal(h.stored.get('api-token'), 'user-existing-session');
+  assert.equal(h.filesDeleted.length, 0);
+  rejectLegacy = false;
+  await h.render().retryAuthCleanup();
+  assert.equal(h.render().authCleanupPending, false);
+  assert.equal(h.states[1], 'user-existing-session');
+  assert.equal(h.stored.get('api-token'), 'user-existing-session');
+  assert.ok(!h.stored.has('cloudflare-client-secret'));
+  assert.ok(!h.deleted.includes('api-token'));
+});
+
+test('an undeletable whitespace-padded pseudo-session remains unusable and retries cleanup on next startup', async () => {
+  const h = harness({ startup: true, stored: legacyStored(' cloudflare-access\n'), deleteFailure: key => key === 'api-token' });
+  await h.start();
+  assert.equal(h.states[1], null);
+  assert.equal(h.render().authCleanupPending, true);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.configs[0][1], null);
+  assert.ok(h.filesDeleted.some(path => path.endsWith('.rezepte-install-v1')));
+});
+
+test('logout removes all legacy credentials and revokes the app session', async () => {
+  const h = harness({ stored: legacyStored() });
+  await h.context.signOut();
+  assert.equal(h.states[1], null);
+  assert.equal(h.requests[0].path, '/api/auth/logout');
+  assert.ok(h.deleted.includes('cloudflare-client-id'));
+  assert.ok(h.deleted.includes('cloudflare-client-secret'));
+  assert.equal(h.stored.size, 0);
+  assert.deepEqual(h.cleared.sort(), ['api', 'disk', 'memory']);
 });

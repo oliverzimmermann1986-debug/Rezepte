@@ -161,7 +161,8 @@ def test_account_activation_preserves_credentials_settings_and_rollback(tmp_path
     units.mkdir()
     config = app / "data/config.yaml"
     settings = yaml.safe_load(config.read_text())
-    settings["web"].update(username="owner", password="existing-config-hash", auth_disabled=True, secret_key="s" * 48)
+    settings["web"].update(username="owner", password="existing-config-hash", auth_disabled=True, secret_key="s" * 48,
+                           external_logout_url="https://obsolete.invalid/logout")
     settings["schedule"] = {"enabled": True, "time": "13:15"}
     config.write_text(yaml.safe_dump(settings))
     with sqlite3.connect(database) as connection:
@@ -171,7 +172,8 @@ def test_account_activation_preserves_credentials_settings_and_rollback(tmp_path
     capture(app, state, unit_root=units)
     assert enable_accounts(app)["accounts_enabled"] is True
     expected = dict(settings)
-    expected["web"] = {**settings["web"], "auth_disabled": False}
+    expected["web"] = {key: value for key, value in settings["web"].items()
+                       if key not in {"auth_disabled", "external_logout_url"}}
     assert yaml.safe_load(config.read_text()) == expected
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT password_hash FROM users").fetchone()[0] == "existing-user-hash"

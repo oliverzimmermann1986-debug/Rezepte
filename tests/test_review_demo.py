@@ -181,7 +181,8 @@ def test_review_demo_is_artificial_complete_and_sanitized(tmp_path: Path, monkey
     if os.name != "nt":
         assert inputs["credential_output"].stat().st_mode & 0o777 == 0o600
     assert "Password:" in inputs["credential_output"].read_text(encoding="utf-8")
-    assert config["web"]["auth_disabled"] is False
+    assert "auth_disabled" not in config["web"]
+    assert "external_logout_url" not in config["web"]
     assert config["web"]["public_url"] == inputs["public_url"]
     assert config["web"]["trusted_proxies"] == [
         "127.0.0.1/32",

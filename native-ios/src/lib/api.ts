@@ -4,8 +4,6 @@ import * as FileSystem from 'expo-file-system/legacy';
 let authToken: string | null = null;
 let configuredUrl = '';
 let configuredIdentity = '';
-let cloudflareClientId = '';
-let cloudflareClientSecret = '';
 let sessionEpoch = 0;
 let unauthorizedHandler: ((requestEpoch: number) => void | Promise<void>) | null = null;
 let unauthorizedHandlingEpoch: number | null = null;
@@ -34,16 +32,13 @@ export class ApiError extends Error {
 export function configureApi(
   baseUrl: string,
   token: string | null,
-  cloudflare?: { clientId: string; clientSecret: string } | null,
   identity = '',
 ) {
   sessionEpoch += 1;
   cancelDownloadsFromPreviousSessions();
   configuredUrl = baseUrl.trim().replace(/\/+$/, '');
   configuredIdentity = identity.trim().toLowerCase();
-  authToken = token;
-  cloudflareClientId = cloudflare?.clientId.trim() || '';
-  cloudflareClientSecret = cloudflare?.clientSecret.trim() || '';
+  authToken = token?.trim() === 'cloudflare-access' ? null : token;
 }
 
 export function currentApiSessionEpoch() {
@@ -109,10 +104,6 @@ export function absoluteApiUrl(path: string) {
 export function apiAuthHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  if (cloudflareClientId && cloudflareClientSecret) {
-    headers['CF-Access-Client-Id'] = cloudflareClientId;
-    headers['CF-Access-Client-Secret'] = cloudflareClientSecret;
-  }
   return headers;
 }
 
@@ -128,19 +119,10 @@ async function readResponse<T>(response: Response): Promise<T> {
     payload = body;
   }
   if (!parsedJson) {
-    const bodyLower = body.toLowerCase();
-    const location = (response.headers.get('location') || '').toLowerCase();
     const isRedirect = response.status >= 300 && response.status < 400;
-    const isCloudflare = response.url.includes('cloudflareaccess.com')
-      || location.includes('cloudflareaccess.com')
-      || location.includes('/cdn-cgi/access/')
-      || bodyLower.includes('cloudflare access')
-      || bodyLower.includes('cloudflareaccess.com')
-      || bodyLower.includes('/cdn-cgi/access/')
-      || response.redirected;
     throw new ApiError(
-      isCloudflare || isRedirect
-        ? 'Cloudflare Access hat die Anfrage zur Anmeldung umgeleitet. Bitte Client-ID und Client-Secret in der App prüfen.'
+      isRedirect || response.redirected
+        ? 'Der Server hat die Anfrage unerwartet umgeleitet. Bitte die Server-Adresse prüfen oder später erneut versuchen.'
         : `Der Server hat keine gültige JSON-Antwort gesendet (HTTP ${response.status}).`,
       response.status,
     );
@@ -199,10 +181,6 @@ export async function api<T>(
   headers.set('Accept', 'application/json');
   if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   if (authToken) headers.set('Authorization', `Bearer ${authToken}`);
-  if (cloudflareClientId && cloudflareClientSecret) {
-    headers.set('CF-Access-Client-Id', cloudflareClientId);
-    headers.set('CF-Access-Client-Secret', cloudflareClientSecret);
-  }
   return withTimeout(
     signal,
     timeoutMs,
@@ -250,10 +228,6 @@ export async function uploadFile<T>(
   const headers = new Headers({ Accept: 'application/json' });
   headers.set('Idempotency-Key', clientRequestId);
   if (authToken) headers.set('Authorization', `Bearer ${authToken}`);
-  if (cloudflareClientId && cloudflareClientSecret) {
-    headers.set('CF-Access-Client-Id', cloudflareClientId);
-    headers.set('CF-Access-Client-Secret', cloudflareClientSecret);
-  }
   return withTimeout(
     undefined,
     timeoutMs,
