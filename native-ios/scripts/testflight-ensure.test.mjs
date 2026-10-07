@@ -1,8 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ensureExternalDistribution, EXTERNAL_GROUP_ID, compactApiError } from './testflight-ensure.mjs';
+import { ensureExternalDistribution, EXTERNAL_GROUP_ID, compactApiError, selectExactBuild } from './testflight-ensure.mjs';
 
 const NOTES = 'Backend 1.9.0: Mein Konto, Passwort, Sitzungen, Benutzerverwaltung und Einkaufsmengen prüfen.';
+test('existing-build selection never substitutes another build, version or platform', () => {
+  const build = { type: 'builds', id: 'exact', attributes: { version: '11601', uploadedDate: '2026-10-07T21:48:37Z' }, relationships: { preReleaseVersion: { data: { id: 'version' } } } };
+  const payload = { data: [build], included: [{ type: 'preReleaseVersions', id: 'version', attributes: { version: '1.2.0', platform: 'IOS' } }] };
+  const selection = { buildNumber: '11601', marketingVersion: '1.2.0', uploadStartedAt: null };
+  assert.equal(selectExactBuild(payload, selection), build);
+  assert.equal(selectExactBuild(payload, { ...selection, buildNumber: '11602' }), null);
+  assert.equal(selectExactBuild(payload, { ...selection, marketingVersion: '1.2.1' }), null);
+  assert.equal(selectExactBuild(payload, { ...selection, uploadStartedAt: Date.parse('2026-10-08T00:00:00Z') }), null);
+  payload.included[0].attributes.platform = 'MAC_OS';
+  assert.equal(selectExactBuild(payload, selection), null);
+  payload.included = [];
+  assert.equal(selectExactBuild(payload, selection), null);
+});
+
+test('duplicate exact build matches fail closed', () => {
+  const build = { type: 'builds', id: 'exact', attributes: { version: '11601' }, relationships: { preReleaseVersion: { data: { id: 'version' } } } };
+  const payload = { data: [build, { ...build, id: 'duplicate' }], included: [{ type: 'preReleaseVersions', id: 'version', attributes: { version: '1.2.0', platform: 'IOS' } }] };
+  assert.throws(() => selectExactBuild(payload, { buildNumber: '11601', marketingVersion: '1.2.0', uploadStartedAt: null }), /Ambiguous/);
+});
 test('API diagnostics never expose contact or demo data from free-form errors', () => {
   const message = compactApiError({ errors: [{ status: '409', code: 'ENTITY_ERROR.ATTRIBUTE.REQUIRED', title: 'Private Reviewer', detail: 'demo-password contact@example.invalid' }, { code: 'echoed secret' }] }, 'POST /v1/betaAppReviewSubmissions returned HTTP 409');
   assert.equal(message, 'POST /v1/betaAppReviewSubmissions returned HTTP 409 (ENTITY_ERROR.ATTRIBUTE.REQUIRED)');
@@ -26,7 +45,11 @@ function fixture(options = {}) {
     if (method === 'GET' && path === `/v1/betaGroups/${EXTERNAL_GROUP_ID}`) return { data: { type: 'betaGroups', id: options.groupId || EXTERNAL_GROUP_ID, attributes: { name: options.groupName || 'Privater Test', isInternalGroup: !!options.internal } } };
     if (path === `/v1/betaGroups/${EXTERNAL_GROUP_ID}/app`) return { data: { type: 'apps', id: options.groupApp || 'app-exact' } };
     if (path === '/v1/builds/build-exact/app') return { data: { type: 'apps', id: options.buildApp || 'app-exact' } };
-    if (path === '/v1/builds/build-exact/betaGroups') return { data: options.otherGroup ? [{ id: 'unrelated-group' }] : assigned ? [{ id: EXTERNAL_GROUP_ID }] : [] };
+    if (path === '/v1/betaGroups') {
+      assert.equal(url.searchParams.get('filter[app]'), 'app-exact');
+      assert.equal(url.searchParams.get('filter[builds]'), build.id);
+      return { data: options.otherGroup ? [{ id: 'unrelated-group' }] : assigned ? [{ id: EXTERNAL_GROUP_ID }] : [] };
+    }
     if (path === '/v1/builds/build-exact/individualTesters') return { data: options.individuals ? [{ id: 'unrelated-tester' }] : [] };
     if (path === `/v1/betaGroups/${EXTERNAL_GROUP_ID}/betaTesters`) return { data: options.noTesters ? [] : [{ id: 'existing-tester', attributes: { state: 'ACCEPTED' } }] };
     if (path === '/v1/builds/build-exact/buildBetaDetail') return { data: { type: 'buildBetaDetails', id: 'detail-exact', attributes: { externalBuildState: state, autoNotifyEnabled: autoNotify } } };

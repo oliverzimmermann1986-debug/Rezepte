@@ -46,7 +46,10 @@ export async function ensureExternalDistribution({ request, build, appId, whatTo
 
   const buildPath = `/v1/builds/${encodeURIComponent(build.id)}`;
   const checkNotificationScope = async () => {
-    const groups = await allPages(request, `${buildPath}/betaGroups?fields%5BbetaGroups%5D=name,isInternalGroup&limit=200`);
+    // ASC exposes the reverse lookup through the betaGroups collection;
+    // GET /builds/{id}/betaGroups is not a supported read endpoint.
+    const groupQuery = new URLSearchParams({ 'filter[app]': appId, 'filter[builds]': build.id, 'fields[betaGroups]': 'name,isInternalGroup', limit: '200' });
+    const groups = await allPages(request, `/v1/betaGroups?${groupQuery}`);
     const individuals = await allPages(request, `${buildPath}/individualTesters?limit=200`);
     if (groups.some(item => item.id !== EXTERNAL_GROUP_ID) || individuals.length) throw new Error('Build has other assigned groups or individual testers; notification scope is not exclusively Privater Test.');
   };
@@ -188,6 +191,20 @@ export function compactApiError(payload, fallback) {
   return codes.length ? `${fallback} (${[...new Set(codes)].join(', ')})` : fallback;
 }
 
+export function selectExactBuild(payload, { buildNumber, marketingVersion, uploadStartedAt }) {
+  const versions = new Map((payload?.included ?? [])
+    .filter(item => item.type === 'preReleaseVersions').map(item => [item.id, item.attributes]));
+  const matches = (payload?.data ?? []).filter(candidate => {
+    const version = versions.get(candidate.relationships?.preReleaseVersion?.data?.id);
+    if (candidate.type !== 'builds' || !candidate.id || candidate.attributes?.version !== buildNumber || version?.version !== marketingVersion || version.platform !== 'IOS') return false;
+    if (uploadStartedAt === null) return true;
+    const uploadedAt = Date.parse(candidate.attributes?.uploadedDate ?? '');
+    return Number.isFinite(uploadedAt) && uploadedAt >= uploadStartedAt;
+  });
+  if (matches.length > 1) throw new Error('Ambiguous exact TestFlight build selection; no changes made.');
+  return matches[0] ?? null;
+}
+
 async function main() {
   const issuerId = required("ASC_API_ISSUER_ID");
   const keyId = required("ASC_API_KEY_ID");
@@ -257,25 +274,7 @@ async function main() {
       sort: "-uploadedDate",
     });
     const buildsPayload = await request(`/v1/builds?${query}`);
-    const preReleaseVersions = new Map(
-      (buildsPayload?.included ?? [])
-        .filter((item) => item.type === "preReleaseVersions")
-        .map((item) => [item.id, item.attributes]),
-    );
-    build = (buildsPayload?.data ?? []).find((candidate) => {
-      const preReleaseId = candidate.relationships?.preReleaseVersion?.data?.id;
-      const preRelease = preReleaseVersions.get(preReleaseId);
-      if (
-        candidate.attributes?.version !== buildNumber ||
-        preRelease?.version !== marketingVersion ||
-        preRelease?.platform !== "IOS"
-      ) {
-        return false;
-      }
-      if (uploadStartedAt === null) return true;
-      const uploadedAt = Date.parse(candidate.attributes?.uploadedDate ?? "");
-      return Number.isFinite(uploadedAt) && uploadedAt >= uploadStartedAt;
-    }) ?? null;
+    build = selectExactBuild(buildsPayload, { buildNumber, marketingVersion, uploadStartedAt });
     lastState = build?.attributes?.processingState ?? "NOT_FOUND";
     console.log(`TestFlight ${marketingVersion} (${buildNumber}): ${lastState}`);
 

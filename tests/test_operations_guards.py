@@ -98,6 +98,32 @@ def test_signed_archive_metadata_is_verified_before_export():
         assert key in swiftui
 
 
+def test_existing_testflight_distribution_cannot_build_or_upload():
+    workflow = yaml.safe_load(_read(".github/workflows/ios-swift.yml"))
+    triggers = workflow.get("on", workflow.get(True))
+    assert triggers["workflow_dispatch"]["inputs"]["distribute_existing_build"]["default"] is False
+    jobs = workflow["jobs"]
+    assert "!inputs.distribute_existing_build" in jobs["test"]["if"]
+    assert "!inputs.distribute_existing_build" in jobs["testflight"]["if"]
+    distribution = jobs["distribute-existing"]
+    assert "inputs.distribute_existing_build" in distribution["if"]
+    assert "needs" not in distribution
+    assert distribution["environment"] == "testflight"
+    assert distribution["runs-on"] == "ubuntu-latest"
+    env = distribution["env"]
+    assert env["ASC_ALLOW_EXISTING_BUILD"] == "true"
+    assert env["ASC_ASSIGN_EXTERNAL_GROUP"] == "true"
+    assert env["ASC_BUILD_NUMBER"] == "${{ inputs.build_number }}"
+    assert env["ASC_MARKETING_VERSION"] == "1.2.0"
+    scripts = "\n".join(step.get("run", "") for step in distribution["steps"])
+    assert "xcodebuild" not in scripts and "altool" not in scripts
+    assert "GITHUB_RUN_NUMBER" not in scripts
+    assert '"$UPLOAD_REQUESTED" == "true"' in scripts
+    assert '"$ASC_BUILD_NUMBER" =~ ^[1-9][0-9]*$' in scripts
+    assert "node native-ios/scripts/testflight-ensure.mjs" in scripts
+    assert distribution["steps"][-1]["if"] == "always()"
+
+
 def test_release_versions_are_explicit_and_coherent():
     package = _read("app/__init__.py")
     project = _read("ios-swift/project.yml")

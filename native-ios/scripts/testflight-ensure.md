@@ -12,6 +12,14 @@ Erlaubt ist nur die vorhandene externe Gruppe **Privater Test** mit ID
 Das Skript erstellt keine Gruppe, keine Tester und keine Einladungen und
 veröffentlicht keine App im App Store oder über einen öffentlichen Testlink.
 
+Für einen bereits hochgeladenen Build gibt es den separaten manuellen Input
+`distribute_existing_build: true` (Standard `false`). Dabei ist `build_number`
+verpflichtend; `upload_testflight` muss `false` bleiben. Ausschließlich der
+Node-Job `distribute-existing` läuft, ohne Xcode, Archiv oder Upload. Er nutzt
+`ASC_ALLOW_EXISTING_BUILD=true` und wählt exakt App, iOS-Marketingversion und
+angegebene Buildnummer; fehlende oder mehrdeutige Treffer erzeugen keinen
+Ersatzbuild. Die externe Verteilung ist in diesem expliziten Modus aktiviert.
+
 Vor Schreibzugriffen prüft es Build-Eignung, Gruppenzugehörigkeit, bestehende
 Tester, Reviewstatus, Exportstatus und die vorhandenen App-Beschreibungen,
 Feedbackadresse, Reviewkontaktdaten und gegebenenfalls Demo-Zugangsdaten.
@@ -38,6 +46,9 @@ zur Gruppenzuordnung nennt keine Voraussetzung eines bereits genehmigten
 Reviews. Das Skript folgt diesem Ablauf; die konkrete API-Annahme wird im
 Lauf geprüft, nicht aus den Mocktests abgeleitet. `APP_STORE_ELIGIBLE` und alle
 verwendeten externen Statuswerte sind mit Apples aktuellen API-Enums abgeglichen.
+Die Gruppenzuordnung wird über `GET /v1/betaGroups` mit `filter[app]` und
+`filter[builds]` gelesen. Die Beziehung `Build.betaGroups` besitzt keinen
+dokumentierten direkten GET-Endpunkt; dieser lieferte im ersten Lauf HTTP 403.
 
 `processingState: VALID` bestätigt nur die Apple-Verarbeitung. Das Ergebnis
 nennt zusätzlich `externalBuildState`, `betaReviewState`, Gruppenzuordnung und
@@ -57,6 +68,7 @@ Apple-Quellen (geprüft am 07.10.2026):
 
 - [Externe Tester und Reviewvoraussetzungen](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers)
 - [Build einer Gruppe zuordnen](https://developer.apple.com/documentation/appstoreconnectapi/post-v1-betagroups-_id_-relationships-builds)
+- [Gruppen nach App und Build filtern](https://developer.apple.com/documentation/appstoreconnectapi/get-v1-betagroups)
 - [Beta-Review einreichen](https://developer.apple.com/documentation/appstoreconnectapi/post-v1-betaappreviewsubmissions)
 - [Build-Teststatus lesen](https://developer.apple.com/documentation/appstoreconnectapi/get-v1-builds-_id_-buildbetadetail)
 - [Bestehende Tester benachrichtigen](https://developer.apple.com/documentation/appstoreconnectapi/post-v1-buildbetanotifications)

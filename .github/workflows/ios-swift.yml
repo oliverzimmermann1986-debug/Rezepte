@@ -13,6 +13,11 @@ on:
         required: false
         default: false
         type: boolean
+      distribute_existing_build:
+        description: "Nur den angegebenen vorhandenen Build an Privater Test verteilen (kein Build/Upload)"
+        required: false
+        default: false
+        type: boolean
       build_number:
         description: "CFBundleVersion für diesen Upload (leer = automatisch aus Laufnummer und Versuch)"
         required: false
@@ -58,6 +63,7 @@ concurrency:
 jobs:
   test:
     name: Generate project, build and test
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.distribute_existing_build }}
     runs-on: macos-26
     timeout-minutes: 35
     defaults:
@@ -128,7 +134,7 @@ jobs:
 
   testflight:
     name: Archive and upload SwiftUI app to TestFlight
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_testflight }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_testflight && !inputs.distribute_existing_build }}
     needs: test
     runs-on: macos-26
     timeout-minutes: 55
@@ -406,3 +412,70 @@ jobs:
             "$RUNNER_TEMP/profile.plist" \
             "$RUNNER_TEMP/ExportOptions.plist" \
             "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
+
+  distribute-existing:
+    name: Distribute exact existing build to private TestFlight group
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.distribute_existing_build }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: testflight
+    env:
+      ASC_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_APP_ID: ${{ vars.ASC_APP_ID || '6803595058' }}
+      ASC_MARKETING_VERSION: "1.2.0"
+      ASC_BUILD_NUMBER: ${{ inputs.build_number }}
+      ASC_ALLOW_EXISTING_BUILD: "true"
+      ASC_ASSIGN_EXTERNAL_GROUP: "true"
+      ASC_ASSIGN_INTERNAL_GROUP: "false"
+    steps:
+      - name: Validate existing-build mode
+        shell: bash
+        env:
+          UPLOAD_REQUESTED: ${{ inputs.upload_testflight }}
+        run: |
+          set -euo pipefail
+          if [[ "$UPLOAD_REQUESTED" == "true" ]]; then
+            echo "Existing-build distribution cannot be combined with upload_testflight." >&2
+            exit 1
+          fi
+          if [[ ! "$ASC_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Existing-build distribution requires an explicit positive build_number." >&2
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js for TestFlight distribution
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.4
+
+      - name: Verify TestFlight distribution guards without network
+        run: node --test native-ios/scripts/testflight-ensure.test.mjs
+
+      - name: Prepare App Store Connect key
+        shell: bash
+        env:
+          ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          for name in ASC_API_ISSUER_ID ASC_API_KEY_ID ASC_APP_ID ASC_PRIVATE_KEY_BASE64; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing TestFlight configuration: $name" >&2
+              exit 1
+            fi
+          done
+          umask 077
+          export ASC_API_KEY_PATH="$RUNNER_TEMP/testflight-distribution-key.p8"
+          printf '%s' "$ASC_PRIVATE_KEY_BASE64" | base64 --decode > "$ASC_API_KEY_PATH"
+          echo "ASC_API_KEY_PATH=$ASC_API_KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Distribute selected existing build
+        run: node native-ios/scripts/testflight-ensure.mjs
+
+      - name: Remove temporary App Store Connect key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/testflight-distribution-key.p8"
