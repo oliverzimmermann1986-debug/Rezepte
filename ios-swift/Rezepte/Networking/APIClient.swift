@@ -1033,7 +1033,7 @@ actor APIClient {
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         authorize(&request, includeBearer: authenticated)
-        return try await execute(request)
+        return try await execute(request, authenticated: authenticated)
     }
 
     private func send<Body: Encodable, Response: Decodable>(
@@ -1055,7 +1055,7 @@ actor APIClient {
             request.setValue(value, forHTTPHeaderField: field)
         }
         authorize(&request, includeBearer: authenticated)
-        return try await execute(request)
+        return try await execute(request, authenticated: authenticated)
     }
 
     private func download(
@@ -1134,7 +1134,10 @@ actor APIClient {
         return query
     }
 
-    private func execute<Response: Decodable>(_ request: URLRequest) async throws -> Response {
+    private func execute<Response: Decodable>(
+        _ request: URLRequest,
+        authenticated: Bool = true
+    ) async throws -> Response {
         let requestConfiguration = configurationID
         let (data, response) = try await session.data(for: request)
         guard configurationID == requestConfiguration else { throw APIError.sessionChanged }
@@ -1143,7 +1146,7 @@ actor APIClient {
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse(endpoint)
         }
-        if http.statusCode == 401 { throw APIError.unauthenticated }
+        if http.statusCode == 401 && authenticated { throw APIError.unauthenticated }
         guard (200..<300).contains(http.statusCode) else {
             let detail = (try? decoder.decode(ErrorResponse.self, from: data).detail)
                 ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)

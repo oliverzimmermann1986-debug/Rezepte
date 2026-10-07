@@ -211,6 +211,113 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(body["password"], "password")
     }
 
+    func testPublicAuthentication401PreservesServerDetailAndCurrentCredentials() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de/rezepte/", token: "current-token")
+        for (action, detail) in [
+            ("login", "Benutzername oder Passwort falsch"),
+            ("register", "Einladung nicht gültig"),
+            ("guest", "Gastzugang nicht verfügbar"),
+        ] {
+            MockURLProtocol.respond(body: "{\"detail\":\"\(detail)\"}", statusCode: 401)
+            do {
+                switch action {
+                case "login":
+                    _ = try await client.login(username: "admin", password: "wrong-password")
+                case "register":
+                    _ = try await client.register(username: "member", password: "synthetic-test-password")
+                default:
+                    _ = try await client.guestLogin()
+                }
+                XCTFail("Ein abgelehnter öffentlicher Aufruf muss fehlschlagen")
+            } catch let error as APIError {
+                guard case let .server(status, message) = error else {
+                    return XCTFail("Erwartet Serverfehler statt Sitzungsablauf, war \(error)")
+                }
+                XCTAssertEqual(status, 401)
+                XCTAssertEqual(message, detail)
+            }
+            XCTAssertEqual(MockURLProtocol.lastPath(), "/rezepte/api/auth/\(action)")
+            XCTAssertNil(MockURLProtocol.lastHeader("Authorization"))
+            let protectedRequest = try await client.imageRequest(recipeID: 42)
+            XCTAssertEqual(protectedRequest.value(forHTTPHeaderField: "Authorization"), "Bearer current-token")
+        }
+    }
+
+    func testPublicLogin401WithoutJSONDoesNotClaimAnExpiredSession() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: nil)
+        MockURLProtocol.respond(body: "<html>Unauthorized</html>", statusCode: 401,
+                                headers: ["Content-Type": "text/html"])
+        do {
+            _ = try await client.login(username: "admin", password: "wrong-password")
+            XCTFail("HTTP401 muss weitergegeben werden")
+        } catch let error as APIError {
+            guard case let .server(status, message) = error else {
+                return XCTFail("Erwartet Serverfehler statt Sitzungsablauf, war \(error)")
+            }
+            XCTAssertEqual(status, 401)
+            XCTAssertFalse(message.isEmpty)
+            XCTAssertFalse(message.contains("Sitzung ist abgelaufen"))
+        }
+    }
+
+    func testPublicGET401PreservesServerDetail() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: nil)
+        MockURLProtocol.respond(body: #"{"detail":"Serverinformationen sind nicht freigegeben"}"#, statusCode: 401)
+        do {
+            _ = try await client.systemInfo()
+            XCTFail("HTTP401 muss weitergegeben werden")
+        } catch let error as APIError {
+            guard case let .server(status, message) = error else {
+                return XCTFail("Erwartet Serverfehler statt Sitzungsablauf, war \(error)")
+            }
+            XCTAssertEqual(status, 401)
+            XCTAssertEqual(message, "Serverinformationen sind nicht freigegeben")
+        }
+    }
+
+    func testProtected401RequiresReauthenticationWithOrWithoutStoredToken() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        for token in [nil, "expired-token"] as [String?] {
+            try await client.configure(server: "https://example.de", token: token)
+            MockURLProtocol.respond(body: #"{"detail":"Authentication required"}"#, statusCode: 401)
+            do {
+                _ = try await client.sessionInfo()
+                XCTFail("Eine geschützte Anfrage ohne gültige Sitzung muss fehlschlagen")
+            } catch let error as APIError {
+                guard case .unauthenticated = error else {
+                    return XCTFail("Erwartet unauthenticated, war \(error)")
+                }
+            }
+        }
+    }
+
+    func testLatePublicLogin401CannotInvalidateNewAccount() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: nil, sessionID: UUID())
+        MockURLProtocol.respond(body: #"{"detail":"Benutzername oder Passwort falsch"}"#, statusCode: 401)
+        let started = expectation(description: "Login started before account change")
+        MockURLProtocol.suspendNextResponse { started.fulfill() }
+        defer { MockURLProtocol.resumeResponse() }
+        let previousLogin = Task { try await client.login(username: "previous", password: "wrong-password") }
+        await fulfillment(of: [started], timeout: 2)
+
+        try await client.configure(server: "https://example.de", token: "current-token", sessionID: UUID())
+        MockURLProtocol.resumeResponse()
+        do {
+            _ = try await previousLogin.value
+            XCTFail("Ein Ergebnis der vorherigen Anmeldung darf nicht übernommen werden")
+        } catch let error as APIError {
+            guard case .sessionChanged = error else {
+                return XCTFail("Erwartet sessionChanged, war \(error)")
+            }
+        }
+        let currentRequest = try await client.imageRequest(recipeID: 42)
+        XCTAssertEqual(currentRequest.value(forHTTPHeaderField: "Authorization"), "Bearer current-token")
+    }
+
     func testGuestLoginUsesUnauthenticatedReadOnlyEndpoint() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)

@@ -9,6 +9,7 @@ struct LoginView: View {
 
     @EnvironmentObject private var session: SessionStore
     @Environment(\.recipeTheme) private var theme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var server = ""
     @State private var username = ""
     @State private var password = ""
@@ -150,6 +151,7 @@ struct LoginView: View {
             }
             .background(theme.background)
             .onAppear {
+                clearIdleError()
                 creatingAccount = session.registrationRequested
                 let reviewEnvironment = ProcessInfo.processInfo.environment
                 if reviewEnvironment["APP_REVIEW_AUTOMATION"] == "1" {
@@ -166,7 +168,23 @@ struct LoginView: View {
                     server = session.savedServer
                 }
             }
+            .onChange(of: scenePhase) { previous, current in
+                // Clear the old foreground's error before suspending. An
+                // in-flight action may still report a new error while inactive;
+                // returning to the app must not erase that result.
+                if previous == .active && current != .active {
+                    clearIdleError()
+                }
+            }
+            .onChange(of: [server, username, password, passwordConfirmation, invitationInput]) { _, _ in
+                clearIdleError()
+            }
         }
+    }
+
+    private func clearIdleError() {
+        guard workingAction == nil else { return }
+        errorMessage = nil
     }
 
     private func submit() async {
