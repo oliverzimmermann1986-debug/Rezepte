@@ -11,8 +11,8 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="application-name" content="Rezepte">
   <link rel="manifest" href="/manifest.json">
-  <link rel="icon" type="image/png" href="/static/icon-192.png">
-  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="icon" type="image/png" href="/static/icon-192.png?v=1.9.2">
+  <link rel="apple-touch-icon" href="/static/icon-192.png?v=1.9.2">
   <link rel="stylesheet" href="/static/rezepte.css?v={VERSION}">
   <script defer src="/static/alpine.min.js?v={VERSION}"></script>
 </head>
@@ -101,7 +101,7 @@
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
-        <span x-text="'v' + (systemInfo.version || '1.9.1')"></span>
+        <span x-text="'v' + (systemInfo.version || '1.9.2')"></span>
         <form method="post" action="/logout" class="logout-form">
           <button type="submit" class="sidebar-logout-button">Abmelden</button>
         </form>

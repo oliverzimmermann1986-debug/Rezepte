@@ -1,0 +1,4 @@
+Neues Quellenküche-App-Icon: ein gelbes Rezeptbuch mit Kochlöffel auf dunklem Hintergrund.
+Bitte nach dem Update das Icon auf dem Home-Bildschirm und beim App-Start prüfen.
+Normale Konten können eigene private Rezeptvarianten bearbeiten, Einkauf und Wochenplanung nutzen. Importe, OCR, KI-Aufträge und Administration bleiben Administratoren vorbehalten.
+Apple-/Google-Anmeldung erscheint jeweils erst nach vollständiger Einrichtung des Anbieters auf dem Server. Die erste Anmeldung legt ein normales Konto an.
