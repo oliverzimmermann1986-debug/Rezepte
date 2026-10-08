@@ -131,6 +131,7 @@
     },
 
     async loadPdfPages() {
+      if (!this.canUseAdminTools()) return;
       const id = Number(this.admin.pdf.recipe_id || 0);
       if (!id) return this.showToast('Bitte zuerst eine Rezept-ID eingeben', 'err');
       const epoch = ++this.admin.pageEditor.requestEpoch;
@@ -186,6 +187,7 @@
     },
 
     async applyPdfPageEdits() {
+      if (!this.canUseAdminTools()) return;
       const id = Number(this.admin.pageEditor.loadedRecipeId || 0);
       const inputId = Number(this.admin.pdf.recipe_id || 0);
       const active = this.admin.pageEditor.pages.filter(page => !page.deleted);
@@ -218,6 +220,7 @@
     },
 
     async loadPdfPreflight() {
+      if (!this.canUseAdminTools()) return;
       this.admin.pdf.legacyMode = false;
       try {
         this.admin.pdf.preflight = await this.api('GET', '/api/admin/pdf/preflight', undefined, { silent: true });
@@ -276,6 +279,7 @@
     },
 
     async runAdminPdf(dryRun = true) {
+      if (!this.canUseAdminTools()) return;
       if (this.admin.pdf.running) return;
       this.admin.pdf.running = true;
       this.admin.pdf.result = null;
@@ -335,6 +339,7 @@
     },
 
     async runMaintenance(kind) {
+      if (!this.canUseAdminTools()) return;
       this.admin.maintenanceBusy = kind;
       this.admin.maintenanceResult = null;
       try {
@@ -347,6 +352,7 @@
     },
 
     async startRecipeImageBackfill() {
+      if (!this.canUseAdminTools()) return;
       if (!confirm(
         'Für alle Rezepte neue Bilder generieren?\n\n' +
         'Vor der ersten Generierung werden ausnahmslos alle vorhandenen Bilder ' +

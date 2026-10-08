@@ -184,6 +184,7 @@ struct AdminLibraryToolsView: View {
     }
 
     private func perform(reloadImmediately: Bool = true, action: () async throws -> Void) async {
+        guard session.fullAccess, !isWorking else { return }
         isWorking = true
         defer { isWorking = false }
         do {

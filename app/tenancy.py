@@ -378,6 +378,22 @@ class HouseholdMiddleware:
                 RECIPE_LIBRARY.reset(library_token)
 
 
+def require_recipe_variant_creator(request: Request, authorization=Depends(require_auth)):
+    """Allow a visible recipe to be copied without granting edit access to it."""
+    from .db import get_db
+    identity = CURRENT_HOUSEHOLD.get()
+    if identity is None:
+        return authorization
+    if identity.is_guest:
+        raise HTTPException(403, "Für eine eigene Variante bitte anmelden")
+    if not identity.is_admin and identity.account_id <= 0:
+        raise HTTPException(409, "Für eine eigene Variante wird ein Haushalt benötigt")
+    recipe_id = request.path_params.get("recipe_id")
+    recipe = get_db().recipe_get(int(recipe_id)) if recipe_id is not None else None
+    if not recipe or recipe.get("deleted_at") is not None:
+        raise HTTPException(404, "Rezept nicht gefunden")
+
+
 def require_recipe_editor(request: Request, authorization=Depends(require_auth)):
     from .db import get_db
     identity = CURRENT_HOUSEHOLD.get()

@@ -118,6 +118,44 @@ def _post_callback(client, flow):
                        headers={"Origin": "https://appleid.apple.com"}, follow_redirects=False)
 
 
+def _native_complete(api, *, intent="login", password=""):
+    client, _, state = api
+    verifier = secrets.token_urlsafe(32)
+    response = client.post("/api/auth/apple/start", json={"intent": intent,
+                            "code_challenge": oidc.challenge(verifier), "current_password": password})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    state["nonce"] = parse_qs(urlsplit(result["authorization_url"]).query)["nonce"][0]
+    response = _post_callback(client, result["flow_id"])
+    assert response.status_code == 303, response.text
+    query = parse_qs(urlsplit(response.headers["location"]).query)
+    return client.post("/api/auth/exchange", json={"code": query["code"][0], "code_verifier": verifier})
+
+
+def test_new_apple_account_can_edit_own_recipes_but_cannot_start_ai_or_imports(apple_api):
+    from tests.test_ai_operation_permissions import assert_provider_user_can_edit_but_cannot_start_jobs
+
+    client, db, _ = apple_api
+    response = _native_complete(apple_api)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    client.headers["Authorization"] = "Bearer " + result["token"]
+    assert_provider_user_can_edit_but_cannot_start_jobs(client, db, result["username"])
+
+
+def test_apple_link_preserves_existing_administrator_role(apple_api):
+    client, db, _ = apple_api
+    user = db.user_get_by_name("admin")
+    db.user_set_password(user["id"], auth.hash_password("admin-provider-password"))
+    client.headers["Authorization"] = "Bearer " + auth.create_session("admin")
+    response = _native_complete(apple_api, intent="link", password="admin-provider-password")
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == user["id"] and response.json()["role"] == "admin"
+    assert db.user_get_by_name("admin")["role"] == "admin"
+    client.headers["Authorization"] = "Bearer " + response.json()["token"]
+    assert client.get("/api/users").status_code == 200
+
+
 def test_apple_web_form_post_signatures_session_and_account_deletion(apple_api):
     client, db, state = apple_api
     flow = _web_start(apple_api)

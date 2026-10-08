@@ -23,6 +23,8 @@ type OwnImport = { url: string; name?: string; suggestion: { type?: string; cate
 
 export default function AccountScreen() {
   const { username, isAdmin, isGuest, serverUrl, registerAccount, signOut, returnToLogin, refreshHousehold } = useAuth();
+  const adminAllowed = useRef(isAdmin);
+  adminAllowed.current = isAdmin;
   const [account, setAccount] = useState<Account | null>(null);
   const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [busy, setBusy] = useState(false);
@@ -48,11 +50,11 @@ export default function AccountScreen() {
       const result = await api<Account>('/api/account', {}, controller.signal);
       if (generation !== loadGeneration.current || controller.signal.aborted) return;
       setAccount(result);
-      if (!result.is_guest) {
+      if (!result.is_guest && adminAllowed.current) {
         const pending = await api<{ items: OwnImport[] }>('/api/account/imports', {}, controller.signal);
         if (generation !== loadGeneration.current || controller.signal.aborted) return;
         setImports(pending.items);
-      }
+      } else setImports([]);
       setError('');
     } catch (reason) {
       if (generation !== loadGeneration.current || controller.signal.aborted || !isApiSessionEpochCurrent(epoch)) return;
@@ -134,13 +136,14 @@ export default function AccountScreen() {
           </>}
         </View>
       )}
-      {!isGuest && <View style={styles.card}>
+      {isAdmin && <View style={styles.card}>
         <Text style={styles.heading}>Rezept hinzufügen</Text>
         <Text style={styles.note}>Private Importe bleiben im Haushalt. Bereits globale Links werden als Verweis in deiner Sammlung gespeichert.</Text>
         <TextInput accessibilityLabel="Rezeptlink" placeholder="https://…" keyboardType="url" autoCapitalize="none" autoCorrect={false} value={importUrl} onChangeText={setImportUrl} editable={!busy} style={styles.input} />
         {isAdmin && <PrimaryButton label={importVisibility === 'private' ? 'Sichtbarkeit: privat im Haushalt' : 'Sichtbarkeit: global für alle'}
                                   onPress={() => setImportVisibility(current => current === 'private' ? 'global' : 'private')} disabled={busy} />}
         <PrimaryButton label="In Sammlung übernehmen" disabled={busy || !importUrl.trim()} onPress={() => void action(async () => {
+          if (!adminAllowed.current) return;
           const result = await api<{ message?: string; recipe_id?: number }>('/api/pending/import-url', { method: 'POST', body: JSON.stringify({ url: importUrl.trim(), type: 'recipe', visibility: importVisibility }) });
           setImportNotice(result.message || 'Link übernommen.'); setImportUrl(''); await invalidateApiCacheByPrefix('recipes:', 'recipe:');
           await load();
@@ -148,7 +151,7 @@ export default function AccountScreen() {
         })} />
         {!!importNotice && <Text accessibilityRole="alert" style={styles.note}>{importNotice}</Text>}
       </View>}
-      {!isGuest && imports.length > 0 && <View style={styles.card}>
+      {isAdmin && imports.length > 0 && <View style={styles.card}>
         <Text style={styles.heading}>Private Importe prüfen</Text>
         <PrimaryButton label="Status aktualisieren" onPress={() => void load()} disabled={busy} />
         {imports.map(item => <View key={item.url} style={styles.pending}>
@@ -159,6 +162,7 @@ export default function AccountScreen() {
           <Text style={styles.note}>{(item.suggestion.ingredients || []).length} Zutaten · {(item.suggestion.steps || []).length} Schritte</Text>
           <PrimaryButton label="Rezept übernehmen" disabled={busy || !item.name?.trim() || ['queued', 'running'].includes(item.suggestion.analysis_state || '')}
             onPress={() => void action(async () => {
+              if (!adminAllowed.current) return;
               const result = await api<{ ok: boolean; error?: string }>('/api/pending', { method: 'POST', body: JSON.stringify({ url: item.url, visibility: 'private', action: 'save', name: item.name?.trim(),
                 type: item.suggestion.type || 'Sonstiges', category: item.suggestion.category || 'Allgemein', ingredients: item.suggestion.ingredients || [],
                 steps: item.suggestion.steps || [], servings: item.suggestion.servings || null }) });

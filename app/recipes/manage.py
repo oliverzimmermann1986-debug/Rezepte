@@ -417,7 +417,7 @@ def _recover_interrupted_variant(
     target: Path,
 ) -> None:
     """Recover only sidecar-proven pending variants; never delete user folders."""
-    existing = db.recipe_get_by_folder(str(target))
+    existing = db.recipe_get_by_folder(str(target), include_pending=True)
     target_exists = target.exists()
     if not existing and not target_exists:
         return
@@ -551,6 +551,14 @@ def _safe_duplicate_recipe_serialized(
     recipe = db.recipe_get(recipe_id)
     if not recipe or recipe.get("deleted_at") is not None:
         raise ValueError(f"Recipe #{recipe_id} nicht gefunden")
+    target_owner = recipe.get("owner_account_id")
+    scope = getattr(db, "scope", None)
+    if scope is not None and not scope.is_admin:
+        if scope.is_guest or scope.account_id <= 0:
+            raise ValueError("Für eine eigene Variante bitte mit einem Konto anmelden")
+        # A visible global source may be copied, but never changed or published
+        # globally by a regular account. The destination is server-selected.
+        target_owner = scope.account_id
     source_folder = _assert_inside_root(Path(str(recipe.get("folder_path") or "")))
     if not source_folder.is_dir():
         raise RuntimeError("Der Rezeptordner des Originals fehlt")
@@ -558,7 +566,7 @@ def _safe_duplicate_recipe_serialized(
     recipe_type = str(recipe.get("type") or "Sonstiges").strip()
     category = str(recipe.get("category") or "Allgemein").strip()
     target = _assert_inside_root(
-        _content_root(recipe)
+        _content_root({**recipe, "owner_account_id": target_owner})
         / sanitize_filename(recipe_type)
         / sanitize_filename(category)
         / sanitize_filename(name)
@@ -576,6 +584,9 @@ def _safe_duplicate_recipe_serialized(
     completed_status = str(final_status or source_status)
     if completed_status == RECIPE_VARIANT_PENDING_STATUS:
         completed_status = "ok"
+    if scope is not None and not scope.is_admin:
+        # Manual copies must not enter a later automatic extraction scan.
+        completed_status = "ok" if source_status == "ok" else "skipped"
     try:
         with AtomicDirectoryCommit(
             target,
@@ -623,6 +634,7 @@ def _safe_duplicate_recipe_serialized(
                 "description": description,
                 "url": None,
                 "variant_of": recipe_id,
+                "owner_account_id": target_owner,
                 "created_at": time.time(),
                 "variant_state": "pending" if defer_finalization else "finalized",
                 "variant_final_status": completed_status,
@@ -648,7 +660,7 @@ def _safe_duplicate_recipe_serialized(
                 video_filename=None,
                 source_added_at=time.time(),
                 initial_ingredients_status=RECIPE_VARIANT_PENDING_STATUS,
-                owner_account_id=recipe.get("owner_account_id"),
+                owner_account_id=target_owner,
             )
             db.recipe_clone_content(
                 recipe_id,

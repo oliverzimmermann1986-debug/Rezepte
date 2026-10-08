@@ -145,6 +145,7 @@ export default function LoginScreen() {
               await signInWithProvider(server, provider.id, invitation);
             })().catch(reason => setError(reason instanceof Error ? reason.message : 'Anmeldung fehlgeschlagen.')).finally(() => setBusy(false));
           }} />)}
+          {!!providers.length && <Text style={styles.subtitle}>Beim ersten Anmelden mit Apple oder Google wird dein Konto erstellt. Danach kannst du dich damit wieder anmelden.</Text>}
           {providersError && <PrimaryButton label="Weitere Anmeldemöglichkeiten erneut laden" disabled={busy} onPress={() => setProvidersRetry(value => value + 1)} />}
           {!!sessionWarning && (
             <View style={styles.warningBox}>

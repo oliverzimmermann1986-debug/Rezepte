@@ -7,7 +7,7 @@ final class ShareViewController: SLComposeServiceViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Zu Quellenküche"
-        placeholder = "Rezeptlink aus Website, Pinterest oder YouTube importieren"
+        placeholder = "Rezeptlink speichern. Der Import in der App erfordert ein Administratorkonto."
         loadSharedURL()
     }
 

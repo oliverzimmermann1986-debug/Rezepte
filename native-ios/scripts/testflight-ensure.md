@@ -30,7 +30,7 @@ Upload-Schlüssel beweist diese Berechtigung nicht. Ein 403 beendet den Lauf.
 Freie Apple-Fehlertexte werden nicht protokolliert; Diagnosen enthalten nur den
 HTTP-Kontext und maschinenlesbare Fehlercodes.
 
-Die versionierten deutschen Testnotizen in `testflight-what-to-test-1.9.0.txt`
+Die versionierten deutschen Testnotizen in `testflight-what-to-test-1.9.1.txt`
 werden nur für den gewählten Build als `de-DE` angelegt oder aktualisiert.
 Buildzuordnung und Revieweinreichung sind wiederholbar: bestehende Zuordnung,
 laufendes Review und bereits freigegebene Builds werden erkannt. Die API-Antwort

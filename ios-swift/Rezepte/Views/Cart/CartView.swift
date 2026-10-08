@@ -66,10 +66,12 @@ struct CartView: View {
                 if mode == .current, !items.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
-                            if session.supports("ai-shopping-optimization") {
-                                Button("KI sortieren & exportieren", systemImage: "sparkles") {
-                                    showShoppingTools = true
-                                }
+                            Button(
+                                session.fullAccess && session.supports("ai-shopping-optimization")
+                                    ? "KI sortieren & exportieren" : "Einkaufsliste teilen & übertragen",
+                                systemImage: "square.and.arrow.up"
+                            ) {
+                                showShoppingTools = true
                             }
                             Button("Erledigte löschen", systemImage: "checkmark.circle") {
                                 Task { await clear(onlyChecked: true) }

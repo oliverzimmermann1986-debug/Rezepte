@@ -47,15 +47,17 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
-                Section("Inhaltssprache") {
-                    Picker("Rezepte und Quelltexte", selection: $contentLanguage) {
-                        ForEach(ContentLanguage.allCases) { language in
-                            Text(language.title).tag(language.rawValue)
+                if session.fullAccess {
+                    Section("Inhaltssprache") {
+                        Picker("Rezepte und Quelltexte", selection: $contentLanguage) {
+                            ForEach(ContentLanguage.allCases) { language in
+                                Text(language.title).tag(language.rawValue)
+                            }
                         }
+                        Text("Importierte Beschreibungen und mitgesendete Kommentartexte werden beim Anzeigen automatisch in diese Sprache übersetzt. Der Originaltext bleibt erhalten.")
+                            .font(.caption)
+                            .foregroundStyle(theme.muted)
                     }
-                    Text("Importierte Beschreibungen und mitgesendete Kommentartexte werden beim Anzeigen automatisch in diese Sprache übersetzt. Der Originaltext bleibt erhalten.")
-                        .font(.caption)
-                        .foregroundStyle(theme.muted)
                 }
 
                 if let warning = session.compatibilityWarning {
@@ -122,7 +124,10 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             .background(theme.background)
             .navigationTitle("Einstellungen")
-            .fullScreenCover(isPresented: $showAdministration) {
+            .fullScreenCover(isPresented: Binding(
+                get: { showAdministration && session.fullAccess },
+                set: { showAdministration = $0 }
+            )) {
                 AdminView(presented: true)
                     .environmentObject(session)
                     .environmentObject(themeStore)

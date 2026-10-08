@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrimaryButton, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
+import { useAuth } from '@/lib/auth-context';
 import { api, ApiError } from '@/lib/api';
 import { invalidateApiCache } from '@/lib/cache';
 
@@ -46,6 +47,9 @@ export function ShoppingAiOptimizer({
   onClose: () => void;
   onApplied: () => void | Promise<void>;
 }) {
+  const { isAdmin } = useAuth();
+  const adminAllowed = useRef(isAdmin);
+  adminAllowed.current = isAdmin;
   const [preview, setPreview] = useState<OptimizationPreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -59,6 +63,7 @@ export function ShoppingAiOptimizer({
   }
 
   async function createPreview() {
+    if (!adminAllowed.current) return;
     setLoading(true);
     setError('');
     try {
@@ -74,6 +79,7 @@ export function ShoppingAiOptimizer({
   }
 
   function requestApply() {
+    if (!adminAllowed.current) return;
     if (!preview) return;
     Alert.alert(
       'Optimierte Liste übernehmen?',
@@ -86,6 +92,7 @@ export function ShoppingAiOptimizer({
   }
 
   async function applyPreview() {
+    if (!adminAllowed.current) return;
     if (!preview) return;
     setApplying(true);
     setError('');
@@ -113,6 +120,8 @@ export function ShoppingAiOptimizer({
     setError('');
     onClose();
   }
+
+  if (!isAdmin) return null;
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>

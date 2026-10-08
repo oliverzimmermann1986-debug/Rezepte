@@ -31,6 +31,29 @@ erneuten Bestätigung verwendet werden. Dafür muss dasselbe Anbieterkonto gewä
 werden. Passwortänderung, Kontolöschung und Trennung verlangen ebenfalls diese
 erneute Bestätigung.
 
+## Rechte normaler Konten
+
+Eine Registrierung mit Apple, Google oder Benutzername/Passwort legt ein normales
+Benutzerkonto an. Die Art der Anmeldung verleiht keine Administratorrechte. Wird
+ein Anbieter mit einem bestehenden Konto verbunden, bleibt dessen Rolle erhalten.
+
+Normale Konten können sichtbare Rezepte lesen, eine eigene private Variante
+erstellen und Rezepte ihres Haushalts manuell bearbeiten. Die globale Vorlage
+bleibt unverändert. Favoriten, Einkauf, Wochenplanung und die eigene
+Kontoverwaltung bleiben verfügbar. Eigene Varianten lassen sich auch dann ohne KI
+anlegen, wenn die Vorlage noch nicht vollständig extrahiert ist; die Kopie wird
+nicht automatisch zur Extraktion eingeplant.
+
+Importe aus Links, Dateien und Fotos, OCR, KI-Übersetzung, Bildgenerierung,
+KI-Nährwerte, erneute Extraktion/Quellenimporte und die KI-Einkaufsoptimierung
+können ausschließlich Administratoren starten. Diese Einschränkung wird auf dem
+Server durchgesetzt. Die Clients blenden entsprechende Aktionen für normale
+Konten aus; geteilte Links starten für sie keinen Hintergrundimport.
+
+Die Verwaltung anderer Benutzer, Serverkonfiguration und administrative Jobs
+bleiben ebenfalls Administratoren vorbehalten. Ein Gast kann keine Variante
+anlegen und keine Daten bearbeiten.
+
 ## Servereinrichtung
 
 Anbieter werden nur angezeigt, wenn ihre serverseitige Konfiguration vollständig

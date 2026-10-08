@@ -1,6 +1,6 @@
 # Quellenküche für iPhone
 
-Primärer nativer iOS-Client in Swift und SwiftUI. Der Eingang übernimmt
+Primärer nativer iOS-Client in Swift und SwiftUI. Der Eingang für Administratoren übernimmt
 Rezeptlinks aus Webseiten, Pinterest, YouTube, TikTok und Instagram sowie
 Fotos und PDFs. Videos werden weder geladen noch abgespielt; die Originalquelle
 bleibt am Rezept sichtbar. Fehlen Zutaten oder Zubereitungsschritte, bleibt das
@@ -31,6 +31,15 @@ vorhanden, speichert der Server den Verweis ohne erneuten Download oder KI-Lauf.
 Administratoren können ausdrücklich global importieren. Änderungen an globalen
 Rezepten bleiben Administratoren vorbehalten; eigene private Rezepte dürfen
 Haushaltsmitglieder bearbeiten.
+
+Normale Konten können über **Eigene Variante erstellen** jedes sichtbare Rezept
+privat in ihren Haushalt kopieren und anschließend bearbeiten. Nach dem Anlegen
+öffnet sich die neue Variante; das Original bleibt unverändert. Importe, OCR,
+KI-Bilder, Neuanalyse, Nährwerte, Übersetzung und KI-Einkaufsoptimierung stehen
+nur Administratoren zur Verfügung. Geteilte Links eines normalen Kontos oder
+Gasts bleiben mit einem Hinweis auf dem Gerät gespeichert; sie werden weder
+automatisch verarbeitet noch beim Abmelden still gelöscht. Einkauf, Text-Export,
+Planung, Kontoverwaltung und die manuelle Pflege eigener Rezepte bleiben verfügbar.
 
 Beim Abmelden oder Haushaltswechsel werden die privaten Ansichten neu aufgebaut
 und Antwort-Caches geleert. Verspätete Antworten der vorherigen Sitzung werden

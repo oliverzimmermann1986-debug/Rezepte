@@ -57,30 +57,32 @@ struct PendingEditorView: View {
                         .lineLimit(4...10)
                 }
 
-                Section {
-                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                        Label(
-                            isPhotoScanning ? "Foto wird gescannt …" : "Foto hinzufügen und scannen",
-                            systemImage: "photo.badge.plus"
-                        )
-                    }
-                    .disabled(isBusy)
+                if session.fullAccess {
+                    Section {
+                        PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                            Label(
+                                isPhotoScanning ? "Foto wird gescannt …" : "Foto hinzufügen und scannen",
+                                systemImage: "photo.badge.plus"
+                            )
+                        }
+                        .disabled(isBusy)
 
-                    Button {
-                        Task { await reanalyze() }
-                    } label: {
-                        Label(
-                            isReanalyzing ? "KI prüft erneut …" : "Nochmals mit KI prüfen",
-                            systemImage: "sparkles"
-                        )
-                    }
-                    .disabled(isBusy)
+                        Button {
+                            Task { await reanalyze() }
+                        } label: {
+                            Label(
+                                isReanalyzing ? "KI prüft erneut …" : "Nochmals mit KI prüfen",
+                                systemImage: "sparkles"
+                            )
+                        }
+                        .disabled(isBusy)
 
-                    Text("Der Foto-Scan ergänzt das Rezeptbild und liest Zutaten sowie Schritte neu ein.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    Text("Analyse")
+                        Text("Der Foto-Scan ergänzt das Rezeptbild und liest Zutaten sowie Schritte neu ein.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } header: {
+                        Text("Analyse")
+                    }
                 }
 
                 Section("Zutaten") {
@@ -228,6 +230,8 @@ struct PendingEditorView: View {
     }
 
     private func scanPhoto(_ photo: PhotosPickerItem) async {
+        guard session.fullAccess, !isBusy else { return }
+        let expectedIdentity = session.identity
         isPhotoScanning = true
         errorMessage = nil
         statusMessage = nil
@@ -241,6 +245,7 @@ struct PendingEditorView: View {
                   let data = image.jpegData(compressionQuality: 0.9) else {
                 throw PendingValidationError.invalidPhoto
             }
+            guard session.fullAccess, session.identity == expectedIdentity else { return }
             let result = try await session.api.scanPendingPhoto(
                 url: item.url,
                 data: data,
@@ -255,6 +260,7 @@ struct PendingEditorView: View {
     }
 
     private func reanalyze() async {
+        guard session.fullAccess, !isBusy else { return }
         isReanalyzing = true
         errorMessage = nil
         statusMessage = nil

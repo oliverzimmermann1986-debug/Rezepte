@@ -414,6 +414,7 @@ struct AdminSettingsView: View {
     }
 
     private func testOpenAI() async {
+        guard session.fullAccess else { return }
         isTesting = true
         defer { isTesting = false }
         do {

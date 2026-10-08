@@ -56,6 +56,7 @@
     },
 
     async generateRecipeImage() {
+      if (!this.canUseAdminTools()) return;
       const recipe = this.recipeDetail.data;
       if (!recipe || this.recipeDetail.imageGenerating) return;
       const context = this._detailContext();
@@ -66,6 +67,35 @@
         this.showToast('Bildgenerierung gestartet; das bisherige Bild wird vorher gesichert');
       } finally {
         if (this._detailOwns(context)) this.recipeDetail.imageGenerating = false;
+      }
+    },
+
+    async createOwnRecipeVariant() {
+      const source = this.recipeDetail.data;
+      if (!source?.id || !this.canWrite() || this.recipeDetail.duplicating === source.id) return;
+      const entered = prompt('Name der eigenen Variante', `${source.name || 'Rezept'} – Variante`);
+      if (entered === null) return;
+      const newName = entered.trim();
+      if (!newName || [...newName].length > 200) {
+        this.showToast('Bitte einen Namen mit 1 bis 200 Zeichen eingeben.', 'err');
+        return;
+      }
+      if (!this.canWrite()) return;
+      const context = this._detailContext();
+      this.recipeDetail.duplicating = source.id;
+      try {
+        const result = await this.api('POST', `/api/recipes/${source.id}/duplicate`, { new_name: newName });
+        if (!result?.recipe_id) return;
+        this.loadRecipes();
+        if (this._detailOwns(context)) {
+          this.recipeDetail.duplicating = false;
+          await this.openRecipe(result.recipe_id);
+          this.showToast('Eigene Variante erstellt', 'ok');
+        }
+      } catch (error) {
+        this.showToast(error?.message || 'Die eigene Variante konnte nicht erstellt werden.', 'err');
+      } finally {
+        if (this.recipeDetail.duplicating === source.id) this.recipeDetail.duplicating = false;
       }
     },
 
@@ -348,6 +378,7 @@
     },
 
     async syncRecipes() {
+      if (!this.canUseAdminTools()) return;
       const r = await this.api('POST', '/api/recipes/sync');
       if (!r) return;
       this.recipes.sync = { ...this.recipes.sync, ...r, running: !!r.running };
@@ -690,6 +721,7 @@
     },
 
     async extractIngredients() {
+      if (!this.canUseAdminTools()) return;
       if (!this.recipeDetail.data || this.recipeDetail.extracting) return;
       const context = this._detailContext();
       this.recipeDetail.extracting = true;
@@ -850,6 +882,7 @@
     // ⚡ Button im Detail-Modal — funktioniert sowohl für Erst-Berechnung
     // als auch für Recompute (z.B. nach manuellem Zutaten-Edit).
     async computeNutrition() {
+      if (!this.canUseAdminTools()) return;
       const context = this._detailContext();
       if (!context.id || this.recipeDetail.computingNutrition) return;
       const ingCount = this.recipeDetail.data?.ingredients?.length || 0;
@@ -1087,6 +1120,7 @@
 
     // Re-Scrape aus dem Detail-Modal — gleicher Endpoint wie aus Audit
     async rescrapeFromDetailModal() {
+      if (!this.canUseAdminTools()) return;
       const context = this._detailContext();
       if (!context.id || this.recipeDetail.rescraping) return;
       this.recipeDetail.rescraping = true;

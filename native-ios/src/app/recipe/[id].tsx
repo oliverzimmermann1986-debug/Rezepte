@@ -293,7 +293,7 @@ export default function RecipeDetailScreen() {
   }
 
   function duplicateRecipe() {
-    if (!recipe) return;
+    if (!recipe || isGuest) return;
     Alert.prompt(
       'Als Variante duplizieren',
       'Zutaten, Schritte, Tags, Cover und PDF werden kopiert. Die externe Quelle wird nicht übernommen.',
@@ -304,7 +304,7 @@ export default function RecipeDetailScreen() {
   }
 
   async function createVariant(value?: string) {
-    if (!recipe) return;
+    if (!recipe || isGuest) return;
     const newName = value?.trim();
     if (!newName) {
       Alert.alert('Name fehlt', 'Bitte gib der Variante einen Namen.');
@@ -435,7 +435,7 @@ export default function RecipeDetailScreen() {
           {!!recipe.pdf_filename && (
             <CompactAction label="PDF" symbol="doc" onPress={openPdf} disabled={busy} />
           )}
-          <CompactAction label="Variante" symbol="doc.on.doc" onPress={duplicateRecipe} disabled={!canEdit || busy} />
+          <CompactAction label="Eigene Variante" symbol="doc.on.doc" onPress={duplicateRecipe} disabled={isGuest || busy} />
           <CompactAction label="Teilen" symbol="square.and.arrow.up" onPress={shareRecipe} disabled={isGuest || busy} />
         </View>
 

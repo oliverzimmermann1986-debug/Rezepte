@@ -42,7 +42,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from ..auth import require_admin, require_auth, request_is_guest
-from ..tenancy import CURRENT_HOUSEHOLD, RECIPE_LIBRARY, require_recipe_editor
+from ..tenancy import CURRENT_HOUSEHOLD, RECIPE_LIBRARY, require_recipe_editor, require_recipe_variant_creator
 from ..core.analyzer import build_analyzer
 from ..core.recipe_web import (
     extract_recipe_web_metadata,
@@ -211,13 +211,14 @@ def list_recipes(
     limit: int = Query(60, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    """Hauptlisten-Endpoint. Lazy-Sync + lazy-Extraction Trigger."""
+    """Hauptlisten-Endpoint; nur Administratoren starten die Lazy-Extraktion."""
     db = get_db()
     if rating and any(value < 0 or value > 5 for value in rating):
         raise HTTPException(422, "Bewertungen müssen zwischen 0 und 5 liegen")
 
-    # Lazy-Background-Extraction starten (no-op wenn nichts pending)
-    if not request_is_guest(request):
+    # Reading recipes must not grant ordinary accounts permission to start AI.
+    identity = CURRENT_HOUSEHOLD.get()
+    if identity is not None and identity.is_admin:
         ensure_extraction_running()
 
     items = db.recipe_list(
@@ -546,7 +547,7 @@ def backfill_allergen_info():
 @router.post(
     "/{recipe_id}/generate-image",
     status_code=202,
-    dependencies=[Depends(require_recipe_editor)],
+    dependencies=[Depends(require_admin), Depends(require_recipe_editor)],
 )
 def queue_recipe_image(recipe_id: int):
     from ..jobs.task_queue import enqueue
@@ -1118,7 +1119,7 @@ class TranslationRequest(BaseModel):
     text: Optional[str] = Field(default=None, max_length=8_000)
 
 
-@router.post("/{recipe_id}/translate")
+@router.post("/{recipe_id}/translate", dependencies=[Depends(require_admin)])
 def translate_recipe_text(recipe_id: int, payload: TranslationRequest) -> Dict[str, Any]:
     """Übersetzt Beschreibung oder einen mitgesendeten Kommentar für die App.
 
@@ -1730,7 +1731,7 @@ def recover_empty(request: Request) -> Dict[str, Any]:
         raise HTTPException(500, f"recover-empty failed: {type(e).__name__}: {e}")
 
 
-@router.post("/{recipe_id}/rescrape", dependencies=[Depends(require_recipe_editor)])
+@router.post("/{recipe_id}/rescrape", dependencies=[Depends(require_admin), Depends(require_recipe_editor)])
 def rescrape_recipe(
     recipe_id: int,
     request: Request,
@@ -2143,7 +2144,7 @@ def toggle_verify(recipe_id: int, request: Request,
     return {"ok": True, "verified": verified, "by": username}
 
 
-@router.post("/{recipe_id}/nutrition", dependencies=[Depends(require_recipe_editor)])
+@router.post("/{recipe_id}/nutrition", dependencies=[Depends(require_admin), Depends(require_recipe_editor)])
 def compute_nutrition_for(recipe_id: int, request: Request) -> Dict[str, Any]:
     """On-Demand Nährwert-Berechnung für ein Rezept. KI-Single-Call.
     Setzt calories_per_serving + protein/carbs/fat_g + computed_at."""
@@ -2249,7 +2250,7 @@ def compute_nutrition_bulk(request: Request, limit: int = Query(50, ge=1, le=200
     }
 
 
-@router.post("/{recipe_id}/extract", dependencies=[Depends(require_recipe_editor)])
+@router.post("/{recipe_id}/extract", dependencies=[Depends(require_admin), Depends(require_recipe_editor)])
 def extract_one(
     recipe_id: int,
     background_tasks: BackgroundTasks,
@@ -2396,13 +2397,22 @@ class DuplicatePayload(BaseModel):
     new_name: str = Field(min_length=1, max_length=200)
 
 
-@router.post("/{recipe_id}/duplicate", dependencies=[Depends(require_recipe_editor)])
+@router.post("/{recipe_id}/duplicate", dependencies=[Depends(require_recipe_variant_creator)])
 def duplicate_recipe(recipe_id: int, payload: DuplicatePayload) -> Dict[str, Any]:
     from ..recipes.manage import safe_duplicate_recipe
 
+    db = get_db()
+    identity = CURRENT_HOUSEHOLD.get()
+    final_status = None
+    if identity is not None and not identity.is_admin:
+        source = db.recipe_get(recipe_id)
+        if not source or source.get("deleted_at") is not None:
+            raise HTTPException(404, "Rezept nicht gefunden")
+        # A manual copy must not inherit a pending/running AI job from its source.
+        final_status = "ok" if source.get("ingredients_status") == "ok" else "skipped"
     try:
         return safe_duplicate_recipe(
-            get_db(), recipe_id, new_name=payload.new_name
+            db, recipe_id, new_name=payload.new_name, final_status=final_status,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

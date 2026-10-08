@@ -14,6 +14,7 @@ from tests.test_tenants import households  # noqa: F401
 @pytest.mark.parametrize("finish_before_enqueue", [False, True])
 def test_url_replay_retains_partial_analysis_and_media(households, monkeypatch, finish_before_enqueue):
     client, db, users, login = households
+    db.user_set_role(users["anna"][0], "admin")
     original_get = get_config().get
     monkeypatch.setattr(get_config(), "get", lambda *keys, default=None:
                         1 if keys == ("web", "import_daily_limit") else original_get(*keys, default=default))

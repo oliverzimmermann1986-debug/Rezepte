@@ -73,6 +73,7 @@ def test_v261_share_migration_does_not_assign_recreated_or_missing_creators(hous
 
 def test_import_in_flight_and_queued_task_block_join_then_pending_moves(households, monkeypatch):
     client, db, users, _ = households
+    db.user_set_role(users["bert"][0], "admin")
     old_account, target = users["bert"][1], users["anna"][1]
     invitation = accounts.invite(db, users["anna"][0])
     bearer = {"Authorization": "Bearer " + auth.create_session("bert")}
@@ -115,6 +116,8 @@ def test_import_in_flight_and_queued_task_block_join_then_pending_moves(househol
 ])
 def test_request_with_scope_captured_before_join_is_rejected_without_writes(households, monkeypatch, path, body):
     client, db, users, _ = households
+    if path.startswith("/api/pending/"):
+        db.user_set_role(users["bert"][0], "admin")
     invitation = accounts.invite(db, users["anna"][0])
     bearer = {"Authorization": "Bearer " + auth.create_session("bert")}
     captured, resume = threading.Event(), threading.Event()
@@ -148,6 +151,7 @@ def test_request_with_scope_captured_before_join_is_rejected_without_writes(hous
 @pytest.mark.parametrize("kind", ["file", "photo"])
 def test_synchronous_analysis_blocks_join_and_releases_guard_on_completion(households, monkeypatch, kind):
     client, db, users, _ = households
+    db.user_set_role(users["bert"][0], "admin")
     account = users["bert"][1]
     scoped = HouseholdDatabase(db, tenancy.HouseholdScope(account), import_owner=account)
     scoped.pending_add("https://recipes.example/photo", content_type="recipe")
@@ -229,7 +233,8 @@ def test_empty_disabled_last_member_can_still_be_deleted(households):
 
 
 def test_guard_releases_after_route_validation_failure(households):
-    client, _, users, login = households
+    client, db, users, login = households
+    db.user_set_role(users["anna"][0], "admin")
     login("anna")
     assert client.post("/api/pending/import-url", json={"url": "http://localhost/private"}).status_code == 400
     assert client.post("/api/account/invitations").status_code == 201

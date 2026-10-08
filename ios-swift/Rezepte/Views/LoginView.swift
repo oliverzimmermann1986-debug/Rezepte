@@ -117,6 +117,9 @@ struct LoginView: View {
 
                     if !providers.isEmpty {
                         VStack(spacing: 12) {
+                            Text("Beim ersten Mal wird dein Konto erstellt. Danach meldest du dich mit demselben Anbieter an.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             ForEach(providers) { provider in
                                 if let kind = provider.kind {
                                     Button { Task { await signInWithProvider(kind) } } label: {

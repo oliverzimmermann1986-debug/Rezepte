@@ -4,6 +4,7 @@
   window.RezepteFeatures = window.RezepteFeatures || {};
   window.RezepteFeatures.account = function () {
     return {
+      canUseAdminTools() { return this.session.loaded && this.session.is_admin === true; },
       canWrite() { return this.session.loaded && ['user', 'admin'].includes(this.session.role); },
       canEditRecipe() { return this.canWrite() && (this.session.is_admin || this.recipeDetail.data?.can_edit === true); },
       async loadAccount() {
@@ -19,8 +20,10 @@
           if (generation === this.account._loadGeneration && !controller.signal.aborted && data) this.account.data = data;
           if (data && !data.is_guest) {
             const [imports, profile, sessions, identities] = await Promise.all([
-              '/api/account/imports', '/api/account/profile', '/api/account/sessions', '/api/account/identities',
-            ].map(path => this.api('GET', path, undefined, { signal: controller.signal })));
+              this.canUseAdminTools() ? this.api('GET', '/api/account/imports', undefined, { signal: controller.signal }) : null,
+              ...['/api/account/profile', '/api/account/sessions', '/api/account/identities']
+                .map(path => this.api('GET', path, undefined, { signal: controller.signal })),
+            ]);
             if (generation !== this.account._loadGeneration || controller.signal.aborted) return;
             this.account.imports = imports?.items || [];
             this.account.profile = profile;
@@ -195,7 +198,7 @@
         finally { this.account.busy = false; }
       },
       async saveHouseholdImport(item) {
-        if (!this.canWrite() || this.account.busy || !item.name?.trim()) return;
+        if (!this.canUseAdminTools() || this.account.busy || !item.name?.trim()) return;
         this.account.busy = true;
         try {
           const suggestion = item.suggestion || {};

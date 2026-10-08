@@ -15,15 +15,17 @@ struct ShoppingToolsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("KI-Sortierung") {
-                    Text("Die KI vereinheitlicht Namen, führt doppelte Artikel zusammen und ordnet sie Supermarkt-Kategorien zu. Vor dem Übernehmen siehst du eine Vorschau.")
-                        .font(.caption).foregroundStyle(theme.muted)
-                    Button("Vorschau erstellen", systemImage: "sparkles") {
-                        Task { await createPreview() }
-                    }.disabled(isWorking)
+                if session.fullAccess, session.supports("ai-shopping-optimization") {
+                    Section("KI-Sortierung") {
+                        Text("Die KI vereinheitlicht Namen, führt doppelte Artikel zusammen und ordnet sie Supermarkt-Kategorien zu. Vor dem Übernehmen siehst du eine Vorschau.")
+                            .font(.caption).foregroundStyle(theme.muted)
+                        Button("Vorschau erstellen", systemImage: "sparkles") {
+                            Task { await createPreview() }
+                        }.disabled(isWorking)
+                    }
                 }
 
-                if let preview {
+                if session.fullAccess, let preview {
                     Section("Vorschau · \(preview.items.count) Artikel") {
                         ForEach(preview.items) { item in
                             HStack {
@@ -63,7 +65,7 @@ struct ShoppingToolsView: View {
                 if let notice { Section { Label(notice, systemImage: "checkmark.circle.fill").foregroundStyle(theme.success) } }
                 if let errorMessage { Section { Text(errorMessage).foregroundStyle(.red) } }
             }
-            .navigationTitle("Einkauf optimieren")
+            .navigationTitle("Einkaufsliste")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Schließen") { dismiss() } }
@@ -72,10 +74,12 @@ struct ShoppingToolsView: View {
     }
 
     private func createPreview() async {
+        guard session.fullAccess else { return }
         await perform { preview = try await session.api.shoppingOptimizationPreview() }
     }
 
     private func apply(_ preview: ShoppingOptimizePreview) async {
+        guard session.fullAccess else { return }
         await perform {
             _ = try await session.api.applyShoppingOptimization(previewID: preview.previewId)
             notice = "Optimierte Liste wurde übernommen."
@@ -100,6 +104,7 @@ struct ShoppingToolsView: View {
     }
 
     private func perform(_ action: () async throws -> Void) async {
+        guard !session.readOnly, !isWorking else { return }
         isWorking = true
         errorMessage = nil
         defer { isWorking = false }

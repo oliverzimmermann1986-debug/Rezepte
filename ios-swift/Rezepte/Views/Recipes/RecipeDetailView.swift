@@ -34,6 +34,7 @@ struct RecipeDetailView: View {
     @State private var showDuplicatePrompt = false
     @State private var showSubstitutionLab = false
     @State private var duplicateName = ""
+    @State private var createdVariantID: Int?
     @State private var isManaging = false
     @State private var translatedDescription: String?
     @State private var sourceCopied = false
@@ -129,13 +130,14 @@ struct RecipeDetailView: View {
                         }
                         .accessibilityLabel(recipe.isFavorite ? "Aus Favoriten entfernen" : "Als Favorit speichern")
                         Menu {
+                            Button("Eigene Variante erstellen", systemImage: "plus.square.on.square") {
+                                duplicateName = "\(recipe.name) – Variante"
+                                showDuplicatePrompt = true
+                            }
+                            .disabled(isManaging)
                             if canEdit(recipe) {
                                 Button("Rezeptdaten bearbeiten", systemImage: "pencil") {
                                     showMetadataEditor = true
-                                }
-                                Button("Als Variante duplizieren", systemImage: "plus.square.on.square") {
-                                    duplicateName = "\(recipe.name) – Variante"
-                                    showDuplicatePrompt = true
                                 }
                                 Button(
                                     recipe.userVerified == true ? "Prüfung zurücknehmen" : "Zutaten als geprüft markieren",
@@ -143,10 +145,10 @@ struct RecipeDetailView: View {
                                 ) {
                                     Task { await setVerified(recipe.userVerified != true) }
                                 }
-                                Button("Nährwerte neu berechnen", systemImage: "bolt.heart") {
-                                    Task { await computeNutrition() }
-                                }
                                 if session.fullAccess {
+                                    Button("Nährwerte neu berechnen", systemImage: "bolt.heart") {
+                                        Task { await computeNutrition() }
+                                    }
                                     Button(
                                         "Quelle mit Bild und Audio neu auswerten",
                                         systemImage: "waveform.and.magnifyingglass"
@@ -295,12 +297,18 @@ struct RecipeDetailView: View {
                 CookingModeView(recipe: recipe)
             }
         }
-        .alert("Variante erstellen", isPresented: $showDuplicatePrompt) {
+        .navigationDestination(item: $createdVariantID) { id in
+            RecipeDetailView(recipeID: id)
+        }
+        .alert("Eigene Variante erstellen", isPresented: $showDuplicatePrompt) {
             TextField("Name der Variante", text: $duplicateName)
             Button("Erstellen") { Task { await duplicateRecipe() } }
+                .disabled(isManaging || duplicateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Abbrechen", role: .cancel) {}
         } message: {
-            Text("Zutaten, Schritte, Tags und Nährwerte werden kopiert; Favorit, Bewertung und Prüfstatus bleiben unabhängig.")
+            Text(session.fullAccess
+                 ? "Zutaten, Schritte, Tags und Nährwerte werden in eine eigenständige Kopie übernommen. Die Sichtbarkeit bleibt wie beim Original; das Original bleibt unverändert."
+                 : "Die Kopie bleibt privat in deinem Haushalt. Du kannst sie bearbeiten; das Original bleibt unverändert. Zutaten, Schritte, Tags und Nährwerte werden übernommen.")
         }
         .task { await load() }
         .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { notification in
@@ -728,7 +736,7 @@ struct RecipeDetailView: View {
         do {
             recipe = try await session.api.recipe(id: recipeID)
             translatedDescription = nil
-            if contentLanguage != ContentLanguage.de.rawValue,
+            if session.fullAccess, contentLanguage != ContentLanguage.de.rawValue,
                let source = recipe?.descriptionOriginal ?? recipe?.description,
                !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 do {
@@ -864,6 +872,7 @@ struct RecipeDetailView: View {
     }
 
     private func computeNutrition() async {
+        guard session.fullAccess else { return }
         isManaging = true
         defer { isManaging = false }
         do { _ = try await session.api.computeRecipeNutrition(id: recipeID); await load() }
@@ -871,6 +880,7 @@ struct RecipeDetailView: View {
     }
 
     private func reextractSource() async {
+        guard session.fullAccess else { return }
         isManaging = true
         defer { isManaging = false }
         do {
@@ -882,13 +892,20 @@ struct RecipeDetailView: View {
     }
 
     private func duplicateRecipe() async {
+        guard !session.readOnly, !isManaging else { return }
+        let expectedIdentity = session.identity
         let name = duplicateName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         isManaging = true
         defer { isManaging = false }
         do {
-            _ = try await session.api.duplicateRecipe(id: recipeID, newName: name)
+            let result = try await session.api.duplicateRecipe(id: recipeID, newName: name)
+            guard session.identity == expectedIdentity else { return }
+            guard result.ok, let id = result.recipeId ?? result.id else {
+                throw APIError.invalidResponse("Rezeptvariante")
+            }
             NotificationCenter.default.post(name: .recipesChanged, object: nil)
+            createdVariantID = id
         } catch { session.handle(error) }
     }
 

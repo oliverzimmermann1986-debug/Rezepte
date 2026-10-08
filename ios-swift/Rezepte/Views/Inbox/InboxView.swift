@@ -20,14 +20,13 @@ struct InboxView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 24) {
-                    hero
-                    importComposer
-
-                    if !session.readOnly {
+                    if session.fullAccess {
+                        hero
+                        importComposer
                         reviewQueue
                     } else {
                         Label(
-                            "Importe werden automatisch verarbeitet. Unsichere Inhalte prüft die Verwaltung.",
+                            "Rezeptimporte und KI-Verarbeitung stehen nur Administratoren zur Verfügung.",
                             systemImage: "checkmark.shield"
                         )
                         .font(.callout)
@@ -253,7 +252,7 @@ struct InboxView: View {
     }
 
     private func loadPending() async {
-        guard !session.readOnly else {
+        guard session.fullAccess else {
             pending = []
             return
         }
@@ -268,7 +267,7 @@ struct InboxView: View {
     }
 
     private func importURL() async {
-        guard !session.readOnly, !isWorking else { return }
+        guard session.fullAccess, !isWorking else { return }
         let link = importLink.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased()) else {
             resultMessage = "Bitte einen gültigen Weblink eingeben."
@@ -290,7 +289,8 @@ struct InboxView: View {
     }
 
     private func uploadPhoto(_ item: PhotosPickerItem) async {
-        guard !session.readOnly, !isWorking else { return }
+        guard session.fullAccess, !isWorking else { return }
+        let expectedIdentity = session.identity
         isWorking = true
         resultMessage = nil
         defer {
@@ -304,6 +304,7 @@ struct InboxView: View {
                 resultMessage = "Das Foto konnte nicht gelesen werden."
                 return
             }
+            guard session.fullAccess, session.identity == expectedIdentity else { return }
             let result = try await session.api.importFile(
                 data: data,
                 filename: "rezept-\(Int(Date().timeIntervalSince1970)).jpg",
@@ -318,7 +319,7 @@ struct InboxView: View {
     }
 
     private func uploadFile(_ url: URL) async {
-        guard !session.readOnly, !isWorking else { return }
+        guard session.fullAccess, !isWorking else { return }
         isWorking = true
         resultMessage = nil
         defer { isWorking = false }

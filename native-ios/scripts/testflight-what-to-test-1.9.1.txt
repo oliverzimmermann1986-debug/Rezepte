@@ -1,0 +1,7 @@
+Bitte normale Konten mit Backend 1.9.1 prüfen:
+• Bei einem sichtbaren Rezept „Eigene Variante erstellen“ wählen und die private Kopie manuell bearbeiten. Das Original bleibt unverändert.
+• Favoriten, Einkauf, Wochenplanung und „Mein Konto“ bleiben verfügbar.
+• Normale Konten können keine Link-/Datei-/Fotoimporte, OCR, KI-Aktionen oder Administration starten.
+• Mit der App geteilte Links werden bei normalen Konten nicht importiert und bleiben mit Hinweis auf dem Gerät gespeichert.
+• Administratoren können Importe und KI-Funktionen weiterhin nutzen.
+Apple und Google dienen sowohl der Kontoerstellung als auch der Anmeldung. Die Buttons erscheinen erst, wenn der jeweilige Anbieter auf dem Server eingerichtet ist; neue Konten erhalten keine Adminrechte.

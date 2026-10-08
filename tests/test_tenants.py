@@ -75,11 +75,12 @@ def _recipe(db, name, url, *, owner=None):
     return rid
 
 
-def test_global_url_import_links_without_queue_or_download(households, monkeypatch):
+def test_admin_global_url_import_links_without_queue_or_download(households, monkeypatch):
     client, db, users, login = households
     rid = _recipe(db, "Gemeinsam", "https://recipes.example/soup?utm_source=old")
     from app.routes import api_pending
     monkeypatch.setattr(api_pending, "enqueue", lambda *a, **k: pytest.fail("Global recipe must not be queued"))
+    db.user_set_role(users["anna"][0], "admin")
     login("anna")
     for _ in range(2):
         response = client.post("/api/pending/import-url", json={"url": "https://recipes.example/soup?utm_source=new#recipe", "visibility": "private"})
@@ -252,11 +253,14 @@ def test_private_import_jobs_and_pending_status_are_separate(households, monkeyp
     monkeypatch.setattr(api_pending, "enqueue", lambda kind, payload, **kwargs: queued.append((payload, kwargs)) or 42)
     for name in ("anna", "bert"):
         login(name)
+        assert client.post("/api/pending/import-url", json={"url": "https://recipes.example/new"}).status_code == 403
+        assert client.post("/api/pending/import-url", json={"url": "https://recipes.example/new", "visibility": "global"}).status_code == 403
+        db.user_set_role(users[name][0], "admin")
+        login(name)
         result = client.post("/api/pending/import-url", json={"url": "https://recipes.example/new"})
         assert result.status_code == 200, result.text
         assert queued[-1][0]["account_id"] == users[name][1]
         assert len(client.get("/api/account/imports").json()["items"]) == 1
-        assert client.post("/api/pending/import-url", json={"url": "https://recipes.example/new", "visibility": "global"}).status_code == 403
     assert queued[0][1]["dedupe_key"] != queued[1][1]["dedupe_key"]
     with db.conn() as c:
         assert c.execute("SELECT COUNT(*) FROM pending").fetchone()[0] == 2
@@ -327,6 +331,7 @@ def test_global_shortlink_alias_reuses_recipe_without_enqueue(households, monkey
     db.history_add("https://recipes.example/short", name="MitAlias", target_dir=db.recipe_get(rid)["folder_path"], content_type="recipe")
     from app.routes import api_pending
     monkeypatch.setattr(api_pending, "enqueue", lambda *a, **k: pytest.fail("Alias must reuse global recipe"))
+    db.user_set_role(users["anna"][0], "admin")
     login("anna")
     response = client.post("/api/pending/import-url", json={"url": "https://recipes.example/short"})
     assert response.status_code == 200 and response.json()["recipe_id"] == rid
@@ -360,6 +365,7 @@ def test_private_file_upload_retries_are_scoped_to_household(households, monkeyp
     buffer = BytesIO()
     Image.new("RGB", (24, 24), "blue").save(buffer, format="JPEG")
     for name in ("anna", "bert"):
+        db.user_set_role(users[name][0], "admin")
         login(name)
         for repeat in range(2):
             response = client.post("/api/pending/import-file", data={"client_request_id": "same-mobile-upload", "visibility": "private"},
@@ -374,7 +380,7 @@ def test_private_file_upload_retries_are_scoped_to_household(households, monkeyp
     assert original.recipe_dir == root and original.temp_dir == temp and original.db is db
 
 
-def test_member_can_approve_own_pending_but_cannot_read_or_approve_foreign_pending(households, monkeypatch):
+def test_only_admin_can_approve_pending_and_household_isolation_is_preserved(households, monkeypatch):
     from app.routes import api_pending
     client, db, users, login = households
     own = HouseholdDatabase(db, HouseholdScope(users["anna"][1]))
@@ -397,9 +403,16 @@ def test_member_can_approve_own_pending_but_cannot_read_or_approve_foreign_pendi
     login("bert")
     assert client.get("/api/pending").json() == []
     assert client.get("/api/pending/file", params={"url": url}).status_code == 404
+    assert client.post("/api/pending", json={"url": url, "action": "save", "name": "Fremd"}).status_code == 403
+    assert client.post("/api/pending/reanalyze", json={"url": url}).status_code == 403
+    db.user_set_role(users["bert"][0], "admin")
+    login("bert")
     assert client.post("/api/pending", json={"url": url, "action": "save", "name": "Fremd"}).status_code == 404
     assert client.post("/api/pending/reanalyze", json={"url": url}).status_code == 404
     assert calls == []
+    login("anna")
+    assert client.post("/api/pending", json={"url": url, "action": "save", "name": "MeinRezept"}).status_code == 403
+    db.user_set_role(users["anna"][0], "admin")
     login("anna")
     response = client.post("/api/pending", json={"url": url, "visibility": "private", "action": "save", "name": "MeinRezept"})
     assert response.status_code == 200, response.text

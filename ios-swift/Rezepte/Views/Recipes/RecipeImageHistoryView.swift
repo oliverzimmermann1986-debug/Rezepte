@@ -29,20 +29,22 @@ struct RecipeImageHistoryView: View {
 
                 currentImageCard
 
-                Button {
-                    Task { await generateImage() }
-                } label: {
-                    HStack {
-                        if isGenerating { ProgressView() }
-                        Label(
-                            isGenerating ? "Bild wird erzeugt …" : "Neues Rezeptbild generieren",
-                            systemImage: "sparkles"
-                        )
+                if session.fullAccess {
+                    Button {
+                        Task { await generateImage() }
+                    } label: {
+                        HStack {
+                            if isGenerating { ProgressView() }
+                            Label(
+                                isGenerating ? "Bild wird erzeugt …" : "Neues Rezeptbild generieren",
+                                systemImage: "sparkles"
+                            )
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 46)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 46)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isGenerating)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(isGenerating)
 
                 if backups.isEmpty, !isLoading {
                     ContentUnavailableView(
@@ -183,7 +185,7 @@ struct RecipeImageHistoryView: View {
     }
 
     private func generateImage() async {
-        guard !isGenerating else { return }
+        guard session.fullAccess, !isGenerating else { return }
         isGenerating = true
         errorMessage = nil
         defer { isGenerating = false }

@@ -267,6 +267,7 @@ for (const changedDetail of ['other-recipe', 'closed']) {
 test('an old generation response cannot finish a newer recipe generation indicator', async () => {
   const first = deferred(), second = deferred();
   const app = createApp();
+  app.session = { loaded: true, role: 'admin', is_admin: true };
   const queued = [];
   app.api = async (method, url) => {
     if (method === 'POST') {
@@ -722,4 +723,75 @@ test('disabled and unknown identity providers never get link controls', () => {
   app.account.providers = [{ id: 'apple', enabled: true }, { id: 'google', enabled: true }];
   app.account.identities = [{ provider: 'apple' }];
   assert.deepEqual(Array.from(app.availableAccountProviders(), provider => provider.id), ['google']);
+});
+
+test('normal and unresolved sessions cannot launch AI, import or OCR handlers directly', async () => {
+  const blocked = ['saveHouseholdImport', 'runScraper', 'cancelScraper', 'cleanupFailedJobs', 'importUrl', 'bulkSkipPending', 'resolveItem',
+    'reanalyzeHistoryOne', 'reanalyzeHistoryAll', 'reanalyzeJunkOnly', 'cleanupAllJunk', 'scanPendingPhoto',
+    'reanalyzeOne', 'retryFailed', 'clearAllFailed', 'reanalyzeAll', 'openEditItem', 'saveEditItem', 'deleteItem',
+    'generateRecipeImage', 'syncRecipes', 'extractIngredients', 'computeNutrition', 'rescrapeFromDetailModal',
+    'loadPdfPages', 'applyPdfPageEdits', 'loadPdfPreflight', 'runAdminPdf', 'runMaintenance', 'startRecipeImageBackfill',
+    'retryFailedDownload', 'startAiSanity', 'recoverEmpty', 'rescrapeBulkRecipeIds', 'rescrapeBulkMissingIngredients',
+    'rescrapeBulkMissingSteps', 'bulkComputeNutrition', 'rescrapeRecipe', 'rescrapeBulkNoImage', 'extractFrame',
+    'bulkExtractFrames', 'applyFinding', 'applyAllFindings', 'runTest', 'testOpenAI'];
+  for (const session of [{ loaded: true, role: 'user', is_admin: false }, { loaded: true, role: 'guest', is_admin: false }, { loaded: false, role: 'admin', is_admin: true }]) {
+    const app = createApp({ confirm: () => assert.fail('No privileged confirmation'), prompt: () => assert.fail('No privileged prompt'), fetch: () => assert.fail('No privileged fetch') });
+    app.session = session;
+    app.recipeDetail.data = { id: 7, can_edit: true, ingredients: [{ name: 'flour' }] };
+    app.manualImportUrl = 'https://example.test/recipe';
+    app.api = () => assert.fail('No privileged API call');
+    for (const action of blocked) await app[action]({ id: 7, url: 'https://example.test/recipe' }, 'approve');
+    assert.equal(app.canWrite(), session.role === 'user');
+  }
+});
+
+test('normal account can create its own variant from a read-only global recipe', async () => {
+  const app = createApp({ prompt: () => 'Meine Variante' });
+  app.session = { loaded: true, role: 'user', is_admin: false };
+  const original = { id: 7, name: 'Original', can_edit: false, visibility: 'global' };
+  const calls = [];
+  app.api = async (method, url, payload) => {
+    if (method === 'POST') { calls.push({ url, payload }); return { ok: true, recipe_id: 8 }; }
+    return url.endsWith('/7') ? original : { id: 8, name: 'Meine Variante', can_edit: true, visibility: 'private' };
+  };
+  app.loadRecipes = async () => {};
+  await app.openRecipe(7);
+  assert.equal(app.canEditRecipe(), false);
+  await app.createOwnRecipeVariant();
+  assert.equal(calls[0].url, '/api/recipes/7/duplicate');
+  assert.equal(calls[0].payload.new_name, 'Meine Variante');
+  assert.equal(app.recipeDetail.data.id, 8);
+  assert.equal(app.canEditRecipe(), true);
+  assert.equal(original.name, 'Original');
+});
+
+test('normal account profile never requests its former import workspace', async () => {
+  const app = createApp();
+  app.session = { loaded: true, role: 'user', is_admin: false };
+  const calls = [];
+  app.api = async (_, url) => { calls.push(url); return url === '/api/account' ? { is_guest: false } : {}; };
+  await app.loadAccount();
+  assert.equal(calls.includes('/api/account/imports'), false);
+  assert.ok(calls.includes('/api/account/profile'));
+  assert.deepEqual(Array.from(app.account.imports), []);
+});
+
+test('variant cancellation and server errors keep the original recipe unchanged', async () => {
+  for (const status of [403, 409]) {
+    const app = createApp({ prompt: () => 'Variante' });
+    app.session = { loaded: true, role: 'user', is_admin: false };
+    const original = { id: 7, name: 'Original', can_edit: false };
+    app.api = async method => { if (method === 'POST') throw Object.assign(new Error(`Serverfehler ${status}`), { status }); return original; };
+    let message = '';
+    app.showToast = value => { message = value; };
+    await app.openRecipe(7); await app.createOwnRecipeVariant();
+    assert.match(message, new RegExp(String(status)));
+    assert.equal(app.recipeDetail.data, original);
+    assert.equal(app.recipeDetail.duplicating, false);
+  }
+  const cancelled = createApp({ prompt: () => null });
+  cancelled.session = { loaded: true, role: 'user' };
+  cancelled.recipeDetail.data = { id: 7 };
+  cancelled.api = () => assert.fail('Cancelled variant must not request');
+  await cancelled.createOwnRecipeVariant();
 });

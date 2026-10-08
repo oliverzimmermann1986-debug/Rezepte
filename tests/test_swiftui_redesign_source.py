@@ -388,7 +388,8 @@ def test_swiftui_guest_login_is_read_only_across_navigation_and_recipe_actions()
     assert '"/api/auth/guest"' in api
     assert "@Published private(set) var readOnly" in session
     assert "case .signedIn = state, !readOnly" in session
-    assert tabs.count("if !session.readOnly") >= 2
+    assert "if session.fullAccess {\n                InboxView()" in tabs
+    assert "if !session.readOnly {\n                MealPlanView()" in tabs
     assert "Gastzugang · Rezept nur ansehen" in detail
     assert detail.count("if !session.readOnly") >= 4
     assert 'Section("Gastzugang")' in settings

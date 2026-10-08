@@ -8,11 +8,13 @@
 
     // ------------- Jobs -------------
     async runScraper() {
+      if (!this.canUseAdminTools()) return;
       await this.api('POST', '/api/jobs/scraper/run');
       this.showToast('Scraper gestartet');
       this.refreshStatus();
     },
     async cancelScraper() {
+      if (!this.canUseAdminTools()) return;
       if (!confirm('Scraper abbrechen? Die gerade laufende URL wird noch fertig verarbeitet, danach wird gestoppt.')) return;
       try {
         await this.api('POST', '/api/jobs/scraper/cancel', {});
@@ -24,6 +26,7 @@
       this.jobs = await this.api('GET', '/api/jobs/list?limit=50');
     },
     async cleanupFailedJobs() {
+      if (!this.canUseAdminTools()) return;
       const n = this.jobs.filter(j => j.status === 'error').length;
       if (!confirm(`${n} Failed-Jobs aus der Liste entfernen?\n\nDas löscht nur die Log-Einträge - History und Pending bleiben unverändert.`)) return;
       try {
@@ -55,6 +58,7 @@
     },
 
     async importUrl() {
+      if (!this.canUseAdminTools()) return;
       const url = (this.manualImportUrl || '').trim();
       if (!url || this.manualImporting) return;
       this.manualImporting = true;
@@ -117,6 +121,7 @@
       this.selectedPending = this.pending.map(p => p.url);
     },
     async bulkSkipPending() {
+      if (!this.canUseAdminTools()) return;
       const n = this.selectedPending.length;
       if (n === 0) return;
       if (!confirm(`${n} Pending-Items wirklich überspringen? Sie landen als '(skipped)' in der History.`)) return;
@@ -153,6 +158,7 @@
       return 'age-stale';   // > 25 Tage: bald auto-skipped (30-Tage-Limit)
     },
     async resolveItem(item, action) {
+      if (!this.canUseAdminTools()) return;
       const payload = {
         url: item.url,
         visibility: item.visibility || 'global',
@@ -185,6 +191,7 @@
       this.history = await this.api('GET', '/api/history?limit=300');
     },
     async reanalyzeHistoryOne(item, fromJunk = false) {
+      if (!this.canUseAdminTools()) return;
       this.reanalyzingHistoryUrl = item.url;
       try {
         const r = await this.api('POST', '/api/history/reanalyze',
@@ -217,6 +224,7 @@
       }
     },
     async reanalyzeHistoryAll(dry_run) {
+      if (!this.canUseAdminTools()) return;
       const moveHint = this.historyAutoMove
         ? '\n\n⚠️ Auto-Move ist aktiv - Files werden in neue Ordner verschoben!'
         : '\n\nNur DB wird aktualisiert, Files bleiben wo sie sind.';
@@ -255,6 +263,7 @@
       }
     },
     async reanalyzeJunkOnly() {
+      if (!this.canUseAdminTools()) return;
       if (!this.junkItems || !this.junkItems.items || this.junkItems.items.length === 0) return;
       const n = this.junkItems.items.length;
       const moveHint = this.historyAutoMove
@@ -284,6 +293,7 @@
       await this.loadJunkItems();
     },
     async cleanupAllJunk() {
+      if (!this.canUseAdminTools()) return;
       // One-Click: Junk finden + sofort aufräumen mit der aktuellen Auto-Move-Einstellung.
       const moveWarn = this.historyAutoMove
         ? '\n\n⚠️ Auto-Move ist AN - Files werden physisch in andere Ordner verschoben.'
@@ -374,6 +384,7 @@
       }
     },
     async scanPendingPhoto(item, event) {
+      if (!this.canUseAdminTools()) return;
       const input = event && event.target;
       const file = input && input.files && input.files[0];
       if (input) input.value = '';
@@ -415,6 +426,7 @@
       }
     },
     async reanalyzeOne(item) {
+      if (!this.canUseAdminTools()) return;
       this.reanalyzing[item.url] = true;
       try {
         const r = await this.api('POST', '/api/pending/reanalyze', { url: item.url, visibility: 'global' });
@@ -444,6 +456,7 @@
       }
     },
     async retryFailed(url) {
+      if (!this.canUseAdminTools()) return;
       this.retryingUrl = url;
       try {
         const r = await this.api('POST', '/api/pending/failed/'
@@ -461,6 +474,7 @@
       }
     },
     async clearAllFailed() {
+      if (!this.canUseAdminTools()) return;
       const n = this.failedDownloads.length;
       if (!confirm('Alle ' + n + ' Failure-Counter zurücksetzen? Die URLs werden beim nächsten Mail-Sync nochmal versucht (sofern noch in einer Mail vorhanden).')) return;
       try {
@@ -473,6 +487,7 @@
     },
 
     async reanalyzeAll() {
+      if (!this.canUseAdminTools()) return;
       if (!confirm('Alle ' + this.pending.length + ' Pending-Items neu analysieren? Das läuft im Hintergrund als Job.')) return;
       try {
         const r = await this.api('POST', '/api/pending/reanalyze-all', {});
@@ -483,6 +498,7 @@
       } catch(e) {}
     },
     openEditItem(item) {
+      if (!this.canUseAdminTools()) return;
       this.editingItem = {
         url: item.url,
         original: item,
@@ -505,6 +521,7 @@
     },
     cancelEdit() { this.editingItem = null; },
     async saveEditItem() {
+      if (!this.canUseAdminTools()) return;
       const e = this.editingItem;
       if (!e.name.trim()) { this.showToast('Name fehlt', 'error'); return; }
       const payload = {
@@ -525,6 +542,7 @@
       } catch (e) { /* api zeigt schon Fehler */ }
     },
     async deleteItem(item) {
+      if (!this.canUseAdminTools()) return;
       if (!confirm('Wirklich löschen? Datei + Ordner werden entfernt.')) return;
       try {
         const r = await this.api('POST', '/api/history/delete', { url: item.url });

@@ -410,7 +410,7 @@ def test_pending_pdf_preview_remains_available(client, test_db, tmp_path, monkey
     assert response.content == source.read_bytes()
 
 
-def test_pending_routes_separate_submission_from_admin_management(client):
+def test_pending_routes_require_admin_for_work_but_keep_household_status_reads(client):
     from app.auth import require_admin, require_auth
     from app.routes import api_pending
 
@@ -420,24 +420,16 @@ def test_pending_routes_separate_submission_from_admin_management(client):
         for method in getattr(route, "methods", set())
         if route.path.startswith("/api/pending")
     }
-    for path in ("/api/pending/import-url", "/api/pending/import-file"):
-        calls = {
-            dependency.call
-            for dependency in routes[(path, "POST")].dependant.dependencies
-        }
-        assert require_auth in calls
-        assert require_admin not in calls
-
-    submission_paths = {"/api/pending/import-url", "/api/pending/import-file", "/api/pending", "/api/pending/file", "/api/pending/scan-photo", "/api/pending/reanalyze"}
-    for (path, _method), route in routes.items():
-        if path in submission_paths:
-            continue
+    for (path, method), route in routes.items():
         calls = {
             dependency.call
             for dependency in route.dependant.dependencies
         }
         assert require_auth in calls
-        assert require_admin in calls
+        if method == "GET" and path in {"/api/pending", "/api/pending/file"}:
+            assert require_admin not in calls
+        else:
+            assert require_admin in calls
 
 
 def test_pending_video_route_is_absent(client):

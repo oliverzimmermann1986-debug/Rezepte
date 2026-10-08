@@ -2864,9 +2864,14 @@ class Database:
             ).fetchone()
         return dict(accepted)
 
-    def recipe_get_by_folder(self, folder_path: str) -> Optional[Dict[str, Any]]:
+    def recipe_get_by_folder(self, folder_path: str, *, include_pending: bool = True) -> Optional[Dict[str, Any]]:
         with self.conn() as c:
-            row = c.execute("SELECT * FROM recipes WHERE folder_path=?", (folder_path,)).fetchone()
+            sql = "SELECT * FROM recipes WHERE folder_path=?"
+            params = [folder_path]
+            if not include_pending:
+                sql += " AND COALESCE(ingredients_status,'')<>?"
+                params.append(RECIPE_VARIANT_PENDING_STATUS)
+            row = c.execute(sql, params).fetchone()
             return dict(row) if row else None
 
     def recipe_clone_content(

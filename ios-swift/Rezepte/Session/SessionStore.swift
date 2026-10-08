@@ -29,14 +29,21 @@ final class SessionStore: ObservableObject {
     private let defaults: UserDefaults
     private let persistence: LocalSessionPersistence
     private let webAuthentication: any NativeAuthenticating
+    private let sharedImportURLs: () -> [String]
+    private let removeSharedImport: (String) -> Void
+    private var isDrainingSharedImports = false
     private let serverKey = "server-url"
 
     init(api: APIClient = APIClient(), defaults: UserDefaults = .standard,
-         persistence: LocalSessionPersistence? = nil, webAuthentication: (any NativeAuthenticating)? = nil) {
+         persistence: LocalSessionPersistence? = nil, webAuthentication: (any NativeAuthenticating)? = nil,
+         sharedImportURLs: @escaping () -> [String] = SharedImportQueue.all,
+         removeSharedImport: @escaping (String) -> Void = SharedImportQueue.remove) {
         self.api = api
         self.defaults = defaults
         self.persistence = persistence ?? LocalSessionPersistence(defaults: defaults)
         self.webAuthentication = webAuthentication ?? NativeWebAuthentication()
+        self.sharedImportURLs = sharedImportURLs
+        self.removeSharedImport = removeSharedImport
     }
 
     var savedServer: String {
@@ -62,7 +69,7 @@ final class SessionStore: ObservableObject {
             apply(session)
             await refreshSystemInfo()
             guard identity == expectedIdentity else { return }
-            if !readOnly { await drainSharedImports() }
+            await drainSharedImports()
         } catch {
             if identity == expectedIdentity { signOut() }
         }
@@ -117,8 +124,8 @@ final class SessionStore: ObservableObject {
     func signOut() {
         webAuthentication.cancel()
         let previousIdentity = identity
-        if !readOnly, !username.isEmpty {
-            for url in SharedImportQueue.all() { SharedImportQueue.remove(url) }
+        if fullAccess, !username.isEmpty {
+            for url in sharedImportURLs() { removeSharedImport(url) }
         }
         identity = UUID()
         URLCache.shared.removeAllCachedResponses()
@@ -269,7 +276,7 @@ final class SessionStore: ObservableObject {
         apply(activeSession)
         await refreshSystemInfo()
         guard identity == expectedIdentity else { throw APIError.sessionChanged }
-        if !readOnly { await drainSharedImports() }
+        await drainSharedImports()
     }
 
     private func apply(_ session: SessionResponse) {
@@ -321,18 +328,24 @@ final class SessionStore: ObservableObject {
     }
 
     func drainSharedImports() async {
-        guard case .signedIn = state, !readOnly else { return }
+        guard case .signedIn = state, !isDrainingSharedImports else { return }
         let expectedIdentity = identity
-        let queued = SharedImportQueue.all()
+        let queued = sharedImportURLs()
         guard !queued.isEmpty else { return }
+        guard fullAccess else {
+            alertMessage = "Geteilte Rezeptlinks können nur Administratoren importieren. Deine Links bleiben auf diesem Gerät gespeichert und wurden nicht verarbeitet."
+            return
+        }
+        isDrainingSharedImports = true
+        defer { isDrainingSharedImports = false }
         var imported = 0
         var linked = 0
         for url in queued {
-            guard identity == expectedIdentity, !readOnly else { return }
+            guard identity == expectedIdentity, fullAccess else { return }
             do {
                 let result = try await api.importURL(url)
-                guard identity == expectedIdentity else { return }
-                SharedImportQueue.remove(url)
+                guard identity == expectedIdentity, fullAccess else { return }
+                removeSharedImport(url)
                 imported += 1
                 if result.status == "linked_global" { linked += 1 }
             } catch {

@@ -579,8 +579,9 @@ def _safe_next(value: str) -> str:
 def _provider_login_links(invitation: str = "") -> str:
     from .oidc import available_providers
     suffix = "?invitation_token=" + quote(invitation, safe="") if invitation else ""
-    return "".join('<a class="btn btn-secondary" href="/auth/' + item["id"] + '/start' + suffix +
-                   '">Mit ' + item["name"] + ' anmelden</a>' for item in available_providers() if item["enabled"])
+    links = "".join('<a class="btn btn-secondary" href="/auth/' + item["id"] + '/start' + suffix +
+                    '">Mit ' + item["name"] + ' fortfahren</a>' for item in available_providers() if item["enabled"])
+    return links + '<p>Beim ersten Anmelden wird dein Konto erstellt.</p>' if links else ""
 
 
 def _login_html(*, error: str, next: str):

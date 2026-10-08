@@ -84,7 +84,7 @@ const emptyRecurringForm = (): RecurringForm => ({
 });
 
 export default function CartScreen() {
-  const { isGuest } = useAuth();
+  const { isGuest, isAdmin } = useAuth();
   const { width, fontScale } = useWindowDimensions();
   const [tab, setTab] = useState<'list' | 'recurring'>('list');
   const [items, setItems] = useState<CartItem[]>([]);
@@ -434,11 +434,11 @@ export default function CartScreen() {
               ))}
             </View>
           )}
-          {!!items.length && (
+          {isAdmin && !!items.length && (
             <Pressable
               accessibilityRole="button"
-              onPress={() => setShowAiOptimizer(true)}
-              disabled={isGuest}
+              onPress={() => { if (isAdmin) setShowAiOptimizer(true); }}
+              disabled={!isAdmin}
               style={({ pressed }) => [styles.aiButton, pressed && styles.pressed]}>
               <Text style={styles.aiButtonLabel}>Einkaufsliste mit KI optimieren</Text>
               <Text style={styles.aiButtonArrow}>›</Text>
@@ -565,7 +565,7 @@ export default function CartScreen() {
         )}
       </Modal>
       <ShoppingAiOptimizer
-        visible={showAiOptimizer}
+        visible={isAdmin && showAiOptimizer}
         onClose={() => setShowAiOptimizer(false)}
         onApplied={() => loadCart()}
       />

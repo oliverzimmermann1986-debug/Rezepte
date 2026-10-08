@@ -132,6 +132,32 @@ def test_native_login_single_use_pkce_and_no_email_autolinking(provider_api):
     assert state["token_calls"][0]["code_verifier"] != verifier
 
 
+def test_new_google_account_can_edit_own_recipes_but_cannot_start_ai_or_imports(provider_api):
+    from tests.test_ai_operation_permissions import assert_provider_user_can_edit_but_cannot_start_jobs
+
+    client, db, _ = provider_api
+    flow, verifier = start(provider_api)
+    response = complete(provider_api, flow, verifier)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    client.headers["Authorization"] = "Bearer " + result["token"]
+    assert_provider_user_can_edit_but_cannot_start_jobs(client, db, result["username"])
+
+
+def test_google_link_preserves_existing_administrator_role(provider_api):
+    client, db, _ = provider_api
+    user = db.user_get_by_name("alice")
+    db.user_set_role(user["id"], "admin")
+    login_local(provider_api)
+    flow, verifier = start(provider_api, intent="link", password="alice-password")
+    response = complete(provider_api, flow, verifier)
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == user["id"] and response.json()["role"] == "admin"
+    assert db.user_get_by_name("alice")["role"] == "admin"
+    client.headers["Authorization"] = "Bearer " + response.json()["token"]
+    assert client.get("/api/users").status_code == 200
+
+
 @pytest.mark.parametrize("claims", [
     {"iss": "https://attacker.test"}, {"aud": "other-client"}, {"nonce": "wrong"},
     {"azp": "other-client"}, {"exp": 1}, {"iat": int(time.time()) + 3600}, {"sub": ""},

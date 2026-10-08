@@ -263,7 +263,7 @@ def _assert_upload_capacity(payload_size: int) -> None:
         )
 
 
-@router.post("/import-url")
+@router.post("/import-url", dependencies=[Depends(require_admin)])
 def import_url(body: ImportUrlBody, request: Request) -> Dict[str, Any]:
     """Nimmt eine Rezept-Webquelle sofort an und analysiert sie im Hintergrund.
 
@@ -359,7 +359,7 @@ def import_url(body: ImportUrlBody, request: Request) -> Dict[str, Any]:
     }
 
 
-@router.post("/import-file")
+@router.post("/import-file", dependencies=[Depends(require_admin)])
 async def import_file(
     request: Request,
     file: UploadFile = File(...),
@@ -501,7 +501,7 @@ async def import_file(
     return result
 
 
-@router.post("/scan-photo")
+@router.post("/scan-photo", dependencies=[Depends(require_admin)])
 async def scan_pending_photo(
     request: Request,
     url: str = Query(..., min_length=1),
@@ -669,7 +669,7 @@ class ResolveBody(BaseModel):
     verified: bool = False
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_admin)])
 def resolve(body: ResolveBody):
     if body.action not in ("save", "skip"):
         raise HTTPException(400, "action muss 'save' oder 'skip' sein")
@@ -706,7 +706,7 @@ class FailedActionRequest(BaseModel):
     url: str
 
 
-@router.post("/reanalyze")
+@router.post("/reanalyze", dependencies=[Depends(require_admin)])
 def reanalyze(body: ReanalyzeRequest):
     """Lässt ein Pending-Item neu durch die KI-Cascade laufen."""
     db, _entry, job = _pending_import(body.url, body.visibility)

@@ -153,6 +153,7 @@
 
     // Endgültig fehlgeschlagene Downloads: Retry (Zähler reset) / Verwerfen (History-Sperre)
     async retryFailedDownload(url) {
+      if (!this.canUseAdminTools()) return;
       const r = await this.api('POST', `/api/pending/failed/${encodeURIComponent(url)}/retry`);
       if (r?.ok) {
         this.showToast('Zähler zurückgesetzt — nächster Lauf versucht es neu');
@@ -191,6 +192,7 @@
 
     // KI-Sanity startet Background-Job, dann pollen wir den Status alle 2s
     async startAiSanity() {
+      if (!this.canUseAdminTools()) return;
       if (this.audit.aiSanity.running) return;
       const r = await this.api('POST', '/api/audit/ai-sanity');
       if (!r || !r.ok) return;
@@ -228,6 +230,7 @@
     // Bulk: aktive leere Rezepte mit gespeichertem Text auf pending setzen.
     // Worker pickt ok/error/skipped auf und versucht den KI-Extract erneut.
     async recoverEmpty() {
+      if (!this.canUseAdminTools()) return;
       const n = this.audit.summary?.empty_recipe_count || 0;
       if (!confirm(`${n} Rezepte auf 'pending' zurücksetzen?\n\nDer Worker extrahiert sie dann neu mit dem aktuellen Prompt. Bestehende Zutaten/Schritte würden überschrieben (sind ja eh leer).`)) return;
       const r = await this.api('POST', '/api/recipes/recover-empty');
@@ -241,6 +244,7 @@
     // sequenziell durch denselben Quellenabruf wie im Rezept-Modal schicken.
     // reanalyze=true plant die Extraktion auch bei unveränderter Caption neu ein.
     async rescrapeBulkRecipeIds(ids, label) {
+      if (!this.canUseAdminTools()) return;
       if (this.audit.rescrapingBulk) {
         this.audit.rescrapingBulk = false;
         return;
@@ -295,11 +299,13 @@
     // UI ist blockiert für ~30s, danach Audit neu laden. Bei mehr als 50
     // pending Rezepten muss User wiederholt klicken (siehe Audit-Liste).
     async rescrapeBulkMissingIngredients() {
+      if (!this.canUseAdminTools()) return;
       const ids = this.audit.data?.empty_rescrape_ids || [];
       return this.rescrapeBulkRecipeIds(ids, 'ohne Zutaten');
     },
 
     async rescrapeBulkMissingSteps() {
+      if (!this.canUseAdminTools()) return;
       const ids = (this.audit.data?.data_gaps?.no_steps || [])
         .filter(r => String(r.url || '').trim())
         .map(r => r.id);
@@ -307,6 +313,7 @@
     },
 
     async bulkComputeNutrition() {
+      if (!this.canUseAdminTools()) return;
       const total = this.audit.data?.data_gaps?.no_nutrition?.length || 0;
       if (total === 0) return;
       const batch = Math.min(total, 50);
@@ -426,6 +433,7 @@
       }
     },
     async rescrapeRecipe(recipeId) {
+      if (!this.canUseAdminTools()) return;
       this.audit.rescrapingId = recipeId;
       try {
         const r = await this.api('POST', `/api/recipes/${recipeId}/rescrape`);
@@ -482,6 +490,7 @@
     // Frame aus lokalem Video extrahieren via ffmpeg (Alternative zu rescrape
     // wenn URL tot ist aber Video noch vorhanden).
     async extractFrame(recipeId, seconds = 2.0) {
+      if (!this.canUseAdminTools()) return;
       this.audit.extractingId = recipeId;
       try {
         const r = await this.api('POST',
@@ -501,6 +510,7 @@
     // Lokal, ~1s pro Rezept → bei 100 Rezepten ca. 2 Min. Cancel-Knopf
     // (state-flip extractingBulk) bricht laufende Schleife sauber ab.
     async bulkExtractFrames() {
+      if (!this.canUseAdminTools()) return;
       const list = (this.audit.data?.data_gaps?.no_image || []);
       if (list.length === 0) return;
       const eta = Math.ceil(list.length * 1.5 / 60);
@@ -569,6 +579,7 @@
     // Sequentiell (nicht parallel) damit yt-dlp nicht rate-limited wird.
     // Cancel via state-flip rescrapingBulk = false (z.B. erneuter Button-Klick).
     async rescrapeBulkNoImage() {
+      if (!this.canUseAdminTools()) return;
       const list = (this.audit.data?.data_gaps?.no_image || []);
       if (list.length === 0) return;
       const eta_sec = list.length * 15;
@@ -645,6 +656,7 @@
     //   folder_mismatch   → nur Folder umbenennen, recipe.name bleibt
     // FS-Move ist irreversibel, daher confirm() mit klarer Vorschau.
     async applyFinding(f) {
+      if (!this.canUseAdminTools()) return;
       const desc = {
         category_mismatch: `Folder verschieben:\n„${f.current_value}" → „${f.suggested_value}"`,
         name_mismatch:     `Rezept umbenennen + Folder umbenennen + info.json updaten:\n„${f.current_value}" → „${f.suggested_value}"`,
@@ -662,6 +674,7 @@
     // Bei Fehler (z.B. Ziel-Folder kollidiert) wird trotzdem weitergemacht,
     // Toast zeigt am Ende 'X erfolgreich / Y Fehler'. Details in Console.
     async applyAllFindings(findingType) {
+      if (!this.canUseAdminTools()) return;
       const counts = {
         category_mismatch: this.audit.data?.ai_category_findings?.length || 0,
         name_mismatch: this.audit.data?.ai_name_findings?.length || 0,

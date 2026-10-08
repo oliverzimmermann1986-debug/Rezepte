@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -37,6 +37,8 @@ export default function AdminScreen() {
   const router = useRouter();
   const { importRefresh } = useLocalSearchParams<{ importRefresh?: string }>();
   const { username, serverUrl, sessionWarning, isAdmin, signOut } = useAuth();
+  const adminAllowed = useRef(isAdmin);
+  adminAllowed.current = isAdmin;
   const [overview, setOverview] = useState<Overview | null>(null);
   const [pending, setPending] = useState<PendingItem[]>([]);
   const [failed, setFailed] = useState<FailedDownload[]>([]);
@@ -53,6 +55,7 @@ export default function AdminScreen() {
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
+    if (!adminAllowed.current) return;
     setLoading(true);
     setError('');
     try {
@@ -93,6 +96,7 @@ export default function AdminScreen() {
   }
 
   async function importUrl() {
+    if (!adminAllowed.current) return;
     const source = url.trim();
     if (!source) return;
     setBusy(true);
@@ -116,6 +120,7 @@ export default function AdminScreen() {
   }
 
   async function runImporter() {
+    if (!adminAllowed.current) return;
     setBusy(true);
     try {
       await api('/api/jobs/scraper/run', { method: 'POST' });
@@ -131,6 +136,7 @@ export default function AdminScreen() {
     file: { uri: string; name: string; mimeType: string },
     clientRequestId = createClientRequestId(),
   ) {
+    if (!adminAllowed.current) return;
     setBusy(true);
     try {
       const result = await uploadFile<{ ok: boolean; status?: string; message?: string }>(
@@ -167,6 +173,7 @@ export default function AdminScreen() {
   }
 
   async function pickImage() {
+    if (!adminAllowed.current) return;
     try {
       const image = await pickEditedJpeg('rezept-import');
       if (image) await uploadSelected(image);
@@ -176,6 +183,7 @@ export default function AdminScreen() {
   }
 
   async function pickPdf() {
+    if (!adminAllowed.current) return;
     const result = await DocumentPicker.getDocumentAsync({
       type: 'application/pdf',
       copyToCacheDirectory: true,
@@ -187,6 +195,7 @@ export default function AdminScreen() {
   }
 
   async function failedAction(item: FailedDownload, action: 'retry' | 'discard') {
+    if (!adminAllowed.current) return;
     setBusy(true);
     try {
       await api(`/api/pending/failed/${action}`, {

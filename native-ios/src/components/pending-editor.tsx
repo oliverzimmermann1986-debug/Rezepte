@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -18,6 +18,7 @@ import * as Sharing from 'expo-sharing';
 
 import { PrimaryButton, sharedStyles } from '@/components/ui';
 import { UnitPicker } from '@/components/unit-picker';
+import { useAuth } from '@/lib/auth-context';
 import { colors, radii, space } from '@/constants/design';
 import {
   absoluteApiUrl,
@@ -59,6 +60,9 @@ type ReanalyzeResult = {
 };
 
 export function PendingEditor({ item, onClose, onSaved }: Props) {
+  const { isAdmin } = useAuth();
+  const adminAllowed = useRef(isAdmin);
+  adminAllowed.current = isAdmin;
   const { width, fontScale } = useWindowDimensions();
   const [name, setName] = useState('');
   const [recipeType, setRecipeType] = useState('Hauptgericht');
@@ -131,6 +135,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   async function save() {
+    if (!adminAllowed.current) return;
     if (!item) return;
     setBusy(true);
     setError('');
@@ -174,6 +179,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   async function reanalyze() {
+    if (!adminAllowed.current) return;
     if (!item || busy) return;
     setBusy(true);
     setAiBusy(true);
@@ -200,11 +206,12 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   async function scanPhoto() {
+    if (!adminAllowed.current) return;
     if (!item || busy) return;
     let picked: Awaited<ReturnType<typeof pickEditedJpeg>> = null;
     try {
       picked = await pickEditedJpeg('pending-rezept');
-      if (!picked) return;
+      if (!picked || !adminAllowed.current) return;
       setBusy(true);
       setPhotoBusy(true);
       setError('');
@@ -225,6 +232,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   function requestDiscard() {
+    if (!adminAllowed.current) return;
     if (!item || busy) return;
     Alert.alert(
       'Import wirklich verwerfen?',
@@ -237,6 +245,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   async function discard() {
+    if (!adminAllowed.current) return;
     if (!item) return;
     setBusy(true);
     setError('');
@@ -279,6 +288,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   async function openLocalFile() {
+    if (!adminAllowed.current) return;
     if (!hasLocalFile || !localFilePath) return;
     const downloadEpoch = currentApiSessionEpoch();
     let localUri = '';
@@ -307,6 +317,8 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
       setBusy(false);
     }
   }
+
+  if (!isAdmin) return null;
 
   return (
     <Modal visible={item !== null} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>

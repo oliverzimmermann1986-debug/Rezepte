@@ -1,5 +1,5 @@
 import { SymbolView } from 'expo-symbols';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -14,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrimaryButton, StateView, sharedStyles } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
+import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { invalidateApiCacheByPrefix } from '@/lib/cache';
 
@@ -60,6 +61,9 @@ export function AdminAiSort({
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const { isAdmin } = useAuth();
+  const adminAllowed = useRef(isAdmin);
+  adminAllowed.current = isAdmin;
   const [snapshot, setSnapshot] = useState<AiSortSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -68,7 +72,7 @@ export function AdminAiSort({
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || !isAdmin) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
@@ -100,13 +104,14 @@ export function AdminAiSort({
       controller.abort();
       if (timer) clearTimeout(timer);
     };
-  }, [reloadKey, visible]);
+  }, [isAdmin, reloadKey, visible]);
 
   const groupedCounts = useMemo(() => (
     snapshot?.counts || { category_mismatch: 0, name_mismatch: 0, folder_mismatch: 0 }
   ), [snapshot]);
 
   function requestStart() {
+    if (!adminAllowed.current) return;
     const count = snapshot?.eligible_recipes || 0;
     Alert.alert(
       'Speisekarte mit KI prüfen?',
@@ -119,6 +124,7 @@ export function AdminAiSort({
   }
 
   async function startSort() {
+    if (!adminAllowed.current) return;
     setStarting(true);
     setError('');
     try {
@@ -138,6 +144,7 @@ export function AdminAiSort({
   }
 
   function requestApply(finding: AiFinding) {
+    if (!adminAllowed.current) return;
     const moveWarning = finding.finding_type === 'category_mismatch'
       ? '\n\nDas Rezept wird dabei in die neue Kategorie verschoben.'
       : finding.finding_type === 'folder_mismatch'
@@ -154,6 +161,7 @@ export function AdminAiSort({
   }
 
   async function applyFinding(finding: AiFinding) {
+    if (!adminAllowed.current) return;
     setBusyId(finding.id);
     setError('');
     try {
@@ -169,6 +177,7 @@ export function AdminAiSort({
   }
 
   async function ignoreFinding(finding: AiFinding) {
+    if (!adminAllowed.current) return;
     setBusyId(finding.id);
     setError('');
     try {
@@ -185,6 +194,8 @@ export function AdminAiSort({
   const close = () => {
     if (busyId === null && !starting) onClose();
   };
+
+  if (!isAdmin) return null;
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>

@@ -35,11 +35,13 @@ def test_account_and_server_limits_precede_pending_and_queue_writes(households, 
     client, db, _, login = households
     queued = []
     monkeypatch.setattr(api_pending, "enqueue", lambda *a, **k: queued.append(a) or len(queued))
+    db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
     for index in range(2):
         assert client.post("/api/pending/import-url", json={"url": f"https://recipes.example/quota/{index}"}).status_code == 200
     account_denied = client.post("/api/pending/import-url", json={"url": "https://recipes.example/quota/denied"})
     assert account_denied.status_code == 429 and int(account_denied.headers["retry-after"]) > 0
+    db.user_set_role(db.user_get_by_name("bert")["id"], "admin")
     login("bert")
     assert client.post("/api/pending/import-url", json={"url": "https://recipes.example/bert/1"}).status_code == 200
     server_denied = client.post("/api/pending/import-url", json={"url": "https://recipes.example/bert/denied"})
@@ -55,6 +57,7 @@ def test_linking_an_existing_global_recipe_remains_free_after_budget_exhaustion(
     rid = _recipe(db, "FreeGlobal", "https://recipes.example/free-global")
     limits["import_daily_limit"] = 0
     monkeypatch.setattr(api_pending, "enqueue", lambda *a, **k: pytest.fail("No analysis needed"))
+    db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
     response = client.post("/api/pending/import-url", json={"url": "https://recipes.example/free-global"})
     assert response.status_code == 200 and response.json()["recipe_id"] == rid
@@ -66,6 +69,7 @@ def test_queued_url_replay_does_not_consume_another_slot(households, limits, mon
     client, db, _, login = households
     limits["import_daily_limit"] = 1
     monkeypatch.setattr(api_pending, "enqueue", db.background_task_enqueue)
+    db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
     responses = [client.post("/api/pending/import-url", json={"url": "https://recipes.example/replay"}) for _ in range(2)]
     assert [r.status_code for r in responses] == [200, 200]
@@ -110,6 +114,7 @@ def test_exhausted_budget_does_not_call_synchronous_analyzer(households, limits,
     monkeypatch.setattr(api_pending, "get_scraper_job", lambda: job)
     from app import tenancy
     monkeypatch.setattr(tenancy, "scoped_scraper", lambda *a, **k: job)
+    db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
     if kind == "reanalyze":
         response = client.post("/api/pending/reanalyze", json={"url": "https://recipes.example/photo"})
@@ -146,6 +151,7 @@ def test_exhausted_analysis_budget_also_blocks_private_image_generation(househol
     limits["import_daily_limit"] = 1
     with household_context(HouseholdScope(users["anna"][1])):
         import_budget.reserve_import(db)
+    db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
     response = client.post(f"/api/recipes/{rid}/generate-image", json={})
     assert response.status_code == 429, response.text
@@ -158,6 +164,7 @@ def test_active_image_replay_is_free_but_new_generation_is_limited(households, l
     rid = _recipe(db, "ImageReplay", "https://recipes.example/image-replay", owner=users["anna"][1])
     _configure_image_queue(monkeypatch, db)
     limits["import_daily_limit"] = 1
+    db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
     first = client.post(f"/api/recipes/{rid}/generate-image", json={})
     assert first.status_code == 202, first.text
@@ -178,6 +185,7 @@ def test_server_budget_counts_images_from_different_households(households, limit
     limits["import_server_daily_limit"] = 1
     for username, status in (("anna", 202), ("bert", 429)):
         rid = _recipe(db, username, f"https://recipes.example/{username}/image", owner=users[username][1])
+        db.user_set_role(users[username][0], "admin")
         login(username)
         response = client.post(f"/api/recipes/{rid}/generate-image", json={})
         assert response.status_code == status, response.text
@@ -189,6 +197,7 @@ def test_finishing_a_replayed_task_cannot_open_a_free_new_job(households, limits
     from app.jobs import task_queue
     _configure_image_queue(monkeypatch, db)
     limits["import_daily_limit"] = 1
+    db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
     first_task = []
 

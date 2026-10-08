@@ -338,6 +338,7 @@ struct AdminView: View {
     }
 
     private func importURL() async {
+        guard session.fullAccess else { return }
         let link = importLink.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: link),
               ["http", "https"].contains(url.scheme?.lowercased()) else {
@@ -358,6 +359,7 @@ struct AdminView: View {
     }
 
     private func runScraper() async {
+        guard session.fullAccess else { return }
         do {
             _ = try await session.api.runScraper()
             resultMessage = "Die Postfachprüfung wurde gestartet."
@@ -367,6 +369,7 @@ struct AdminView: View {
     }
 
     private func startImageBackfill() async {
+        guard session.fullAccess else { return }
         guard !isStartingImageBackfill else { return }
         isStartingImageBackfill = true
         resultMessage = nil
@@ -402,6 +405,8 @@ struct AdminView: View {
     }
 
     private func uploadPhoto(_ item: PhotosPickerItem) async {
+        guard session.fullAccess else { return }
+        let expectedIdentity = session.identity
         isUploading = true
         resultMessage = nil
         defer {
@@ -415,6 +420,7 @@ struct AdminView: View {
                 resultMessage = "Das Foto konnte nicht gelesen werden."
                 return
             }
+            guard session.fullAccess, session.identity == expectedIdentity else { return }
             let result = try await session.api.importFile(
                 data: data,
                 filename: "rezept-\(Int(Date().timeIntervalSince1970)).jpg",
@@ -428,6 +434,7 @@ struct AdminView: View {
     }
 
     private func uploadFile(_ url: URL) async {
+        guard session.fullAccess else { return }
         isUploading = true
         resultMessage = nil
         defer { isUploading = false }
@@ -449,6 +456,7 @@ struct AdminView: View {
     }
 
     private func retry(_ item: FailedDownload) async {
+        guard session.fullAccess else { return }
         do {
             _ = try await session.api.retryFailedDownload(url: item.url)
             resultMessage = "Der Download wird beim nächsten Lauf erneut versucht."

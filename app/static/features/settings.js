@@ -202,6 +202,7 @@
     },
 
     async runTest(key, endpoint, body = null) {
+      if (!this.canUseAdminTools()) return;
       this.testing[key] = true;
       this.testResults[key] = null;
       try {
@@ -227,6 +228,7 @@
       this.runTest('mail_' + account, '/api/test/mail', { account });
     },
     async testOpenAI() {
+      if (!this.canUseAdminTools()) return;
       // Defensiv: testing-state immer auf false zurücksetzen damit der Button
       // nicht 'stuck' bleibt nach einem alten Fehler
       this.testing.openai = false;
