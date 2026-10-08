@@ -137,19 +137,44 @@ def test_member_saves_and_unlinks_global_recipe_in_own_collection(web):
 
 
 @pytest.mark.parametrize("web", [1440, 390, 320], indirect=True)
-def test_member_private_link_import_shows_global_reuse(web):
+def test_admin_private_link_import_shows_global_reuse(web):
     page, fixture, width, errors = web
-    fixture.role = "user"
+    fixture.role = "admin"
+    page.route(ORIGIN + "/api/pending?*", lambda route: route.fulfill(json=[]))
+    page.route(ORIGIN + "/api/admin/import-center?*", lambda route: route.fulfill(json={}))
     open_library(page)
     page.get_by_role("button", name="Rezept hinzufügen", exact=True).filter(visible=True).click()
     page.locator("#household-import-url").fill(fixture.recipes[1]["url"])
-    expect(page.locator("#household-import-visibility")).to_be_hidden()
+    expect(page.locator("#household-import-visibility")).to_be_visible()
+    page.locator("#household-import-visibility").select_option("private")
     page.get_by_role("button", name="In Sammlung übernehmen", exact=True).click()
     expect(page.locator(".household-import [role='status']")).to_contain_text("Kein erneuter Download")
     assert fixture.request_bodies[-1][1]["visibility"] == "private"
     assert fixture.recipes[1]["in_library"] is True and len(fixture.recipes) == 3
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     capture(page, f"global-link-import-{width}")
+    assert errors == []
+
+
+@pytest.mark.parametrize("web", [1440, 390, 320], indirect=True)
+def test_member_has_no_import_actions_or_import_requests(web):
+    page, fixture, width, errors = web
+    fixture.role = "user"
+    open_library(page)
+    expect(page.get_by_role("button", name="Rezept hinzufügen", exact=True).filter(visible=True)).to_have_count(0)
+    expect(page.locator("form.household-import")).to_be_hidden()
+    expect(page.locator('.sidebar button[title="Administration"]')).to_be_hidden()
+    page.locator('.sidebar button[title="Mein Konto"]').click()
+    expect(page.locator(".account-page h1")).to_have_text("Mein Konto")
+    expect(page.get_by_role("heading", name="Private Importe prüfen", exact=True)).to_be_hidden()
+    expect(page.get_by_role("button", name="Rezept übernehmen", exact=True)).to_have_count(0)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    capture(page, f"member-no-import-{width}")
+    assert not any(path.startswith(("/api/pending", "/api/jobs", "/api/admin"))
+                   for _method, path, _query in fixture.requests)
+    assert all(method in ("GET", "HEAD", "OPTIONS")
+               for method, path, _query in fixture.requests if path.startswith("/api/"))
+    assert fixture.request_bodies == []
     assert errors == []
 
 
