@@ -4353,13 +4353,23 @@ class Database:
             return dict(row) if row else None
 
     def user_list(self) -> List[Dict[str, Any]]:
-        """Liste aller User für die Settings-UI. OHNE password_hash."""
+        """Alle Konten mit Anmeldewegen, ohne Zugangsdaten oder Providerdetails."""
         with self.conn() as c:
             rows = c.execute(
-                "SELECT id, username, role, disabled, created_at, last_login_at "
-                "FROM users ORDER BY username"
+                "SELECT u.id, u.username, u.role, u.disabled, u.created_at, u.last_login_at, "
+                "COALESCE(u.password_hash, '')<>'' AS has_password, "
+                "EXISTS(SELECT 1 FROM oidc_identities i WHERE i.user_id=u.id AND i.provider='apple') AS has_apple, "
+                "EXISTS(SELECT 1 FROM oidc_identities i WHERE i.user_id=u.id AND i.provider='google') AS has_google "
+                "FROM users u ORDER BY u.username"
             ).fetchall()
-            return [{**dict(r), "disabled": bool(r["disabled"])} for r in rows]
+            public_fields = ("id", "username", "role", "created_at", "last_login_at")
+            return [
+                {**{field: row[field] for field in public_fields},
+                 "disabled": bool(row["disabled"]),
+                 "auth_methods": [method for method in ("password", "apple", "google")
+                                  if row["has_" + method]]}
+                for row in rows
+            ]
 
     def session_create(self, user_id: int, session_id: str, *, lifetime: int,
                        client_label: str, auth_method: str, expected_identity: Optional[dict] = None,

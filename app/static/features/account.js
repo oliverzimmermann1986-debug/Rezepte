@@ -105,7 +105,18 @@
         } catch (error) { if (generation === this.users._loadGeneration) this.users.error = error.message; }
         finally { if (generation === this.users._loadGeneration) this.users.loading = false; }
       },
-      filteredUsers() { return this.users.items.filter(item => item.username.toLowerCase().includes(this.users.search.trim().toLowerCase())); },
+      userAuthMethods(item) {
+        const labels = { password: 'Passwort', apple: 'Apple', google: 'Google' };
+        return (Array.isArray(item.auth_methods) ? item.auth_methods : [])
+          .filter((method, index, methods) => Object.hasOwn(labels, method) && methods.indexOf(method) === index)
+          .map(method => labels[method]);
+      },
+      filteredUsers() {
+        const search = this.users.search.trim().toLowerCase();
+        return this.users.items.filter(item => [item.username, ...this.userAuthMethods(item)]
+          .some(value => value.toLowerCase().includes(search)));
+      },
+      resetUserSearch() { this.users.search = ''; },
       editUser(item = null) {
         if (!this.session.is_admin || this.users.busy) return;
         this.users.error = this.users.notice = '';

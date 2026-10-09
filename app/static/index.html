@@ -101,7 +101,7 @@
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
-        <span x-text="'v' + (systemInfo.version || '1.9.2')"></span>
+        <span x-text="'v' + (systemInfo.version || '1.9.3')"></span>
         <form method="post" action="/logout" class="logout-form">
           <button type="submit" class="sidebar-logout-button">Abmelden</button>
         </form>
@@ -550,7 +550,15 @@
       <p x-show="users.error" class="error" role="alert" x-text="users.error"></p>
       <p x-show="users.notice" role="status" x-text="users.notice"></p>
       <p x-show="users.loading" role="status">Benutzer werden geladen …</p>
-      <div class="account-form"><label>Benutzer suchen<input type="search" x-model="users.search" autocomplete="off"></label><button class="btn btn-secondary" @click="loadUsers()" :disabled="users.busy || users.loading">Aktualisieren</button></div>
+      <form class="account-form" role="search" autocomplete="off" @submit.prevent="loadUsers()">
+        <label for="user-directory-search">Benutzer suchen</label>
+        <input id="user-directory-search" name="user-directory-search" type="search" x-model="users.search" autocomplete="off" placeholder="Benutzername, Apple, Google oder Passwort">
+        <div class="account-user-actions">
+          <button class="btn btn-secondary" type="submit" :disabled="users.busy || users.loading">Aktualisieren</button>
+          <button class="btn btn-secondary" type="button" x-show="users.search" @click="resetUserSearch()">Suche zurücksetzen</button>
+        </div>
+      </form>
+      <p x-show="!users.loading && !users.error" role="status"><span x-text="filteredUsers().length + ' von ' + users.items.length + ' Benutzern'"></span><span x-show="users.search.trim()" x-text="' · Suche: ' + users.search.trim()"></span></p>
       <template x-if="users.draft">
         <form class="card account-form" @submit.prevent="saveUser()">
           <h2 x-text="users.draft.id ? 'Benutzer bearbeiten' : 'Benutzer erstellen'"></h2>
@@ -563,7 +571,7 @@
         </form>
       </template>
       <template x-for="item in filteredUsers()" :key="item.id">
-        <div class="card account-session"><div><h2 x-text="item.username + (item.username===session.username ? ' · Du' : '')"></h2><p x-text="(item.role==='admin' ? 'Administrator' : 'Benutzer') + (item.disabled ? ' · deaktiviert' : ' · aktiv')"></p><p class="muted" x-text="'Erstellt: ' + formatTs(item.created_at) + ' · letzte Anmeldung: ' + (item.last_login_at ? formatTs(item.last_login_at) : 'noch nie')"></p></div><div class="account-user-actions"><button class="btn btn-secondary" @click="editUser(item)" :disabled="users.busy">Bearbeiten</button><button class="btn btn-secondary" @click="revokeUserSessions(item)" :disabled="users.busy">Alle Sitzungen beenden</button><button class="btn btn-danger" @click="deleteUser(item)" :disabled="users.busy || item.username===session.username">Löschen</button></div></div>
+        <div class="card account-session"><div><h2 x-text="item.username + (item.username===session.username ? ' · Du' : '')"></h2><p x-text="(item.role==='admin' ? 'Administrator' : 'Benutzer') + (item.disabled ? ' · deaktiviert' : ' · aktiv')"></p><p x-show="userAuthMethods(item).length" x-text="'Anmeldung: ' + userAuthMethods(item).join(' · ')"></p><p class="muted" x-text="'Erstellt: ' + formatTs(item.created_at) + ' · letzte Anmeldung: ' + (item.last_login_at ? formatTs(item.last_login_at) : 'noch nie')"></p></div><div class="account-user-actions"><button class="btn btn-secondary" @click="editUser(item)" :disabled="users.busy">Bearbeiten</button><button class="btn btn-secondary" @click="revokeUserSessions(item)" :disabled="users.busy">Alle Sitzungen beenden</button><button class="btn btn-danger" @click="deleteUser(item)" :disabled="users.busy || item.username===session.username">Löschen</button></div></div>
       </template>
       <p x-show="!users.loading && !users.error && !filteredUsers().length">Keine passenden Benutzer.</p>
     </section>

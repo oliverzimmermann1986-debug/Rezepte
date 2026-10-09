@@ -626,6 +626,38 @@ test('a late account refresh cannot restore revoked invitations or old membershi
   assert.equal(app.account.loading, false);
 });
 
+test('user directory finds provider-only accounts and can clear an active filter', async () => {
+  const app = createApp();
+  app.session = { loaded: true, is_admin: true, username: 'admin' };
+  const users = [
+    { id: 1, username: 'admin', auth_methods: ['password'] },
+    { id: 2, username: 'relay_random', auth_methods: ['apple'] },
+    { id: 3, username: 'second_random', auth_methods: ['google', 'apple'] },
+  ];
+  app.api = async () => ({ users });
+  app.users.search = 'admin';
+  await app.loadUsers();
+  assert.deepEqual(Array.from(app.filteredUsers(), user => user.id), [1]);
+  assert.equal(app.users.items.length, 3);
+  app.resetUserSearch();
+  assert.deepEqual(Array.from(app.filteredUsers(), user => user.id), [1, 2, 3]);
+  app.users.search = '  APPLE  ';
+  assert.deepEqual(Array.from(app.filteredUsers(), user => user.id), [2, 3]);
+  app.users.search = 'Google';
+  assert.deepEqual(Array.from(app.filteredUsers(), user => user.id), [3]);
+  app.users.search = 'Passwort';
+  assert.deepEqual(Array.from(app.filteredUsers(), user => user.id), [1]);
+});
+
+test('user directory tolerates older payloads without claiming a password login', () => {
+  const app = createApp();
+  app.users.items = [{ id: 1, username: 'legacy' }];
+  app.users.search = 'legacy';
+  assert.equal(app.filteredUsers().length, 1);
+  assert.deepEqual(Array.from(app.userAuthMethods(app.users.items[0])), []);
+  assert.deepEqual(Array.from(app.userAuthMethods({ auth_methods: ['apple', 'apple', 'unexpected'] })), ['Apple']);
+});
+
 test('normal users cannot call administrative account mutations', async () => {
   const app = createApp({ confirm: () => true });
   app.session = { loaded: true, role: 'user', is_admin: false };

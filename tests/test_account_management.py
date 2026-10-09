@@ -38,6 +38,66 @@ def _headers(token):
     return {"Authorization": "Bearer " + token}
 
 
+@pytest.mark.parametrize("provider,email", [
+    ("apple", "private-relay@privaterelay.appleid.com"),
+    ("apple", None),
+    ("google", "provider-person@example.invalid"),
+])
+def test_admin_list_includes_real_passwordless_provider_accounts(account_api, provider, email):
+    from app import oidc
+
+    client, db, _, _ = account_api
+    subject = "synthetic-subject-not-for-admin-list"
+    secret = "synthetic-encrypted-grant-not-for-admin-list"
+    identity = oidc._bind_identity(db, provider, {"intent": "login", "invitation": ""},
+                                   {"sub": subject, "email": email}, secret)
+    account = db.user_get_by_name(identity["username"])
+    assert account["password_hash"] == ""
+    token = auth.create_session(identity["username"], auth_method=provider, expected_identity=identity)
+    assert client.get("/api/users", headers=_headers(token)).status_code == 403
+
+    admin = _headers(auth.create_session("admin"))
+    response = client.get("/api/users", headers=admin)
+    assert response.status_code == 200
+    by_id = {item["id"]: item for item in response.json()["users"]}
+    listed = by_id[identity["user_id"]]
+    assert listed["auth_methods"] == [provider]
+    assert listed["role"] == "user" and listed["disabled"] is False
+    assert set(listed) == {"id", "username", "role", "disabled", "created_at", "last_login_at", "auth_methods"}
+    assert subject not in response.text and secret not in response.text
+    if email:
+        assert email not in response.text
+    assert account["session_version"] == db.user_get_by_name(identity["username"])["session_version"]
+
+    assert client.patch(f"/api/users/{identity['user_id']}", json={"disabled": True}, headers=admin).status_code == 200
+    response = client.get("/api/users", headers=admin)
+    disabled = next(item for item in response.json()["users"] if item["id"] == identity["user_id"])
+    assert disabled["disabled"] is True and disabled["auth_methods"] == [provider]
+
+
+def test_admin_list_auth_methods_are_deterministic_unique_and_private(account_api, password_hash):
+    client, db, user_id, admin_id = account_api
+    # Insert in reverse display order to catch order derived from row insertion.
+    with db.conn() as connection:
+        for provider in ("google", "apple"):
+            connection.execute(
+                "INSERT INTO oidc_identities(user_id,provider,subject,email,token_secret,linked_at) VALUES(?,?,?,?,?,?)",
+                (user_id, provider, provider + "-private-subject", "private-contact@example.invalid",
+                 provider + "-private-grant", time.time()),
+            )
+    response = client.get("/api/users", headers=_headers(auth.create_session("admin")))
+    assert response.status_code == 200
+    items = response.json()["users"]
+    assert len({item["id"] for item in items}) == len(items) == 3
+    assert next(item for item in items if item["id"] == user_id)["auth_methods"] == ["password", "apple", "google"]
+    assert next(item for item in items if item["id"] == admin_id)["auth_methods"] == ["password"]
+    assert all(len(item["auth_methods"]) == len(set(item["auth_methods"])) for item in items)
+    for sensitive in ("password_hash", "subject", "email", "token_secret", password_hash,
+                      "private-contact@example.invalid", "apple-private-grant", "google-private-grant"):
+        assert sensitive not in response.text
+    assert client.get("/api/users").status_code == 403
+
+
 @pytest.mark.parametrize("endpoint", ["native", "web"])
 @pytest.mark.parametrize("admin_action", ["reset", "recreate", "disable", "role", "revoke", "delete"])
 @pytest.mark.parametrize("race_stage", ["verification", "session_insert"])
