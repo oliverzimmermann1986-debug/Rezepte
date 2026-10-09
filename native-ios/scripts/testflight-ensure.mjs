@@ -367,7 +367,7 @@ async function main() {
   }
 
   const external = assignExternalGroup
-    ? await ensureExternalDistribution({ request, build, appId, whatToTest: await readFile(new URL('./testflight-what-to-test-1.9.2.txt', import.meta.url), 'utf8') })
+    ? await ensureExternalDistribution({ request, build, appId, whatToTest: await readFile(new URL('./testflight-what-to-test-1.10.0.txt', import.meta.url), 'utf8') })
     : { externalGroupAssigned: false };
   console.log(
     JSON.stringify(

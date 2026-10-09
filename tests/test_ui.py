@@ -275,9 +275,13 @@ def test_logout_controls_work_without_javascript_on_desktop_and_mobile():
 
 
 def test_admin_ui_is_private_and_backend_has_explicit_roles():
+    import re
+    import pytest
+    from pydantic import ValidationError
+    from app.routes.api_users import UserCreate, UserUpdate
+
     js = read_web_scripts()
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    users_api = (ROOT / "app" / "routes" / "api_users.py").read_text(encoding="utf-8")
     assert "Privater Admin-Bereich" in html
     assert "Benutzerverwaltung" in html
     assert "loadUsers" in js
@@ -286,7 +290,17 @@ def test_admin_ui_is_private_and_backend_has_explicit_roles():
     assert "if (!this.session.is_admin || this.users.busy) return" in js
     assert 'x-model="config.web.password"' not in html
     assert 'x-model="config.web.username"' not in html
-    assert 'Literal["user", "admin"]' in users_api
+    selector = re.search(r'<select\b[^>]*x-model="users\.draft\.role"[^>]*>(.*?)</select>', html, re.S)
+    assert selector is not None
+    roles = dict(re.findall(r'<option value="([^"]+)">([^<]+)</option>', selector.group(1)))
+    assert roles == {"guest": "Gast", "user": "Benutzer", "full_user": "Vollbenutzer", "admin": "Admin"}
+    for role in roles:
+        assert UserCreate(username="synthetic-user", password="synthetic-password", role=role).role == role
+        assert UserUpdate(role=role).role == role
+    with pytest.raises(ValidationError):
+        UserCreate(username="synthetic-user", password="synthetic-password", role="owner")
+    with pytest.raises(ValidationError):
+        UserUpdate(role="owner")
 
 
 def test_refined_recipe_filters_and_shopping_list_match_mockup():

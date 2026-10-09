@@ -381,7 +381,8 @@ def test_private_file_upload_retries_are_scoped_to_household(households, monkeyp
     assert original.recipe_dir == root and original.temp_dir == temp and original.db is db
 
 
-def test_only_admin_can_approve_pending_and_household_isolation_is_preserved(households, monkeypatch):
+@pytest.mark.parametrize("import_role", ["full_user", "admin"])
+def test_import_roles_can_approve_only_own_pending_and_keep_household_isolation(households, monkeypatch, import_role):
     from app.routes import api_pending
     client, db, users, login = households
     own = HouseholdDatabase(db, HouseholdScope(users["anna"][1]))
@@ -402,24 +403,33 @@ def test_only_admin_can_approve_pending_and_household_isolation_is_preserved(hou
             return {"ok": True, "recipe_id": rid}
     monkeypatch.setattr(api_pending, "get_scraper_job", ImportJob)
     login("bert")
-    assert client.get("/api/pending").json() == []
-    assert client.get("/api/pending/file", params={"url": url}).status_code == 404
+    original_pending = db.pending_list()
+    assert client.get("/api/pending").status_code == 403
+    assert client.get("/api/pending/file", params={"url": url}).status_code == 403
     assert client.post("/api/pending", json={"url": url, "action": "save", "name": "Fremd"}).status_code == 403
     assert client.post("/api/pending/reanalyze", json={"url": url}).status_code == 403
-    db.user_set_role(users["bert"][0], "admin")
+    db.user_set_role(users["bert"][0], import_role)
     login("bert")
+    assert client.get("/api/pending").json() == []
+    assert client.get("/api/pending/file", params={"url": url}).status_code == 404
     assert client.post("/api/pending", json={"url": url, "action": "save", "name": "Fremd"}).status_code == 404
     assert client.post("/api/pending/reanalyze", json={"url": url}).status_code == 404
-    assert calls == []
+    assert calls == [] and db.pending_list() == original_pending
     login("anna")
+    assert client.get("/api/pending").status_code == 403
     assert client.post("/api/pending", json={"url": url, "action": "save", "name": "MeinRezept"}).status_code == 403
-    db.user_set_role(users["anna"][0], "admin")
+    db.user_set_role(users["anna"][0], import_role)
     login("anna")
+    session = client.get("/api/session").json()
+    assert session["can_import"] is True and session["is_admin"] is (import_role == "admin")
+    assert len(client.get("/api/pending").json()) == 1
     response = client.post("/api/pending", json={"url": url, "visibility": "private", "action": "save", "name": "MeinRezept"})
     assert response.status_code == 200, response.text
     rid = response.json()["recipe_id"]
     assert db.recipe_get(rid)["owner_account_id"] == users["anna"][1]
     assert db.recipe_count() == 1 and calls == [users["anna"][1]]
+    login("bert")
+    assert client.get(f"/api/recipes/{rid}").status_code == 404
     login("guest")
     assert client.get(f"/api/recipes/{rid}").status_code == 404
 

@@ -104,13 +104,18 @@ Importe werden ausdrücklich in der App gestartet. Die Hintergrundwarteschlange 
 ## Gastzugang und Konten
 
 - **Als Gast ansehen:** auf der Anmeldung in Web/PWA und iOS. Gäste können die
-  Rezeptbibliothek, Einkaufsliste und den Wochenplan lesen. Das Backend sperrt
-  sämtliche Schreibzugriffe; Verwaltungsdaten bleiben Administratoren vorbehalten.
+  öffentliche Rezeptbibliothek lesen. Das Backend sperrt Schreibzugriffe auf
+  Rezept- und Haushaltsdaten; Verwaltungsdaten bleiben Administratoren vorbehalten.
   Die signierte Gastsitzung gilt 24 Stunden und legt keinen Benutzer an.
 - **Konto erstellen:** eigene Anmeldung mit Benutzername und Passwort ab zehn
   Zeichen (höchstens 72 UTF-8-Bytes). Registrierte Personen erhalten die Rolle
   `user`; eine Registrierung kann keinen Administrator anlegen. Der Betreiber
   muss zuerst als aktiver Administrator eingerichtet sein.
+- **Vier Rollen:** Gast, Benutzer, Vollbenutzer und Admin. Vollbenutzer haben
+  zusätzlich zu den Benutzerrechten private Link-, Foto- und PDF-Importe für ihren
+  Haushalt. Globale Importe und Administration bleiben Admins vorbehalten.
+  Angemeldete Gastkonten können weiterhin ihre eigene Kontosicherheit verwalten.
+  [Alle Rollen und Anmeldewege](docs/account-management.md).
 - **Zweite Person einladen:** im Reiter **Konto**. Der Link gilt sieben Tage,
   funktioniert einmal und ist widerrufbar. Ein neuer Link widerruft die vorige
   offene Einladung. Beide Personen haben eigene Passwörter; Einladungen übertragen

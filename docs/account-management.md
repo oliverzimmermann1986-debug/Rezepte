@@ -31,7 +31,16 @@ erneuten Bestätigung verwendet werden. Dafür muss dasselbe Anbieterkonto gewä
 werden. Passwortänderung, Kontolöschung und Trennung verlangen ebenfalls diese
 erneute Bestätigung.
 
-## Rechte normaler Konten
+## Rollen und Rechte
+
+Administratoren vergeben unter **Benutzer** eine von vier Rollen:
+
+| Rolle | Rechte |
+| --- | --- |
+| Gast (`guest`) | Öffentliche Rezepte lesen; keine Haushaltsdaten bearbeiten. |
+| Benutzer (`user`) | Rezepte und private Varianten, Favoriten, Einkauf und Wochenplanung nutzen. |
+| Vollbenutzer (`full_user`) | Alle Benutzerrechte sowie private Link-, Foto- und PDF-Importe für den eigenen Haushalt. |
+| Admin (`admin`) | Alle Rechte einschließlich globaler Importe, Benutzerverwaltung und Serveradministration. |
 
 Eine Registrierung mit Apple, Google oder Benutzername/Passwort legt ein normales
 Benutzerkonto an. Die Art der Anmeldung verleiht keine Administratorrechte. Wird
@@ -44,15 +53,21 @@ Kontoverwaltung bleiben verfügbar. Eigene Varianten lassen sich auch dann ohne 
 anlegen, wenn die Vorlage noch nicht vollständig extrahiert ist; die Kopie wird
 nicht automatisch zur Extraktion eingeplant.
 
-Importe aus Links, Dateien und Fotos, OCR, KI-Übersetzung, Bildgenerierung,
-KI-Nährwerte, erneute Extraktion/Quellenimporte und die KI-Einkaufsoptimierung
-können ausschließlich Administratoren starten. Diese Einschränkung wird auf dem
-Server durchgesetzt. Die Clients blenden entsprechende Aktionen für normale
-Konten aus; geteilte Links starten für sie keinen Hintergrundimport.
+Vollbenutzer können private Links, Fotos und PDF-Dateien importieren, ihre
+Importvorschläge bearbeiten, ergänzende Fotos per OCR auslesen und ihre eigenen
+offenen Importe erneut analysieren. Sie können weder globale Importe noch
+Importe anderer Haushalte bearbeiten. Globale Importe, KI-Übersetzung,
+Bildgenerierung, KI-Nährwerte, erneute Extraktion bestehender Rezepte und die
+KI-Einkaufsoptimierung bleiben Administratoren vorbehalten. Diese Grenzen werden
+auf dem Server durchgesetzt. Geteilte Links starten für normale Benutzer keinen
+Hintergrundimport. E-Mail-Import und dessen Zeitplanung sind vollständig entfernt.
 
 Die Verwaltung anderer Benutzer, Serverkonfiguration und administrative Jobs
 bleiben ebenfalls Administratoren vorbehalten. Ein Gast kann keine Variante
-anlegen und keine Daten bearbeiten.
+anlegen und keine Rezept- oder Haushaltsdaten bearbeiten. Ein angemeldetes Konto
+mit Gastrolle kann weiterhin sein eigenes Passwort, seine Anmeldewege und
+Sitzungen verwalten sowie sein Konto löschen; die erforderliche erneute
+Anmeldebestätigung bleibt bestehen. Der anonyme Gastzugang hat kein solches Konto.
 
 ## Servereinrichtung
 
