@@ -32,6 +32,8 @@ actor APIClient {
 
     private var baseURL: URL?
     private var token: String?
+    private var readOnly = false
+    private var hasAccount = false
     private var configurationID = UUID()
     private let session: URLSession
     private let decoder: JSONDecoder
@@ -66,6 +68,8 @@ actor APIClient {
         }
         baseURL = url
         self.token = token
+        readOnly = token?.hasPrefix("guest.") == true
+        hasAccount = false
         configurationID = sessionID ?? UUID()
         URLCache.shared.removeAllCachedResponses()
     }
@@ -73,6 +77,8 @@ actor APIClient {
     func clearAuthentication(ifSessionID expected: UUID) {
         guard configurationID == expected else { return }
         token = nil
+        readOnly = false
+        hasAccount = false
         configurationID = UUID()
         URLCache.shared.removeAllCachedResponses()
     }
@@ -277,7 +283,12 @@ actor APIClient {
     }
 
     func sessionInfo() async throws -> SessionResponse {
-        try await send("/api/auth/session")
+        let expectedConfiguration = configurationID
+        let result: SessionResponse = try await send("/api/auth/session")
+        guard configurationID == expectedConfiguration else { throw APIError.sessionChanged }
+        readOnly = result.effectiveRole == .guest
+        hasAccount = result.id != nil
+        return result
     }
 
     func systemInfo() async throws -> SystemInfo {
@@ -805,41 +816,11 @@ actor APIClient {
         try await send("/api/config/reload", method: "POST", body: EmptyBody())
     }
 
-    func adminSchedule() async throws -> NativeAdminScheduleStatus {
-        try await send("/api/schedule")
-    }
-
-    func previewAdminSchedule(_ value: String) async throws -> NativeAdminSchedulePreview {
-        try await send(
-            "/api/schedule/preview",
-            method: "POST",
-            body: SchedulePayload(scraper: value)
-        )
-    }
-
-    func updateAdminSchedule(_ value: String) async throws -> APIResult {
-        try await send(
-            "/api/schedule",
-            method: "PUT",
-            body: SchedulePayload(scraper: value),
-            timeout: 120
-        )
-    }
-
     func testOpenAIConfiguration(apiKey: String?, model: String?) async throws -> NativeAdminTestResult {
         try await send(
             "/api/test/openai",
             method: "POST",
             body: OpenAITestPayload(apiKey: apiKey, model: model)
-        )
-    }
-
-    func testMailConfiguration(account: String) async throws -> NativeAdminTestResult {
-        try await send(
-            "/api/test/mail",
-            method: "POST",
-            body: MailTestPayload(account: account),
-            timeout: 120
         )
     }
 
@@ -985,7 +966,8 @@ actor APIClient {
         url: String,
         data: Data,
         filename: String,
-        mimeType: String
+        mimeType: String,
+        visibility: String? = nil
     ) async throws -> PendingAnalysisResult {
         let boundary = "RezepteBoundary-\(UUID().uuidString)"
         let safeFilename = filename
@@ -1001,7 +983,7 @@ actor APIClient {
 
         var request = URLRequest(url: try endpoint(
             "/api/pending/scan-photo",
-            query: [URLQueryItem(name: "url", value: url)]
+            query: [URLQueryItem(name: "url", value: url)] + (visibility.map { [URLQueryItem(name: "visibility", value: $0)] } ?? [])
         ))
         request.httpMethod = "POST"
         request.timeoutInterval = 180
@@ -1022,7 +1004,8 @@ actor APIClient {
         ingredients: [PendingIngredient]? = nil,
         steps: [PendingStep]? = nil,
         servings: Int? = nil,
-        verified: Bool = false
+        verified: Bool = false,
+        visibility: String? = nil
     ) async throws -> APIResult {
         try await send(
             "/api/pending",
@@ -1037,16 +1020,17 @@ actor APIClient {
                 ingredients: ingredients,
                 steps: steps,
                 servings: servings,
-                verified: verified
+                verified: verified,
+                visibility: visibility
             )
         )
     }
 
-    func reanalyzePending(url: String) async throws -> PendingAnalysisResult {
+    func reanalyzePending(url: String, visibility: String? = nil) async throws -> PendingAnalysisResult {
         try await send(
             "/api/pending/reanalyze",
             method: "POST",
-            body: PendingURLPayload(url: url),
+            body: PendingURLPayload(url: url, visibility: visibility),
             timeout: 120
         )
     }
@@ -1065,10 +1049,6 @@ actor APIClient {
             method: "POST",
             body: FailedDownloadPayload(url: url)
         )
-    }
-
-    func runScraper() async throws -> APIResult {
-        try await send("/api/jobs/scraper/run", method: "POST", body: EmptyBody())
     }
 
     func generateRecipeImage(id: Int) async throws -> ImageGenerationStart {
@@ -1218,10 +1198,35 @@ actor APIClient {
         return query
     }
 
+    private func isOwnSecurityAction(_ request: URLRequest) -> Bool {
+        guard hasAccount else { return false }
+        let method = request.httpMethod ?? "GET"
+        let parts = Array((request.url?.path ?? "").split(separator: "/").suffix(4)).map(String.init)
+        if method == "POST", Array(parts.suffix(3)) == ["api", "account", "password"] { return true }
+        if method == "POST", Array(parts.suffix(3)) == ["api", "auth", "logout-all"] { return true }
+        if method == "DELETE", Array(parts.suffix(3)) == ["api", "account", "profile"] { return true }
+        if method == "DELETE", parts.count == 4, Array(parts.prefix(3)) == ["api", "account", "sessions"] { return true }
+        if method == "DELETE", parts.count == 4, Array(parts.prefix(3)) == ["api", "account", "identities"] {
+            return ["apple", "google"].contains(parts[3])
+        }
+        if method == "POST", parts.count == 4, Array(parts.prefix(2)) == ["api", "auth"],
+           ["apple", "google"].contains(parts[2]), parts[3] == "start",
+           let body = request.httpBody,
+           let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+            return payload["platform"] as? String == "native" && payload["intent"] as? String == "link"
+        }
+        return false
+    }
+
     private func execute<Response: Decodable>(
         _ request: URLRequest,
         authenticated: Bool = true
     ) async throws -> Response {
+        let method = request.httpMethod ?? "GET"
+        if authenticated, readOnly, !["GET", "HEAD", "OPTIONS"].contains(method),
+           request.url?.path.hasSuffix("/api/auth/logout") != true, !isOwnSecurityAction(request) {
+            throw APIError.server(403, "Im Gastzugang kannst du ansehen, aber nichts verändern oder erstellen.")
+        }
         let requestConfiguration = configurationID
         let (data, response) = try await session.data(for: request)
         guard configurationID == requestConfiguration else { throw APIError.sessionChanged }
@@ -1291,8 +1296,6 @@ private struct ShoppingPushPayload: Codable {
 private struct SharePayload: Codable { let expiresDays: Int }
 private struct TranslationPayload: Codable { let targetLanguage: String; let text: String? }
 private struct OpenAITestPayload: Codable { let apiKey: String?; let model: String? }
-private struct MailTestPayload: Codable { let account: String }
-private struct SchedulePayload: Codable { let scraper: String }
 struct IngredientDraft: Codable, Hashable {
     let name: String
     let amount: Double?
@@ -1357,8 +1360,9 @@ private struct ResolvePendingPayload: Codable {
     let steps: [PendingStep]?
     let servings: Int?
     let verified: Bool
+    let visibility: String?
 }
-private struct PendingURLPayload: Codable { let url: String }
+private struct PendingURLPayload: Codable { let url: String; let visibility: String? }
 private struct FailedDownloadPayload: Codable { let url: String }
 
 private extension Data {

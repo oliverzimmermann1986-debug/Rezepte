@@ -39,6 +39,7 @@ def provider_api(client, test_db, monkeypatch, signing_key):
         monkeypatch.delenv("REZEPTE_APPLE_" + key, raising=False)
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     test_db.user_create("admin", "unusable", role="admin")
     test_db.user_create("alice", auth.hash_password("alice-password"))
     client.base_url = "https://testserver"

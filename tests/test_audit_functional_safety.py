@@ -79,7 +79,7 @@ def test_direct_pytest_collection_isolates_config_before_app_import(tmp_path):
     assert sandbox.is_relative_to(root / ".tmp")
     assert Path(result["db"]).is_relative_to(sandbox)
     assert all(Path(value).is_relative_to(sandbox) for value in result["paths"].values() if isinstance(value, str))
-    assert all(not account["enabled"] and not account["password"] for account in result["mail"].values())
+    assert result["mail"] is None
     assert not result["ai"]["openai"]["api_key"]
     assert not result["ai"]["image_generation"]["enabled"]
     assert real.read_text(encoding="utf-8") == "do not read or change me"
@@ -289,10 +289,6 @@ def test_ai_quota_is_reserved_before_network_and_failures_are_counted(test_db, t
     assert calls == [True]
 
 
-@pytest.mark.parametrize("footer", ["-- \nAnna\nanna@example.test", "Viele Grüße\nAnna\nanna@example.test", "Sent from my iPhone"])
-def test_ai_mail_excerpt_excludes_recognizable_signatures(footer):
-    from app.core.email_processor import _ai_body_excerpt
-    assert _ai_body_excerpt("Zutaten:\n250 g Mehl\n" + footer) == "Zutaten:\n250 g Mehl"
 
 
 def test_partial_ai_ingredient_list_does_not_displace_complete_pdf_source():

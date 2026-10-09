@@ -1758,7 +1758,7 @@ def rescrape_recipe(
     url = rec.get("url")
     if not url:
         return {"ok": False, "error": "Rezept hat keine URL (manuell angelegt?)"}
-    from ..core.email_processor import normalize_content_url
+    from ..core.content_urls import normalize_content_url
     normalized_url = normalize_content_url(str(url))
     if not normalized_url:
         raise HTTPException(

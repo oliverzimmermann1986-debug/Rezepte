@@ -16,7 +16,7 @@ type ImportResult = {
 };
 
 export function SharedLinkReceiver() {
-  const { isAdmin, ready, token } = useAuth();
+  const { canImport, ready, token } = useAuth();
   const { error, hasShareIntent, isReady, resetShareIntent, shareIntent } = useShareIntentContext();
   const navigationState = useRootNavigationState();
   const router = useRouter();
@@ -47,10 +47,10 @@ export function SharedLinkReceiver() {
     ) return;
 
     processing.current = true;
-    if (!isAdmin) {
+    if (!canImport) {
       resetShareIntent();
       processing.current = false;
-      Alert.alert('Import nur für Administratoren', 'Dieses Konto darf keine Rezeptimporte starten.');
+      Alert.alert('Import für Vollbenutzer und Admins', 'Dieses Konto darf keine Rezeptimporte starten.');
       return;
     }
     const source = socialLinkFromShareIntent(shareIntent);
@@ -102,7 +102,7 @@ export function SharedLinkReceiver() {
       });
   }, [
     hasShareIntent,
-    isAdmin,
+    canImport,
     isReady,
     navigationState?.key,
     ready,

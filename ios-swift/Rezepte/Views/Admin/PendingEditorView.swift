@@ -39,6 +39,7 @@ struct PendingEditorView: View {
         _steps = State(initialValue: Self.stepDrafts(from: suggestion))
     }
 
+    private var visibility: String { session.fullAccess ? item.effectiveVisibility : "private" }
     private var isBusy: Bool { isSaving || isPhotoScanning || isReanalyzing }
     private var hasIngredients: Bool {
         ingredients.contains { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -57,7 +58,7 @@ struct PendingEditorView: View {
                         .lineLimit(4...10)
                 }
 
-                if session.fullAccess {
+                if session.canImport {
                     Section {
                         PhotosPicker(selection: $selectedPhoto, matching: .images) {
                             Label(
@@ -230,7 +231,7 @@ struct PendingEditorView: View {
     }
 
     private func scanPhoto(_ photo: PhotosPickerItem) async {
-        guard session.fullAccess, !isBusy else { return }
+        guard session.canImport, !isBusy else { return }
         let expectedIdentity = session.identity
         isPhotoScanning = true
         errorMessage = nil
@@ -245,12 +246,13 @@ struct PendingEditorView: View {
                   let data = image.jpegData(compressionQuality: 0.9) else {
                 throw PendingValidationError.invalidPhoto
             }
-            guard session.fullAccess, session.identity == expectedIdentity else { return }
+            guard session.canImport, session.identity == expectedIdentity else { return }
             let result = try await session.api.scanPendingPhoto(
                 url: item.url,
                 data: data,
                 filename: "rezeptfoto-\(Int(Date().timeIntervalSince1970)).jpg",
-                mimeType: "image/jpeg"
+                mimeType: "image/jpeg",
+                visibility: visibility
             )
             await apply(result, fallbackMessage: "Das Foto wurde erkannt.")
         } catch {
@@ -260,13 +262,13 @@ struct PendingEditorView: View {
     }
 
     private func reanalyze() async {
-        guard session.fullAccess, !isBusy else { return }
+        guard session.canImport, !isBusy else { return }
         isReanalyzing = true
         errorMessage = nil
         statusMessage = nil
         defer { isReanalyzing = false }
         do {
-            let result = try await session.api.reanalyzePending(url: item.url)
+            let result = try await session.api.reanalyzePending(url: item.url, visibility: visibility)
             await apply(result, fallbackMessage: "Der KI-Vorschlag wurde aktualisiert.")
         } catch {
             errorMessage = error.localizedDescription
@@ -303,6 +305,7 @@ struct PendingEditorView: View {
     }
 
     private func save() async {
+        guard session.canImport, !isBusy else { return }
         isSaving = true
         errorMessage = nil
         statusMessage = nil
@@ -321,7 +324,8 @@ struct PendingEditorView: View {
                 ingredients: cleanIngredients,
                 steps: cleanSteps,
                 servings: cleanServings,
-                verified: verified && !cleanIngredients.isEmpty
+                verified: verified && !cleanIngredients.isEmpty,
+                visibility: visibility
             )
             guard result.ok != false else {
                 errorMessage = result.message ?? "Der Import konnte nicht gespeichert werden."
@@ -336,11 +340,12 @@ struct PendingEditorView: View {
     }
 
     private func discard() async {
+        guard session.canImport, !isBusy else { return }
         isSaving = true
         errorMessage = nil
         defer { isSaving = false }
         do {
-            _ = try await session.api.resolvePending(url: item.url, action: "skip")
+            _ = try await session.api.resolvePending(url: item.url, action: "skip", visibility: visibility)
             await onChanged()
             dismiss()
         } catch {

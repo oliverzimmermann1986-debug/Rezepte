@@ -60,9 +60,9 @@ type ReanalyzeResult = {
 };
 
 export function PendingEditor({ item, onClose, onSaved }: Props) {
-  const { isAdmin } = useAuth();
-  const adminAllowed = useRef(isAdmin);
-  adminAllowed.current = isAdmin;
+  const { canImport } = useAuth();
+  const importAllowed = useRef(canImport);
+  importAllowed.current = canImport;
   const { width, fontScale } = useWindowDimensions();
   const [name, setName] = useState('');
   const [recipeType, setRecipeType] = useState('Hauptgericht');
@@ -135,7 +135,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   async function save() {
-    if (!adminAllowed.current) return;
+    if (!importAllowed.current) return;
     if (!item) return;
     setBusy(true);
     setError('');
@@ -179,7 +179,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   async function reanalyze() {
-    if (!adminAllowed.current) return;
+    if (!importAllowed.current) return;
     if (!item || busy) return;
     setBusy(true);
     setAiBusy(true);
@@ -206,12 +206,12 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   async function scanPhoto() {
-    if (!adminAllowed.current) return;
+    if (!importAllowed.current) return;
     if (!item || busy) return;
     let picked: Awaited<ReturnType<typeof pickEditedJpeg>> = null;
     try {
       picked = await pickEditedJpeg('pending-rezept');
-      if (!picked || !adminAllowed.current) return;
+      if (!picked || !importAllowed.current) return;
       setBusy(true);
       setPhotoBusy(true);
       setError('');
@@ -232,7 +232,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   function requestDiscard() {
-    if (!adminAllowed.current) return;
+    if (!importAllowed.current) return;
     if (!item || busy) return;
     Alert.alert(
       'Import wirklich verwerfen?',
@@ -245,7 +245,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   async function discard() {
-    if (!adminAllowed.current) return;
+    if (!importAllowed.current) return;
     if (!item) return;
     setBusy(true);
     setError('');
@@ -288,7 +288,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
   }
 
   async function openLocalFile() {
-    if (!adminAllowed.current) return;
+    if (!importAllowed.current) return;
     if (!hasLocalFile || !localFilePath) return;
     const downloadEpoch = currentApiSessionEpoch();
     let localUri = '';
@@ -318,7 +318,7 @@ export function PendingEditor({ item, onClose, onSaved }: Props) {
     }
   }
 
-  if (!isAdmin) return null;
+  if (!canImport) return null;
 
   return (
     <Modal visible={item !== null} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>

@@ -119,19 +119,6 @@ export default function AdminScreen() {
     }
   }
 
-  async function runImporter() {
-    if (!adminAllowed.current) return;
-    setBusy(true);
-    try {
-      await api('/api/jobs/scraper/run', { method: 'POST' });
-      Alert.alert('Import gestartet', 'Neue Quellen werden im Hintergrund verarbeitet.');
-    } catch (reason) {
-      Alert.alert('Import nicht gestartet', reason instanceof Error ? reason.message : 'Unbekannter Fehler');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function uploadSelected(
     file: { uri: string; name: string; mimeType: string },
     clientRequestId = createClientRequestId(),
@@ -140,9 +127,11 @@ export default function AdminScreen() {
     setBusy(true);
     try {
       const result = await uploadFile<{ ok: boolean; status?: string; message?: string }>(
-        '/api/pending/import-file?type=recipe&visibility=global',
+        '/api/pending/import-file',
         file,
         clientRequestId,
+        undefined,
+        { type: 'recipe', visibility: 'global' },
       );
       Alert.alert(
         result.status === 'pending' ? 'Zur Prüfung vorgemerkt' : 'Datei importiert',
@@ -260,7 +249,6 @@ export default function AdminScreen() {
               <View style={styles.uploadButton}><PrimaryButton label="Bild auswählen" onPress={pickImage} disabled={busy} /></View>
               <View style={styles.uploadButton}><PrimaryButton label="PDF auswählen" onPress={pickPdf} disabled={busy} /></View>
             </View>
-            <PrimaryButton label="Postfächer jetzt prüfen" onPress={runImporter} disabled={busy} />
           </View>
 
           <View style={sharedStyles.card}>

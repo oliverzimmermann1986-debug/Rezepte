@@ -18,7 +18,7 @@ function harness(file, exported, options = {}) {
   const native = { StyleSheet: { create: value => value }, Alert: { alert: (...args) => alerts.push(args) },
     Platform: { OS: 'ios' }, useWindowDimensions: () => ({ width: 390, fontScale: 1 }) };
   for (const name of ['Text', 'View', 'TextInput', 'Pressable', 'ScrollView', 'Modal', 'FlatList', 'KeyboardAvoidingView', 'ActivityIndicator']) native[name] = name;
-  const auth = () => ({ username: 'Example', isAdmin: admin, isGuest: options.guest ?? false, ready: true, token: 'synthetic', serverUrl: 'https://example.invalid',
+  const auth = () => ({ username: 'Example', isAdmin: admin, canImport: options.fullUser === true || admin, canManageOwnAccount: !options.guest || options.namedGuest === true, isGuest: options.guest ?? false, ready: true, token: 'synthetic', serverUrl: 'https://example.invalid',
     loadProviders: async () => options.providers || [], signInWithProvider: async (...args) => providerCalls.push(args) });
   const api = async (url, init = {}) => { calls.push({ url, init }); return options.request ? options.request(url, init) : { ok: true }; };
   const deps = {
@@ -77,7 +77,7 @@ test('normal shared links are consumed without import requests', async () => {
   const h = harness('components/shared-link-receiver.tsx', 'SharedLinkReceiver');
   h.render(); h.runEffects(); await flush();
   assert.equal(h.calls.length, 0); assert.equal(h.resets(), 1);
-  assert.match(h.alerts[0][0], /Administrator/);
+  assert.match(h.alerts[0][0], /Vollbenutzer/);
 });
 
 test('administrator shared link still reaches the import API', async () => {
@@ -142,4 +142,45 @@ test('unconfigured provider discovery shows no pretend provider buttons', async 
   const h = harness('app/login.tsx', 'default');
   h.render(); h.runEffects(); await flush();
   assert.equal(h.elements(h.render()).filter(item => /^Mit (Apple|Google) fortfahren$/.test(item.props.label || '')).length, 0);
+});
+
+
+test('full users import private shared links but cannot open system administration or AI maintenance', async () => {
+  const h = harness('components/shared-link-receiver.tsx', 'SharedLinkReceiver', { fullUser: true });
+  h.render(); h.runEffects(); await flush();
+  assert.equal(h.calls[0].url, '/api/pending/import-url');
+  assert.equal(JSON.parse(h.calls[0].init.body).visibility, 'private');
+  for (const [file, exported] of [['admin-ai-sort', 'AdminAiSort'], ['shopping-ai-optimizer', 'ShoppingAiOptimizer']]) {
+    const admin = harness(`components/${file}.tsx`, exported, { fullUser: true });
+    assert.equal(admin.render(), null); admin.runEffects(); assert.equal(admin.calls.length, 0);
+  }
+  const admin = harness('app/(tabs)/admin.tsx', 'default', { fullUser: true, runFocus: true });
+  admin.render(); admin.runEffects(); assert.equal(admin.calls.length, 0);
+});
+
+test('full users have private URL, photo and PDF imports without global visibility controls', async () => {
+  const h = harness('app/(tabs)/account.tsx', 'default', { fullUser: true, request: async url => url === '/api/account/imports' ? { items: [] } : url === '/api/account' ? { is_guest: false, members: [], invitations: [] } : { ok: true } });
+  h.elements(h.render()).find(item => item.props.accessibilityLabel === 'Rezeptlink').props.onChangeText('https://example.invalid/recipe');
+  h.button('Foto importieren'); h.button('PDF importieren');
+  assert.equal(h.elements(h.render()).some(item => item.props.label?.startsWith('Sichtbarkeit:')), false);
+  h.button('In Sammlung übernehmen').onPress(); await flush();
+  assert.equal(JSON.parse(h.calls[0].init.body).visibility, 'private');
+  assert.ok(h.calls.some(item => item.url === '/api/account/imports'));
+});
+
+test('full users can open the pending import editor', () => {
+  const h = harness('components/pending-editor.tsx', 'PendingEditor', { fullUser: true });
+  assert.notEqual(h.render(), null);
+});
+
+
+test('named guest account shows security and logout while keeping household and import controls hidden', () => {
+  const named = harness('app/(tabs)/account.tsx', 'default', { guest: true, namedGuest: true });
+  const namedItems = named.elements(named.render());
+  assert.ok(namedItems.some(item => item.type === 'AccountSecurity'));
+  named.button('Abmelden');
+  assert.equal(namedItems.some(item => ['Konto erstellen', 'Zweite Person einladen', 'Foto importieren', 'PDF importieren', 'In Sammlung übernehmen'].includes(item.props.label)), false);
+  const anonymous = harness('app/(tabs)/account.tsx', 'default', { guest: true });
+  assert.equal(anonymous.elements(anonymous.render()).some(item => item.type === 'AccountSecurity'), false);
+  anonymous.button('Konto erstellen'); anonymous.button('Zur Anmeldung');
 });

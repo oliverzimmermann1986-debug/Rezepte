@@ -16,15 +16,15 @@ Getrennte private Haushalte mit Login-Accounts und globaler Rezeptsammlung, in d
 
 ## Product Purpose
 
-Rezepte aus TikTok-/Instagram-Links, E-Mails, Fotos, Videos und PDFs werden eingesammelt, mit `yt-dlp`, OCR sowie der konfigurierten OpenAI-Analyse verarbeitet und in eine durchsuchbare Bibliothek einsortiert. Erfolg heißt: ein gefundener Rezeptname reicht für einen ehrlichen Import; Zutaten und Zubereitung werden aus Caption, Bildtext, Videoframes oder Sprache ergänzt, soweit belastbare Belege vorhanden sind. Die Quelle (Video, Caption und Scan-Belege) bleibt am Rezept erhalten.
+Rezepte aus TikTok-/Instagram-Links, Texten, Fotos, Videos und PDFs werden eingesammelt, mit `yt-dlp`, OCR sowie der konfigurierten OpenAI-Analyse verarbeitet und in eine durchsuchbare Bibliothek einsortiert. Erfolg heißt: ein gefundener Rezeptname reicht für einen ehrlichen Import; Zutaten und Zubereitung werden aus Caption, Bildtext, Videoframes oder Sprache ergänzt, soweit belastbare Belege vorhanden sind. Die Quelle (Video, Caption und Scan-Belege) bleibt am Rezept erhalten.
 
 ## Positioning
 
-Kein Rezept-Manager, in den man Rezepte tippt, sondern eine **Auffang-Anlage für Social-Video- und Bildrezepte**: E-Mail-Postfach, Direktlink und Datei-Upload als Eingänge, Dateisystem plus SQLite als kontrolliertes Archiv. Anwendung und Daten laufen self-hosted im eigenen LXC; OpenAI, die Quellplattformen und optional Cloudflare sind klar abgegrenzte externe Dienste. Es gibt keine externen Fonts oder Design-CDNs und keine Telemetrie. Unsichere oder unvollständige Ergebnisse landen bewusst in einer manuellen Prüfung, statt erfundene Zutaten oder Schritte zu speichern.
+Kein Rezept-Manager, in den man Rezepte tippt, sondern eine **Auffang-Anlage für Social-Video- und Bildrezepte**: Direktlink, Texteingabe und Datei-Upload als Eingänge, Dateisystem plus SQLite als kontrolliertes Archiv. Anwendung und Daten laufen self-hosted im eigenen LXC; OpenAI, die Quellplattformen und optional Cloudflare sind klar abgegrenzte externe Dienste. Es gibt keine externen Fonts oder Design-CDNs und keine Telemetrie. Unsichere oder unvollständige Ergebnisse landen bewusst in einer manuellen Prüfung, statt erfundene Zutaten oder Schritte zu speichern.
 
 ## Operating Context
 
-- systemd-Timer alle 30 Minuten (`*:0/30`) oder manueller Start im Web-UI; File-Locks verhindern Doppelläufe zwischen Web und CLI.
+- Ausdrücklich gestartete Importe in Web und App; Dateisperren und die Hintergrundwarteschlange verhindern konkurrierende Verarbeitung. Kein Mailabruf oder Mailzeitplan.
 - Externe Erreichbarkeit über HTTPS und optional Cloudflare-Tunnel; Anmeldung und Rollenprüfung erfolgen immer im Rezeptserver.
 - Kochen am Handy (native iOS-App oder PWA, iOS-Safe-Area, Bottom-Navigation); Verwalten am Desktop oder in der Admin-Zentrale der App.
 - Einkaufsliste entsteht aus Rezept-Zutaten und wird über `canonical_name` zu einem Eintrag pro Zutat verschmolzen.

@@ -30,7 +30,7 @@ from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
-from ..auth import require_admin, require_auth
+from ..auth import require_admin, require_auth, require_import
 from ..config_store import get_config
 from ..db import get_db
 from ..jobs.scraper import get_scraper_job
@@ -61,7 +61,7 @@ def _is_under_temp(path_str: str) -> bool:
         return False
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_import)])
 def list_pending(status: str = "pending", sort: str = "newest", visibility: Optional[Literal["private", "global"]] = None) -> List[Dict[str, Any]]:
     items = get_db().pending_list(status=status, sort=sort)
     return [item for item in items if visibility is None or ("private" if item.get("owner_account_id") is not None else "global") == visibility]
@@ -263,7 +263,7 @@ def _assert_upload_capacity(payload_size: int) -> None:
         )
 
 
-@router.post("/import-url", dependencies=[Depends(require_admin)])
+@router.post("/import-url", dependencies=[Depends(require_import)])
 def import_url(body: ImportUrlBody, request: Request) -> Dict[str, Any]:
     """Nimmt eine Rezept-Webquelle sofort an und analysiert sie im Hintergrund.
 
@@ -359,7 +359,7 @@ def import_url(body: ImportUrlBody, request: Request) -> Dict[str, Any]:
     }
 
 
-@router.post("/import-file", dependencies=[Depends(require_admin)])
+@router.post("/import-file", dependencies=[Depends(require_import)])
 async def import_file(
     request: Request,
     file: UploadFile = File(...),
@@ -501,7 +501,7 @@ async def import_file(
     return result
 
 
-@router.post("/scan-photo", dependencies=[Depends(require_admin)])
+@router.post("/scan-photo", dependencies=[Depends(require_import)])
 async def scan_pending_photo(
     request: Request,
     url: str = Query(..., min_length=1),
@@ -592,7 +592,7 @@ def bulk_skip(body: BulkSkipBody) -> Dict[str, Any]:
 # vor der Freigabe tatsächlich kontrolliert werden können.
 
 
-@router.get("/file")
+@router.get("/file", dependencies=[Depends(require_import)])
 def pending_file(url: str, visibility: Optional[Literal["private", "global"]] = None) -> FileResponse:
     from ..tenancy import CURRENT_HOUSEHOLD
     db = get_db()
@@ -669,7 +669,7 @@ class ResolveBody(BaseModel):
     verified: bool = False
 
 
-@router.post("", dependencies=[Depends(require_admin)])
+@router.post("", dependencies=[Depends(require_import)])
 def resolve(body: ResolveBody):
     if body.action not in ("save", "skip"):
         raise HTTPException(400, "action muss 'save' oder 'skip' sein")
@@ -706,7 +706,7 @@ class FailedActionRequest(BaseModel):
     url: str
 
 
-@router.post("/reanalyze", dependencies=[Depends(require_admin)])
+@router.post("/reanalyze", dependencies=[Depends(require_import)])
 def reanalyze(body: ReanalyzeRequest):
     """Lässt ein Pending-Item neu durch die KI-Cascade laufen."""
     db, _entry, job = _pending_import(body.url, body.visibility)
@@ -852,7 +852,7 @@ def reanalyze_progress():
     }
 
 
-# ---------------- Failed Downloads (Email Recovery) ----------------
+# ---------------- Failed Downloads ----------------
 
 @router.get("/failed", dependencies=[Depends(require_admin)])
 def list_failed_downloads(limit: int = 100) -> List[Dict[str, Any]]:
@@ -860,7 +860,7 @@ def list_failed_downloads(limit: int = 100) -> List[Dict[str, Any]]:
 
     Werden vom Scraper nach MAX_DOWNLOAD_ATTEMPTS (default 3) übersprungen.
     Diese Liste zeigt sie, damit der User entscheiden kann was tun:
-    - Retry-Counter zurücksetzen (URL wird beim nächsten Mail-Sync neu versucht)
+    - Retry-Counter zurücksetzen und die URL erneut direkt importieren
     - Komplett aus dem Failed-Tracking löschen
     """
     return get_db().download_failures_list(limit=limit)
@@ -885,9 +885,7 @@ def discard_failed_body(body: FailedActionRequest) -> Dict[str, Any]:
 def retry_failed(url: str) -> Dict[str, Any]:
     """Setzt den Failure-Counter zurück (Zeile bleibt erhalten).
 
-    Der nächste Scraper-Lauf nimmt die URL als Retry-Kandidat direkt aus
-    download_failures auf — die Quell-Mail wird NICHT mehr benötigt
-    (verarbeitete Mails werden gelöscht, wenn delete_processed aktiv ist).
+    Danach kann die URL über den direkten Import erneut verarbeitet werden.
     """
     if not get_db().download_failure_reset(url):
         raise HTTPException(404, "Fehlgeschlagener Download nicht gefunden")
@@ -898,10 +896,8 @@ def retry_failed(url: str) -> Dict[str, Any]:
 def discard_failed(url: str) -> Dict[str, Any]:
     """Verwirft eine endgültig fehlgeschlagene URL dauerhaft.
 
-    Schreibt sie als '(verworfen)' in die History (→ Mail-Sync überspringt
-    sie ab jetzt, auch wenn die Mail im Postfach bleibt) und entfernt den
-    Failure-Eintrag. Bewusste User-Entscheidung — das frühere automatische
-    History-Schreiben nach MAX Versuchen wurde entfernt.
+    Schreibt sie als '(verworfen)' in die History und entfernt den
+    Failure-Eintrag. Das geschieht nur nach bewusster Benutzerentscheidung.
     """
     db = get_db()
     if not db.download_failure_discard(url):
@@ -911,7 +907,6 @@ def discard_failed(url: str) -> Dict[str, Any]:
 
 @router.post("/failed/clear-all", dependencies=[Depends(require_admin)])
 def clear_all_failed() -> Dict[str, Any]:
-    """Alle Failure-Counter löschen. Bei nächstem Mail-Sync werden alle
-    noch in Mails enthaltenen URLs nochmal versucht."""
+    """Alle Failure-Counter zurücksetzen, um direkte Neuimporte zu erlauben."""
     count = get_db().download_failures_clear_all()
     return {"ok": True, "cleared": count}

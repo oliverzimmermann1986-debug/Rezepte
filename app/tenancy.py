@@ -294,7 +294,7 @@ def merge_households(c, source: int, target: int) -> None:
 
 
 def scope_for_request(request: Request) -> HouseholdScope | None:
-    from .auth import cached_request_user, request_is_guest, request_user
+    from .auth import cached_request_user, request_is_guest, request_user, role_capabilities
     from .db import get_db
     if request_is_guest(request):
         return HouseholdScope(-1, is_guest=True)
@@ -305,6 +305,8 @@ def scope_for_request(request: Request) -> HouseholdScope | None:
         return HouseholdScope(0, is_admin=True)
     if not user or user.get("disabled"):
         return None
+    if role_capabilities(user.get("role"))["read_only"]:
+        return HouseholdScope(-1, is_guest=True, user_id=int(user["id"]))
     from .accounts import _account
     with db.conn() as c:
         # Normal requests need no writer lock once membership exists.

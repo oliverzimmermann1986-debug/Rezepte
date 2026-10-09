@@ -46,7 +46,7 @@ struct RecipesView: View {
                                 ? "Passe die aktiven Filter an."
                                 : session.readOnly
                                     ? "Für den Gastzugang sind derzeit keine Rezepte verfügbar."
-                                    : session.fullAccess
+                                    : session.canImport
                                         ? "Passe die Suche an oder importiere ein Rezept."
                                         : "Passe die Suche an oder speichere ein globales Rezept in deiner Sammlung."
                         )

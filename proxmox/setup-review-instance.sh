@@ -21,7 +21,7 @@ if [[ ! -x "$APP_DIR/venv/bin/python" ]]; then
 fi
 
 systemctl stop scrapper-web.service
-systemctl disable --now scrapper-job.timer
+"$APP_DIR/venv/bin/python" "$APP_DIR/tools/retire_mail_import.py" --apply
 
 "$APP_DIR/venv/bin/python" -m tools.setup_app_review_demo \
   --trusted-proxy-cidr "$REVERSE_PROXY_IP/32"
@@ -32,8 +32,8 @@ printf 'SCRAPPER_BIND_HOST=0.0.0.0\nSCRAPPER_FORWARDED_ALLOW_IPS=%s\n' \
 chown root:root /etc/scrapper/web.env
 chmod 0600 /etc/scrapper/web.env
 
-# Marker für proxmox/update-local.sh: der Import-Timer bleibt auf dieser
-# Instanz auch über spätere Updates hinweg deaktiviert.
+# Marker für proxmox/update-local.sh: Updates pflegen ausschließlich die
+# synthetischen Daten dieser Review-Instanz.
 : > /etc/scrapper/review-instance
 chmod 0644 /etc/scrapper/review-instance
 

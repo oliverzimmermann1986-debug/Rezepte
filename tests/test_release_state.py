@@ -220,12 +220,14 @@ def test_updater_keeps_rollback_slots_and_resumes_timers_after_gates():
     assert script.rindex("restore_timer_activity") > script.index("required_methods =")
 
 
-@pytest.mark.parametrize("review,import_active,backup_active,expected", [
-    (False, False, False, ["stop scrapper-job.timer", "stop scrapper-db-backup.timer"]),
-    (False, True, False, ["start scrapper-job.timer", "stop scrapper-db-backup.timer"]),
-    (True, True, True, ["disable --now scrapper-job.timer", "start scrapper-db-backup.timer"]),
+@pytest.mark.parametrize("review,import_active,backup_active,retire,expected", [
+    (False, False, False, False, ["stop scrapper-job.timer", "stop scrapper-db-backup.timer"]),
+    (False, True, False, False, ["start scrapper-job.timer", "stop scrapper-db-backup.timer"]),
+    (True, True, True, False, ["disable --now scrapper-job.timer", "start scrapper-db-backup.timer"]),
+    (False, True, True, True, ["disable --now scrapper-job.timer", "start scrapper-db-backup.timer"]),
+    (False, False, False, True, ["disable --now scrapper-job.timer", "stop scrapper-db-backup.timer"]),
 ])
-def test_timer_resume_executes_only_previously_active_jobs(review, import_active, backup_active, expected):
+def test_timer_resume_executes_only_previously_active_jobs(review, import_active, backup_active, retire, expected):
     bash = shutil.which("bash") or str(Path("C:/Program Files/Git/bin/bash.exe"))
     if not Path(bash).is_file():
         pytest.skip("Bash is required for the timer policy simulation")
@@ -238,7 +240,59 @@ def test_timer_resume_executes_only_previously_active_jobs(review, import_active
         f"IS_REVIEW_INSTANCE={int(review)}", "declare -A TIMER_WAS_ACTIVE",
         f"TIMER_WAS_ACTIVE[scrapper-job.timer]={int(import_active)}",
         f"TIMER_WAS_ACTIVE[scrapper-db-backup.timer]={int(backup_active)}",
-        function.replace(' >/dev/null', ''), "restore_timer_activity",
+        _shell_function(script, "unit_load_state"),
+        function.replace(' >/dev/null', ''), f"restore_timer_activity {int(retire)}",
     ])
     result = subprocess.run([bash, "-c", harness], capture_output=True, text=True, check=True)
     assert result.stdout.splitlines() == expected
+
+
+def _shell_function(script, name):
+    start = script.index(name + "() {")
+    return script[start:script.index("\n}\n", start) + 3]
+
+
+@pytest.mark.parametrize("inspection_failure,stop_failure,expected_code", [
+    (False, False, 0), (True, False, 1), (False, True, 1),
+])
+def test_rollback_stops_existing_units_and_rejects_real_service_errors(inspection_failure, stop_failure, expected_code):
+    bash = shutil.which("bash") or str(Path("C:/Program Files/Git/bin/bash.exe"))
+    if not Path(bash).is_file():
+        pytest.skip("Bash is required for the rollback simulation")
+    script = Path("proxmox/update-local.sh").read_text(encoding="utf-8")
+    harness = "\n".join([
+        "set -euo pipefail",
+        f"INSPECTION_FAILURE={int(inspection_failure)}; STOP_FAILURE={int(stop_failure)}",
+        'systemctl() { if [[ "$1" == "show" ]]; then '
+        '[[ "$INSPECTION_FAILURE" == 1 ]] && return 1; '
+        'if [[ "$2" == scrapper-job.* ]]; then printf "not-found\\n"; return 1; fi; '
+        'printf "loaded\\n"; return 0; fi; '
+        'printf "%s\\n" "$*"; [[ "$STOP_FAILURE" == 0 ]]; }',
+        _shell_function(script, "unit_load_state"),
+        _shell_function(script, "stop_installed_units"),
+        "stop_installed_units scrapper-job.timer scrapper-job.service scrapper-web.service scrapper-db-backup.timer",
+    ])
+    result = subprocess.run([bash, "-c", harness], capture_output=True, text=True)
+    assert result.returncode == expected_code
+    expected_stops = [] if inspection_failure else ["stop scrapper-web.service"]
+    if not inspection_failure and not stop_failure:
+        expected_stops.append("stop scrapper-db-backup.timer")
+    assert result.stdout.splitlines() == expected_stops
+
+
+def test_success_and_rollback_timer_resume_accept_already_removed_mail_unit():
+    bash = shutil.which("bash") or str(Path("C:/Program Files/Git/bin/bash.exe"))
+    if not Path(bash).is_file():
+        pytest.skip("Bash is required for the rollback simulation")
+    script = Path("proxmox/update-local.sh").read_text(encoding="utf-8")
+    harness = "\n".join([
+        "set -euo pipefail",
+        'systemctl() { if [[ "$1" == "show" ]]; then printf "not-found\\n"; return 1; fi; printf "%s\\n" "$*"; }',
+        "IS_REVIEW_INSTANCE=0; declare -A TIMER_WAS_ACTIVE",
+        "TIMER_WAS_ACTIVE[scrapper-job.timer]=0; TIMER_WAS_ACTIVE[scrapper-db-backup.timer]=1",
+        _shell_function(script, "unit_load_state"),
+        _shell_function(script, "restore_timer_activity"),
+        "restore_timer_activity 0", "restore_timer_activity 1",
+    ])
+    result = subprocess.run([bash, "-c", harness], capture_output=True, text=True, check=True)
+    assert result.stdout.splitlines() == ["start scrapper-db-backup.timer"] * 2

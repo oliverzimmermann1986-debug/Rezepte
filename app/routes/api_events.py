@@ -8,9 +8,8 @@ Format ist die Standard-SSE-Notation:
     data: <json>
     \\n\\n
 
-Drei Event-Typen:
-  - status:           {scraper, reanalyze, pending_count}
-  - scraper_progress: vom scraper_progress-Endpoint
+Status-Event:
+  - status: {reanalyze, pending_count}
 
 Heartbeat alle 25 s als Comment ('`: keepalive`'), damit Cloudflare-Tunnel
 & Reverse-Proxys die Connection nicht wegen Idle-Timeout kappen.
@@ -29,7 +28,6 @@ from starlette.concurrency import run_in_threadpool
 from ..auth import require_admin
 from fastapi import HTTPException
 from ..db import get_db
-from . import api_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -80,14 +78,6 @@ async def _stream(request: Request) -> AsyncIterator[bytes]:
             snapshot = await run_in_threadpool(_status_snapshot, db)
             yield _format("status", snapshot).encode()
 
-            # Progress-Events nur wenn was läuft
-            if snapshot.get("scraper") or snapshot.get("reanalyze"):
-                try:
-                    p = await run_in_threadpool(api_jobs.scraper_progress)
-                    yield _format("scraper_progress", p).encode()
-                except Exception as e:
-                    logger.debug(f"scraper_progress fail: {e}")
-
             # Heartbeat (Comment-Line) gegen idle-Timeout der Reverse-Proxies
             now = loop.time()
             if now - last_heartbeat >= HEARTBEAT_INTERVAL:
@@ -103,7 +93,6 @@ async def _stream(request: Request) -> AsyncIterator[bytes]:
 
 def _status_snapshot(db) -> dict:
     return {
-        "scraper": bool(db.job_running("scraper")),
         "reanalyze": bool(db.job_running("reanalyze")),
         "pending_count": db.pending_count(),
     }

@@ -13,6 +13,7 @@ def guest(client, monkeypatch):
     old = dict(app.dependency_overrides)
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     response = client.post("/api/auth/guest")
     assert response.status_code == 200
     client.headers["Authorization"] = "Bearer " + response.json()["token"]
@@ -25,7 +26,7 @@ def test_guest_session_is_read_only_and_creates_no_user(guest, test_db):
     for path in ("/api/auth/session", "/api/session"):
         response = guest.get(path)
         assert response.status_code == 200
-    assert response.json() == {"username": "Gast", "role": "guest", "is_admin": False, "full_access": False, "read_only": True}
+    assert response.json() == {"username": "Gast", "role": "guest", "is_admin": False, "full_access": False, "can_import": False, "read_only": True}
     assert test_db.user_list() == []
     assert guest.get("/api/recipes").status_code == 200
     assert guest.get("/api/cart").status_code == 200

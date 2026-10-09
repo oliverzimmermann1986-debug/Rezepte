@@ -46,6 +46,13 @@ final class SessionStore: ObservableObject {
         self.removeSharedImport = removeSharedImport
     }
 
+    var canManageOwnAccount: Bool {
+        guard case .signedIn = state else { return false }
+        return !readOnly || userID != nil
+    }
+
+    var canImport: Bool { role == .fullUser || role == .admin }
+
     var savedServer: String {
         defaults.string(forKey: serverKey) ?? ""
     }
@@ -124,7 +131,7 @@ final class SessionStore: ObservableObject {
     func signOut() {
         webAuthentication.cancel()
         let previousIdentity = identity
-        if fullAccess, !username.isEmpty {
+        if canImport, !username.isEmpty {
             for url in sharedImportURLs() { removeSharedImport(url) }
         }
         identity = UUID()
@@ -184,7 +191,7 @@ final class SessionStore: ObservableObject {
     }
 
     func linkProvider(_ provider: IdentityProvider, currentPassword: String? = nil) async throws {
-        guard case .signedIn = state, !readOnly else { throw APIError.unauthenticated }
+        guard case .signedIn = state, canManageOwnAccount else { throw APIError.unauthenticated }
         try await authenticateProvider(provider, intent: .link, server: savedServer,
                                        invitationToken: "", expectedIdentity: identity, currentPassword: currentPassword)
     }
@@ -332,8 +339,8 @@ final class SessionStore: ObservableObject {
         let expectedIdentity = identity
         let queued = sharedImportURLs()
         guard !queued.isEmpty else { return }
-        guard fullAccess else {
-            alertMessage = "Geteilte Rezeptlinks können nur Administratoren importieren. Deine Links bleiben auf diesem Gerät gespeichert und wurden nicht verarbeitet."
+        guard canImport else {
+            alertMessage = "Geteilte Rezeptlinks können nur Vollbenutzer und Admins importieren. Deine Links bleiben auf diesem Gerät gespeichert und wurden nicht verarbeitet."
             return
         }
         isDrainingSharedImports = true
@@ -341,10 +348,10 @@ final class SessionStore: ObservableObject {
         var imported = 0
         var linked = 0
         for url in queued {
-            guard identity == expectedIdentity, fullAccess else { return }
+            guard identity == expectedIdentity, canImport else { return }
             do {
                 let result = try await api.importURL(url)
-                guard identity == expectedIdentity, fullAccess else { return }
+                guard identity == expectedIdentity, canImport else { return }
                 removeSharedImport(url)
                 imported += 1
                 if result.status == "linked_global" { linked += 1 }

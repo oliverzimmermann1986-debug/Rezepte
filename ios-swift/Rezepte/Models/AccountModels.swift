@@ -1,11 +1,14 @@
 import Foundation
 
 enum AccountRole: String, Codable, CaseIterable, Identifiable {
-    case admin, user, guest
+    case guest, user
+    case fullUser = "full_user"
+    case admin
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .admin: "Administrator"
+        case .admin: "Admin"
+        case .fullUser: "Vollbenutzer"
         case .user: "Benutzer"
         case .guest: "Gast"
         }

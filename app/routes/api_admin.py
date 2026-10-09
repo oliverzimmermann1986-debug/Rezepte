@@ -20,6 +20,8 @@ from ..auth import (
     ROLE_ADMIN,
     ROLE_GUEST,
     ROLE_USER,
+    VALID_ROLES,
+    role_capabilities,
     request_is_guest,
     require_admin,
     require_auth,
@@ -187,15 +189,12 @@ def current_session(request: Request) -> Dict[str, Any]:
         role = ROLE_ADMIN
     else:
         role = str(user.get("role") or ROLE_USER)
-        if role not in {ROLE_USER, ROLE_ADMIN}:
-            role = ROLE_USER
-    is_admin = role == ROLE_ADMIN
+        if role not in VALID_ROLES:
+            role = ROLE_GUEST
     return {
         "username": (user or {}).get("username") or username,
         "role": role,
-        "is_admin": is_admin,
-        "full_access": is_admin,
-        "read_only": read_only,
+        **role_capabilities(role),
     }
 
 

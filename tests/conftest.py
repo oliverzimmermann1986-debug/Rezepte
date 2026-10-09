@@ -34,7 +34,7 @@ from fastapi.testclient import TestClient
 from app.db import Database
 Database.__init__.__defaults__ = (_TEST_SANDBOX / "fallback.db",)
 import app.db as db_module
-from app.auth import require_admin, require_auth
+from app.auth import require_admin, require_auth, require_import
 
 
 @pytest.fixture
@@ -88,6 +88,9 @@ def client(test_db: Database, monkeypatch) -> TestClient:
         "username": "test-admin",
         "role": "admin",
         "full_access": True,
+    }
+    app.dependency_overrides[require_import] = lambda: {
+        "username": "test-admin", "role": "admin", "full_access": True, "can_import": True,
     }
     try:
         with TestClient(app) as c:

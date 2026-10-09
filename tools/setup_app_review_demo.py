@@ -250,9 +250,8 @@ def _sanitize_config(config_path: Path, public_url: str, trusted_proxy_cidr: str
         "public_url": public_url,
         "trusted_proxies": ["127.0.0.1/32", "::1/128", trusted_proxy_cidr],
     })
-    for mailbox in ("recipe", "wedding"):
-        section = config.setdefault("mail", {}).setdefault(mailbox, {})
-        section.update({"enabled": False, "username": "", "password": ""})
+    config.pop("mail", None)
+    config.pop("schedule", None)
     ai = config.setdefault("ai", {})
     ai.setdefault("openai", {}).update({"api_key": "", "base_url": ""})
     ai["auto_translate"] = False

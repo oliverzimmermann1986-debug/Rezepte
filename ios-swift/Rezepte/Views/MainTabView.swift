@@ -5,7 +5,7 @@ struct MainTabView: View {
 
     var body: some View {
         TabView {
-            if session.fullAccess {
+            if session.canImport {
                 InboxView()
                     .tabItem { Label("Eingang", systemImage: "tray.and.arrow.down.fill") }
             }
@@ -38,12 +38,14 @@ private struct GuestHouseholdPreview: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 20) {
-                ContentUnavailableView(title, systemImage: symbol, description: Text(message))
-                Button("Konto erstellen") { session.startRegistration() }
-                    .buttonStyle(.borderedProminent)
-                    .frame(minHeight: 44)
-                Button("Anmelden") { session.signOut() }
-                    .frame(minHeight: 44)
+                ContentUnavailableView(title, systemImage: symbol, description: Text(session.canManageOwnAccount ? "Für Haushaltsfunktionen brauchst du mindestens die Rolle Benutzer. Deine Anmeldung verwaltest du unter Einstellungen → Mein Konto." : message))
+                if !session.canManageOwnAccount {
+                    Button("Konto erstellen") { session.startRegistration() }
+                        .buttonStyle(.borderedProminent)
+                        .frame(minHeight: 44)
+                    Button("Anmelden") { session.signOut() }
+                        .frame(minHeight: 44)
+                }
             }
             .padding()
             .background(theme.background)

@@ -25,9 +25,19 @@ final class AccountManagementTests: XCTestCase {
         XCTAssertEqual(user.id, 12)
         XCTAssertEqual(user.passwordEnabled, false)
         let legacy = try decode(SessionResponse.self, #"{"username":"admin","full_access":true,"read_only":false}"#)
-        XCTAssertEqual(legacy.effectiveRole, .admin)
+        XCTAssertEqual(legacy.effectiveRole, .user, "Legacy full_access is not a role assignment")
         let guest = try decode(SessionResponse.self, #"{"username":"Gast","full_access":false,"read_only":true}"#)
         XCTAssertEqual(guest.effectiveRole, .guest)
+    }
+
+    func testAllFourRolesDecodeAndSerializeForUserManagement() throws {
+        XCTAssertEqual(AccountRole.allCases.map(\.rawValue), ["guest", "user", "full_user", "admin"])
+        for role in AccountRole.allCases {
+            let json = "\"\(role.rawValue)\""
+            XCTAssertEqual(try decode(AccountRole.self, json), role)
+            XCTAssertEqual(String(data: try JSONEncoder().encode(role), encoding: .utf8), json)
+        }
+        XCTAssertEqual(AccountRole.fullUser.title, "Vollbenutzer")
     }
 
     func testPasswordPolicyMatchesCodePointMinimumAndUTF8Maximum() {

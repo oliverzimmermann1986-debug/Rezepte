@@ -2,7 +2,6 @@ import Foundation
 
 struct NativeAdminConfig: Codable {
     let ai: NativeAdminAIConfig?
-    let mail: NativeAdminMailConfig?
     let pdf: NativeAdminPDFConfig?
     let einkauf: NativeAdminEinkaufConfig?
 }
@@ -37,24 +36,6 @@ struct NativeAdminImageGenerationConfig: Codable {
     let outputFormat: String?
 }
 
-struct NativeAdminMailConfig: Codable {
-    let recipe: NativeAdminMailAccountConfig?
-    let wedding: NativeAdminMailAccountConfig?
-}
-
-struct NativeAdminMailAccountConfig: Codable {
-    let enabled: Bool?
-    let imapHost: String?
-    let imapPort: Int?
-    let username: String?
-    let password: String?
-    let folder: String?
-    let maxMails: Int?
-    let attachmentMaxMb: Int?
-    let defaultCategory: String?
-    let alwaysPending: Bool?
-}
-
 struct NativeAdminPDFConfig: Codable {
     let autoRotate: Bool?
     let useTesseractOsd: Bool?
@@ -80,7 +61,6 @@ struct NativeAdminEinkaufConfig: Codable {
 
 struct NativeAdminConfigPatch: Encodable {
     let ai: NativeAdminAIConfigPatch
-    let mail: NativeAdminMailConfigPatch
     let pdf: NativeAdminPDFConfigPatch
     let einkauf: NativeAdminEinkaufConfigPatch
 }
@@ -114,24 +94,6 @@ struct NativeAdminImageGenerationConfigPatch: Encodable {
     let outputFormat: String
 }
 
-struct NativeAdminMailConfigPatch: Encodable {
-    let recipe: NativeAdminMailAccountConfigPatch
-    let wedding: NativeAdminMailAccountConfigPatch
-}
-
-struct NativeAdminMailAccountConfigPatch: Encodable {
-    let enabled: Bool
-    let imapHost: String
-    let imapPort: Int
-    let username: String
-    let password: String?
-    let folder: String
-    let maxMails: Int
-    let attachmentMaxMb: Int
-    let defaultCategory: String?
-    let alwaysPending: Bool?
-}
-
 struct NativeAdminPDFConfigPatch: Encodable {
     let autoRotate: Bool
     let useTesseractOsd: Bool
@@ -152,27 +114,6 @@ struct NativeAdminEinkaufConfigPatch: Encodable {
     let cfAccessClientId: String
     let cfAccessClientSecret: String?
     let autoConsolidate: Bool
-}
-
-struct NativeAdminScheduleStatus: Codable {
-    let scraper: NativeAdminScheduleItem?
-}
-
-struct NativeAdminScheduleItem: Codable {
-    let oncalendar: String?
-    let unit: String?
-    let nextRun: String?
-    let lastRun: Double?
-}
-
-struct NativeAdminSchedulePreview: Codable {
-    let scraper: NativeAdminSchedulePreviewItem?
-}
-
-struct NativeAdminSchedulePreviewItem: Codable {
-    let ok: Bool
-    let error: String?
-    let nextRuns: [String]?
 }
 
 struct NativeAdminTestResult: Codable {

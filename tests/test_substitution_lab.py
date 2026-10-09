@@ -142,6 +142,7 @@ def test_substitution_routes_enforce_real_admin_user_and_guest_sessions(
 
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     try:
         anonymous_preview = client.get(
             f"/api/recipes/{recipe_id}/substitutions"

@@ -23,6 +23,7 @@ def test_native_login_returns_bearer_session(client, test_db, monkeypatch):
         "role": "user",
         "is_admin": False,
         "full_access": False,
+        "can_import": False,
         "read_only": False,
     }
 
@@ -104,6 +105,7 @@ def test_native_guest_login_creates_no_database_user(client, test_db, monkeypatc
         "role": "guest",
         "is_admin": False,
         "full_access": False,
+        "can_import": False,
         "read_only": True,
     }
     assert test_db.user_get_by_name("Gast") is None
@@ -130,6 +132,7 @@ def test_native_session_accepts_authenticated_request(client, test_db, monkeypat
         "role": "user",
         "is_admin": False,
         "full_access": False,
+        "can_import": False,
         "read_only": False,
     }
 
@@ -151,6 +154,7 @@ def test_native_session_reports_guest_as_read_only(client, monkeypatch):
         "role": "guest",
         "is_admin": False,
         "full_access": False,
+        "can_import": False,
         "read_only": True,
     }
 
@@ -173,6 +177,7 @@ def test_guest_can_read_recipes_but_cannot_write(client, monkeypatch):
     assert auth.session_is_guest(guest_token) is True
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     try:
         read_response = client.get(
             "/api/recipes",

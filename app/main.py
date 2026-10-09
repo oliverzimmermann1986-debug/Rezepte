@@ -28,7 +28,7 @@ from .config_store import get_config, migrate_pdf_quality_defaults
 from .db import get_db
 from .routes import (api_account, api_admin, api_audit, api_auth, api_oidc, api_browse, api_config, api_einkauf, api_events, api_hdd,
                      api_history, api_jobs, api_master, api_metrics, api_pending, api_recipes,
-                     api_meal_plan, api_schedule, api_share, api_shopping, api_stats, api_test,
+                     api_meal_plan, api_share, api_shopping, api_stats, api_test,
                      api_users, sharing)
 from .security import (SameOriginMiddleware, SecurityHeadersMiddleware,
                        DatabaseBusyMiddleware, UploadSizeLimitMiddleware, client_ip,
@@ -325,16 +325,12 @@ async def _lifespan(app):
         from .routes.api_audit import stop_ai_sanity_thread
         from .routes.api_admin import stop_pdf_executor
         from .routes.api_history import stop_history_reanalysis
-        from .routes.api_jobs import stop_scraper_thread
         from .routes.api_pending import stop_pending_reanalysis
         _stop_trash_cleanup_thread(timeout=2.0)
         queue_stopped = stop_worker(timeout=8.0)
         sync_stopped = not wait_for_sync(timeout=5.0).get("running", False)
         if not sync_stopped:
             logger.warning("Dateisystem-Sync nach 5s noch aktiv")
-        scraper_stopped = stop_scraper_thread(timeout=8.0)
-        if not scraper_stopped:
-            logger.warning("Scraper-Thread nach 8s noch aktiv")
         audit_stopped = stop_ai_sanity_thread(timeout=8.0)
         if not audit_stopped:
             logger.warning("Audit-KI-Thread nach 8s noch aktiv")
@@ -350,7 +346,7 @@ async def _lifespan(app):
         if not queue_stopped:
             logger.warning("Background-Task-Worker nach 8s noch aktiv")
         other_workers_stopped = all((
-            queue_stopped, scraper_stopped, audit_stopped,
+            queue_stopped, audit_stopped,
             pending_stopped, history_stopped, pdf_stopped, sync_stopped,
         ))
         # Sauberes Shutdown: Worker-Thread stoppen damit keine FTS-Transaktion
@@ -393,6 +389,8 @@ APP_VERSION = __version__
 APP_CAPABILITIES = [
     "account-management-v1",
     "provider-auth-v1",
+    "role-based-import-v1",
+    "email-import-removed",
     "admin-center",
     "ai-shopping-optimization",
     "shopping-categories",
@@ -500,7 +498,6 @@ app.include_router(api_pending.router)
 app.include_router(api_history.router)
 app.include_router(api_test.router)
 app.include_router(api_browse.router)
-app.include_router(api_schedule.router)
 app.include_router(api_metrics.router)
 app.include_router(api_stats.router)
 app.include_router(api_hdd.router)
@@ -821,9 +818,9 @@ def _static_version() -> str:
         assets = [STATIC_DIR / name for name in ("app.js", "rezepte.css", "runtime.js", "alpine.min.js")]
         assets.extend((STATIC_DIR / "features").glob("*.js"))
         m = max(asset.stat().st_mtime_ns for asset in assets)
-        return str(m)
+        return f"{__version__}-{m}"
     except Exception:
-        return "0"
+        return __version__
 
 
 def _render_spa(request: Request, *, initial_page: str = "recipes",
@@ -968,9 +965,9 @@ def system_info():
 
 @app.get("/healthz/deep", dependencies=[Depends(require_auth)])
 def healthz_deep():
-    """Tiefer Check: DB + OpenAI + IMAP + Disk-Space.
-    Status-Code immer 200, Details im Body. Wir wollen nicht dass eine
-    kaputte IMAP-Config den ganzen Container als 'unhealthy' markiert."""
+    """Tiefer Check: DB, KI-Verbindung und Speicherplatz.
+    Status-Code immer 200, Details im Body.
+    """
     import shutil
     from .config_store import get_config, migrate_pdf_quality_defaults
 

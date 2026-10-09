@@ -7,21 +7,6 @@
     return {
 
     // ------------- Jobs -------------
-    async runScraper() {
-      if (!this.canUseAdminTools()) return;
-      await this.api('POST', '/api/jobs/scraper/run');
-      this.showToast('Scraper gestartet');
-      this.refreshStatus();
-    },
-    async cancelScraper() {
-      if (!this.canUseAdminTools()) return;
-      if (!confirm('Scraper abbrechen? Die gerade laufende URL wird noch fertig verarbeitet, danach wird gestoppt.')) return;
-      try {
-        await this.api('POST', '/api/jobs/scraper/cancel', {});
-        this.showToast('Cancel-Signal gesendet (laufende URL wird noch fertig)', 'ok');
-        this.refreshStatus();
-      } catch(e) {}
-    },
     async loadJobs() {
       this.jobs = await this.api('GET', '/api/jobs/list?limit=50');
     },
@@ -58,12 +43,12 @@
     },
 
     async importUrl() {
-      if (!this.canUseAdminTools()) return;
+      if (!this.canImport()) return;
       const url = (this.manualImportUrl || '').trim();
       if (!url || this.manualImporting) return;
       this.manualImporting = true;
       try {
-        const r = await this.api('POST', '/api/pending/import-url', { url, type: 'recipe', visibility: this.manualImportVisibility || 'private' });
+        const r = await this.api('POST', '/api/pending/import-url', { url, type: 'recipe', visibility: this.session.is_admin ? (this.manualImportVisibility || 'private') : 'private' });
         if (r && r.ok) {
           this.manualImportNotice = r.message || 'Link übernommen';
           if (r.status === 'linked_global') this.showToast('Globales Rezept im Haushalt gespeichert');
@@ -82,6 +67,35 @@
         // api() zeigt bei 4xx (z.B. Profil-URL) schon einen Fehler-Toast
       } finally {
         this.manualImporting = false;
+      }
+    },
+
+    async importRecipeFile(event) {
+      if (!this.canImport()) return;
+      const input = event?.target;
+      const file = input?.files?.[0];
+      if (!file || this.manualImporting) return;
+      this.manualImporting = true;
+      this.manualImportNotice = '';
+      try {
+        if (file.size > 25 * 1024 * 1024) throw new Error('Die Datei darf höchstens 25 MB groß sein.');
+        const form = new FormData();
+        form.append('file', file, file.name);
+        form.append('visibility', this.session.is_admin ? (this.manualImportVisibility || 'private') : 'private');
+        const result = await this.fetchWithTimeout('/api/pending/import-file', { method: 'POST', body: form }, 120000, async response => {
+          if (response.status === 401) { window.location.assign('/login'); throw new Error('Bitte erneut anmelden.'); }
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) throw new Error(this.apiErrorMessage(payload.detail || payload.error, 'Datei konnte nicht importiert werden.'));
+          return payload;
+        });
+        this.manualImportNotice = result.message || 'Datei übernommen. Offene Vorschläge findest du unter Mein Konto.';
+        await this.loadRecipes();
+      } catch (error) {
+        this.manualImportNotice = error.message;
+        this.showToast(error.message, 'error');
+      } finally {
+        this.manualImporting = false;
+        if (input) input.value = '';
       }
     },
 
@@ -384,7 +398,7 @@
       }
     },
     async scanPendingPhoto(item, event) {
-      if (!this.canUseAdminTools()) return;
+      if (!this.canImport() || (item.visibility !== 'private' && !this.canUseAdminTools())) return;
       const input = event && event.target;
       const file = input && input.files && input.files[0];
       if (input) input.value = '';
@@ -393,7 +407,7 @@
       try {
         const form = new FormData();
         form.append('file', file, file.name || 'rezeptfoto.jpg');
-        const endpoint = '/api/pending/scan-photo?visibility=global&url=' + encodeURIComponent(item.url);
+        const endpoint = '/api/pending/scan-photo?visibility=' + (item.visibility === 'private' ? 'private' : 'global') + '&url=' + encodeURIComponent(item.url);
         const { response, result } = await this.fetchWithTimeout(
           endpoint, { method: 'POST', body: form }, 60000, async response => {
             let result = {};
@@ -417,8 +431,8 @@
         } else {
           this.showToast(result.message || 'Foto erkannt; KI-Vorschlag aktualisiert', 'ok');
         }
-        await this.loadPending();
-        await this.refreshStatus();
+        if (item.visibility === 'private') await this.loadAccount();
+        else { await this.loadPending(); await this.refreshStatus(); }
       } catch (error) {
         this.showToast('Foto-Scan: ' + (error && error.message || error), 'error');
       } finally {
@@ -446,7 +460,7 @@
       }
     },
 
-    // ---------------- Failed Downloads (Email Recovery) ----------------
+    // ---------------- Failed Downloads ----------------
     async loadFailedDownloads() {
       try {
         this.failedDownloads = await this.api('GET', '/api/pending/failed') || [];
@@ -462,7 +476,7 @@
         const r = await this.api('POST', '/api/pending/failed/'
                                    + encodeURIComponent(url) + '/retry');
         if (r && r.ok) {
-          this.showToast('Counter zurückgesetzt - URL wird beim nächsten Mail-Sync neu versucht', 'ok');
+          this.showToast('Fehlerzähler zurückgesetzt – die URL kann erneut importiert werden', 'ok');
           await this.loadFailedDownloads();
         } else {
           this.showToast('Reset fehlgeschlagen', 'error');
@@ -476,7 +490,7 @@
     async clearAllFailed() {
       if (!this.canUseAdminTools()) return;
       const n = this.failedDownloads.length;
-      if (!confirm('Alle ' + n + ' Failure-Counter zurücksetzen? Die URLs werden beim nächsten Mail-Sync nochmal versucht (sofern noch in einer Mail vorhanden).')) return;
+      if (!confirm('Alle ' + n + ' Fehlerzähler zurücksetzen? Danach können die URLs erneut importiert werden.')) return;
       try {
         const r = await this.api('POST', '/api/pending/failed/clear-all');
         this.showToast((r && r.cleared || n) + ' Counter zurückgesetzt', 'ok');

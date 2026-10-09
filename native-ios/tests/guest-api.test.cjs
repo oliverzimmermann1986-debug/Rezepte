@@ -21,7 +21,7 @@ function harness(response = {}) {
   };
   const module = { exports: {} };
   vm.runInNewContext(compiled, {
-    module, exports: module.exports, Headers, AbortController, FormData: class { append() {} },
+    module, exports: module.exports, Headers, AbortController, FormData: class { fields = []; append(name, value) { this.fields.push([name, value]); } },
     setTimeout, clearTimeout,
     require: name => name === 'expo-constants' ? { expoConfig: {} } : fileSystem,
     fetch: async (url, options) => {
@@ -132,4 +132,58 @@ test('HTML and proxy redirects remain useful errors without Access credential in
       return true;
     });
   }
+});
+
+
+test('a signed-in account with the guest role cannot write or upload using a normal token', async () => {
+  const h = harness();
+  h.api.configureApi('https://rezepte.test', 'named-guest-token', 'Reader');
+  h.api.setApiReadOnly(true);
+  await h.api.api('/api/recipes');
+  await assert.rejects(h.api.api('/api/cart/add', { method: 'POST' }), error => error.status === 403);
+  await assert.rejects(h.api.uploadFile('/api/pending/import-file', { uri: 'file://demo', name: 'demo.jpg', mimeType: 'image/jpeg' }), error => error.status === 403);
+  assert.equal(h.calls.length, 1);
+  await h.api.api('/api/auth/logout', { method: 'POST' });
+  h.api.setApiReadOnly(false);
+  await h.api.api('/api/cart/add', { method: 'POST' });
+  assert.equal(h.calls.length, 3);
+});
+
+
+test('recipe uploads send private and global visibility as multipart fields expected by the server', async () => {
+  const h = harness();
+  h.api.configureApi('https://rezepte.test', 'importer-token', 'Importer');
+  for (const visibility of ['private', 'global']) {
+    await h.api.uploadFile('/api/pending/import-file', { uri: 'file://demo', name: 'demo.jpg', mimeType: 'image/jpeg' }, 'stable-request-id', undefined, { type: 'recipe', visibility });
+    const fields = Object.fromEntries(h.calls.at(-1).options.body.fields);
+    assert.equal(fields.visibility, visibility); assert.equal(fields.type, 'recipe');
+    assert.equal(fields.client_request_id, 'stable-request-id');
+  }
+});
+
+
+test('named guests retain narrow account security operations without household or admin writes', async () => {
+  const h = harness();
+  h.api.configureApi('https://rezepte.test', 'named-guest-token', 'Reader', true);
+  for (const [path, method, body] of [
+    ['/api/account/password', 'POST', '{}'], ['/api/account/profile', 'DELETE', '{}'],
+    ['/api/account/sessions/own-session', 'DELETE'], ['/api/auth/logout-all', 'POST'],
+    ['/api/account/identities/apple', 'DELETE', '{}'], ['/api/account/identities/google', 'DELETE', '{}'],
+    ['/api/auth/apple/start', 'POST', JSON.stringify({ platform: 'native', intent: 'link' })],
+    ['/api/auth/google/start', 'POST', JSON.stringify({ platform: 'native', intent: 'link' })],
+    ['/api/auth/exchange', 'POST', JSON.stringify({ code: 'proof-bound-code', code_verifier: 'proof-verifier' })],
+  ]) await h.api.api(path, { method, body });
+  assert.equal(h.calls.length, 9);
+  for (const [path, method, body] of [
+    ['/api/account/invitations', 'POST', '{}'], ['/api/account/invitations/1', 'DELETE'],
+    ['/api/users/1', 'DELETE'], ['/api/recipes/42', 'DELETE'], ['/api/pending/import-url', 'POST', '{}'],
+    ['/api/account/identities/unknown', 'DELETE'], ['/api/account/sessions/own-session/extra', 'DELETE'],
+    ['/api/auth/apple/start', 'POST', JSON.stringify({ platform: 'native', intent: 'login' })],
+  ]) await assert.rejects(h.api.api(path, { method, body }), error => error.status === 403);
+  assert.equal(h.calls.length, 9);
+  h.api.configureApi('https://rezepte.test', 'guest.anonymous-token', 'Gast');
+  for (const path of ['/api/account/password', '/api/auth/logout-all', '/api/auth/apple/start', '/api/auth/exchange']) {
+    await assert.rejects(h.api.api(path, { method: 'POST', body: JSON.stringify({ platform: 'native', intent: 'link', code: 'code', code_verifier: 'verifier' }) }), error => error.status === 403);
+  }
+  assert.equal(h.calls.length, 9);
 });

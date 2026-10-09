@@ -30,7 +30,6 @@ from ..config_store import get_config
 from ..db import get_db
 from ..core.analyzer import RecipeAnalysis, WeddingAnalysis, build_analyzer
 from ..core.downloader import VideoDownloader
-from ..core.email_processor import MailAccount, EmailRouter
 from ..core.pdf_processing import process_pdf_bytes
 from ..recipes.pdf_recipe_extract import (
     ExtractedRecipeData, apply_extracted_recipe_data, existing_hints,
@@ -47,34 +46,17 @@ from ..recipes.video_recipe_extract import (
 logger = logging.getLogger(__name__)
 
 
-# Cancel-Flag (modul-global, threading-safe). Wird im Web-Trigger und beim
-# Job-Start reset, vom Cancel-Endpoint gesetzt, im run()-Loop pro URL geprüft.
-_CANCEL_EVENT = threading.Event()
+# Cancellation for explicit history reanalysis; direct imports use task state.
 _HISTORY_CANCEL_EVENT = threading.Event()
 
 # Anzahl automatischer Wiederholungen, bevor ein fehlgeschlagener Download
 # ausschließlich über die manuelle Prüfung erneut angestoßen wird.
 MAX_DOWNLOAD_ATTEMPTS = 3
 
-def cancel_job() -> dict:
-    """Setzt das Cancel-Flag. Der laufende Scraper bricht beim nächsten
-    URL-Check ab. Nicht-blockierend - kein subprocess wird hier gekillt
-    (yt-dlp läuft, fertige URLs werden komplett verarbeitet)."""
-    _CANCEL_EVENT.set()
-    from .locks import request_cancel
-    request_cancel("scraper")
-    return {"ok": True}
 
 
-def is_cancelled() -> bool:
-    from .locks import cancel_requested
-    return _CANCEL_EVENT.is_set() or cancel_requested("scraper")
 
 
-def reset_cancel() -> None:
-    _CANCEL_EVENT.clear()
-    from .locks import clear_cancel
-    clear_cancel("scraper")
 
 
 def cancel_history_job() -> dict:
@@ -209,22 +191,6 @@ class ScraperJob:
             ytdlp_cfg.get("binary", "/opt/scrapper/venv/bin/yt-dlp"),
             self.temp_dir,
             cookies_file=ytdlp_cfg.get("cookies_file") or None,
-        )
-
-        # E-Mail Konten
-        mail_cfg = cfg.get("mail", default={}) or {}
-        accounts = []
-        if mail_cfg.get("recipe"):
-            accounts.append(MailAccount("recipe", mail_cfg["recipe"], "recipe"))
-        if mail_cfg.get("wedding"):
-            accounts.append(MailAccount(
-                "wedding", mail_cfg["wedding"], "wedding",
-                default_category=mail_cfg["wedding"].get("default_category", "Sonstiges"),
-            ))
-        self.router = EmailRouter(accounts)
-
-        self.wedding_always_pending = bool(
-            (mail_cfg.get("wedding") or {}).get("always_pending", False)
         )
 
         self.wedding_categories = cfg.get(
@@ -372,7 +338,7 @@ class ScraperJob:
         entsteht ein Rezept; fehlende Zutaten oder Schritte bleiben dort als
         sichtbare manuelle Pflegeaufgabe erhalten.
         """
-        from ..core.email_processor import normalize_content_url
+        from ..core.content_urls import normalize_content_url
 
         raw_url = str(item.get("url") or "")
         url = normalize_content_url(raw_url)
@@ -1126,7 +1092,7 @@ class ScraperJob:
                 source_added_at=time.time(),
             )
             applied = apply_extracted_recipe_data(
-                self.db, recipe_id, structured, actor="mail-import",
+                self.db, recipe_id, structured, actor="attachment-import",
                 overwrite=False, create_version=False, update_description=True,
             )
             if not applied.get("ok"):
@@ -1138,7 +1104,7 @@ class ScraperJob:
             return None
 
     def process_attachment(self, att: Dict, synth_url: str) -> Dict:
-        """Verarbeitet ein Mail-Attachment (PDF/JPG/PNG):
+        """Verarbeitet einen hochgeladenen Anhang (PDF/JPG/PNG):
 
         - PDF: Text via pdfplumber/pypdf extrahieren, durch Text-Analyzer
         - JPG/PNG: bei OpenAI-Provider via Vision-API; sonst Subject-Fallback
@@ -1151,7 +1117,7 @@ class ScraperJob:
         subject = att.get("subject", "")
         body_excerpt = att.get("body_excerpt", "")
         default_cat = att.get("default_category") or "Sonstiges"
-        source_kind = str(att.get("source") or "mail-attachment")
+        source_kind = str(att.get("source") or "manual-upload")
         result: Dict = {"url": synth_url, "type": content_type, "status": "error"}
         pdf_rotation = None
         structured_recipe = None
@@ -1274,7 +1240,7 @@ class ScraperJob:
                         "category": analysis.category, "confidence": analysis.confidence,
                         "content_type": "recipe", "source": source_kind,
                         "is_manual": not complete,
-                        "filename": att["filename"], "mail_subject": subject,
+                        "filename": att["filename"], "title": subject,
                         "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
                         "description": description[:5000],
                         "pdf_recipe_extraction": {
@@ -1316,7 +1282,7 @@ class ScraperJob:
                 if not analysis:
                     analysis = self._analyze_wedding(description)
 
-                if analysis.needs_manual_input(self.confidence_threshold) or self.wedding_always_pending:
+                if analysis.needs_manual_input(self.confidence_threshold):
                     pending_path = self._stash_attachment_for_pending(data, ext, synth_url)
                     self.db.pending_add(
                         url=synth_url, content_type="wedding",
@@ -1342,7 +1308,7 @@ class ScraperJob:
                         "wedding_category": analysis.category or default_cat,
                         "confidence": analysis.confidence,
                         "content_type": "wedding", "source": source_kind,
-                        "filename": att["filename"], "mail_subject": subject,
+                        "filename": att["filename"], "title": subject,
                         "pdf_processing": pdf_rotation.as_dict() if pdf_rotation else None,
                         "description": description[:5000],
                         "timestamp": datetime.now().isoformat(),
@@ -1384,183 +1350,6 @@ class ScraperJob:
         except Exception as e:
             logger.warning(f"Cleanup: {e}")
 
-    # ---------------- Hauptlauf ----------------
-    def run(self) -> Dict:
-        start = time.time()
-        summary = {
-            "started_at": datetime.now().isoformat(),
-            "fetched": 0, "new": 0, "auto": 0, "pending": 0,
-            "errors": 0, "cancelled": False, "skipped_failed": 0,
-            "recipe_auto": 0, "recipe_pending": 0,
-            "wedding_auto": 0, "wedding_pending": 0,
-        }
-
-        # Link-Imports sind seit der Link-only-Umstellung KI-frei. Ein Ausfall
-        # des optionalen Analyzers darf deshalb weder das Mail-Abrufen noch das
-        # persistente Ablegen solcher Links blockieren. Attachment-Parser
-        # behandeln ihren jeweiligen KI-Fehler weiterhin pro Element.
-        if self.analyzer_enabled and self.analyzer and not self.analyzer.health():
-            msg = (f"OpenAI nicht erreichbar oder Modell '{self.analyzer.model}' nicht verfügbar - "
-                   f"KI-abhängige Anhänge können fehlschlagen; Link-Import läuft weiter")
-            logger.warning(msg)
-            summary["ai_available"] = False
-            summary["warning"] = msg
-        else:
-            summary["ai_available"] = bool(self.analyzer_enabled and self.analyzer)
-
-        # Mails holen: URLs + Attachments in einem Pass
-        fetched = self.router.fetch_all_with_attachments()
-        url_items = fetched["urls"]
-        attach_items = fetched["attachments"]
-        summary["fetched"] = len(url_items)
-        summary["attachments_fetched"] = len(attach_items)
-
-        pending_urls = {p["url"] for p in self.db.pending_list("pending")}
-        new_items = [
-            it for it in url_items
-            if not self.db.history_has(it["url"]) and it["url"] not in pending_urls
-        ]
-
-        # Retry-Kandidaten aus download_failures (attempts < MAX). Quelle der
-        # Wahrheit für Wiederholungen seit verarbeitete Mails gelöscht werden —
-        # die URL steht in keiner Mail mehr.
-        known = {it["url"] for it in new_items}
-        for cand in self.db.download_failures_retry_candidates(MAX_DOWNLOAD_ATTEMPTS):
-            if cand["url"] in known or self.db.history_has(cand["url"]) \
-                    or cand["url"] in pending_urls:
-                continue
-            new_items.append({"url": cand["url"],
-                              "type": cand.get("content_type") or "recipe",
-                              "source_account": None, "mail_uid": None})
-        summary["new"] = len(new_items)
-        logger.info(f"Neue URLs: {len(new_items)}, Attachments: {len(attach_items)}")
-
-        # Mail-Accounting: eine Mail darf erst gelöscht werden, wenn ALLE ihre
-        # Items (URLs + Attachments) in diesem Lauf verarbeitet oder als
-        # bereits bekannt geskippt wurden. Bei Cancel wird nichts gelöscht.
-        mail_total: Dict[tuple, int] = {}
-        mail_done: Dict[tuple, int] = {}
-        def _mail_key(it: Dict) -> Optional[tuple]:
-            if it.get("source_account") and it.get("mail_uid"):
-                return (it["source_account"], it["mail_uid"])
-            return None
-        for it in url_items + attach_items:
-            k = _mail_key(it)
-            if k:
-                mail_total[k] = mail_total.get(k, 0) + 1
-        def _mark_done(it: Dict) -> None:
-            k = _mail_key(it)
-            if k:
-                mail_done[k] = mail_done.get(k, 0) + 1
-        # Bereits bekannte URLs (history/pending-Dedup oben) sind erledigt:
-        new_urls = {it["url"] for it in new_items}
-        for it in url_items:
-            if it["url"] not in new_urls:
-                _mark_done(it)
-
-        for item in new_items:
-            # Cancel zwischen URLs prüfen - laufende process_url-Calls
-            # werden nicht unterbrochen, neue starten aber nicht mehr.
-            if is_cancelled():
-                logger.warning(f"Scraper cancelled - {len([i for i in new_items if i == item]) } URLs übersprungen")
-                summary["cancelled"] = True
-                break
-
-            url = item["url"]
-
-            accounted = False
-            try:
-                r = self.process_url(item)
-                if r["status"] == "auto":
-                    summary["auto"] += 1
-                    summary[f"{item['type']}_auto"] += 1
-                    accounted = True
-                elif r["status"] == "pending":
-                    summary["pending"] += 1
-                    summary[f"{item['type']}_pending"] += 1
-                    accounted = True
-                elif r["status"] == "already_processed":
-                    accounted = True
-                else:
-                    summary["errors"] += 1
-            except Exception as e:
-                logger.exception(f"URL fehlgeschlagen {url}: {e}")
-                summary["errors"] += 1
-            finally:
-                # Nur persistierte Outcomes erlauben das Löschen der Quellmail.
-                # Bei Fehler bleibt sie für einen späteren Lauf erhalten.
-                if accounted:
-                    _mark_done(item)
-
-        # Attachments verarbeiten (PDF + JPG)
-        summary["attach_auto"] = 0
-        summary["attach_pending"] = 0
-        summary["attach_skipped"] = 0
-        for att in attach_items:
-            if is_cancelled():
-                summary["cancelled"] = True
-                break
-            # Synthetic-URL für Dedupe: msg_id::filename. Wenn schon
-            # in History oder Pending, skip.
-            synth_url = f"mail-attachment://{att['msg_id']}::{att['filename']}"
-            if self.db.history_has(synth_url) or synth_url in pending_urls:
-                summary["attach_skipped"] += 1
-                _mark_done(att)
-                continue
-            accounted = False
-            try:
-                r = self.process_attachment(att, synth_url)
-                if r.get("status") == "auto":
-                    summary["attach_auto"] += 1
-                    summary[f"{att['type']}_auto"] += 1
-                    accounted = True
-                elif r.get("status") == "pending":
-                    summary["attach_pending"] += 1
-                    summary[f"{att['type']}_pending"] += 1
-                    accounted = True
-                else:
-                    summary["errors"] += 1
-            except Exception as e:
-                logger.exception(f"Attachment fehlgeschlagen {att.get('filename')}: {e}")
-                summary["errors"] += 1
-            finally:
-                if accounted:
-                    _mark_done(att)
-
-        # Verarbeitete Mails löschen — nur wenn der Lauf nicht abgebrochen wurde
-        # und ALLE Items der Mail accounted sind. Config-gated pro Konto
-        # (email.<konto>.delete_processed: true).
-        if not summary["cancelled"]:
-            try:
-                uids_by_account: Dict[str, set] = {}
-                for (acc_name, uid), total in mail_total.items():
-                    if mail_done.get((acc_name, uid), 0) >= total:
-                        uids_by_account.setdefault(acc_name, set()).add(uid)
-                deleted = self.router.delete_processed_mails(uids_by_account)
-                summary["mails_deleted"] = deleted
-            except Exception as e:
-                logger.warning(f"Mail-Cleanup fehlgeschlagen (non-fatal): {e}")
-
-        summary["duration_sec"] = round(time.time() - start, 1)
-        summary["total_pending"] = self.db.pending_count()
-        logger.info(f"Job-Summary: {summary}")
-
-        # Webhook-Notifications (asynchron, blockt das Job-Ende nicht)
-        try:
-            from ..core import webhook
-            webhook.notify("scraper_done", summary)
-            # Pending-High-Alarm wenn Schwelle überschritten
-            threshold = int(self.cfg.get("notifications", "pending_high_threshold",
-                                          default=50) or 50)
-            if summary["total_pending"] >= threshold:
-                webhook.notify("pending_high", {
-                    "pending_count": summary["total_pending"],
-                    "threshold": threshold,
-                })
-        except Exception as e:
-            logger.warning(f"webhook.notify failed (non-fatal): {e}")
-
-        return summary
 
     # ---------------- History neu analysieren ----------------
 
@@ -2467,7 +2256,7 @@ class ScraperJob:
         # Link-only-Pending-Einträge aus älteren Releases besitzen noch keinen
         # ``source``-Marker. Sie dürfen nicht in den Legacy-Video-Pfad fallen:
         # dort ist absichtlich keine dauerhafte Video-Datei mehr vorhanden.
-        from ..core.email_processor import is_content_url
+        from ..core.content_urls import is_content_url
 
         if suggestion.get("source") == "external-link" or is_content_url(url):
             if suggestion.get("source") != "external-link":
@@ -2821,12 +2610,10 @@ class ScraperJob:
                 pass
 
 
-def run_job() -> Dict:
-    return get_scraper_job().run()
 
 
 # ---------------- Singleton-Accessor ----------------
-# ScraperJob() konstruiert 30+ Config-Werte, Ollama-Clients, IMAP-Klassen.
+# ScraperJob() cached import settings and analyzer/downloader clients.
 # Bei vielen UI-Klicks (Resolve, Reanalyze, Edit) summiert sich das auf
 # 200-800 ms pro Call. Singleton cached die Instanz und wird bei Config-
 # Save invalidiert, sodass neue Settings im nächsten Call greifen.

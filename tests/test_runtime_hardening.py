@@ -92,7 +92,7 @@ def test_vacuum_reports_busy_process_lock(test_db, monkeypatch):
 
 
 def test_admin_vacuum_returns_conflict_when_locked(client, test_db, monkeypatch):
-    from app.auth import require_admin
+    from app.auth import require_admin, require_import
     from app.main import app
 
     monkeypatch.setattr(
@@ -110,5 +110,6 @@ def test_admin_vacuum_returns_conflict_when_locked(client, test_db, monkeypatch)
         response = client.post("/api/admin/maintenance/run/vacuum")
     finally:
         app.dependency_overrides.pop(require_admin, None)
+        app.dependency_overrides.pop(require_import, None)
 
     assert response.status_code == 409

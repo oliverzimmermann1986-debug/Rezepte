@@ -23,17 +23,20 @@ def account_client(client, test_db, monkeypatch):
     overrides = dict(app.dependency_overrides)
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     yield client, owner_id
     app.dependency_overrides.clear()
     app.dependency_overrides.update(overrides)
 
 
-def test_public_registration_creates_user_without_admin_privileges(account_client, test_db):
+@pytest.mark.parametrize("requested_role", ["guest", "user", "full_user", "admin"])
+def test_public_registration_creates_user_without_admin_privileges(account_client, test_db, requested_role):
     client, _ = account_client
     client.headers.pop("Authorization")
-    response = client.post("/api/auth/register", json={"username": "new-member", "password": "strong-test-password", "role": "admin"})
+    response = client.post("/api/auth/register", json={"username": "new-member", "password": "strong-test-password", "role": requested_role})
     assert response.status_code == 201
     assert response.json()["role"] == "user" and response.json()["is_admin"] is False
+    assert response.json()["can_import"] is False
     client.headers["Authorization"] = "Bearer " + response.json()["token"]
     assert client.get("/api/account").json()["members"][0]["username"] == "new-member"
     assert client.get("/api/users").status_code == 403

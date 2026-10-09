@@ -64,6 +64,7 @@ def test_legacy_proxy_settings_cannot_read_api_or_spa(client, legacy_config, mon
     monkeypatch.setattr(security, "request_is_from_trusted_proxy", lambda _request: trusted)
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     headers = {"Authorization": "Bearer " + token} if token else {}
     for path in ("/api/auth/session", "/api/session", "/api/recipes", "/api/account", "/api/config", "/api/admin/overview"):
         assert client.get(path, headers=headers).status_code == 401, path
@@ -90,7 +91,7 @@ def test_legacy_client_can_save_false_but_never_disable_accounts(client, legacy_
     assert config.path.read_bytes() == before
 
 
-@pytest.mark.parametrize("role", ["user", "admin"])
+@pytest.mark.parametrize("role", ["guest", "user", "full_user", "admin"])
 def test_real_login_keeps_persisted_role_and_logout_revokes(client, test_db, legacy_config, role):
     from app.main import app
     config, original = legacy_config
@@ -106,6 +107,7 @@ def test_real_login_keeps_persisted_role_and_logout_revokes(client, test_db, leg
     assert auth.verify_session(payload["token"])
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     headers = {"Authorization": "Bearer " + payload["token"]}
     assert client.get("/api/config", headers=headers).status_code == (200 if role == "admin" else 403)
     assert client.post("/api/auth/logout", headers=headers).json()["revoked"]

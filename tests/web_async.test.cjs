@@ -104,6 +104,7 @@ test('household join cancellation preserves the invitation and makes no request'
 test('confirmed household join posts once and refreshes the household', async () => {
   const calls = [];
   const app = createApp({ confirm: () => true, window: { location: { assign: url => calls.push(url) } } });
+  app.session = { loaded: true, role: 'user' };
   app.account.joinToken = 'synthetic-invitation';
   app.api = async (method, url, body) => { calls.push([method, url, body.token]); return {}; };
   app.loadAccount = async () => {};
@@ -584,6 +585,7 @@ test('unknown sessions cannot enable editing after a failed role check', async (
 
 test('account invitations retain their link until revoked', async () => {
   const app = createApp({ window: { location: { origin: 'https://rezepte.test' } } });
+  app.session = { loaded: true, role: 'user' };
   const calls = [];
   app.api = async (method, path) => {
     calls.push([method, path]);
@@ -599,6 +601,7 @@ test('account invitations retain their link until revoked', async () => {
 
 test('accepting an invitation extracts the token and refreshes membership', async () => {
   const app = createApp({ confirm: () => true });
+  app.session = { loaded: true, role: 'user' };
   let received;
   app.account.joinToken = 'https://rezepte.test/register?invite=demo-invitation-token';
   app.api = async (method, path, payload) => {
@@ -758,7 +761,7 @@ test('disabled and unknown identity providers never get link controls', () => {
 });
 
 test('normal and unresolved sessions cannot launch AI, import or OCR handlers directly', async () => {
-  const blocked = ['saveHouseholdImport', 'runScraper', 'cancelScraper', 'cleanupFailedJobs', 'importUrl', 'bulkSkipPending', 'resolveItem',
+  const blocked = ['saveHouseholdImport', 'importRecipeFile', 'cleanupFailedJobs', 'importUrl', 'bulkSkipPending', 'resolveItem',
     'reanalyzeHistoryOne', 'reanalyzeHistoryAll', 'reanalyzeJunkOnly', 'cleanupAllJunk', 'scanPendingPhoto',
     'reanalyzeOne', 'retryFailed', 'clearAllFailed', 'reanalyzeAll', 'openEditItem', 'saveEditItem', 'deleteItem',
     'generateRecipeImage', 'syncRecipes', 'extractIngredients', 'computeNutrition', 'rescrapeFromDetailModal',
@@ -806,6 +809,52 @@ test('normal account profile never requests its former import workspace', async 
   assert.equal(calls.includes('/api/account/imports'), false);
   assert.ok(calls.includes('/api/account/profile'));
   assert.deepEqual(Array.from(app.account.imports), []);
+});
+
+test('four roles separate normal editing, import and administration', () => {
+  const app = createApp();
+  for (const [role, write, importing, admin] of [
+    ['guest', false, false, false], ['user', true, false, false],
+    ['full_user', true, true, false], ['admin', true, true, true],
+  ]) {
+    app.session = { loaded: true, role, is_admin: admin };
+    assert.equal(app.canWrite(), write);
+    assert.equal(app.canImport(), importing);
+    assert.equal(app.canUseAdminTools(), admin);
+  }
+  app.session = { loaded: false, role: 'full_user' };
+  assert.equal(app.canImport(), false);
+});
+
+test('full users import privately even with stale global visibility and cannot run maintenance', async () => {
+  const app = createApp({ confirm: () => assert.fail('No maintenance confirmation') });
+  app.session = { loaded: true, role: 'full_user', is_admin: false };
+  app.manualImportUrl = 'https://recipes.example/meal';
+  app.manualImportVisibility = 'global';
+  const calls = [];
+  app.api = async (method, path, body) => { calls.push({ method, path, body }); return { ok: true }; };
+  app.loadRecipes = async () => {};
+  await app.importUrl();
+  assert.equal(calls[0].path, '/api/pending/import-url');
+  assert.equal(calls[0].body.visibility, 'private');
+  await app.runAdminPdf();
+  await app.runMaintenance();
+  await app.bulkSkipPending();
+  assert.equal(calls.length, 1);
+  assert.equal(app.runScraper, undefined);
+  assert.equal(app.testMail, undefined);
+  assert.equal(app.saveSchedule, undefined);
+});
+
+test('named guests can revoke their own session but cannot change household data', async () => {
+  const calls = [];
+  const app = createApp({ fetch: async (url) => { calls.push(url); return { ok: true, json: async () => ({ ok: true }) }; } });
+  app.session = { loaded: true, role: 'guest' };
+  app.account.profile = { id: 5, role: 'guest' };
+  await app.api('DELETE', '/api/account/sessions/current');
+  await assert.rejects(app.api('POST', '/api/account/invitations', {}), /Gäste/);
+  await assert.rejects(app.api('POST', '/api/pending/import-url', {}), /Gäste/);
+  assert.deepEqual(calls, ['/api/account/sessions/current']);
 });
 
 test('variant cancellation and server errors keep the original recipe unchanged', async () => {

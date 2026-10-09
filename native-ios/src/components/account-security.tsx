@@ -5,7 +5,7 @@ import { PrimaryButton } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { AccountIdentity, AccountProfile, AccountSession, IdentityProvider, accountDate, passwordProblem } from '@/lib/account-management';
+import { AccountIdentity, AccountProfile, AccountSession, IdentityProvider, accountRoleLabels, accountDate, passwordProblem } from '@/lib/account-management';
 
 export function AccountSecurity() {
   const { signOut, linkProvider } = useAuth();
@@ -59,7 +59,7 @@ export function AccountSecurity() {
     {!!notice && <Text accessibilityRole="alert" style={styles.note}>{notice}</Text>}
     <PrimaryButton label="Kontodaten aktualisieren" onPress={() => void load()} disabled={busy} />
     {profile && <>
-      <Text style={styles.note}>{profile.username} · {profile.role === 'admin' ? 'Administrator' : 'Benutzer'}{ '\n' }Erstellt: {accountDate(profile.created_at)}</Text>
+      <Text style={styles.note}>{profile.username} · {accountRoleLabels[profile.role]}{ '\n' }Erstellt: {accountDate(profile.created_at)}</Text>
       {[['password', 'Passwort ändern oder einrichten'], ['sessions', 'Angemeldete Geräte'], ['identities', 'Verknüpfte Anmeldungen'], ['delete', 'Konto löschen']].map(([key, label]) => <PrimaryButton key={key} label={(section === key ? '− ' : '+ ') + label} onPress={() => { clearPasswords(); setSection(section === key ? '' : key); }} disabled={busy} />)}
       {section === 'password' && <View style={styles.group}>
         <Text style={styles.note}>Mindestens 10 Zeichen, höchstens 72 UTF-8-Bytes. Danach auf allen Geräten erneut anmelden.</Text>

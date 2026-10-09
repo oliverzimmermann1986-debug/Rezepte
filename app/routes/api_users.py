@@ -45,7 +45,7 @@ def list_users():
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=32)
     password: str = Field(..., min_length=MIN_PW_LEN, max_length=72)
-    role: Literal["user", "admin"] = ROLE_USER
+    role: Literal["guest", "user", "full_user", "admin"] = ROLE_USER
 
 
 @router.post("")
@@ -82,7 +82,7 @@ def create_user(payload: UserCreate, current=Depends(require_admin)):
 class UserUpdate(BaseModel):
     password: Optional[str] = Field(default=None, max_length=72)
     disabled: Optional[bool] = None
-    role: Optional[Literal["user", "admin"]] = None
+    role: Optional[Literal["guest", "user", "full_user", "admin"]] = None
 
 
 @router.patch("/{user_id}")

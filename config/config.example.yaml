@@ -53,34 +53,6 @@ paths:
   # 0 = nie löschen.
   log_retention_days: 30
 
-# E-Mail Konten (2 separate Inboxes - kein Betreff-Check mehr nötig!)
-mail:
-  # Konto für Rezepte
-  recipe:
-    enabled: true
-    imap_host: imap.gmail.com
-    imap_port: 993
-    username: rezepte@example.com
-    password: app-passwort-hier
-    folder: INBOX
-    max_mails: 20
-    attachment_max_mb: 25
-
-  # Konto für Hochzeit
-  wedding:
-    enabled: true
-    imap_host: imap.gmail.com
-    imap_port: 993
-    username: hochzeit@example.com
-    password: app-passwort-hier
-    folder: INBOX
-    max_mails: 20
-    attachment_max_mb: 25
-    # Default-Kategorie wenn KI keine Zuordnung findet
-    default_category: Sonstiges
-    # Wenn true: ALLE Hochzeits-Items landen IMMER in Pending (kein Auto-Sortieren)
-    always_pending: true
-
 # AI Analyse - läuft über OpenAI (gpt-4o-mini per default). Bei niedriger
 # Confidence landet das Item in der Pending-Liste zur manuellen Zuordnung.
 # Captions in anderen Sprachen werden automatisch nach Deutsch übersetzt
@@ -94,7 +66,7 @@ ai:
     base_url: ""
     timeout: 30
     # Serverweite rollierende 24-Stunden-Grenzen, einschließlich Retries und
-    # automatischer Mail-/Video-/PDF-Verarbeitung. 0 sperrt weitere Aufrufe.
+    # Video-/PDF-Verarbeitung. 0 sperrt weitere Aufrufe.
     # Dies sind Versuchskontingente, keine garantierte Euro-/Dollar-Obergrenze.
     server_daily_request_limit: 1000
     server_daily_image_limit: 40
@@ -123,7 +95,7 @@ ai:
     quality: medium
     output_format: jpeg
 
-# PDF-Verarbeitung. Falsch gedrehte Seiten werden beim Mail-Import
+# PDF-Verarbeitung. Falsch gedrehte Seiten werden beim Datei-Import
 # automatisch ausgerichtet. Text-PDFs werden lokal über den Text-Layer
 # erkannt; gescannte Seiten optional über Tesseract OSD. Bei Unsicherheit
 # wird nichts verändert. Digitale Signaturen bleiben unangetastet.
@@ -167,10 +139,6 @@ ytdlp:
   browser_timeout_seconds: 35
   # Optional: eigener Chromium-Pfad; leer = Playwright-Browser verwenden.
   browser_executable_path: ""
-
-# Scheduling (systemd Timer)
-schedule:
-  scraper_interval: "*:0/30"   # alle 30 Minuten
 
 # Wedding-Kategorien (für KI-Vorschläge + Web-UI Dropdown)
 wedding_categories:

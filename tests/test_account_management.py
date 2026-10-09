@@ -27,6 +27,7 @@ def account_api(client, test_db, monkeypatch, password_hash):
     monkeypatch.setattr(account_security, "recent_auth_limiter", LoginRateLimiter())
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     admin_id = test_db.user_create("admin", password_hash, role="admin")
     user_id = test_db.user_create("anna", password_hash)
     test_db.user_create("bert", password_hash)
@@ -63,6 +64,8 @@ def test_admin_list_includes_real_passwordless_provider_accounts(account_api, pr
     listed = by_id[identity["user_id"]]
     assert listed["auth_methods"] == [provider]
     assert listed["role"] == "user" and listed["disabled"] is False
+    provider_session = client.get("/api/auth/session", headers=_headers(token)).json()
+    assert provider_session["role"] == "user" and provider_session["can_import"] is False
     assert set(listed) == {"id", "username", "role", "disabled", "created_at", "last_login_at", "auth_methods"}
     assert subject not in response.text and secret not in response.text
     if email:

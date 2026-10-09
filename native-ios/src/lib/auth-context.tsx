@@ -18,6 +18,7 @@ import {
   ApiError,
   api,
   configureApi,
+  setApiReadOnly,
   currentApiSessionEpoch,
   isApiSessionEpochCurrent,
   setUnauthorizedHandler,
@@ -181,6 +182,8 @@ type AuthContextValue = {
   username: string;
   isAdmin: boolean;
   isGuest: boolean;
+  canImport: boolean;
+  canManageOwnAccount: boolean;
   sessionWarning: string;
   sessionChecking: boolean;
   authCleanupPending: boolean;
@@ -214,6 +217,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [sessionWarning, setSessionWarning] = useState('');
   const [sessionChecking, setSessionChecking] = useState(false);
   const [authCleanupPending, setAuthCleanupPending] = useState(false);
+  const [canImport, setCanImport] = useState(false);
+  const canManageOwnAccount = Boolean(token) && (!isGuest || !token?.startsWith('guest.'));
   const sessionRefreshInFlight = useRef<Promise<void> | null>(null);
   const authenticationInFlight = useRef(false);
 
@@ -263,7 +268,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
               is_admin?: boolean;
             }>('/api/auth/session', {}, undefined, 5_000);
             setUsername(session.username);
-            setIsAdmin(session.is_admin === true || session.role === 'admin');
+            setIsAdmin(session.role === 'admin');
+            setCanImport(session.role === 'full_user' || session.role === 'admin');
+            setApiReadOnly(session.role === 'guest');
             setIsGuest(session.role === 'guest');
             await secureStorage.set(USERNAME_KEY, session.username);
           } catch (reason) {
@@ -279,6 +286,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
               setIsGuest(false);
               setUsername('');
               setIsAdmin(false);
+              setCanImport(false);
               setSessionWarning('Deine Sitzung ist abgelaufen. Bitte erneut anmelden.');
               await clearExpiredSessionCaches();
             } else if (reason instanceof ApiError && reason.status === 403) {
@@ -298,6 +306,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         setIsGuest(false);
         setUsername('');
         setIsAdmin(false);
+        setCanImport(false);
         setServerUrl(DEFAULT_SERVER);
         setAuthCleanupPending(true);
         setSessionWarning('Der iOS-Schlüsselbund konnte nicht vollständig bereinigt werden. Bitte erneut versuchen.');
@@ -317,6 +326,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       setIsGuest(false);
       setUsername('');
       setIsAdmin(false);
+      setCanImport(false);
       setSessionWarning('Deine Sitzung ist abgelaufen. Bitte erneut anmelden.');
       router.replace('/login');
       try {
@@ -348,7 +358,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
         // Eine Antwort der alten Sitzung darf die neue Rolle nicht überschreiben.
         if (!isApiSessionEpochCurrent(requestEpoch)) return;
         setUsername(session.username);
-        setIsAdmin(session.is_admin === true || session.role === 'admin');
+        setIsAdmin(session.role === 'admin');
+        setCanImport(session.role === 'full_user' || session.role === 'admin');
+        setApiReadOnly(session.role === 'guest');
         setIsGuest(session.role === 'guest');
         try {
           await secureStorage.set(USERNAME_KEY, session.username);
@@ -367,6 +379,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
           setIsGuest(false);
           setUsername('');
           setIsAdmin(false);
+          setCanImport(false);
           setSessionWarning('Deine Sitzung ist abgelaufen. Bitte erneut anmelden.');
           router.replace('/login');
           try {
@@ -431,6 +444,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       setIsGuest(false);
       setUsername('');
       setIsAdmin(false);
+      setCanImport(false);
       setSessionWarning('Anmeldung konnte auf dem Gerät nicht gespeichert werden. Bitte erneut anmelden.');
       router.replace('/login');
       throw reason;
@@ -447,7 +461,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setToken(result.token);
     setIsGuest(result.role === 'guest');
     setUsername(result.username);
-    setIsAdmin(result.is_admin === true || result.role === 'admin');
+    setIsAdmin(result.role === 'admin');
+    setCanImport(result.role === 'full_user' || result.role === 'admin');
+    setApiReadOnly(result.role === 'guest');
     setSessionWarning(legacyCleanupPending ? 'Alte Zugangsdaten konnten noch nicht vollständig aus dem Schlüsselbund entfernt werden.' : '');
     setAuthCleanupPending(legacyCleanupPending);
     router.replace('/(tabs)');
@@ -484,7 +500,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         // Eine fehlgeschlagene Registrierung aus dem Gastkonto lässt dessen
         // Lesesitzung aktiv. Ein zwischenzeitliches Abmelden bleibt wirksam.
         if (token && isApiSessionEpochCurrent(attemptEpoch)) {
-          configureApi(serverUrl, token, username);
+          configureApi(serverUrl, token, username, isGuest);
         }
         throw reason;
       }
@@ -497,7 +513,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   async function authenticateProvider(nextServer: string, provider: 'apple' | 'google', intent: 'login' | 'link', invitationToken = '', currentPassword = '') {
     const normalizedServer = normalizeServer(nextServer);
     if (authenticationInFlight.current) throw new ApiError('Eine Anmeldung läuft bereits.', 0);
-    if (intent === 'link' && (!token || isGuest)) throw new ApiError('Bitte zuerst mit deinem Konto anmelden.', 401);
+    if (intent === 'link' && !canManageOwnAccount) throw new ApiError('Bitte zuerst mit deinem Konto anmelden.', 401);
     authenticationInFlight.current = true;
     if (intent === 'login') configureApi(normalizedServer, null);
     const epoch = currentApiSessionEpoch();
@@ -506,7 +522,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       const result = await providerAuthentication(provider, intent, invitationToken, currentPassword);
       if (result) { await activateSession(result, normalizedServer, epoch); activated = true; }
     } finally {
-      if (!activated && isApiSessionEpochCurrent(epoch)) configureApi(serverUrl, token, username);
+      if (!activated && isApiSessionEpochCurrent(epoch)) configureApi(serverUrl, token, username, isGuest);
       authenticationInFlight.current = false;
     }
   }
@@ -518,6 +534,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setIsGuest(false);
     setUsername('');
     setIsAdmin(false);
+    setCanImport(false);
     setSessionWarning('');
     router.replace('/login');
     try {
@@ -548,6 +565,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setIsGuest(false);
     setUsername('');
     setIsAdmin(false);
+    setCanImport(false);
     setServerUrl(DEFAULT_SERVER);
     setSessionWarning(options.notice || '');
     router.replace('/login');
@@ -610,6 +628,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
     username,
     isAdmin,
     isGuest,
+    canImport,
+    canManageOwnAccount,
     sessionWarning,
     sessionChecking,
     authCleanupPending,
@@ -626,7 +646,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     refreshHousehold: async () => {
       // A membership change invalidates in-flight reads and all stored content
       // before the newly shared household can be displayed.
-      configureApi(serverUrl, token, username);
+      configureApi(serverUrl, token, username, isGuest);
       await clearApiCache();
       await Image.clearDiskCache();
       await Image.clearMemoryCache();

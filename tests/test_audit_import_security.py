@@ -1,4 +1,4 @@
-"""Regressions for untrusted mail, paths, HTML identities and preview sizes."""
+"""Regressions for untrusted uploads, paths, HTML identities and preview sizes."""
 from pathlib import Path
 from types import SimpleNamespace
 import ssl
@@ -7,31 +7,12 @@ import threading
 
 import pytest
 
-from app.core import email_processor, recipe_web
+from app.core import recipe_web
 from app.jobs.scraper import _sanitize
 from app.recipes.manage import sanitize_filename
 from app.recipes import image_cache
 
 
-def test_mail_connection_requires_verified_tls_before_credentials(monkeypatch):
-    seen = {}
-    class FakeImap:
-        def __init__(self, host, port, *, timeout, ssl_context=None):
-            seen.update(context=ssl_context, host=host, port=port)
-        def login(self, *args):
-            seen['login'] = True
-        def select(self, folder, *, readonly):
-            seen['readonly'] = readonly
-        def logout(self):
-            seen['logout'] = True
-    monkeypatch.setattr(email_processor.imaplib, 'IMAP4_SSL', FakeImap)
-    account = email_processor.MailAccount('recipe', {'username':'synthetic', 'password':'synthetic'}, 'recipe')
-    with account._connect(readonly=True):
-        pass
-    assert seen['context'] is not None
-    assert seen['context'].verify_mode == ssl.CERT_REQUIRED
-    assert seen['context'].check_hostname is True
-    assert seen['login'] and seen['readonly'] and seen['logout']
 
 
 @pytest.mark.parametrize('value', ['.', '..', '...'])
@@ -91,67 +72,6 @@ def test_non_upload_endpoints_reject_large_bodies_before_parsing(path, content_t
     assert messages[0]['status'] == 413
 
 
-@pytest.mark.parametrize('trusted,host,accepted', [
-    (False, 'localhost', False), (True, '127.0.0.1', False), (True, 'localhost', True),
-])
-def test_real_imap_tls_handshake_blocks_credentials_for_invalid_certificates(monkeypatch, trusted, host, accepted):
-    fixture = Path(__file__).parent/'fixtures'/'synthetic-imap-tls'
-    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    server_context.load_cert_chain(fixture/'certificate.pem', fixture/'key.pem')
-    listener = socket.socket()
-    listener.bind(('127.0.0.1', 0))
-    listener.listen(1)
-    listener.settimeout(5)
-    logged_in = threading.Event()
-    failures = []
-    def server():
-        try:
-            connection, _ = listener.accept()
-            connection.settimeout(5)
-            with server_context.wrap_socket(connection, server_side=True) as secure:
-                secure.sendall(b'* OK Synthetic IMAP server\r\n')
-                with secure.makefile('rb') as stream:
-                    while line := stream.readline():
-                        tag, command, *_ = line.split()
-                        command = command.upper()
-                        if command == b'CAPABILITY':
-                            secure.sendall(b'* CAPABILITY IMAP4rev1\r\n')
-                        elif command == b'LOGIN':
-                            logged_in.set()
-                        elif command in (b'EXAMINE', b'SELECT'):
-                            secure.sendall(b'* 0 EXISTS\r\n')
-                        elif command == b'LOGOUT':
-                            secure.sendall(b'* BYE Synthetic logout\r\n')
-                        secure.sendall(tag+b' OK Completed\r\n')
-                        if command == b'LOGOUT':
-                            break
-        except (ssl.SSLError, ConnectionError) as error:
-            # Rejected certificates can close TLS with an alert or a TCP reset.
-            if accepted:
-                failures.append(error)
-        except Exception as error:
-            failures.append(error)
-        finally:
-            listener.close()
-    if trusted:
-        client_context = ssl.create_default_context(cafile=str(fixture/'certificate.pem'))
-        monkeypatch.setattr(email_processor.ssl, 'create_default_context', lambda: client_context)
-    thread = threading.Thread(target=server, daemon=True)
-    thread.start()
-    account = email_processor.MailAccount('recipe', {'imap_host':host, 'imap_port':listener.getsockname()[1],
-                                                    'username':'synthetic', 'password':'synthetic'}, 'recipe')
-    try:
-        if accepted:
-            with account._connect(readonly=True):
-                pass
-        else:
-            with pytest.raises(ssl.SSLCertVerificationError):
-                with account._connect():
-                    pytest.fail('No IMAP session for an untrusted certificate')
-    finally:
-        thread.join(timeout=7)
-    assert not thread.is_alive() and not failures, failures
-    assert logged_in.is_set() is accepted
 
 
 def test_streamed_unknown_length_body_is_rejected_at_the_limit():
@@ -177,19 +97,3 @@ def test_normal_names_stay_usable_and_windows_aliases_are_safe():
         assert sanitize('Crème brûlée') == 'Crème_brûlée'
         assert sanitize('CON.txt') == '_CON.txt'
         assert len(sanitize('🍲'*100).encode('utf-8')) <= 180
-
-
-def test_mail_connection_check_reports_tls_failure_instead_of_empty_success(client, monkeypatch):
-    from app.routes import api_test
-    class Config:
-        def get(self, *args, **kwargs):
-            return {'enabled':True,'username':'synthetic','password':'synthetic'}
-    monkeypatch.setattr(api_test, 'get_config', lambda: Config())
-    monkeypatch.setattr(email_processor.time, 'sleep', lambda seconds: None)
-    def reject(*args, **kwargs):
-        raise ssl.SSLCertVerificationError('Synthetic invalid certificate')
-    monkeypatch.setattr(email_processor.imaplib, 'IMAP4_SSL', reject)
-    response = client.post('/api/test/mail',json={'account':'recipe'})
-    assert response.status_code == 200
-    assert response.json()['ok'] is False
-    assert 'SSLCertVerificationError' in response.json()['error']

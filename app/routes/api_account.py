@@ -3,8 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from .. import accounts
-from ..auth import (hash_password, request_is_guest, request_session, request_user,
-                    require_auth, validate_new_password)
+from ..auth import (hash_password, request_is_guest, request_is_read_only, request_session, request_user,
+                    require_auth, require_import, validate_new_password)
 from ..account_security import require_recent_auth
 from ..db import LastActiveAdminError, get_db
 
@@ -22,8 +22,9 @@ def _user(request: Request):
 
 @router.get("")
 def own_account(request: Request):
-    if request_is_guest(request):
-        return {"is_guest": True, "is_owner": False, "members": [], "invitations": [],
+    if request_is_read_only(request):
+        return {"is_guest": request_is_guest(request), "read_only": True,
+                "username": request_user(request), "is_owner": False, "members": [], "invitations": [],
                 "max_members": accounts.MAX_ACCOUNT_MEMBERS, "data_scope": "global_read_only", "global_recipes": True}
     user = _user(request)
     return {"is_guest": False, "username": user["username"], **accounts.view(get_db(), user["id"])}
@@ -107,7 +108,7 @@ def accept_invitation(payload: InvitationAccept, request: Request):
     return {"ok": True}
 
 
-@router.get("/imports")
+@router.get("/imports", dependencies=[Depends(require_import)])
 def own_imports(request: Request):
     _user(request)
     db = get_db()
@@ -125,5 +126,6 @@ def own_imports(request: Request):
             if task["error"]:
                 suggestion["analysis_error"] = task["error"]
         items.append({"url": item["url"], "status": item["status"], "created_at": item["created_at"],
-                      "name": suggestion.get("name"), "suggestion": suggestion})
+                      "name": suggestion.get("name"), "suggestion": suggestion,
+                      "has_file": bool(item.get("video_path") or item.get("frame_path"))})
     return {"items": items}

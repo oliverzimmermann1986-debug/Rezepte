@@ -78,7 +78,6 @@ def test_empty_install_creates_config_user_as_admin(test_db, monkeypatch):
         ("GET", "/api/browse/local?path=/"),
         ("GET", "/api/hdd/status"),
         ("GET", "/api/jobs/list"),
-        ("GET", "/api/schedule"),
         ("GET", "/api/master/tags"),
         ("GET", "/api/admin/overview"),
         ("GET", "/api/users"),
@@ -93,6 +92,7 @@ def test_normal_user_cannot_access_admin_route_groups(
     test_db.user_create("friend", auth.hash_password("friend-password"), role="user")
     monkeypatch.setattr(auth, "request_user", lambda _request: "friend")
     app.dependency_overrides.pop(require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     try:
         response = client.request(method, path)
     finally:
@@ -144,6 +144,7 @@ def test_source_integrity_routes_use_real_admin_user_and_guest_sessions(
 
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     try:
         anonymous_report = client.get(report_path)
         reports = {

@@ -103,20 +103,13 @@ fi
 # 8. systemd Services installieren
 echo "⚙️  Installiere systemd Units..."
 install -m 0644 "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/
-install -m 0644 "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/
-install -m 0644 "$APP_DIR/systemd/scrapper-job.timer" /etc/systemd/system/
 install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.service" /etc/systemd/system/
 install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.timer" /etc/systemd/system/
-install -m 0644 "$APP_DIR/systemd/scrapper-schedule-apply.service" /etc/systemd/system/
-install -d -m 0755 /etc/systemd/system/scrapper-job.timer.d
 install -d -m 0755 /etc/scrapper
 if [[ -f "$APP_DIR/data/web.env" && ! -f /etc/scrapper/web.env ]]; then
   install -m 0600 -o root -g root "$APP_DIR/data/web.env" /etc/scrapper/web.env
 fi
 
-# Polkit erlaubt dem Webdienst nur den erneut validierenden root-Helper.
-install -m 0644 "$APP_DIR/systemd/49-scrapper-systemctl.rules" \
-  /etc/polkit-1/rules.d/49-scrapper-systemctl.rules
 rm -f /etc/sudoers.d/scrapper
 
 # Anwendungscode, venv und Units bleiben root-eigen. Nur Laufzeitdaten sind für
@@ -128,10 +121,10 @@ chown -R "$APP_USER:$APP_USER" \
   "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" "$APP_DIR/files"
 
 systemctl daemon-reload
+"$APP_DIR/venv/bin/python" "$APP_DIR/tools/retire_mail_import.py" --apply
 
 # 9. Web-Service starten + enablen
 systemctl enable --now scrapper-web.service
-systemctl enable --now scrapper-job.timer
 systemctl enable --now scrapper-db-backup.timer
 # 10. Status anzeigen
 sleep 2

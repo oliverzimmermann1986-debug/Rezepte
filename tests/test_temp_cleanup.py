@@ -1,8 +1,6 @@
 import os
 import time
-from email.message import EmailMessage
 
-from app.core.email_processor import _decode_attachment_payload
 from app.core.temp_cleanup import cleanup_temp_files
 
 
@@ -57,12 +55,3 @@ def test_pending_file_paths_only_returns_active_status(test_db, tmp_path):
     test_db.pending_resolve("manual-upload://skipped", "auto_skipped")
 
     assert test_db.pending_file_paths() == [str(active)]
-
-
-def test_attachment_decode_enforces_decoded_limit():
-    message = EmailMessage()
-    message.add_attachment(b"123456789", maintype="image", subtype="jpeg", filename="x.jpg")
-    part = next(message.iter_attachments())
-
-    assert _decode_attachment_payload(part, 9) == b"123456789"
-    assert _decode_attachment_payload(part, 8) is None

@@ -20,14 +20,14 @@ Diff angezeigt und niemals automatisch in das Rezept übernommen. Ein lokaler
 Mengenangaben und Dubletten. Wochenplanzutaten und wiederkehrender
 Haushaltsbedarf laufen in derselben Einkaufsliste zusammen.
 
-Proxmox-LXC-Container für den Scraper-Job:
+Self-hosted Rezeptbibliothek im Proxmox-LXC-Container:
 
-**Rezeptbibliothek mit offenem Quellenimport** — übernimmt Links aus zwei
-separaten E-Mail-Postfächern (Rezepte + Hochzeit). Plattformmedien werden nicht
-heruntergeladen. Unvollständige Eingänge bleiben mit ihrem Original-Link zur
-manuellen Bearbeitung erhalten.
+**Rezeptbibliothek mit offenem Quellenimport** — übernimmt ausdrücklich gestartete
+URL-, Text-, Foto-, PDF- und Videoimporte. Unvollständige Eingänge bleiben mit
+ihrer Quelle zur manuellen Bearbeitung erhalten. E-Mail-Abruf und Mailzeitpläne
+sind seit 1.10.0 entfernt.
 
-Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Starten, Pending-Auflösung, Logs, Historie). Für die externe Erreichbarkeit kann ein **Cloudflare-Tunnel** verwendet werden. Web- und iOS-App melden sich direkt mit einem eigenen Rezeptkonto an.
+Die Bibliothek wird über ein **Web-Interface** verwaltet (Konfiguration, direkte Importe, Pending-Auflösung, Logs, Historie). Für die externe Erreichbarkeit kann ein **Cloudflare-Tunnel** verwendet werden. Web- und iOS-App melden sich direkt mit einem eigenen Rezeptkonto an.
 
 
 ## Oberfläche
@@ -49,7 +49,7 @@ Der Job wird über ein **Web-Interface** verwaltet (Konfiguration, manuelles Sta
 ## Architektur auf einen Blick
 
 ```
-E-Mail-Inbox / App
+URL / Text / Foto / PDF / Video aus der App
         │
         ▼
   strikte Linkprüfung
@@ -61,7 +61,7 @@ Optional und vollständig getrennt:
 private SQLite-Queue ──► video_archiver ──► privates ID-basiertes Archiv
 ```
 
-Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Button im Web-UI. File-Locks verhindern doppelte Läufe zwischen Web und CLI.
+Importe werden ausdrücklich in der App gestartet. Die Hintergrundwarteschlange und Dateisperren schützen vor konkurrierender Verarbeitung; es gibt keinen periodischen Mailabruf.
 
 ---
 
@@ -92,11 +92,9 @@ Der Job läuft als systemd-Timer (Default `*:0/30` = alle 30 min) oder per Butto
 - technische Module getrennt in `api_admin.py`, `pdf_processing.py` und `recipes/search.py`
 
 **Robustheit**
-- File-Lock (`fcntl.flock`) zwischen Web-Trigger und systemd-CLI
-- Log-Rotation aller Job-Logs (älter als 30 Tage werden bei jedem Job-Start aufgeräumt)
+- Dateisperren (`fcntl.flock`) für Import-, Analyse- und Verwaltungsaufgaben
+- Aufbewahrungsgrenze für Job-Logs über `app.cli log-cleanup`
 - Link-only-Import ohne Plattformmedien oder versteckte Videodateien
-- IMAP-Retry mit Backoff (3 Versuche, 1s/4s)
-- OpenAI-Health-Check beim Job-Start (bricht ab statt 50 sinnlose Pending-Items zu erzeugen)
 - Thread-safe Cancel für laufende Import- und Analysejobs
 - Async Telegram raus, alle Notifications nur noch in Web-UI
 
@@ -151,8 +149,8 @@ während der Wiederholung, benötigt ein neuer Auftrag ein eigenes Kontingent.
 Eine erneute Linkübernahme erhält bereits ermittelte Vorschläge und Medien;
 ein Platzhalter überschreibt diese Daten nicht.
 Gastanmeldungen sind auf 30 je IP innerhalb von fünf Minuten begrenzt.
-Mail-/CLI-Jobs und gesonderte Admin-Batchjobs verwenden diese Nutzerkontingente
-nicht; sie bleiben durch ihre jeweiligen Zugriffsrechte geschützt.
+Gesonderte Admin-Batchjobs verwenden diese Nutzerkontingente nicht; sie bleiben
+durch ihre jeweiligen Zugriffsrechte und die serverweiten KI-Kontingente geschützt.
 
 Die Migration auf Schema **261** behält bestehende Rezepte als globale Sammlung
 und ordnet vorhandene Einkaufs- und Plandaten einmalig dem Betreiberhaushalt zu.
@@ -242,7 +240,7 @@ Das Install-Script erzeugt automatisch:
 - einen `scrapper`-User
 - ein **zufälliges Initial-Passwort** (gespeichert in `data/.initial-password`)
 - ein **zufälliges `secret_key`** (48 Zeichen)
-- die systemd-Units für Web, Scraper, Backups und den eng begrenzten Schedule-Helper
+- die systemd-Units für Web und Datenbank-Backups; alte Maildienste werden gezielt stillgelegt
 
 ```
 🌐 Web-Interface (LOKAL):    http://127.0.0.1:8000
@@ -357,9 +355,7 @@ nicht für die Anmeldung am Rezeptserver verwendet.
 ### 4. Konfiguration
 
 Im Web-UI → „Einstellungen":
-- **E-Mail-Konten** (IMAP-App-Passwords für Gmail)
 - **OpenAI API-Key** und Modell (Default: `gpt-4o-mini`; optionale Base-URL nur mit erneuter Key-Eingabe änderbar)
-- **Schedule** (systemd-OnCalendar-Expression für den Importdienst)
 
 ---
 
@@ -403,8 +399,6 @@ systemctl status scrapper-web
 systemctl restart scrapper-web      # mit Type=notify wartet auf 'ready'-Signal
 journalctl -u scrapper-web -f
 
-# Manuell ausführen (respektiert File-Lock)
-sudo -u scrapper /opt/scrapper/venv/bin/python -m app.jobs.scraper_cli
 
 # Daily DB-Backup-Timer aktivieren (läuft 04:00, macht auch log-cleanup + sonntags vacuum)
 systemctl enable --now scrapper-db-backup.timer
@@ -437,7 +431,7 @@ EOF
 # Auf dem Proxmox-Host: einmal pro Tag automatisch
 ```
 
-Plus die `config.yaml` separat sichern (enthält Mail-Passwörter, Webhook-URLs).
+Plus die `config.yaml` separat sichern (enthält Zugangsdaten, KI-Schlüssel und Webhook-URLs).
 
 ### 2. Restore-Playbook
 
@@ -463,7 +457,7 @@ sudo chmod 600 /opt/scrapper/data/config.yaml
 sudo -u scrapper /opt/scrapper/venv/bin/python -m app.cli db-restore \
     /opt/scrapper/data/backups/daily/scrapper-2026-05-22.db.gz
 
-# Schritt 4: Im Web-UI einloggen und Mail-/KI-Verbindungen testen
+# Schritt 4: Im Web-UI einloggen und die KI-Verbindung testen
 ```
 
 ### 3. Was nicht im Backup ist
@@ -530,21 +524,6 @@ paths:
   wedding_dir: /pfad/zu/hochzeit
   temp_dir: /opt/scrapper/temp
   logs_dir: /opt/scrapper/logs
-
-mail:
-  recipe:
-    enabled: true
-    imap_host: imap.gmail.com
-    imap_port: 993
-    username: …
-    password: …      # App-Password, NICHT das Google-Konto-Passwort
-    folder: INBOX
-    max_mails: 20
-  wedding:
-    enabled: true
-    # … wie recipe
-    default_category: Sonstiges
-    always_pending: false
 
 ai:
   openai:
@@ -673,9 +652,10 @@ Zugangsdaten und Produkt-Nutzungsstatistiken bleiben dabei unverändert.
 Vor dem Austausch verweigert das Skript ältere Datenbankschemas und Releases,
 denen bisherige Fähigkeiten fehlen. Es sichert Datenbank, Konfiguration, Code
 und installierte Dienste und stellt sie bei einem Fehler gemeinsam wieder her.
-Die vorherige Aktivität der Import- und Backup-Timer bleibt erhalten;
-ausgeschaltete Timer werden nicht aktiviert. Auf der Review-Instanz bleibt der
-Import-Timer ausgeschaltet.
+Die vorherige Aktivität des Backup-Timers bleibt erhalten; ausgeschaltete
+Backup-Timer werden nicht aktiviert. Nach erfolgreichen Updateprüfungen werden
+alte Maildienste deaktiviert und ausschließlich ihre bekannten Unit-/Polkit-Dateien
+entfernt. Bis zu diesem Punkt stellt ein Rollback auch den früheren Timerzustand wieder her.
 
 Für den Wechsel vom bisherigen Proxy-Einzelbenutzerbetrieb auf Haushalte
 das Update mit `sudo ENABLE_HOUSEHOLD_AUTH=1 bash proxmox/update-local.sh`
@@ -704,11 +684,7 @@ vorhandenen Sitzungsschlüssel. Details: [CHANGELOG_V1.8.9.md](CHANGELOG_V1.8.9.
 
 PDF-Rezepte werden nach OCR/Ausrichtung direkt auf Zutaten, Mengen, Einheiten, Schritte und Portionen ausgewertet. Für Bestandsdateien steht die Funktion unter **Admin → PDF & Scan** zur Verfügung. Details: `PDF_RECIPE_EXTRACTION.md`.
 
-### Importgrenzen und Mailverbindungen ab 1.8.5
-
-IMAP-Verbindungen prüfen Zertifikatskette und Hostnamen, bevor Zugangsdaten
-übertragen werden. Der Verbindungstest liest nur und meldet Verbindungsfehler;
-er verändert weder Mailflags noch die gespeicherte Mailkonfiguration.
+### Importgrenzen ab 1.8.5
 
 Request-Bodies sind vor dem Parsing begrenzt: regulär auf 1 MiB, Dateiimporte
 auf 25 MiB plus 1 MiB Formular-Overhead und Foto-/Coverimporte auf 10 MiB plus
@@ -723,9 +699,8 @@ HTTPS-Origin beanspruchen. Die bestehenden DNS-/SSRF-Prüfungen bleiben aktiv.
 
 Der Status der Sicherheits- und GUI-Befunde steht in [AUDIT.md](AUDIT.md), die
 offenen Arbeiten in [FIXPLAN.md](FIXPLAN.md). Der Prüf- und Rolloutnachweis dieser
-Runde steht in [AUDIT_FOLLOWUP_1.8.5.md](AUDIT_FOLLOWUP_1.8.5.md). Die Freigabe
-automatischer Mailabsender braucht noch die erlaubten Adressen und eine Prüfung
-der vom Mailprovider bestätigten Absenderidentität.
+Runde steht in [AUDIT_FOLLOWUP_1.8.5.md](AUDIT_FOLLOWUP_1.8.5.md). Die dortigen
+Mailbefunde sind historisch; der Mailimport wurde mit 1.10.0 entfernt.
 
 ### Request- und Archivstabilisierung ab 1.8.6
 
@@ -747,7 +722,7 @@ lokale PDF-Quelltext wird erhalten. Alle KI-POST-Versuche unterliegen rollierend
 serverweiten 24-Stunden-Kontingenten in `ai.openai`: `server_daily_request_limit`
 (Standard 1000) und `server_daily_image_limit` (Standard 40). Null sperrt weitere
 Versuche; fehlgeschlagene Versuche und Retries zählen mit. Die Kontingente gelten
-auch für automatische Mail- und Hintergrundarbeit und sind keine Dollar-/Eurogrenze.
+auch für Hintergrundanalysen und sind keine Dollar-/Eurogrenze.
 
 Automatische Rezeptbilder ersetzen kein vorhandenes Quellcover. Ein expliziter
 Bildauftrag oder administrativer Backfill bleibt mit Originalsicherung möglich.

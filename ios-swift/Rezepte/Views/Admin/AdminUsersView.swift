@@ -128,8 +128,9 @@ private struct AdminUserEditor: View {
                         LabeledContent("Benutzername", value: username)
                     }
                     Picker("Rolle", selection: $role) {
-                        Text(AccountRole.user.title).tag(AccountRole.user)
-                        Text(AccountRole.admin.title).tag(AccountRole.admin)
+                        ForEach(AccountRole.allCases) { item in
+                            Text(item.title).tag(item)
+                        }
                     }
                     if user != nil { Toggle("Deaktiviert", isOn: $disabled).disabled(isSelf) }
                 }

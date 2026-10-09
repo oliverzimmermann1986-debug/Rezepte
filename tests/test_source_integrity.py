@@ -1,5 +1,6 @@
 import pytest
 
+from app.auth import require_import
 from tests.conftest import _create_recipe
 
 from app.recipes.source_integrity import (
@@ -399,13 +400,14 @@ def test_source_accept_requires_admin_for_authenticated_user(
     client, test_db, monkeypatch
 ):
     from app import auth
-    from app.auth import require_admin
+    from app.auth import require_admin, require_import
     from app.main import app
 
     source = _changed_source_recipe(test_db, suffix="rbac-user")
     test_db.user_create("source-reader", auth.hash_password("password"), role="user")
     monkeypatch.setattr(auth, "request_user", lambda _request: "source-reader")
     app.dependency_overrides.pop(require_admin, None)
+    app.dependency_overrides.pop(require_import, None)
     try:
         response = client.post(
             f"/api/recipes/{source['recipe']['id']}/source-integrity/accept",
@@ -433,6 +435,7 @@ def test_source_accept_requires_authentication(client, test_db, monkeypatch):
     source = _changed_source_recipe(test_db, suffix="rbac-guest")
     app.dependency_overrides.pop(require_auth, None)
     app.dependency_overrides.pop(require_admin, None)
+    app.dependency_overrides.pop(require_import, None)
     try:
         response = client.post(
             f"/api/recipes/{source['recipe']['id']}/source-integrity/accept",
@@ -461,6 +464,7 @@ def test_source_accept_rejects_signed_guest_session(client, test_db, monkeypatch
     guest_token = auth.create_guest_session()
     app.dependency_overrides.pop(require_auth, None)
     app.dependency_overrides.pop(require_admin, None)
+    app.dependency_overrides.pop(require_import, None)
     client.cookies.set(auth.SESSION_COOKIE, guest_token)
     try:
         response = client.post(

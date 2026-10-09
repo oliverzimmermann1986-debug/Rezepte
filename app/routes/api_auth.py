@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field, field_validator
 from ..auth import (
     ROLE_ADMIN,
     ROLE_GUEST,
-    ROLE_USER,
     GUEST_MAX_AGE,
     password_login_identity,
     create_guest_session,
@@ -17,6 +16,7 @@ from ..auth import (
     request_is_guest,
     hash_password,
     request_user,
+    role_capabilities,
     revoke_current_session,
     validate_new_password,
 )
@@ -41,18 +41,12 @@ def _access_payload(username: str, *, read_only: bool = False) -> dict:
         role = ROLE_GUEST
     else:
         user = get_db().user_get_by_name(username)
-        role = (user or {}).get("role") or ROLE_ADMIN
-        if role not in {ROLE_USER, ROLE_ADMIN}:
-            role = ROLE_USER
-    is_admin = role == ROLE_ADMIN
+        role = user.get("role") if user else ROLE_ADMIN
     return {
         "id": (user or {}).get("id"),
         "password_enabled": bool((user or {}).get("password_hash")),
         "username": username,
-        "role": role,
-        "is_admin": is_admin,
-        "full_access": is_admin,
-        "read_only": read_only,
+        **role_capabilities(role),
     }
 
 

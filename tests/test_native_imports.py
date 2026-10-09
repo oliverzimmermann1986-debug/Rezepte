@@ -9,7 +9,7 @@ import pytest
 from PIL import Image
 
 from app.core.analyzer import RecipeAnalysis
-from app.core.email_processor import normalize_content_url
+from app.core.content_urls import normalize_content_url
 from app.jobs.scraper import ScraperJob
 from app.recipes.pdf_recipe_extract import ExtractedRecipeData
 from app.recipes.video_recipe_extract import VideoAnalysisResult
@@ -410,26 +410,23 @@ def test_pending_pdf_preview_remains_available(client, test_db, tmp_path, monkey
     assert response.content == source.read_bytes()
 
 
-def test_pending_routes_require_admin_for_work_but_keep_household_status_reads(client):
-    from app.auth import require_admin, require_auth
+def test_pending_routes_separate_import_access_from_global_administration(client):
+    from app.auth import require_admin, require_auth, require_import
     from app.routes import api_pending
 
-    routes = {
-        (route.path, method): route
-        for route in api_pending.router.routes
-        for method in getattr(route, "methods", set())
-        if route.path.startswith("/api/pending")
-    }
-    for (path, method), route in routes.items():
-        calls = {
-            dependency.call
-            for dependency in route.dependant.dependencies
-        }
+    import_paths = {"/api/pending", "/api/pending/file", "/api/pending/import-url",
+                    "/api/pending/import-file", "/api/pending/scan-photo", "/api/pending/reanalyze"}
+    for route in api_pending.router.routes:
+        if not route.path.startswith("/api/pending"):
+            continue
+        calls = {dependency.call for dependency in route.dependant.dependencies}
         assert require_auth in calls
-        if method == "GET" and path in {"/api/pending", "/api/pending/file"}:
+        if route.path in import_paths:
+            assert require_import in calls
             assert require_admin not in calls
         else:
             assert require_admin in calls
+
 
 
 def test_pending_video_route_is_absent(client):

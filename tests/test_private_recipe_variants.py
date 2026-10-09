@@ -23,6 +23,7 @@ def variant_accounts(client, test_db, monkeypatch, tmp_path):
     overrides = dict(app.dependency_overrides)
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     users = {}
     for name, role in (("owner", "admin"), ("alice", "user"), ("bob", "user")):
         user_id = test_db.user_create(name, "not-a-password", role=role)

@@ -23,9 +23,8 @@ def install_test_environment(root: Path) -> Path:
     for key in ("data_dir", "db_path", "temp_dir", "logs_dir", "recipe_dir", "wedding_dir",
                 "recipes_dir", "recipes_root", "recipe_output_dir", "wedding_output_dir"):
         paths[key] = str(sandbox / key)
-    for account in config.get("mail", {}).values():
-        if isinstance(account, dict):
-            account.update(enabled=False, password="")
+    config.pop("mail", None)
+    config.pop("schedule", None)
     config.setdefault("external_hdd", {})["enabled"] = False
     config["webhooks"] = []
     ai = config.setdefault("ai", {})

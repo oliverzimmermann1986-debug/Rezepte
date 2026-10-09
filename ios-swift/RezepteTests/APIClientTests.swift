@@ -691,6 +691,23 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
     }
 
+    func testPrivatePendingActionsKeepTheirVisibilityScope() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        try await client.configure(server: "https://example.de", token: "full-user-token")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+        _ = try await client.resolvePending(url: "https://example.de/rezept", action: "skip", visibility: "private")
+        var body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any])
+        XCTAssertEqual(body["visibility"] as? String, "private")
+
+        _ = try await client.reanalyzePending(url: "https://example.de/rezept", visibility: "private")
+        body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any])
+        XCTAssertEqual(body["visibility"] as? String, "private")
+
+        _ = try await client.scanPendingPhoto(url: "https://example.de/rezept", data: Data([1, 2, 3]), filename: "test.jpg", mimeType: "image/jpeg", visibility: "private")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/pending/scan-photo")
+        XCTAssertEqual(MockURLProtocol.lastQueryItems()["visibility"], "private")
+    }
+
     func testCookingProgressAndCompletionUseNativeContracts() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)

@@ -1,10 +1,7 @@
-"""File-basierte Locks zwischen Web-Trigger und systemd-CLI.
+"""Dateibasierte Locks für Import-, Analyse- und Verwaltungsaufgaben.
 
-Der In-Process ``threading.Lock`` in api_jobs schützt nur den Web-Prozess.
-Wenn der ``scrapper-job.timer`` feuert während ein Web-Trigger schon läuft,
-würden ZWEI Scraper-Prozesse gleichzeitig E-Mails lesen und Videos laden -
-plus die History/Pending-DB beschreiben. Dieses Modul schließt die Lücke
-per Betriebssystem-Dateisperre, die auch über Prozessgrenzen hinweg greift.
+Betriebssystem-Dateisperren schützen gemeinsam verwendete Daten auch über
+Prozessgrenzen hinweg vor konkurrierenden Änderungen.
 
 Verwendung:
     with file_lock_or_none("scraper") as fh:

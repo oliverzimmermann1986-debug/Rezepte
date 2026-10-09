@@ -37,7 +37,7 @@ struct SessionResponse: Codable {
     let passwordEnabled: Bool?
 
     var effectiveRole: AccountRole {
-        role ?? ((readOnly ?? false) ? .guest : ((fullAccess ?? false) ? .admin : .user))
+        role ?? ((readOnly ?? false) ? .guest : ((isAdmin ?? false) ? .admin : .user))
     }
 }
 
@@ -1062,8 +1062,11 @@ struct PendingItem: Codable, Identifiable {
     let reason: String?
     let aiSuggestion: PendingSuggestion?
     var sourceUrl: String? = nil
+    var visibility: String? = nil
+    var ownerAccountId: Int? = nil
 
     var id: String { url }
+    var effectiveVisibility: String { visibility ?? (ownerAccountId == nil ? "global" : "private") }
     var displayName: String {
         aiSuggestion?.name?.nilIfEmpty
             ?? aiSuggestion?.filename?.nilIfEmpty

@@ -29,11 +29,12 @@ DEFAULT_SECRETS = (
     "change-this-to-random-string-32chars-min",
 )
 ROLE_USER = "user"
+ROLE_FULL_USER = "full_user"
 ROLE_ADMIN = "admin"
 ROLE_GUEST = "guest"
 GUEST_USERNAME = "Gast"
 GUEST_MAX_AGE = 60 * 60 * 24
-VALID_ROLES = frozenset({ROLE_USER, ROLE_ADMIN})
+VALID_ROLES = frozenset({ROLE_GUEST, ROLE_USER, ROLE_FULL_USER, ROLE_ADMIN})
 SAFE_SESSION_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _DUMMY_PASSWORD_HASH = "$2b$12$tHqkjQG/5uUOLxPxh766ku3u8CNZ6YprzbSzD8uyU7ZB04RLAt1m2"
 _SESSION_LOOKUP = ContextVar("session_lookup", default=None)
@@ -289,11 +290,33 @@ def _request_token(request: Request) -> str:
 
 
 def request_is_guest(request: Request) -> bool:
+    """Anonymous guest token, distinct from an authenticated guest account."""
     return _guest_token_valid(_request_token(request))
 
 
+def role_capabilities(role: str) -> dict:
+    """One public capability contract; unknown roles never gain write access."""
+    role = role if role in VALID_ROLES else ROLE_GUEST
+    return {"role": role, "is_admin": role == ROLE_ADMIN,
+            "full_access": role == ROLE_ADMIN,
+            "can_import": role in {ROLE_FULL_USER, ROLE_ADMIN},
+            "read_only": role == ROLE_GUEST}
+
+
+def request_is_read_only(request: Request) -> bool:
+    if request_is_guest(request):
+        return True
+    username = request_user(request)
+    if not username:
+        return False
+    from .db import get_db
+    user = cached_request_user(request) or get_db().user_get_by_name(username)
+    # The verified pre-migration config session is the legacy administrator.
+    return role_capabilities(user.get("role") if user else ROLE_ADMIN)["read_only"]
+
+
 def guest_access_payload() -> dict:
-    return {"username": "Gast", "role": ROLE_GUEST, "is_admin": False, "full_access": False, "read_only": True}
+    return {"username": "Gast", **role_capabilities(ROLE_GUEST)}
 
 
 def _session_payload(token: str) -> Optional[dict]:
@@ -425,7 +448,7 @@ def _require_auth(request: Request) -> None:
     if _request_token(request).startswith("guest.") and not request_is_guest(request):
         raise HTTPException(401, "Gastsitzung abgelaufen")
     if request_is_guest(request):
-        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        if request.method not in SAFE_SESSION_METHODS:
             raise HTTPException(403, "Der Gastzugang ist schreibgeschützt.")
         return
     is_api = request.url.path.startswith("/api/")
@@ -439,6 +462,27 @@ def _require_auth(request: Request) -> None:
             status_code=status.HTTP_303_SEE_OTHER,
             headers={"Location": f"/login?next={request.url.path}"},
         )
+    if (request.method not in SAFE_SESSION_METHODS and request_is_read_only(request)
+            and not _is_own_security_action(request)):
+        raise HTTPException(403, "Der Gastzugang ist schreibgeschützt.")
+
+
+def _is_own_security_action(request: Request) -> bool:
+    """Allow only authenticated guests' self-service security mutations.
+
+    Each endpoint still checks account ownership and, where needed, recent
+    authentication. This does not apply to anonymous guest sessions.
+    """
+    method, path = request.method, request.url.path
+    if (method, path) in {("POST", "/api/account/password"),
+                         ("DELETE", "/api/account/profile")}:
+        return True
+    parts = path.strip("/").split("/")
+    if method == "DELETE" and len(parts) == 4 and parts[:3] == ["api", "account", "sessions"]:
+        return bool(parts[3])
+    if method == "DELETE" and len(parts) == 4 and parts[:3] == ["api", "account", "identities"]:
+        return parts[3] in {"apple", "google"}
+    return method == "POST" and len(parts) == 3 and parts[0] == "auth" and parts[1] in {"apple", "google"} and parts[2] == "link"
 
 
 async def require_auth(request: Request) -> None:
@@ -524,3 +568,22 @@ def _require_admin(request: Request) -> dict:
 async def require_admin(request: Request) -> dict:
     from starlette.concurrency import run_in_threadpool
     return await run_in_threadpool(_require_admin, request)
+
+
+def _require_import(request: Request) -> dict:
+    """Require an active full-user/admin session, without system admin rights."""
+    _require_auth(request)
+    if request_is_guest(request):
+        raise HTTPException(403, "Importberechtigung erforderlich")
+    from .db import get_db
+    user = cached_request_user(request) or get_db().user_get_by_name(request_user(request) or "")
+    if user is None:
+        return _require_admin(request)  # Verified pre-migration config session.
+    if not role_capabilities(user.get("role"))["can_import"]:
+        raise HTTPException(403, "Importberechtigung erforderlich")
+    return {**user, **role_capabilities(user["role"])}
+
+
+async def require_import(request: Request) -> dict:
+    from starlette.concurrency import run_in_threadpool
+    return await run_in_threadpool(_require_import, request)

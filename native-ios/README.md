@@ -46,7 +46,7 @@ Platzhalter `cloudflare-access` verlangt eine neue Anmeldung.
 - Favoriten und Übernahme in die Einkaufsliste
 - gemeinsame Einkaufsliste
 - Wochenplan inklusive Wocheneinkauf
-- Admin-Übersicht, Link-only-Direktimport, Postfachlauf und manuelle Prüfung
+- Rollen Gast, Benutzer, Vollbenutzer und Admin: Import aus Links, Fotos und PDFs für Vollbenutzer/Admin; Systemverwaltung nur für Admin
 - sicherer Bearer-Login über `/api/auth/login`
 
 ## App-Store-Vorbereitung

@@ -40,7 +40,7 @@ struct AccountProfileView: View {
                     }
                     NavigationLink("Angemeldete Geräte") { AccountSessionsView() }
                 }
-                if session.supports("household-invitations-v1") {
+                if !session.readOnly, session.supports("household-invitations-v1") {
                     Section("Haushalt") {
                         NavigationLink("Mein Haushalt & Einladungen") { HouseholdAccountView() }
                     }

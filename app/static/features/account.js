@@ -5,7 +5,10 @@
   window.RezepteFeatures.account = function () {
     return {
       canUseAdminTools() { return this.session.loaded && this.session.is_admin === true; },
-      canWrite() { return this.session.loaded && ['user', 'admin'].includes(this.session.role); },
+      canImport() { return this.session.loaded && ['full_user', 'admin'].includes(this.session.role); },
+      canWrite() { return this.session.loaded && ['user', 'full_user', 'admin'].includes(this.session.role); },
+      canManageOwnAccount() { return this.canWrite() || (this.session.loaded && this.session.role === 'guest' && !!this.account.profile); },
+      userRoleLabel(role) { return ({ guest: 'Gast', user: 'Benutzer', full_user: 'Vollbenutzer', admin: 'Admin' })[role] || 'Unbekannt'; },
       canEditRecipe() { return this.canWrite() && (this.session.is_admin || this.recipeDetail.data?.can_edit === true); },
       async loadAccount() {
         const generation = ++this.account._loadGeneration;
@@ -20,12 +23,16 @@
           if (generation === this.account._loadGeneration && !controller.signal.aborted && data) this.account.data = data;
           if (data && !data.is_guest) {
             const [imports, profile, sessions, identities] = await Promise.all([
-              this.canUseAdminTools() ? this.api('GET', '/api/account/imports', undefined, { signal: controller.signal }) : null,
+              this.canImport() ? this.api('GET', '/api/account/imports', undefined, { signal: controller.signal }) : null,
               ...['/api/account/profile', '/api/account/sessions', '/api/account/identities']
                 .map(path => this.api('GET', path, undefined, { signal: controller.signal })),
             ]);
             if (generation !== this.account._loadGeneration || controller.signal.aborted) return;
-            this.account.imports = imports?.items || [];
+            this.account.imports = (imports?.items || []).map(item => ({ ...item, suggestion: {
+              ...item.suggestion,
+              ingredients: Array.isArray(item.suggestion?.ingredients) ? item.suggestion.ingredients.map(value => typeof value === 'string' ? { name: value, amount: null, unit: '' } : { ...value }) : [],
+              steps: Array.isArray(item.suggestion?.steps) ? item.suggestion.steps.map(value => typeof value === 'string' ? { instruction: value } : { ...value }) : [],
+            } }));
             this.account.profile = profile;
             this.account.sessions = sessions?.sessions || [];
             this.account.identities = identities?.identities || [];
@@ -45,7 +52,7 @@
         this.account.currentPassword = this.account.newPassword = this.account.confirmPassword = this.account.deletePassword = '';
       },
       async accountAction(operation) {
-        if (!this.canWrite() || this.account.busy) return;
+        if (!this.canManageOwnAccount() || this.account.busy) return;
         this.account.busy = true;
         this.account.error = this.account.notice = '';
         try { await operation(); }
@@ -113,7 +120,7 @@
       },
       filteredUsers() {
         const search = this.users.search.trim().toLowerCase();
-        return this.users.items.filter(item => [item.username, ...this.userAuthMethods(item)]
+        return this.users.items.filter(item => [item.username, this.userRoleLabel(item.role), ...this.userAuthMethods(item)]
           .some(value => value.toLowerCase().includes(search)));
       },
       resetUserSearch() { this.users.search = ''; },
@@ -163,7 +170,7 @@
         });
       },
       async createAccountInvitation() {
-        if (this.account.busy) return;
+        if (!this.canWrite() || this.account.busy) return;
         this.account.busy = true;
         this.account.error = '';
         try {
@@ -182,7 +189,7 @@
         } catch (_) { this.showToast('Link bitte aus dem Feld kopieren', 'err'); }
       },
       async revokeAccountInvitation(item) {
-        if (this.account.busy) return;
+        if (!this.canWrite() || this.account.busy) return;
         this.account.busy = true;
         try {
           await this.api('DELETE', `/api/account/invitations/${item.id}`);
@@ -192,7 +199,7 @@
         finally { this.account.busy = false; }
       },
       async acceptAccountInvitation() {
-        if (this.account.busy || !this.account.joinToken.trim()) return;
+        if (!this.canWrite() || this.account.busy || !this.account.joinToken.trim()) return;
         if (!confirm('Diesem Haushalt beitreten? Deine privaten Rezepte, Einkaufsliste und Kochhistorie werden übernommen. Das lässt sich hier nicht rückgängig machen.')) return;
         this.account.busy = true;
         this.account.error = '';
@@ -209,16 +216,35 @@
         finally { this.account.busy = false; }
       },
       async saveHouseholdImport(item) {
-        if (!this.canUseAdminTools() || this.account.busy || !item.name?.trim()) return;
+        if (!this.canImport() || this.householdImportBusy(item) || !item.name?.trim()) return;
         this.account.busy = true;
         try {
           const suggestion = item.suggestion || {};
           const result = await this.api('POST', '/api/pending', { url: item.url, visibility: 'private', action: 'save', name: item.name.trim(),
             type: suggestion.type || 'Sonstiges', category: suggestion.category || 'Allgemein',
-            ingredients: suggestion.ingredients || [], steps: suggestion.steps || [], servings: suggestion.servings || null });
+            ingredients: (suggestion.ingredients || []).filter(row => row.name?.trim()).map(row => ({ ...row, name: row.name.trim(), amount: row.amount === '' ? null : row.amount })),
+            steps: (suggestion.steps || []).filter(row => row.instruction?.trim()).map((row, index) => ({ ...row, instruction: row.instruction.trim(), step_number: index + 1 })),
+            servings: suggestion.servings || null });
           if (!result?.ok) throw new Error(result?.error || 'Rezept konnte nicht übernommen werden');
           await this.loadAccount();
           this.showToast('Privates Rezept übernommen');
+        } catch (error) { this.account.error = error.message; }
+        finally { this.account.busy = false; }
+      },
+      householdImportBusy(item) {
+        return this.account.busy || !!this.reanalyzing[item.url] || ['queued', 'running'].includes(item.suggestion?.analysis_state);
+      },
+      async changeHouseholdImport(item, action) {
+        if (!this.canImport() || this.householdImportBusy(item) || !['skip', 'reanalyze'].includes(action)) return;
+        if (action === 'skip' && !confirm('Diesen Importvorschlag verwerfen?')) return;
+        this.account.busy = true;
+        this.account.error = '';
+        try {
+          const path = action === 'reanalyze' ? '/api/pending/reanalyze' : '/api/pending';
+          const result = await this.api('POST', path, { url: item.url, visibility: 'private', ...(action === 'skip' ? { action } : {}) });
+          if (!result?.ok) throw new Error(result?.error || 'Import konnte nicht aktualisiert werden.');
+          await this.loadAccount();
+          this.showToast(action === 'skip' ? 'Import verworfen.' : 'Import erneut analysiert.');
         } catch (error) { this.account.error = error.message; }
         finally { this.account.busy = false; }
       },

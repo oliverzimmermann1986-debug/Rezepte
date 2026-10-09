@@ -106,21 +106,6 @@ struct AdminSettingsView: View {
                 .disabled(isTesting || draft.ai.openAIModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
-            mailSection(
-                title: "Rezept-Postfach",
-                account: $draft.recipeMail,
-                storedSecret: storedSecrets.recipeMail,
-                testAccount: "recipe"
-            )
-
-            mailSection(
-                title: "Hochzeits-Postfach",
-                account: $draft.weddingMail,
-                storedSecret: storedSecrets.weddingMail,
-                testAccount: "wedding",
-                showsWeddingOptions: true
-            )
-
             Section("PDF-Verarbeitung") {
                 Toggle("Automatisch drehen", isOn: $draft.pdf.autoRotate)
                 Toggle("Tesseract-Ausrichtung", isOn: $draft.pdf.useTesseractOSD)
@@ -136,15 +121,6 @@ struct AdminSettingsView: View {
                 Toggle("Scans schärfen", isOn: $draft.pdf.sharpenScans)
                 Stepper("Scan-Auflösung: \(draft.pdf.scanDPI) dpi", value: $draft.pdf.scanDPI, in: 150...600, step: 50)
                 Toggle("Originaldatei behalten", isOn: $draft.pdf.keepOriginal)
-            }
-
-            Section("Automatisierung") {
-                TextField("Scraper-Intervall", text: $draft.scraperInterval)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Text("Systemd-OnCalendar, zum Beispiel *:0/30. Änderungen werden nach dem Speichern neu geladen.")
-                    .font(.caption)
-                    .foregroundStyle(theme.muted)
             }
 
             Section("Einkauf-Anbindung") {
@@ -282,54 +258,6 @@ struct AdminSettingsView: View {
     }
 
     @ViewBuilder
-    private func mailSection(
-        title: String,
-        account: Binding<AdminMailSettingsDraft>,
-        storedSecret: Bool,
-        testAccount: String,
-        showsWeddingOptions: Bool = false
-    ) -> some View {
-        Section {
-            Toggle("Aktiv", isOn: account.enabled)
-            TextField("IMAP-Host", text: account.imapHost)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            TextField("IMAP-Port", value: account.imapPort, format: .number)
-                .keyboardType(.numberPad)
-            TextField("Benutzer / E-Mail", text: account.username)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            SecureField("Neues Passwort / App-Pass", text: account.password)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            secretStatus(storedSecret, replacement: account.wrappedValue.password)
-            TextField("Ordner", text: account.folder)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            Stepper("Maximal \(account.wrappedValue.maxMails) Mails", value: account.maxMails, in: 1...500)
-            Stepper("Anhänge bis \(account.wrappedValue.attachmentMaxMB) MB", value: account.attachmentMaxMB, in: 1...200)
-
-            if showsWeddingOptions {
-                TextField("Standardkategorie", text: account.defaultCategory)
-                Toggle("Immer manuell prüfen", isOn: account.alwaysPending)
-            }
-
-            Text("Bei einer Änderung von Host oder Port muss das Passwort neu eingegeben werden.")
-                .font(.caption)
-                .foregroundStyle(theme.muted)
-
-            Button {
-                Task { await testMail(testAccount) }
-            } label: {
-                Label("Gespeicherte Verbindung testen", systemImage: "envelope.badge")
-            }
-            .disabled(isTesting || !changedSections.isEmpty)
-        } header: {
-            Text(title)
-        }
-    }
-
-    @ViewBuilder
     private func secretStatus(_ isStored: Bool, replacement: String) -> some View {
         if !replacement.isEmpty {
             Label("Neuer Wert wird beim Speichern gesetzt", systemImage: "pencil.and.outline")
@@ -350,13 +278,8 @@ struct AdminSettingsView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            async let configRequest = session.api.adminConfiguration()
-            async let scheduleRequest = session.api.adminSchedule()
-            let (config, schedule) = try await (
-                configRequest,
-                scheduleRequest
-            )
-            apply(config, schedule: schedule)
+            let config = try await session.api.adminConfiguration()
+            apply(config)
             // Wartungsstatus ist ergänzend: Ein temporär nicht erreichbarer
             // Backup-/Log-Endpunkt darf das Bearbeiten der Konfiguration
             // nicht blockieren.
@@ -370,11 +293,8 @@ struct AdminSettingsView: View {
         }
     }
 
-    private func apply(_ config: NativeAdminConfig, schedule: NativeAdminScheduleStatus) {
-        let loadedDraft = AdminSettingsDraft(
-            config: config,
-            scraperInterval: schedule.scraper?.oncalendar
-        )
+    private func apply(_ config: NativeAdminConfig) {
+        let loadedDraft = AdminSettingsDraft(config: config)
         draft = loadedDraft
         originalDraft = loadedDraft
         storedSecrets = StoredSecretStatus(config: config)
@@ -386,24 +306,10 @@ struct AdminSettingsView: View {
         isSaving = true
         defer { isSaving = false }
         do {
-            let scheduleChanged = draft.scraperInterval != originalDraft.scraperInterval
-            if scheduleChanged {
-                let preview = try await session.api.previewAdminSchedule(draft.scraperInterval)
-                if preview.scraper?.ok != true {
-                    throw APIError.server(
-                        400,
-                        preview.scraper?.error ?? "Der Zeitplan ist ungültig."
-                    )
-                }
-            }
             _ = try await session.api.updateAdminConfiguration(draft.patch)
-            if scheduleChanged {
-                _ = try await session.api.updateAdminSchedule(draft.scraperInterval)
-            }
             _ = try await session.api.reloadAdminConfiguration()
             let refreshed = try await session.api.adminConfiguration()
-            let refreshedSchedule = try await session.api.adminSchedule()
-            apply(refreshed, schedule: refreshedSchedule)
+            apply(refreshed)
             statusSuccess = true
             statusMessage = "Einstellungen gespeichert und neu geladen."
         } catch {
@@ -422,20 +328,6 @@ struct AdminSettingsView: View {
                 apiKey: draft.ai.openAIKey.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
                 model: draft.ai.openAIModel.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             )
-            statusSuccess = result.ok
-            statusMessage = result.displayMessage
-        } catch {
-            statusSuccess = false
-            statusMessage = error.localizedDescription
-            session.handle(error)
-        }
-    }
-
-    private func testMail(_ account: String) async {
-        isTesting = true
-        defer { isTesting = false }
-        do {
-            let result = try await session.api.testMailConfiguration(account: account)
             statusSuccess = result.ok
             statusMessage = result.displayMessage
         } catch {
@@ -480,8 +372,6 @@ struct AdminSettingsView: View {
 
 private struct StoredSecretStatus {
     var openAI = false
-    var recipeMail = false
-    var weddingMail = false
     var einkaufToken = false
     var einkaufCloudflareSecret = false
 
@@ -489,8 +379,6 @@ private struct StoredSecretStatus {
 
     init(config: NativeAdminConfig) {
         openAI = config.ai?.openai?.apiKey?.nilIfEmpty != nil
-        recipeMail = config.mail?.recipe?.password?.nilIfEmpty != nil
-        weddingMail = config.mail?.wedding?.password?.nilIfEmpty != nil
         einkaufToken = config.einkauf?.appToken?.nilIfEmpty != nil
         einkaufCloudflareSecret = config.einkauf?.cfAccessClientSecret?.nilIfEmpty != nil
     }
@@ -498,30 +386,21 @@ private struct StoredSecretStatus {
 
 private struct AdminSettingsDraft: Equatable {
     var ai = AdminAISettingsDraft()
-    var recipeMail = AdminMailSettingsDraft()
-    var weddingMail = AdminMailSettingsDraft()
     var pdf = AdminPDFSettingsDraft()
-    var scraperInterval = "*:0/30"
     var einkauf = AdminEinkaufSettingsDraft()
 
     init() {}
 
-    init(config: NativeAdminConfig, scraperInterval: String?) {
+    init(config: NativeAdminConfig) {
         ai = AdminAISettingsDraft(config: config.ai)
-        recipeMail = AdminMailSettingsDraft(config: config.mail?.recipe)
-        weddingMail = AdminMailSettingsDraft(config: config.mail?.wedding)
         pdf = AdminPDFSettingsDraft(config: config.pdf)
-        self.scraperInterval = scraperInterval ?? "*:0/30"
         einkauf = AdminEinkaufSettingsDraft(config: config.einkauf)
     }
 
     func changedSections(comparedTo original: Self) -> [String] {
         var sections: [String] = []
         if ai != original.ai { sections.append("KI") }
-        if recipeMail != original.recipeMail { sections.append("Rezept-Postfach") }
-        if weddingMail != original.weddingMail { sections.append("Hochzeits-Postfach") }
         if pdf != original.pdf { sections.append("PDF") }
-        if scraperInterval != original.scraperInterval { sections.append("Automatisierung") }
         if einkauf != original.einkauf { sections.append("Einkauf") }
         return sections
     }
@@ -529,17 +408,6 @@ private struct AdminSettingsDraft: Equatable {
     var validationMessage: String? {
         if ai.openAIModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "Das OpenAI-Modell darf nicht leer sein."
-        }
-        for (title, account) in [("Rezept-Postfach", recipeMail), ("Hochzeits-Postfach", weddingMail)] {
-            if account.enabled && account.imapHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return "Für \(title) fehlt der IMAP-Host."
-            }
-            if !(1...65_535).contains(account.imapPort) {
-                return "Der IMAP-Port für \(title) ist ungültig."
-            }
-        }
-        if scraperInterval.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Das Scraper-Intervall darf nicht leer sein."
         }
         return nil
     }
@@ -567,10 +435,6 @@ private struct AdminSettingsDraft: Equatable {
                     quality: ai.imageQuality,
                     outputFormat: ai.imageOutputFormat
                 )
-            ),
-            mail: NativeAdminMailConfigPatch(
-                recipe: recipeMail.patch(wedding: false),
-                wedding: weddingMail.patch(wedding: true)
             ),
             pdf: pdf.patch,
             einkauf: NativeAdminEinkaufConfigPatch(
@@ -615,48 +479,6 @@ private struct AdminAISettingsDraft: Equatable {
         imageSize = config?.imageGeneration?.size ?? "1536x1024"
         imageQuality = config?.imageGeneration?.quality ?? "medium"
         imageOutputFormat = config?.imageGeneration?.outputFormat ?? "jpeg"
-    }
-}
-
-private struct AdminMailSettingsDraft: Equatable {
-    var enabled = false
-    var imapHost = ""
-    var imapPort = 993
-    var username = ""
-    var password = ""
-    var folder = "INBOX"
-    var maxMails = 20
-    var attachmentMaxMB = 25
-    var defaultCategory = "Sonstiges"
-    var alwaysPending = true
-
-    init() {}
-
-    init(config: NativeAdminMailAccountConfig?) {
-        enabled = config?.enabled ?? false
-        imapHost = config?.imapHost ?? ""
-        imapPort = config?.imapPort ?? 993
-        username = config?.username ?? ""
-        folder = config?.folder ?? "INBOX"
-        maxMails = config?.maxMails ?? 20
-        attachmentMaxMB = config?.attachmentMaxMb ?? 25
-        defaultCategory = config?.defaultCategory ?? "Sonstiges"
-        alwaysPending = config?.alwaysPending ?? true
-    }
-
-    func patch(wedding: Bool) -> NativeAdminMailAccountConfigPatch {
-        NativeAdminMailAccountConfigPatch(
-            enabled: enabled,
-            imapHost: imapHost.trimmingCharacters(in: .whitespacesAndNewlines),
-            imapPort: imapPort,
-            username: username.trimmingCharacters(in: .whitespacesAndNewlines),
-            password: password.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-            folder: folder.trimmingCharacters(in: .whitespacesAndNewlines),
-            maxMails: maxMails,
-            attachmentMaxMb: attachmentMaxMB,
-            defaultCategory: wedding ? defaultCategory.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
-            alwaysPending: wedding ? alwaysPending : nil
-        )
     }
 }
 

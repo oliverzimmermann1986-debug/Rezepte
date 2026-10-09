@@ -24,8 +24,6 @@ def main() -> None:
                 config["paths"][key] = str(root / key)
         for key in ("data_dir", "db_path", "recipe_dir", "wedding_dir", "temp_dir", "logs_dir"):
             config["paths"][key] = str(root / key)
-        for account in config["mail"].values():
-            account.update(enabled=False, password="")
         config["ai"]["openai"]["api_key"] = ""
         config["ai"]["image_generation"]["enabled"] = False
         config["ai"]["video_fallback"]["enabled"] = False
@@ -39,7 +37,7 @@ def main() -> None:
         from app.recipes.pdf_recipe_extract import extract_recipe_data, parse_ingredient_lines, apply_extracted_recipe_data
         from app.recipes.cart_logic import prepare_for_cart
         from app.core.analyzer import OpenAIAnalyzer
-        from app.core.email_processor import _ai_body_excerpt
+        from app.core.content_urls import normalize_content_url
         from app.recipes.shopping_catalog import infer_shopping_category
         from app.recipes.canonical import canonical_name
         Database.__init__.__defaults__ = (root / "fallback.db",)
@@ -104,8 +102,9 @@ def main() -> None:
         assert infer_shopping_category("Tomatenmark") == "Vorrat & Konserven"
         assert infer_shopping_category("Teelicht") == "Drogerie & Haushalt"
         checks["canonical_names_and_product_categories"] = True
-        assert _ai_body_excerpt("250 g Mehl\nViele Grüße\nprivate@example.test") == "250 g Mehl"
-        checks["mail_signature_excerpt_removed"] = True
+        assert "mail" not in config and "schedule" not in config
+        assert normalize_content_url("https://www.tiktok.com/@cook/video/123") == "https://www.tiktok.com/@cook/video/123"
+        checks["mail_removed_direct_url_normalization_preserved"] = True
         store.set("ai", "openai", "server_daily_request_limit", 2)
         store.set("ai", "openai", "server_daily_image_limit", 1)
         def reserve(_index):

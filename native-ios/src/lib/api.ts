@@ -4,6 +4,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 let authToken: string | null = null;
 let configuredUrl = '';
 let configuredIdentity = '';
+let configuredReadOnly = false;
 let sessionEpoch = 0;
 let unauthorizedHandler: ((requestEpoch: number) => void | Promise<void>) | null = null;
 let unauthorizedHandlingEpoch: number | null = null;
@@ -33,12 +34,18 @@ export function configureApi(
   baseUrl: string,
   token: string | null,
   identity = '',
+  readOnly = false,
 ) {
   sessionEpoch += 1;
   cancelDownloadsFromPreviousSessions();
   configuredUrl = baseUrl.trim().replace(/\/+$/, '');
   configuredIdentity = identity.trim().toLowerCase();
   authToken = token?.trim() === 'cloudflare-access' ? null : token;
+  configuredReadOnly = readOnly || Boolean(authToken?.startsWith('guest.'));
+}
+
+export function setApiReadOnly(readOnly: boolean) {
+  configuredReadOnly = readOnly || Boolean(authToken?.startsWith('guest.'));
 }
 
 export function currentApiSessionEpoch() {
@@ -163,6 +170,21 @@ async function withTimeout<T>(
   }
 }
 
+function isOwnSecurityAction(path: string, method: string, body: BodyInit | null | undefined) {
+  if (!authToken || authToken.startsWith('guest.')) return false;
+  if (method === 'POST' && ['/api/account/password', '/api/auth/logout-all'].includes(path)) return true;
+  if (method === 'DELETE' && (path === '/api/account/profile' || /^\/api\/account\/sessions\/[^/?]+$/.test(path) || /^\/api\/account\/identities\/(apple|google)$/.test(path))) return true;
+  // Native provider linking has its own proof-bound start/exchange endpoints.
+  if (method === 'POST' && typeof body === 'string') {
+    try {
+      const payload = JSON.parse(body);
+      if (/^\/api\/auth\/(apple|google)\/start$/.test(path)) return payload.platform === 'native' && payload.intent === 'link';
+      if (path === '/api/auth/exchange') return typeof payload.code === 'string' && typeof payload.code_verifier === 'string';
+    } catch { return false; }
+  }
+  return false;
+}
+
 export async function api<T>(
   path: string,
   options: RequestInit = {},
@@ -170,7 +192,7 @@ export async function api<T>(
   timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   const method = (options.method || 'GET').toUpperCase();
-  if (authToken?.startsWith('guest.') && !['GET', 'HEAD', 'OPTIONS'].includes(method) && path !== '/api/auth/logout') {
+  if (configuredReadOnly && !['GET', 'HEAD', 'OPTIONS'].includes(method) && path !== '/api/auth/logout' && !isOwnSecurityAction(path, method, options.body)) {
     throw new ApiError('Im Gastzugang kannst du ansehen, aber nichts verändern oder erstellen.', 403);
   }
   const requestEpoch = currentApiSessionEpoch();
@@ -213,8 +235,9 @@ export async function uploadFile<T>(
   file: { uri: string; name: string; mimeType: string },
   clientRequestId = createClientRequestId(),
   timeoutMs = UPLOAD_TIMEOUT_MS,
+  formFields: Record<string, string> = {},
 ): Promise<T> {
-  if (authToken?.startsWith('guest.')) {
+  if (configuredReadOnly) {
     throw new ApiError('Zum Hochladen bitte mit deinem Konto anmelden.', 403);
   }
   const requestEpoch = currentApiSessionEpoch();
@@ -228,6 +251,9 @@ export async function uploadFile<T>(
     type: file.mimeType,
   } as unknown as Blob);
   body.append('client_request_id', clientRequestId);
+  for (const [name, value] of Object.entries(formFields)) {
+    if (name !== 'file' && name !== 'client_request_id') body.append(name, value);
+  }
   const headers = new Headers({ Accept: 'application/json' });
   headers.set('Idempotency-Key', clientRequestId);
   if (authToken) headers.set('Authorization', `Bearer ${authToken}`);

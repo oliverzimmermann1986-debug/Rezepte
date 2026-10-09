@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 from PIL import Image
 
-from app.auth import require_admin
+from app.auth import require_admin, require_import
 from app.core.pdf_processing import (
     MAX_PDF_PAGE_PIXELS,
     PdfResourceLimitError,
@@ -249,6 +249,7 @@ def test_admin_routes_are_consolidated(client, test_db: Database, tmp_path: Path
         assert maintenance.json()["ok"] is True
     finally:
         app.dependency_overrides.pop(require_admin, None)
+        app.dependency_overrides.pop(require_import, None)
 
 
 def _scan_pdf_bytes(text: str = "Zutaten Kartoffeln Salz Butter") -> bytes:
@@ -340,6 +341,7 @@ def test_admin_pdf_page_editor_reorders_rotates_and_keeps_backup(client, test_db
             changed.close()
     finally:
         app.dependency_overrides.pop(require_admin, None)
+        app.dependency_overrides.pop(require_import, None)
 
 
 def test_recipe_api_returns_transparent_typo_correction(client, test_db: Database, tmp_path: Path):
@@ -453,6 +455,7 @@ def test_admin_pdf_dry_run_detects_rotation_without_writing(client, test_db: Dat
         assert pdf_path.read_bytes() == original
     finally:
         app.dependency_overrides.pop(require_admin, None)
+        app.dependency_overrides.pop(require_import, None)
 
 
 def test_normal_user_is_rejected_by_admin_dependency(test_db: Database, monkeypatch):
@@ -485,6 +488,7 @@ def test_current_session_exposes_persisted_user_role(client, test_db: Database, 
         "role": "user",
         "is_admin": False,
         "full_access": False,
+        "can_import": False,
         "read_only": False,
     }
 
@@ -494,6 +498,7 @@ def test_current_session_requires_authentication(client):
     from app.main import app
 
     app.dependency_overrides.pop(auth.require_auth, None)
+    app.dependency_overrides.pop(require_import, None)
     response = client.get("/api/session")
     assert response.status_code == 401
 
@@ -531,6 +536,7 @@ def test_user_list_exposes_role_and_self_disable_is_blocked(client, test_db: Dat
         assert "eigenes Konto" in disabled.json()["detail"]
     finally:
         app.dependency_overrides.pop(require_admin, None)
+        app.dependency_overrides.pop(require_import, None)
 
 
 def test_pdf_background_job_persists_result(client, test_db: Database, tmp_path: Path, monkeypatch):
@@ -594,6 +600,7 @@ def test_pdf_background_job_persists_result(client, test_db: Database, tmp_path:
         assert job["result"]["changed"] == 1
     finally:
         app.dependency_overrides.pop(require_admin, None)
+        app.dependency_overrides.pop(require_import, None)
 
 
 def test_safe_pdf_render_dpi_limits_huge_pages():
@@ -671,6 +678,7 @@ def test_pdf_sync_and_background_runs_share_exclusive_lock(
     finally:
         held_lock.release()
         app.dependency_overrides.pop(require_admin, None)
+        app.dependency_overrides.pop(require_import, None)
 
 
 @pytest.mark.parametrize(
@@ -705,3 +713,4 @@ def test_interactive_pdf_endpoints_return_busy_while_engine_is_claimed(
     finally:
         held_lock.release()
         app.dependency_overrides.pop(require_admin, None)
+        app.dependency_overrides.pop(require_import, None)

@@ -10,7 +10,7 @@ function scrapperApp() {
     ...window.RezepteFeatures["audit"](),
     ...window.RezepteFeatures["account"](),
     page: 'recipes',
-    session: { username: '', role: 'user', is_admin: false, full_access: false, loaded: false },
+    session: { username: '', role: 'user', is_admin: false, full_access: false, can_import: false, loaded: false },
     account: { imports: [], data: null, profile: null, sessions: [], identities: [], providers: [], loading: false, error: '', notice: '', busy: false, currentPassword: '', newPassword: '', confirmPassword: '', deletePassword: '', invitation: null, joinToken: '', _loadGeneration: 0, _loadController: null },
     users: { items: [], loading: false, busy: false, error: '', notice: '', search: '', draft: null, _loadGeneration: 0 },
     systemInfo: { version: '', capabilities: [], loaded: false, backendOutdated: false },
@@ -359,6 +359,7 @@ function scrapperApp() {
           ...(r || {}),
           is_admin: r?.is_admin === true || r?.role === 'admin',
           full_access: r?.full_access === true,
+          can_import: ['full_user', 'admin'].includes(r?.role),
           loaded: true,
         };
         this.admin.accessDenied = !this.session.is_admin;
@@ -373,6 +374,7 @@ function scrapperApp() {
           role: 'unknown',
           is_admin: false,
           full_access: false,
+          can_import: false,
           loaded: false,
         };
         this.admin.accessDenied = true;
@@ -390,9 +392,6 @@ function scrapperApp() {
         this._eventSource = es;
         es.addEventListener('status', (e) => {
           try { this.status = JSON.parse(e.data); } catch(_) {}
-        });
-        es.addEventListener('scraper_progress', (e) => {
-          try { this.scraperProgress = JSON.parse(e.data); } catch(_) {}
         });
         let errors = 0;
         es.addEventListener('error', () => {
@@ -420,7 +419,7 @@ function scrapperApp() {
       }
       if (!this._progressPoller) {
         this._progressPoller = window.RezepteRuntime.createPoller(
-          async () => { const before = JSON.stringify(this.scraperProgress); await this.refreshProgress(); return before !== JSON.stringify(this.scraperProgress); },
+          async () => { const before = JSON.stringify(this.reanalyzeProgress); await this.refreshProgress(); return before !== JSON.stringify(this.reanalyzeProgress); },
           { minDelay: 2500, maxDelay: 15000, isActive: () => this.page === 'admin' && !document.hidden }
         );
       }
@@ -525,7 +524,11 @@ function scrapperApp() {
       if (body !== undefined) opts.body = JSON.stringify(body);
       if (options.signal) opts.signal = options.signal;
       try {
-        if (this.session.role === 'guest' && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+        const ownSecurityAction = this.canManageOwnAccount() && (
+          (method === 'POST' && ['/api/account/password', '/api/auth/logout-all'].includes(url)) ||
+          (method === 'DELETE' && (url === '/api/account/profile' || /^\/api\/account\/sessions\/[^/?]+$/.test(url) || /^\/api\/account\/identities\/(apple|google)$/.test(url)))
+        );
+        if (this.session.role === 'guest' && !['GET', 'HEAD', 'OPTIONS'].includes(method) && !ownSecurityAction) {
           throw new Error('Gäste können ansehen, aber nichts verändern oder erstellen');
         }
         return await this.fetchWithTimeout(url, opts, options.timeoutMs || 30000, async r => {
@@ -693,18 +696,12 @@ function scrapperApp() {
 
     // ------------- Tests -------------
     testing: {
-      mail_recipe: false, mail_wedding: false,
       openai: false,
       paths: false, ytdlp: false,
-      schedule_preview: false, schedule_save: false,
       webhook: -1,   // Index des gerade getesteten Webhook (-1 = keiner)
     },
     testResults: {},
-    schedule: { scraper: { oncalendar: '', next_run: null } },
-    scheduleEdit: { scraper: '' },
-    schedulePreview: null,
 
-    scraperProgress: null,
     reanalyzeProgress: null,
     _progressTimer: null,
 

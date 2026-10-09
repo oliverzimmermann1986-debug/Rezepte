@@ -78,9 +78,6 @@
       // Defaults absichern damit Alpine-Bindings nicht meckern
       cfg.web ||= {};
       cfg.paths ||= {};
-      cfg.mail ||= {};
-      cfg.mail.recipe ||= {};
-      cfg.mail.wedding ||= {};
       cfg.ai ||= {};
       cfg.ai.openai ||= { api_key: '', model: 'gpt-4o-mini', base_url: '', timeout: 30 };
       if (cfg.ai.auto_translate === undefined) cfg.ai.auto_translate = true;
@@ -113,7 +110,6 @@
       // Pro-Pair-Args ins UI laden
       this.recipeTypes = cfg.recipe_types || this.recipeTypes;
       this.weddingCategories = cfg.wedding_categories || this.weddingCategories;
-      this.loadSchedule();
       this.loadMaintenance();  // Wartungs-Stats parallel
     },
     async loadMaintenance() {
@@ -224,9 +220,6 @@
         this.testing[key] = false;
       }
     },
-    testMail(account) {
-      this.runTest('mail_' + account, '/api/test/mail', { account });
-    },
     async testOpenAI() {
       if (!this.canUseAdminTools()) return;
       // Defensiv: testing-state immer auf false zurücksetzen damit der Button
@@ -280,7 +273,7 @@
       if (!this.config.webhooks) this.config.webhooks = [];
       this.config.webhooks.push({
         name: '', url: '', enabled: true,
-        events: ['scraper_done', 'job_failed'],
+        events: ['job_failed', 'pending_high'],
       });
     },
     removeWebhook(idx) {
@@ -312,40 +305,6 @@
         this.showToast('Test fail: ' + e, 'error');
       } finally {
         this.testing.webhook = -1;
-      }
-    },
-
-    // ------------- Schedule / Timer -------------
-    async loadSchedule() {
-      try {
-        this.schedule = await this.api('GET', '/api/schedule');
-        this.scheduleEdit.scraper = this.schedule.scraper.oncalendar || '';
-      } catch(e) {}
-    },
-    async previewSchedule() {
-      this.testing.schedule_preview = true;
-      try {
-        this.schedulePreview = await this.api('POST', '/api/schedule/preview', {
-          scraper: this.scheduleEdit.scraper,
-        });
-      } finally {
-        this.testing.schedule_preview = false;
-      }
-    },
-    async saveSchedule() {
-      this.testing.schedule_save = true;
-      try {
-        const r = await this.api('PUT', '/api/schedule', {
-          scraper: this.scheduleEdit.scraper,
-        });
-        if (r && r.ok) {
-          this.showToast('Schedule gespeichert ✓');
-          await this.loadSchedule();
-        } else {
-          this.showToast('Speichern fehlgeschlagen: ' + (r && r.error || ''), 'error');
-        }
-      } finally {
-        this.testing.schedule_save = false;
       }
     },
 
@@ -402,24 +361,6 @@
       }
     },
 
-    humanCron(cron) {
-      if (!cron) return '—';
-      const map = {
-        'hourly': 'jede Stunde',
-        'daily': 'täglich um Mitternacht',
-        'weekly': 'wöchentlich (Mo 00:00)',
-        'monthly': 'monatlich (1. um 00:00)',
-      };
-      if (map[cron]) return map[cron];
-      let m;
-      if ((m = cron.match(/^\*:0\/(\d+)$/))) return 'alle ' + m[1] + ' Minuten';
-      if ((m = cron.match(/^\*-\*-\*\s+(\d\d):(\d\d):(\d\d)$/))) return 'täglich um ' + m[1] + ':' + m[2];
-      if ((m = cron.match(/^(\w+)\.\.(\w+)\s+\*-\*-\*\s+(\d\d):(\d\d):(\d\d)$/)))
-        return m[1] + '-' + m[2] + ' um ' + m[3] + ':' + m[4];
-      if ((m = cron.match(/^(\w+)\s+\*-\*-\*\s+(\d\d):(\d\d):(\d\d)$/)))
-        return m[1] + ' um ' + m[2] + ':' + m[3];
-      return cron;   // custom
-    },
     };
   };
 })();

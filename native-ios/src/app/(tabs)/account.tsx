@@ -1,14 +1,18 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { router } from 'expo-router';
 import React, { useCallback, useRef, useState } from 'react';
+import * as DocumentPicker from 'expo-document-picker';
 import { Share, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { PrimaryButton, Screen } from '@/components/ui';
+import { PendingEditor } from '@/components/pending-editor';
+import { PendingItem, PendingSuggestion } from '@/lib/types';
 import { AccountSecurity } from '@/components/account-security';
 import { passwordProblem } from '@/lib/account-management';
 import { colors, radii, space } from '@/constants/design';
-import { api, currentApiSessionEpoch, isApiSessionEpochCurrent } from '@/lib/api';
+import { api, uploadFile, deleteCachedFile, currentApiSessionEpoch, isApiSessionEpochCurrent } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { pickEditedJpeg } from '@/lib/image-picker';
 import { invalidateApiCacheByPrefix } from '@/lib/cache';
 
 type Account = {
@@ -18,13 +22,12 @@ type Account = {
   invitations: { id: number; expires_at: number; revoked_at: number | null; accepted_at: number | null }[];
 };
 type Invitation = { id: number; token: string; invite_path: string; expires_at: number };
-type OwnImport = { url: string; name?: string; suggestion: { type?: string; category?: string; analysis_state?: string; analysis_error?: string;
-  ingredients?: unknown[]; steps?: unknown[]; servings?: number | null } };
+type OwnImport = { url: string; name?: string; suggestion: PendingSuggestion & { analysis_state?: string; analysis_error?: string } };
 
 export default function AccountScreen() {
-  const { username, isAdmin, isGuest, serverUrl, registerAccount, signOut, returnToLogin, refreshHousehold } = useAuth();
-  const adminAllowed = useRef(isAdmin);
-  adminAllowed.current = isAdmin;
+  const { username, isAdmin, isGuest, canImport, canManageOwnAccount, serverUrl, registerAccount, signOut, returnToLogin, refreshHousehold } = useAuth();
+  const importAllowed = useRef(canImport);
+  importAllowed.current = canImport;
   const [account, setAccount] = useState<Account | null>(null);
   const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [busy, setBusy] = useState(false);
@@ -37,6 +40,7 @@ export default function AccountScreen() {
   const [importNotice, setImportNotice] = useState('');
   const [importVisibility, setImportVisibility] = useState<'private' | 'global'>('private');
   const [imports, setImports] = useState<OwnImport[]>([]);
+  const [selectedImport, setSelectedImport] = useState<PendingItem | null>(null);
   const loadGeneration = useRef(0);
   const activeLoad = useRef<AbortController | null>(null);
 
@@ -50,7 +54,7 @@ export default function AccountScreen() {
       const result = await api<Account>('/api/account', {}, controller.signal);
       if (generation !== loadGeneration.current || controller.signal.aborted) return;
       setAccount(result);
-      if (!result.is_guest && adminAllowed.current) {
+      if (!result.is_guest && importAllowed.current) {
         const pending = await api<{ items: OwnImport[] }>('/api/account/imports', {}, controller.signal);
         if (generation !== loadGeneration.current || controller.signal.aborted) return;
         setImports(pending.items);
@@ -92,14 +96,38 @@ export default function AccountScreen() {
     await load();
   }
 
+  async function uploadRecipe(file: { uri: string; name: string; mimeType: string }) {
+    if (!importAllowed.current) return;
+    const visibility = isAdmin ? importVisibility : 'private';
+    const result = await uploadFile<{ message?: string }>('/api/pending/import-file', file, undefined, undefined, { type: 'recipe', visibility });
+    setImportNotice(result.message || 'Datei übernommen.');
+    await deleteCachedFile(file.uri).catch(() => undefined);
+    await invalidateApiCacheByPrefix('recipes:', 'recipe:');
+    await load();
+  }
+
+  async function pickPhoto() {
+    if (!importAllowed.current) return;
+    const image = await pickEditedJpeg('rezept-import');
+    if (image && importAllowed.current) await uploadRecipe(image);
+  }
+
+  async function pickPDF() {
+    if (!importAllowed.current) return;
+    const result = await DocumentPicker.getDocumentAsync({ type: 'application/pdf', copyToCacheDirectory: true, multiple: false });
+    if (result.canceled || !importAllowed.current) return;
+    const asset = result.assets[0];
+    await uploadRecipe({ uri: asset.uri, name: asset.name, mimeType: asset.mimeType || 'application/pdf' });
+  }
+
   return (
     <Screen>
       <Text accessibilityRole="header" style={styles.title}>Mein Konto</Text>
-      <Text style={styles.note}>{isGuest ? 'Gastzugang · nur ansehen' : username}</Text>
+      <Text style={styles.note}>{isGuest ? `${canManageOwnAccount ? username + ' · Gastkonto' : 'Gastzugang'} · nur ansehen` : username}</Text>
       <Text style={styles.note}>Globale Rezepte sind für alle sichtbar. Private Rezepte, Favoriten, Bewertungen, Einkauf und Wochenplan gehören zu deinem Haushalt.</Text>
       {!!error && <View style={styles.card}><Text accessibilityRole="alert" style={styles.error}>{error}</Text><PrimaryButton label="Erneut laden" onPress={() => void load()} /></View>}
-      {!isGuest && <AccountSecurity />}
-      {isGuest ? (
+      {canManageOwnAccount && <AccountSecurity />}
+      {isGuest && !canManageOwnAccount ? (
         <View style={styles.card}>
           <Text style={styles.heading}>Konto erstellen</Text>
           <Text style={styles.note}>Mit einem eigenen Konto kannst du Haushaltsfunktionen nutzen und eine zweite Person einladen.</Text>
@@ -109,6 +137,8 @@ export default function AccountScreen() {
           <TextInput accessibilityLabel="Einladungscode oder Link" placeholder="Einladungscode oder Link (optional)" autoCapitalize="none" autoCorrect={false} value={joinToken} onChangeText={setJoinToken} editable={!busy} style={styles.input} />
           <PrimaryButton label={busy ? 'Konto wird erstellt …' : 'Konto erstellen'} onPress={() => void action(createAccount)} disabled={busy || name.trim().length < 3 || password.length < 10} />
         </View>
+      ) : isGuest ? (
+        <View style={styles.card}><Text style={styles.note}>Dein Gastkonto kann Rezepte ansehen und die eigene Anmeldung verwalten. Haushaltsfunktionen benötigen mindestens die Rolle Benutzer.</Text></View>
       ) : (
         <View style={styles.card}>
           <Text style={styles.heading}>Personen im Konto</Text>
@@ -136,22 +166,24 @@ export default function AccountScreen() {
           </>}
         </View>
       )}
-      {isAdmin && <View style={styles.card}>
+      {canImport && <View style={styles.card}>
         <Text style={styles.heading}>Rezept hinzufügen</Text>
         <Text style={styles.note}>Private Importe bleiben im Haushalt. Bereits globale Links werden als Verweis in deiner Sammlung gespeichert.</Text>
         <TextInput accessibilityLabel="Rezeptlink" placeholder="https://…" keyboardType="url" autoCapitalize="none" autoCorrect={false} value={importUrl} onChangeText={setImportUrl} editable={!busy} style={styles.input} />
         {isAdmin && <PrimaryButton label={importVisibility === 'private' ? 'Sichtbarkeit: privat im Haushalt' : 'Sichtbarkeit: global für alle'}
                                   onPress={() => setImportVisibility(current => current === 'private' ? 'global' : 'private')} disabled={busy} />}
         <PrimaryButton label="In Sammlung übernehmen" disabled={busy || !importUrl.trim()} onPress={() => void action(async () => {
-          if (!adminAllowed.current) return;
-          const result = await api<{ message?: string; recipe_id?: number }>('/api/pending/import-url', { method: 'POST', body: JSON.stringify({ url: importUrl.trim(), type: 'recipe', visibility: importVisibility }) });
+          if (!importAllowed.current) return;
+          const result = await api<{ message?: string; recipe_id?: number }>('/api/pending/import-url', { method: 'POST', body: JSON.stringify({ url: importUrl.trim(), type: 'recipe', visibility: isAdmin ? importVisibility : 'private' }) });
           setImportNotice(result.message || 'Link übernommen.'); setImportUrl(''); await invalidateApiCacheByPrefix('recipes:', 'recipe:');
           await load();
           if (result.recipe_id) router.push({ pathname: '/recipe/[id]', params: { id: String(result.recipe_id) } });
         })} />
+        <PrimaryButton label="Foto importieren" onPress={() => void action(pickPhoto)} disabled={busy} />
+        <PrimaryButton label="PDF importieren" onPress={() => void action(pickPDF)} disabled={busy} />
         {!!importNotice && <Text accessibilityRole="alert" style={styles.note}>{importNotice}</Text>}
       </View>}
-      {isAdmin && imports.length > 0 && <View style={styles.card}>
+      {canImport && imports.length > 0 && <View style={styles.card}>
         <Text style={styles.heading}>Private Importe prüfen</Text>
         <PrimaryButton label="Status aktualisieren" onPress={() => void load()} disabled={busy} />
         {imports.map(item => <View key={item.url} style={styles.pending}>
@@ -159,10 +191,12 @@ export default function AccountScreen() {
           {!!item.suggestion.analysis_error && <Text style={styles.error}>{item.suggestion.analysis_error}</Text>}
           <TextInput accessibilityLabel="Name des privaten Rezepts" value={item.name || ''} onChangeText={value => setImports(current => current.map(row => row.url === item.url ? { ...row, name: value } : row))}
                      style={styles.input} editable={!busy} />
+          <PrimaryButton label="Import bearbeiten" disabled={busy || ['queued', 'running'].includes(item.suggestion.analysis_state || '')}
+            onPress={() => { if (importAllowed.current) setSelectedImport({ url: item.url, visibility: 'private', status: 'pending', ai_suggestion: { ...item.suggestion, name: item.name || item.suggestion.name } }); }} />
           <Text style={styles.note}>{(item.suggestion.ingredients || []).length} Zutaten · {(item.suggestion.steps || []).length} Schritte</Text>
           <PrimaryButton label="Rezept übernehmen" disabled={busy || !item.name?.trim() || ['queued', 'running'].includes(item.suggestion.analysis_state || '')}
             onPress={() => void action(async () => {
-              if (!adminAllowed.current) return;
+              if (!importAllowed.current) return;
               const result = await api<{ ok: boolean; error?: string }>('/api/pending', { method: 'POST', body: JSON.stringify({ url: item.url, visibility: 'private', action: 'save', name: item.name?.trim(),
                 type: item.suggestion.type || 'Sonstiges', category: item.suggestion.category || 'Allgemein', ingredients: item.suggestion.ingredients || [],
                 steps: item.suggestion.steps || [], servings: item.suggestion.servings || null }) });
@@ -171,7 +205,8 @@ export default function AccountScreen() {
             })} />
         </View>)}
       </View>}
-      <PrimaryButton label={isGuest ? 'Zur Anmeldung' : 'Abmelden'} onPress={() => void (isGuest ? returnToLogin() : signOut())} disabled={busy} />
+      <PendingEditor item={canImport ? selectedImport : null} onClose={() => setSelectedImport(null)} onSaved={async () => { setSelectedImport(null); await load(); }} />
+      <PrimaryButton label={isGuest && !canManageOwnAccount ? 'Zur Anmeldung' : 'Abmelden'} onPress={() => void (isGuest && !canManageOwnAccount ? returnToLogin() : signOut())} disabled={busy} />
     </Screen>
   );
 }

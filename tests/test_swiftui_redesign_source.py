@@ -228,14 +228,14 @@ def test_swiftui_admin_settings_use_safe_partial_config_contract():
         "/api/config",
         "/api/config/reload",
         "/api/test/openai",
-        "/api/test/mail",
-        "/api/schedule/preview",
         "/api/config/logs/stats",
         "/api/config/logs/cleanup",
         "/api/config/backups/list",
         "/api/config/backups/run-now",
     ):
         assert endpoint in api
+    for removed in ("/api/test/mail", "/api/schedule", "/api/jobs/scraper"):
+        assert removed not in api
     assert "NativeAdminConfigPatch" in models
     patch_models = models.split("struct NativeAdminConfigPatch", 1)[1]
     assert "let baseUrl" not in patch_models
@@ -387,8 +387,9 @@ def test_swiftui_guest_login_is_read_only_across_navigation_and_recipe_actions()
     assert "signInAsGuest" in login and "signInAsGuest" in session
     assert '"/api/auth/guest"' in api
     assert "@Published private(set) var readOnly" in session
-    assert "case .signedIn = state, !readOnly" in session
-    assert "if session.fullAccess {\n                InboxView()" in tabs
+    assert "guard case .signedIn = state else { return false }" in session
+    assert "return !readOnly || userID != nil" in session
+    assert "if session.canImport {\n                InboxView()" in tabs
     assert "if !session.readOnly {\n                MealPlanView()" in tabs
     assert "Gastzugang · Rezept nur ansehen" in detail
     assert detail.count("if !session.readOnly") >= 4

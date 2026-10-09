@@ -70,7 +70,8 @@ def test_user_cannot_start_import_or_ai_before_any_work(households, monkeypatch,
     files, work = _files(), _work_state(db)
     response = _post(client, *operation[:3], rid)
     assert response.status_code == 403, response.text
-    assert "Administratorrechte" in response.json()["detail"]
+    expected_permission = "Importberechtigung" if operation[0].startswith("/api/pending") else "Administratorrechte"
+    assert expected_permission in response.json()["detail"]
     assert _files() == files and _work_state(db) == work
 
 
@@ -122,12 +123,12 @@ def assert_provider_user_can_edit_but_cannot_start_jobs(client, db, username):
     assert db.recipe_steps_get(rid)[0]["instruction"] == "Manuell geändert."
     assert len(db.recipe_versions_list(recipe_id=rid)) == 1
     assert client.get(f"/api/recipes/{rid}").json()["can_edit"] is True
-    assert client.get("/api/account/imports").status_code == 200
+    assert client.get("/api/account/imports").status_code == 403
     for path, payload in ((f"/api/recipes/{rid}/generate-image", {}),
                           (f"/api/recipes/{rid}/translate", {"target_language": "de", "text": "Test"}),
-                          ("/api/pending/import-url", {"url": "https://recipes.example/new"}),
-                          ("/api/jobs/scraper/run", {})):
+                          ("/api/pending/import-url", {"url": "https://recipes.example/new"})):
         assert client.post(path, json=payload).status_code == 403
+    assert client.post("/api/jobs/scraper/run", json={}).status_code == 404
     assert client.get("/api/users").status_code == 403
     assert db.user_get_by_name(username)["role"] == "user"
 

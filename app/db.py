@@ -400,14 +400,14 @@ CREATE INDEX IF NOT EXISTS idx_cooking_completion_history
   ON recipe_cooking_completion_requests(history_id);
 
 -- users: Multi-User-Auth. Bcrypt-Hashes in password_hash. role ist entweder
--- 'user' oder 'admin'; administrative APIs prüfen diese Rolle serverseitig.
+-- 'guest', 'user', 'full_user' oder 'admin'; APIs prüfen diese Rolle serverseitig.
 -- disabled=1 → kein Login mehr,
 -- Datensatz bleibt für Audit-Trail.
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL COLLATE NOCASE UNIQUE,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'user',           -- Legacy, nicht mehr ausgewertet
+  role TEXT NOT NULL DEFAULT 'user',
   disabled INTEGER NOT NULL DEFAULT 0,
   session_version INTEGER NOT NULL DEFAULT 0,  -- erhöht bei Passwort/Sperr-Änderungen
   created_at REAL NOT NULL,
@@ -983,12 +983,13 @@ class Database:
                 "INTEGER NOT NULL DEFAULT 0"
             )
         # Historische Versionen haben die Rolle nicht ausgewertet. Ungültige
-        # Altwerte werden deshalb fail-closed zu einem normalen Benutzer. Die
+        # Altwerte werden deshalb fail-closed zu einem lesenden Gast. Bereits
+        # ausgestellte Sitzungen werden beim Rollenwechsel widerrufen. Die
         # initiale Admin-Promotion erfolgt anschließend in migrate_users_to_db(),
         # wo der konfigurierte Legacy-Benutzer bekannt ist.
         c.execute(
-            "UPDATE users SET role='user' "
-            "WHERE role IS NULL OR role NOT IN ('user', 'admin')"
+            "UPDATE users SET role='guest', session_version=session_version+1 "
+            "WHERE role IS NULL OR role NOT IN ('guest', 'user', 'full_user', 'admin')"
         )
         duplicate_names = c.execute(
             "SELECT username FROM users GROUP BY username COLLATE NOCASE HAVING COUNT(*)>1"
@@ -4478,8 +4479,9 @@ class Database:
 
     def user_create(self, username: str, password_hash: str,
                      role: str = "user") -> int:
-        if role not in {"user", "admin"}:
-            raise ValueError("role muss 'user' oder 'admin' sein")
+        from .auth import VALID_ROLES
+        if role not in VALID_ROLES:
+            raise ValueError("Unbekannte Benutzerrolle")
         with self.conn() as c:
             cur = c.execute(
                 "INSERT INTO users (username, password_hash, role, created_at) "
@@ -4514,8 +4516,9 @@ class Database:
         expected_version: Optional[int] = None,
     ) -> bool:
         """Ändert Auth-Felder atomar und widerruft bestehende Sitzungen."""
-        if role is not None and role not in {"user", "admin"}:
-            raise ValueError("role muss 'user' oder 'admin' sein")
+        from .auth import VALID_ROLES
+        if role is not None and role not in VALID_ROLES:
+            raise ValueError("Unbekannte Benutzerrolle")
         with self.conn() as c:
             # Writer-Lock vor Lesen und Entscheiden: ein paralleler
             # Demote/Disable/Delete liest erst nach unserem Commit.

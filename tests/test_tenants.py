@@ -45,6 +45,7 @@ def households(client, test_db, monkeypatch):
     old = dict(app.dependency_overrides)
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     users = {}
     for username, role in (("operator", "admin"), ("anna", "user"), ("bert", "user")):
         uid = test_db.user_create(username, "unused-password-hash", role=role)

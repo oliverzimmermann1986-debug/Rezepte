@@ -32,29 +32,6 @@ def test_sync_manager_resets_running_state_when_thread_start_fails(monkeypatch):
     sync_manager.reset_sync_state_for_tests()
 
 
-def test_scraper_route_releases_lock_when_thread_start_fails(monkeypatch):
-    class FakeDb:
-        def __init__(self):
-            self.finished = []
-
-        def job_start(self, _kind):
-            return 42
-
-        def job_finish(self, job_id, status, summary):
-            self.finished.append((job_id, status, summary))
-
-    fake_db = FakeDb()
-    lock = threading.Lock()
-    monkeypatch.setitem(api_jobs._locks, "scraper", lock)
-    monkeypatch.setattr(api_jobs, "get_db", lambda: fake_db)
-    monkeypatch.setattr(api_jobs.threading, "Thread", _BrokenThread)
-
-    with pytest.raises(HTTPException) as exc:
-        api_jobs.run_scraper()
-    assert exc.value.status_code == 500
-    assert fake_db.finished[0][0:2] == (42, "error")
-    assert lock.acquire(blocking=False) is True
-    lock.release()
 
 
 def test_trash_cleanup_thread_can_be_stopped_without_waiting_for_daily_sleep():

@@ -74,7 +74,7 @@ struct AdminView: View {
                         } label: {
                             Label("Admin-Einstellungen", systemImage: "gearshape.2")
                         }
-                        Text("KI, Postfächer, PDF, Automatisierung, Einkauf-Anbindung, Backups und Logs sicher verwalten.")
+                        Text("KI, PDF, Einkauf-Anbindung, Backups und Logs sicher verwalten.")
                             .font(.caption)
                             .foregroundStyle(theme.muted)
                     } else {
@@ -213,14 +213,6 @@ struct AdminView: View {
                     }
                 }
 
-                Section("Automatik") {
-                    Button {
-                        Task { await runScraper() }
-                    } label: {
-                        Label("Postfach jetzt prüfen", systemImage: "arrow.clockwise")
-                    }
-                }
-
                 Section("Konto") {
                     LabeledContent("Angemeldet als", value: session.username)
                     Button {
@@ -355,16 +347,6 @@ struct AdminView: View {
             await load()
         } catch {
             resultMessage = error.localizedDescription
-        }
-    }
-
-    private func runScraper() async {
-        guard session.fullAccess else { return }
-        do {
-            _ = try await session.api.runScraper()
-            resultMessage = "Die Postfachprüfung wurde gestartet."
-        } catch {
-            session.handle(error)
         }
     }
 

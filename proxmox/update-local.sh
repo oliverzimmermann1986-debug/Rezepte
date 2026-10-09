@@ -95,10 +95,33 @@ for timer in scrapper-job.timer scrapper-db-backup.timer; do
   fi
 done
 
+unit_load_state() {
+  local state
+  state="$(systemctl show "$1" --property=LoadState --value)" || {
+    [[ "$state" == "not-found" ]] || return 1
+  }
+  [[ -n "$state" ]] || return 1
+  printf '%s\n' "$state"
+}
+
+stop_installed_units() {
+  local unit state
+  for unit in "$@"; do
+    state="$(unit_load_state "$unit")" || return 1
+    [[ "$state" == "not-found" ]] && continue
+    systemctl stop "$unit" || return 1
+  done
+}
+
 restore_timer_activity() {
-  local timer
+  local retire_mail="${1:-0}"
+  local timer state
   for timer in scrapper-job.timer scrapper-db-backup.timer; do
-    if [[ "$timer" == "scrapper-job.timer" && "$IS_REVIEW_INSTANCE" == "1" ]]; then
+    if [[ "$timer" == "scrapper-job.timer" ]]; then
+      state="$(unit_load_state "$timer")" || return 1
+      [[ "$state" == "not-found" ]] && continue
+    fi
+    if [[ "$timer" == "scrapper-job.timer" && ( "$retire_mail" == "1" || "$IS_REVIEW_INSTANCE" == "1" ) ]]; then
       systemctl disable --now "$timer" >/dev/null
     elif [[ "${TIMER_WAS_ACTIVE[$timer]}" == "1" ]]; then
       systemctl start "$timer"
@@ -145,8 +168,8 @@ restore_on_error() {
   if [[ $rc -ne 0 ]]; then
     echo "Update fehlgeschlagen (Code $rc). Stelle bisherigen Code wieder her…" >&2
     if [[ -f "$BACKUP_FILE" ]]; then
-      systemctl stop scrapper-web.service scrapper-job.timer scrapper-db-backup.timer || restored=0
-      systemctl stop scrapper-job.service scrapper-db-backup.service || restored=0
+      stop_installed_units scrapper-web.service scrapper-job.timer scrapper-db-backup.timer || restored=0
+      stop_installed_units scrapper-job.service scrapper-db-backup.service || restored=0
       RESTORE_DIR="$(mktemp -d /tmp/rezepte-restore.XXXXXX)"
       tar -C "$RESTORE_DIR" -xzf "$BACKUP_FILE"
       rsync -a --checksum --delete \
@@ -245,19 +268,12 @@ BROWSERS_SWAPPED=1
 "$APP_DIR/venv/bin/python" -m compileall -q -f --invalidation-mode checked-hash "$APP_DIR/app"
 
 install -m 0644 "$APP_DIR/systemd/scrapper-web.service" /etc/systemd/system/scrapper-web.service
-install -m 0644 "$APP_DIR/systemd/scrapper-job.service" /etc/systemd/system/scrapper-job.service
-install -m 0644 "$APP_DIR/systemd/scrapper-job.timer" /etc/systemd/system/scrapper-job.timer
 install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.service" /etc/systemd/system/scrapper-db-backup.service
 install -m 0644 "$APP_DIR/systemd/scrapper-db-backup.timer" /etc/systemd/system/scrapper-db-backup.timer
-install -m 0644 "$APP_DIR/systemd/scrapper-schedule-apply.service" \
-  /etc/systemd/system/scrapper-schedule-apply.service
-install -d -m 0755 /etc/systemd/system/scrapper-job.timer.d
 install -d -m 0755 /etc/scrapper
 if [[ -f "$APP_DIR/data/web.env" && ! -f /etc/scrapper/web.env ]]; then
   install -m 0600 -o root -g root "$APP_DIR/data/web.env" /etc/scrapper/web.env
 fi
-install -m 0644 "$APP_DIR/systemd/49-scrapper-systemctl.rules" \
-  /etc/polkit-1/rules.d/49-scrapper-systemctl.rules
 rm -f /etc/sudoers.d/scrapper
 
 mkdir -p "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/temp" "$APP_DIR/files/rezepte"
@@ -402,8 +418,11 @@ if [[ "$IS_REVIEW_INSTANCE" == "1" ]]; then
   fi
 fi
 
-restore_timer_activity
+# Commit the release with the retired mail timer disabled. Rollback above keeps
+# the original timer policy; successful updates never reactivate mail polling.
+restore_timer_activity 1
 trap - ERR
+"$APP_DIR/venv/bin/python" "$APP_DIR/tools/retire_mail_import.py" --apply
 rm -rf -- "$APP_DIR/venv.previous" "$APP_DIR/playwright-browsers.previous"
 echo "Update erfolgreich. Backend und Frontend laufen gemeinsam auf Version $EXPECTED_VERSION."
 echo "Gesundheit: $(cat "$HEALTH_FILE")"

@@ -1,0 +1,9 @@
+Bitte Quellenküche 1.3.0 mit Backend 1.10.0 prüfen:
+• Gast: Rezepte lesen; Hinzufügen, Bearbeiten, Einkauf, Planung und Import bleiben gesperrt.
+• Angemeldete Gastkonten: eigene Anmeldung, Passwort, Apple/Google-Verknüpfungen und Sitzungen verwalten sowie das Konto löschen; anonyme Gäste bekommen diese Kontofunktionen nicht.
+• Benutzer: Rezepte und Haushalt einschließlich Einkauf und Wochenplan nutzen; Import und Administration bleiben gesperrt.
+• Vollbenutzer: zusätzlich Links, Fotos und PDFs in den eigenen Haushalt importieren, geteilte Links übernehmen und private Importe prüfen.
+• Admin: alle Funktionen einschließlich Benutzerverwaltung und Systempflege. Alle vier Rollen lassen sich in der Benutzerverwaltung vergeben.
+• Nach einer Rollenänderung erneut anmelden und prüfen, dass nur die erlaubten Funktionen erscheinen.
+• E-Mail-Import, Postfachprüfung und Postfach-Einstellungen sind vollständig entfernt.
+• Apple-/Google-Anmeldung sowie bestehende Rezepte, Einkaufslisten und Haushalte weiter prüfen.

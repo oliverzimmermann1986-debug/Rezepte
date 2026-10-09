@@ -9,7 +9,7 @@ BUILD_ROOT="${CM_BUILD_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 DERIVED_DATA="$BUILD_ROOT/ios-swift/build/DerivedData"
 ARTIFACT_DIR="$BUILD_ROOT/ios-swift/artifacts"
 RESULT_BUNDLE="$BUILD_ROOT/ios-swift/ReviewVideoResults.xcresult"
-VIDEO_PATH="$ARTIFACT_DIR/Rezeptregal-App-Review-1.2.0.mp4"
+VIDEO_PATH="$ARTIFACT_DIR/Rezeptregal-App-Review-1.3.0.mp4"
 
 mkdir -p "$ARTIFACT_DIR"
 rm -rf "$DERIVED_DATA" "$RESULT_BUNDLE"

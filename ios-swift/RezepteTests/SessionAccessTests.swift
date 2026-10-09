@@ -13,11 +13,12 @@ final class SessionAccessTests: XCTestCase {
 
         XCTAssertEqual(fixture.store.role, .user)
         XCTAssertFalse(fixture.store.fullAccess)
+        XCTAssertFalse(fixture.store.canImport)
         XCTAssertTrue(fixture.store.supports("ai-shopping-optimization"), "Server capabilities are not account permissions")
         XCTAssertFalse(fixture.store.readOnly, "Manual recipe, planning and shopping actions remain available")
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/system/info", "Restore must not dispatch a shared import")
         XCTAssertEqual(fixture.links, ["https://example.org/recipe"])
-        XCTAssertTrue(fixture.store.alertMessage?.contains("nur Administratoren") == true)
+        XCTAssertTrue(fixture.store.alertMessage?.contains("Vollbenutzer und Admins") == true)
 
         await fixture.store.drainSharedImports()
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/system/info")
@@ -85,9 +86,92 @@ final class SessionAccessTests: XCTestCase {
         XCTAssertEqual(fixture.links.count, 2)
     }
 
+    @MainActor
+    func testFullUserImportsWithoutSystemAdministrationRights() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        fixture.links = ["https://example.org/recipe"]
+        MockURLProtocol.respond(json: response(role: "full_user"))
+        await fixture.store.restore()
+
+        XCTAssertEqual(fixture.store.role, .fullUser)
+        XCTAssertTrue(fixture.store.canImport)
+        XCTAssertFalse(fixture.store.fullAccess)
+        XCTAssertFalse(fixture.store.readOnly)
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/pending/import-url")
+        XCTAssertTrue(fixture.links.isEmpty)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: String])
+        XCTAssertEqual(body["visibility"], "private")
+    }
+
+    @MainActor
+    func testNamedGuestCannotSendMutationsButCanLogOut() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        MockURLProtocol.respond(json: response(role: "guest"))
+        await fixture.store.restore()
+        XCTAssertTrue(fixture.store.readOnly)
+        XCTAssertFalse(fixture.store.canImport)
+
+        do {
+            _ = try await fixture.store.api.duplicateRecipe(id: 42, newName: "Denied")
+            XCTFail("Guest mutation must be blocked before the request")
+        } catch APIError.server(let status, _) {
+            XCTAssertEqual(status, 403)
+        }
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/system/info")
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+        _ = try await fixture.store.api.logout()
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/auth/logout")
+    }
+
+    @MainActor
+    func testNamedGuestCanManageOnlyOwnSecurity() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        MockURLProtocol.respond(json: response(role: "guest"))
+        await fixture.store.restore()
+        XCTAssertTrue(fixture.store.canManageOwnAccount)
+        XCTAssertTrue(fixture.store.readOnly)
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+        _ = try await fixture.store.api.changePassword(current: "old-test-password", new: "new-test-password")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/account/password")
+        _ = try await fixture.store.api.revokeSession(id: "synthetic-session")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/account/sessions/synthetic-session")
+        _ = try await fixture.store.api.logoutAll()
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/auth/logout-all")
+        _ = try await fixture.store.api.unlinkIdentity(provider: .google, currentPassword: "test-password")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/account/identities/google")
+        _ = try await fixture.store.api.deleteAccount(currentPassword: "test-password")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/account/profile")
+
+        MockURLProtocol.respond(json: #"{"authorization_url":"https://appleid.apple.com/auth/authorize","flow_id":"synthetic-flow"}"#)
+        _ = try await fixture.store.api.startNativeAuth(provider: .apple, intent: .link, challenge: "synthetic-challenge", currentPassword: "test-password")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/auth/apple/start")
+        do {
+            _ = try await fixture.store.api.createInvitation()
+            XCTFail("Guest account security must not grant household writes")
+        } catch APIError.server(let status, _) { XCTAssertEqual(status, 403) }
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/auth/apple/start")
+    }
+
+    @MainActor
+    func testAnonymousGuestCannotUseAccountSecurity() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        MockURLProtocol.respond(json: response(role: "guest").replacingOccurrences(of: "\"id\":12,", with: ""))
+        await fixture.store.restore()
+        XCTAssertFalse(fixture.store.canManageOwnAccount)
+        do {
+            _ = try await fixture.store.api.changePassword(current: "old-test-password", new: "new-test-password")
+            XCTFail("Anonymous guests have no account security actions")
+        } catch APIError.server(let status, _) { XCTAssertEqual(status, 403) }
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/system/info")
+    }
+
     private func response(role: String) -> String {
         // Extra fields let one response serve the session and server-info requests.
-        #"{"username":"test-account","role":"\#(role)","full_access":true,"read_only":false,"name":"Rezepte","version":"1.9.0","capabilities":["shopping-categories","recurring-shopping","weekly-meal-plan","ai-shopping-optimization"],"ok":true}"#
+        #"{"id":12,"username":"test-account","role":"\#(role)","full_access":true,"read_only":false,"name":"Rezepte","version":"1.9.0","capabilities":["shopping-categories","recurring-shopping","weekly-meal-plan","ai-shopping-optimization"],"ok":true}"#
     }
 
     @MainActor

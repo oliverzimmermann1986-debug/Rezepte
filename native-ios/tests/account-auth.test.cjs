@@ -81,6 +81,7 @@ function harness(options = {}) {
     },
     './api': {
       ApiError,
+      setApiReadOnly: () => {},
       configureApi: (...configuration) => { ++epoch; configs.push(configuration); },
       currentApiSessionEpoch: () => epoch,
       isApiSessionEpochCurrent: request => request === epoch,
@@ -353,4 +354,26 @@ test('provider login cannot activate a pseudo-session or link an anonymous guest
   await assert.rejects(h.context.linkProvider('apple'), /zuerst mit deinem Konto/);
   assert.equal(h.states[1], 'guest.original-token');
   assert.equal(h.stored.size, 0);
+});
+
+
+for (const [role, admin, readOnly, canImport] of [['guest', false, true, false], ['user', false, false, false], ['full_user', false, false, true], ['admin', true, false, true]]) {
+  test(`provider login applies ${role} permissions independently of legacy admin flags`, async () => {
+    const h = harness({ providerRequest: async () => ({ token: 'provider-session', username: 'Federated', role, is_admin: !admin }) });
+    await h.context.signInWithProvider('https://rezepte.test', 'apple');
+    assert.equal(h.states[4], admin); assert.equal(h.states[5], readOnly); assert.equal(h.states[9], canImport);
+  });
+}
+
+
+test('named guests can link providers while anonymous guests cannot manage an account', async () => {
+  const calls = [];
+  const h = harness({ providerRequest: async (...args) => { calls.push(args); return null; } });
+  assert.equal(h.context.canManageOwnAccount, false);
+  h.states[1] = 'named-guest-token';
+  const named = h.render();
+  assert.equal(named.canManageOwnAccount, true);
+  await named.linkProvider('apple', 'current-test-password');
+  assert.equal(calls[0][1], 'link'); assert.equal(calls[0][3], 'current-test-password');
+  assert.equal(h.states[5], true); assert.equal(h.states[9], false);
 });

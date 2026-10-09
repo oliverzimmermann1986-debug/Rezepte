@@ -15,7 +15,6 @@ from pydantic import BaseModel
 
 from ..auth import require_admin
 from ..config_store import get_config
-from ..core.email_processor import MailAccount
 from ..core.webhook import pinned_https_request, server_configured_request
 
 logger = logging.getLogger(__name__)
@@ -23,34 +22,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/test", tags=["test"], dependencies=[Depends(require_admin)])
 
 
-class MailTestRequest(BaseModel):
-    account: str  # 'recipe' | 'wedding'
 
 
-@router.post("/mail")
-def test_mail(req: MailTestRequest) -> Dict[str, Any]:
-    """IMAP-Verbindung testen + Anzahl URLs im Postfach zählen."""
-    if req.account not in ("recipe", "wedding"):
-        raise HTTPException(400, "account muss 'recipe' oder 'wedding' sein")
-
-    cfg = get_config().get("mail", req.account, default={}) or {}
-    if not cfg.get("username") or not cfg.get("password"):
-        return {"ok": False, "error": "Benutzer/Passwort fehlt"}
-
-    start = time.time()
-    try:
-        acc = MailAccount(req.account, {**cfg, 'enabled': True}, req.account)
-        urls = acc.fetch_all_readonly(include_attachments=False, raise_errors=True)['urls']
-        elapsed = round(time.time() - start, 2)
-        return {
-            "ok": True,
-            "message": f"IMAP-Verbindung OK ({elapsed}s) – {len(urls)} URLs im Postfach gefunden.",
-            "url_count": len(urls),
-            "host": cfg.get("imap_host"),
-            "elapsed": elapsed,
-        }
-    except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
 class OpenAITestRequest(BaseModel):

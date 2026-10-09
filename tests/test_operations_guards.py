@@ -72,7 +72,7 @@ def test_testflight_upload_waits_for_processing_without_assigning_a_group():
     assert "ASC_APP_ID: ${{ vars.ASC_APP_ID || '6803595058' }}" in swiftui
     assert "Wait for TestFlight processing" in swiftui
     assert "node ../native-ios/scripts/testflight-ensure.mjs" in swiftui
-    assert 'ASC_MARKETING_VERSION: "1.2.0"' in swiftui
+    assert 'ASC_MARKETING_VERSION: "1.3.0"' in swiftui
     assert "ASC_UPLOAD_STARTED_AT: ${{ steps.upload.outputs.started_at }}" in swiftui
     assert 'ASC_ASSIGN_INTERNAL_GROUP: "false"' in swiftui
     assert 'ASC_ASSIGN_INTERNAL_GROUP: "true"' not in swiftui
@@ -81,7 +81,7 @@ def test_testflight_upload_waits_for_processing_without_assigning_a_group():
 def test_signed_archive_metadata_is_verified_before_export():
     swiftui = _read(".github/workflows/ios-swift.yml")
     assert swiftui.index("Validate archive metadata") < swiftui.index("Export signed IPA")
-    assert 'EXPECTED_MARKETING_VERSION: "1.2.0"' in swiftui
+    assert 'EXPECTED_MARKETING_VERSION: "1.3.0"' in swiftui
     assert "EXPECTED_BUILD_NUMBER: ${{ steps.buildnum.outputs.value }}" in swiftui
     assert 'assert_bundle_metadata "Main app" "$app_path/Info.plist" "$IOS_BUNDLE_ID"' in swiftui
     assert (
@@ -114,7 +114,7 @@ def test_existing_testflight_distribution_cannot_build_or_upload():
     assert env["ASC_ALLOW_EXISTING_BUILD"] == "true"
     assert env["ASC_ASSIGN_EXTERNAL_GROUP"] == "true"
     assert env["ASC_BUILD_NUMBER"] == "${{ inputs.build_number }}"
-    assert env["ASC_MARKETING_VERSION"] == "1.2.0"
+    assert env["ASC_MARKETING_VERSION"] == "1.3.0"
     scripts = "\n".join(step.get("run", "") for step in distribution["steps"])
     assert "xcodebuild" not in scripts and "altool" not in scripts
     assert "GITHUB_RUN_NUMBER" not in scripts
@@ -130,10 +130,27 @@ def test_release_versions_are_explicit_and_coherent():
     index = _read("app/static/index.html")
     service_worker = _read("app/static/sw.js")
 
-    assert '__version__ = "1.9.3"' in package
-    assert 'MARKETING_VERSION: "1.2.0"' in project
-    assert "systemInfo.version || '1.9.3'" in index
-    assert "rezepte-static-v1.9.3-user-auth-methods" in service_worker
+    assert '__version__ = "1.10.0"' in package
+    assert 'MARKETING_VERSION: "1.3.0"' in project
+    assert "systemInfo.version || '1.10.0'" in index
+    assert "rezepte-static-v1.10.0-import-roles" in service_worker
+
+
+def test_static_cache_key_changes_across_releases_with_normalized_timestamps(tmp_path, monkeypatch):
+    import os
+    from app import main
+
+    for name in ("app.js", "rezepte.css", "runtime.js", "alpine.min.js"):
+        asset = tmp_path / name
+        asset.write_text("synthetic", encoding="utf-8")
+        os.utime(asset, (0, 0))
+    monkeypatch.setattr(main, "STATIC_DIR", tmp_path)
+    monkeypatch.setattr(main, "__version__", "1.9.3")
+    previous = main._static_version()
+    monkeypatch.setattr(main, "__version__", "1.10.0")
+    current = main._static_version()
+    assert current.startswith("1.10.0-")
+    assert previous != current
 
 
 def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
@@ -146,7 +163,7 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert "app_review" in config
     assert "APP_REVIEW_PASSWORD" not in config
     assert "Rezepte.app" in config
-    assert "Rezeptregal-App-Review-1.2.0.mp4" in config
+    assert "Rezeptregal-App-Review-1.3.0.mp4" in config
     assert "recordVideo" in script
     assert '${APP_REVIEW_PASSWORD:?' in script
     assert "xcodebuild build-for-testing" in script

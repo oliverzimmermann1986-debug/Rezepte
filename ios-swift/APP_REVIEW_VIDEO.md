@@ -4,7 +4,7 @@ Der Workflow `ios-review-video` in `codemagic.yaml` erzeugt zwei Artefakte aus
 demselben SwiftUI-Stand:
 
 - `Rezepte.app` als unsignierte Simulator-App für Codemagic App Preview
-- `Rezeptregal-App-Review-1.2.0.mp4` als automatisierten Review-Rundgang
+- `Rezeptregal-App-Review-1.3.0.mp4` als automatisierten Review-Rundgang
 
 ## Einmalige Codemagic-Konfiguration
 
@@ -18,7 +18,7 @@ demselben SwiftUI-Stand:
 ## Aufnahme starten
 
 Der Workflow wird ausschließlich durch Tags mit dem Präfix `review-video-`
-gestartet. Beispiel: `review-video-1.2.0-2302`.
+gestartet. Beispiel: `review-video-1.3.0-2302`.
 
 Die UI-Aufnahme verwendet den isolierten Review-Server und zeigt Anmeldung,
 Rezeptpass mit Rezept-ID, Originalquelle, Wochenplan, aktuelle und

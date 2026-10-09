@@ -25,8 +25,6 @@ def main():
                 cfg['paths'][key] = str(root / key)
         for key in ('db_path', 'data_dir', 'recipe_dir', 'temp_dir', 'wedding_dir', 'logs_dir'):
             cfg['paths'][key] = str(root / key)
-        for account in cfg['mail'].values():
-            account.update(enabled=False, password='')
         cfg['ai']['openai']['api_key'] = ''
         cfg['ai']['image_generation']['enabled'] = False
         cfg['ai']['video_fallback']['enabled'] = False

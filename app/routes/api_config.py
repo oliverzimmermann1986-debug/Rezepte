@@ -34,6 +34,8 @@ def update_config(payload: Dict[str, Any], request: Request):
 
 def _update_config_locked(payload: Dict[str, Any], request: Request):
     """Read/merge/write als eine kritische Sektion gegen Lost Updates."""
+    if "mail" in payload or "schedule" in payload:
+        raise HTTPException(400, "E-Mail-Import und seine Zeitplanung wurden entfernt")
     store = get_config()
     current = store.all()
     authenticated_username = request_user(request)
@@ -52,7 +54,6 @@ def _update_config_locked(payload: Dict[str, Any], request: Request):
 
     _assert_server_managed_einkauf_url_unchanged(payload, current)
     _assert_server_managed_service_urls_unchanged(payload, current)
-    _assert_mail_target_change_requires_password(payload, current)
 
     # Ein gespeicherter OpenAI-Key darf nicht still an eine neue Base-URL
     # gebunden werden. Sonst könnte ein Benutzer nur die URL ändern, die
@@ -77,7 +78,7 @@ def _update_config_locked(payload: Dict[str, Any], request: Request):
 
     # PUT bleibt aus Kompatibilitätsgründen erhalten, verhält sich aber wie
     # ein rekursiver Patch. Mobile/ältere Clients senden oft nur eine Sektion;
-    # nicht mitgesendete Secrets, Mail-Konten oder Pfade dürfen dabei nicht
+    # nicht mitgesendete Secrets oder Pfade dürfen dabei nicht
     # verschwinden.
     merged = _unmask(_deep_merge(current, payload), current)
     # Web-Passwort, falls Klartext, immer bcrypt-hashen
@@ -151,8 +152,6 @@ MASK_PATHS = [
     ("web", "password"),
     ("web", "secret_key"),
     ("web", "share_token"),
-    ("mail", "recipe", "password"),
-    ("mail", "wedding", "password"),
     ("ai", "openai", "api_key"),
     ("einkauf", "app_token"),
     ("einkauf", "cf_access_client_secret"),
@@ -166,25 +165,6 @@ SERVER_MANAGED_SERVICE_URL_PATHS = (
 )
 
 
-def _assert_mail_target_change_requires_password(incoming: dict, current: dict) -> None:
-    """Verhindert Wiederverwendung eines maskierten Secrets an einem neuen IMAP-Ziel."""
-    for account in ("recipe", "wedding"):
-        current_password = _get(current, ("mail", account, "password"))
-        if not current_password:
-            continue
-        target_changed = any(
-            _get(incoming, ("mail", account, key)) is not None
-            and _get(incoming, ("mail", account, key))
-            != _get(current, ("mail", account, key))
-            for key in ("imap_host", "imap_port")
-        )
-        incoming_password = _get(incoming, ("mail", account, "password"))
-        if target_changed and (not incoming_password or incoming_password == MASKED):
-            raise HTTPException(
-                400,
-                f"Bei Änderung von mail.{account}.imap_host/imap_port muss "
-                "das Passwort neu eingegeben werden",
-            )
 
 
 def _get(d: dict, path: tuple):
@@ -332,6 +312,8 @@ def _deep_merge(current: dict, incoming: dict) -> dict:
 def _mask(cfg: dict) -> dict:
     import copy
     out = copy.deepcopy(cfg)
+    out.pop("mail", None)
+    out.pop("schedule", None)
     for path in MASK_PATHS:
         v = _get(out, path)
         if v:

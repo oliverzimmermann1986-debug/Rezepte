@@ -13,10 +13,6 @@ final class AdminConfigTests: XCTestCase {
             "video_fallback":{"enabled":true,"max_frames":10,"max_seconds":600,"transcription_model":"gpt-4o-mini-transcribe"},
             "image_generation":{"enabled":true,"model":"gpt-image-2","size":"1536x1024","quality":"medium","output_format":"jpeg"}
           },
-          "mail": {
-            "recipe":{"enabled":true,"imap_host":"imap.example.com","imap_port":993,"username":"recipes@example.com","password":"********","folder":"INBOX","max_mails":20,"attachment_max_mb":25},
-            "wedding":{"enabled":false,"imap_host":"imap.example.com","imap_port":993,"username":"wedding@example.com","password":"********","folder":"INBOX","max_mails":20,"attachment_max_mb":25,"default_category":"Sonstiges","always_pending":true}
-          },
           "pdf":{"auto_rotate":true,"use_tesseract_osd":true,"scan_dpi":300,"keep_original":true},
           "einkauf":{"api_url":"https://einkauf.example.com","app_token":"********","cf_access_client_id":"client-id","cf_access_client_secret":"********","auto_consolidate":true}
         }
@@ -27,7 +23,6 @@ final class AdminConfigTests: XCTestCase {
         let config = try decoder.decode(NativeAdminConfig.self, from: Data(json.utf8))
 
         XCTAssertEqual(config.ai?.openai?.apiKey, "********")
-        XCTAssertEqual(config.mail?.recipe?.imapHost, "imap.example.com")
         XCTAssertEqual(config.pdf?.scanDpi, 300)
         XCTAssertEqual(config.einkauf?.apiUrl, "https://einkauf.example.com")
     }
@@ -43,16 +38,14 @@ final class AdminConfigTests: XCTestCase {
         let ai = try XCTUnwrap(object["ai"] as? [String: Any])
         let openAI = try XCTUnwrap(ai["openai"] as? [String: Any])
         let einkauf = try XCTUnwrap(object["einkauf"] as? [String: Any])
-        let mail = try XCTUnwrap(object["mail"] as? [String: Any])
-        let recipeMail = try XCTUnwrap(mail["recipe"] as? [String: Any])
 
         XCTAssertNil(object["paths"])
+        XCTAssertNil(object["mail"])
         XCTAssertNil(openAI["api_key"])
         XCTAssertNil(openAI["base_url"])
         XCTAssertNil(einkauf["app_token"])
         XCTAssertNil(einkauf["cf_access_client_secret"])
         XCTAssertNil(einkauf["api_url"])
-        XCTAssertNil(recipeMail["password"])
         XCTAssertEqual(openAI["model"] as? String, "gpt-4o-mini")
     }
 
@@ -84,18 +77,6 @@ final class AdminConfigTests: XCTestCase {
         XCTAssertEqual(stats.totalBytes, 2_048)
         XCTAssertEqual(stats.retentionDays, 30)
         XCTAssertEqual(backups.allBackups.map(\.name), ["newer.db", "older.db"])
-    }
-
-    func testAPIClientUsesDedicatedValidatedScheduleEndpoint() async throws {
-        let session = MockURLProtocol.makeSession()
-        let client = APIClient(session: session)
-        try await client.configure(server: "https://example.de", token: "admin-token")
-        MockURLProtocol.respond(json: #"{"scraper":{"ok":true,"error":null,"next_runs":[]}}"#)
-
-        _ = try await client.previewAdminSchedule("*:0/30")
-
-        XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
-        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/schedule/preview")
     }
 
     func testAPIClientUsesExplicitMaintenanceEndpoints() async throws {
@@ -133,32 +114,6 @@ final class AdminConfigTests: XCTestCase {
                     size: "1536x1024",
                     quality: "medium",
                     outputFormat: "jpeg"
-                )
-            ),
-            mail: NativeAdminMailConfigPatch(
-                recipe: NativeAdminMailAccountConfigPatch(
-                    enabled: true,
-                    imapHost: "imap.example.com",
-                    imapPort: 993,
-                    username: "recipes@example.com",
-                    password: nil,
-                    folder: "INBOX",
-                    maxMails: 20,
-                    attachmentMaxMb: 25,
-                    defaultCategory: nil,
-                    alwaysPending: nil
-                ),
-                wedding: NativeAdminMailAccountConfigPatch(
-                    enabled: false,
-                    imapHost: "imap.example.com",
-                    imapPort: 993,
-                    username: "wedding@example.com",
-                    password: nil,
-                    folder: "INBOX",
-                    maxMails: 20,
-                    attachmentMaxMb: 25,
-                    defaultCategory: "Sonstiges",
-                    alwaysPending: true
                 )
             ),
             pdf: NativeAdminPDFConfigPatch(

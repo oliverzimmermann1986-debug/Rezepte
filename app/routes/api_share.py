@@ -104,7 +104,7 @@ def _new_token(name: str, created_by: str) -> dict:
 
 
 def _normalized_share_url(value: str) -> str:
-    from ..core.email_processor import normalize_content_url
+    from ..core.content_urls import normalize_content_url
 
     normalized = normalize_content_url(value)
     if not normalized:

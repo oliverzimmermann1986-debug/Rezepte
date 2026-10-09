@@ -98,12 +98,6 @@ def _assert_sanitized_config(config_path: Path, public_url: str) -> None:
 
     expected: tuple[tuple[tuple[str, ...], Any], ...] = (
         (("web", "public_url"), public_url),
-        (("mail", "recipe", "enabled"), False),
-        (("mail", "recipe", "username"), ""),
-        (("mail", "recipe", "password"), ""),
-        (("mail", "wedding", "enabled"), False),
-        (("mail", "wedding", "username"), ""),
-        (("mail", "wedding", "password"), ""),
         (("ai", "openai", "api_key"), ""),
         (("ai", "openai", "base_url"), ""),
         (("ai", "auto_translate"), False),
@@ -117,6 +111,14 @@ def _assert_sanitized_config(config_path: Path, public_url: str) -> None:
         (("einkauf", "cf_access_client_id"), ""),
         (("einkauf", "cf_access_client_secret"), ""),
     )
+    # Old review configs may retain inert mail sections; they must still be
+    # sanitized. New configurations have no mail section at all.
+    if "mail" in loaded:
+        expected += tuple(
+            (("mail", account, key), value)
+            for account in ("recipe", "wedding")
+            for key, value in (("enabled", False), ("username", ""), ("password", ""))
+        )
     unsafe: list[str] = []
     for path, expected_value in expected:
         actual = _nested_value(loaded, path)

@@ -493,13 +493,6 @@
       return svg;
     },
     async refreshProgress() {
-      // Nur abfragen wenn Job läuft, sonst Last-Info behalten
-
-      if (this.status && this.status.scraper) {
-        try { this.scraperProgress = await this.api('GET', '/api/jobs/scraper/progress'); } catch(e) {}
-      } else if (this.scraperProgress && this.scraperProgress.running) {
-        try { this.scraperProgress = await this.api('GET', '/api/jobs/scraper/progress'); } catch(e) {}
-      }
       if (this.status && this.status.reanalyze) {
         try { this.reanalyzeProgress = await this.api('GET', '/api/pending/reanalyze/progress'); } catch(e) {}
       } else if (this.reanalyzeProgress && this.reanalyzeProgress.running) {

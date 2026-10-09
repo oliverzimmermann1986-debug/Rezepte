@@ -5,9 +5,9 @@ import { PrimaryButton } from '@/components/ui';
 import { colors, radii, space } from '@/constants/design';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { ManagedUser, accountDate, passwordProblem } from '@/lib/account-management';
+import { AccountRole, ManagedUser, accountRoles, accountRoleLabels, accountDate, passwordProblem } from '@/lib/account-management';
 
-type Draft = { id: number | null; username: string; role: 'admin' | 'user'; disabled: boolean; password: string };
+type Draft = { id: number | null; username: string; role: AccountRole; disabled: boolean; password: string };
 
 export function AdminUsers({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const { isAdmin, username, signOut } = useAuth();
@@ -63,7 +63,7 @@ export function AdminUsers({ visible, onClose }: { visible: boolean; onClose: ()
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text accessibilityRole="header" style={styles.title}>Benutzerverwaltung</Text>
         <PrimaryButton label="Schließen" onPress={onClose} disabled={busy} />
-        <Text style={styles.note}>Administratoren verwalten Konten und das System. Benutzer nutzen Rezepte und ihren Haushalt.</Text>
+        <Text style={styles.note}>Gäste lesen Rezepte. Benutzer nutzen Rezepte und ihren Haushalt. Vollbenutzer dürfen zusätzlich importieren. Admins verwalten auch Konten und das System.</Text>
         {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
         {!!notice && <Text accessibilityRole="alert" style={styles.note}>{notice}</Text>}
         <PrimaryButton label={loading ? 'Wird geladen …' : 'Aktualisieren'} onPress={() => void load()} disabled={loading || busy} />
@@ -72,7 +72,8 @@ export function AdminUsers({ visible, onClose }: { visible: boolean; onClose: ()
         {draft && <View style={styles.card}>
           <Text style={styles.heading}>{draft.id ? 'Benutzer bearbeiten' : 'Neuer Benutzer'}</Text>
           <TextInput accessibilityLabel="Benutzername" placeholder="Benutzername" autoCapitalize="none" autoCorrect={false} value={draft.username} onChangeText={value => setDraft({ ...draft, username: value })} editable={!draft.id && !busy} maxLength={32} style={styles.input} />
-          <View style={styles.row}><Text style={styles.note}>Administrator</Text><Switch accessibilityLabel="Administratorrechte" value={draft.role === 'admin'} disabled={busy} onValueChange={value => setDraft({ ...draft, role: value ? 'admin' : 'user' })} /></View>
+          <Text style={styles.note}>Rolle: {accountRoleLabels[draft.role]}</Text>
+          <View style={styles.roles}>{accountRoles.map(role => <PrimaryButton key={role} label={accountRoleLabels[role]} disabled={busy || draft.role === role} onPress={() => setDraft({ ...draft, role })} />)}</View>
           {!!draft.id && <View style={styles.row}><Text style={styles.note}>Konto deaktiviert</Text><Switch accessibilityLabel="Konto deaktiviert" value={draft.disabled} disabled={busy || draft.username === username} onValueChange={value => setDraft({ ...draft, disabled: value })} /></View>}
           <TextInput accessibilityLabel={draft.id ? 'Neues Passwort optional' : 'Passwort'} placeholder={draft.id ? 'Neues Passwort (optional)' : 'Passwort'} secureTextEntry textContentType="newPassword" value={draft.password} onChangeText={value => setDraft({ ...draft, password: value })} editable={!busy} style={styles.input} />
           <Text style={styles.note}>Mindestens 10 Zeichen, höchstens 72 UTF-8-Bytes. Geänderte Rechte oder Passwörter beenden bestehende Sitzungen.</Text>
@@ -84,7 +85,7 @@ export function AdminUsers({ visible, onClose }: { visible: boolean; onClose: ()
         </View>}
         {users.filter(item => item.username.toLowerCase().includes(query.trim().toLowerCase())).map(item => <View key={item.id} style={styles.card}>
           <Text style={styles.heading}>{item.username}{item.username === username ? ' · Du' : ''}</Text>
-          <Text style={styles.note}>{item.role === 'admin' ? 'Administrator' : 'Benutzer'} · {item.disabled ? 'deaktiviert' : 'aktiv'}{'\n'}Erstellt: {accountDate(item.created_at)}{'\n'}Letzte Anmeldung: {accountDate(item.last_login_at)}</Text>
+          <Text style={styles.note}>{accountRoleLabels[item.role]} · {item.disabled ? 'deaktiviert' : 'aktiv'}{'\n'}Erstellt: {accountDate(item.created_at)}{'\n'}Letzte Anmeldung: {accountDate(item.last_login_at)}</Text>
           <PrimaryButton label="Bearbeiten" disabled={busy} onPress={() => { setDraft({ id: item.id, username: item.username, role: item.role, disabled: item.disabled, password: '' }); setError(''); setNotice(''); }} />
           <PrimaryButton label="Alle Sitzungen beenden" disabled={busy} onPress={() => confirm('Alle Sitzungen beenden?', `Alle Geräte von „${item.username}“ werden abgemeldet.`, async () => {
             await api(`/api/users/${item.id}/revoke-sessions`, { method: 'POST' });
@@ -100,6 +101,7 @@ export function AdminUsers({ visible, onClose }: { visible: boolean; onClose: ()
   </Modal>;
 }
 const styles = StyleSheet.create({
+  roles: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   safe: { flex: 1, backgroundColor: colors.cream }, content: { padding: space.lg, gap: space.md },
   title: { fontSize: 28, fontWeight: '700', color: colors.text }, heading: { fontSize: 20, fontWeight: '600', color: colors.text },
   card: { padding: space.lg, borderRadius: radii.lg, backgroundColor: colors.surface, gap: space.md },

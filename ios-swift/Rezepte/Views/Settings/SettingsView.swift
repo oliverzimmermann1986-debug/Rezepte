@@ -87,7 +87,7 @@ struct SettingsView: View {
                 }
 
                 Section("Konto") {
-                    if !session.readOnly, session.supports("account-management-v1") {
+                    if session.canManageOwnAccount, session.supports("account-management-v1") {
                         NavigationLink("Mein Konto") { AccountProfileView() }
                     } else if session.supports("household-invitations-v1") {
                         NavigationLink("Mein Haushalt & Einladungen") { HouseholdAccountView() }

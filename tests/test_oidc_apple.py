@@ -46,6 +46,7 @@ def apple_api(client, test_db, monkeypatch, tmp_path, apple_keys):
         monkeypatch.setenv(key, value)
     app.dependency_overrides.pop(auth.require_auth, None)
     app.dependency_overrides.pop(auth.require_admin, None)
+    app.dependency_overrides.pop(auth.require_import, None)
     test_db.user_create("admin", "unusable", role="admin")
     client.base_url = "https://testserver"
     jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(provider_key.public_key()))

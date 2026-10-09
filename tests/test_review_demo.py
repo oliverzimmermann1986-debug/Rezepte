@@ -189,8 +189,7 @@ def test_review_demo_is_artificial_complete_and_sanitized(tmp_path: Path, monkey
         "::1/128",
         inputs["trusted_proxy_cidr"],
     ]
-    assert config["mail"]["recipe"]["enabled"] is False
-    assert config["mail"]["wedding"]["enabled"] is False
+    assert "mail" not in config and "schedule" not in config
     assert config["ai"]["openai"]["api_key"] == ""
     assert config["ai"]["video_fallback"]["enabled"] is False
     assert config["webhooks"] == []

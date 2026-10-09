@@ -1,5 +1,9 @@
+export const accountRoles = ['guest', 'user', 'full_user', 'admin'] as const;
+export type AccountRole = typeof accountRoles[number];
+export const accountRoleLabels: Record<AccountRole, string> = { guest: 'Gast', user: 'Benutzer', full_user: 'Vollbenutzer', admin: 'Admin' };
+
 export type AccountProfile = {
-  id: number; username: string; role: 'user' | 'admin'; created_at: number;
+  id: number; username: string; role: AccountRole; created_at: number;
   last_login_at: number | null; password_enabled: boolean;
 };
 export type AccountSession = {

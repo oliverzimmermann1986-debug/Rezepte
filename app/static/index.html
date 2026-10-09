@@ -101,7 +101,7 @@
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
-        <span x-text="'v' + (systemInfo.version || '1.9.3')"></span>
+        <span x-text="'v' + (systemInfo.version || '1.10.0')"></span>
         <form method="post" action="/logout" class="logout-form">
           <button type="submit" class="sidebar-logout-button">Abmelden</button>
         </form>
@@ -112,14 +112,13 @@
   <!-- ============ MAIN ============ -->
   <main class="main">
     <div class="guest-notice" x-show="session.loaded && session.role==='guest'" role="status">
-      <strong>Gastzugang</strong> · Du kannst alle globalen Rezepte ansehen. Für eine eigene Sammlung, Einkauf und Wochenplan brauchst du ein Konto.
-      <a href="/register">Konto erstellen</a>
+      <strong>Gastzugang</strong> · Du kannst alle globalen Rezepte ansehen. Für Änderungen brauchst du mindestens die Rolle Benutzer.
     </div>
 
     <section x-show="page==='account'" class="account-page">
       <div class="page-head"><div><h1>Mein Konto</h1><p class="muted" x-text="session.username"></p></div></div>
       <p class="muted">Globale Rezepte sind für alle sichtbar. Private Rezepte, Favoriten, Bewertungen, Einkauf und Wochenplan gehören zu deinem Haushalt. Eine eingeladene Person nutzt diesen Haushalt mit eigener Anmeldung.</p>
-      <div class="card" x-show="canUseAdminTools() && account.imports?.length">
+      <div class="card" x-show="canImport() && account.imports?.length">
         <h2>Private Importe prüfen</h2>
         <button type="button" class="btn btn-secondary" @click="loadAccount()" :disabled="account.busy">Status aktualisieren</button>
         <template x-for="item in account.imports || []" :key="item.url">
@@ -128,17 +127,43 @@
             <p class="muted" x-show="item.suggestion?.analysis_error" x-text="item.suggestion?.analysis_error"></p>
             <label>Name des privaten Rezepts <input x-model="item.name" :disabled="account.busy" maxlength="200"></label>
             <p class="muted" x-text="(item.suggestion?.ingredients || []).length + ' Zutaten · ' + (item.suggestion?.steps || []).length + ' Schritte'"></p>
+            <a class="btn btn-secondary" x-show="item.has_file" :href="'/api/pending/file?visibility=private&amp;url=' + encodeURIComponent(item.url)" target="_blank" rel="noopener">Original öffnen</a>
+            <details>
+              <summary>Zutaten und Schritte bearbeiten</summary>
+              <label>Portionen<input type="number" min="1" max="50" x-model.number="item.suggestion.servings" :disabled="householdImportBusy(item)"></label>
+              <h3>Zutaten</h3>
+              <template x-for="(ingredient, index) in item.suggestion.ingredients" :key="index">
+                <div class="account-import-row">
+                  <label>Zutat<input x-model="ingredient.name" :disabled="householdImportBusy(item)"></label>
+                  <label>Menge<input type="number" min="0" step="any" x-model.number="ingredient.amount" :disabled="householdImportBusy(item)"></label>
+                  <label>Einheit<input x-model="ingredient.unit" :disabled="householdImportBusy(item)"></label>
+                  <button type="button" class="btn btn-secondary" @click="item.suggestion.ingredients.splice(index, 1)" :disabled="householdImportBusy(item)">Zutat entfernen</button>
+                </div>
+              </template>
+              <button type="button" class="btn btn-secondary" @click="item.suggestion.ingredients.push({ name: '', amount: null, unit: '' })" :disabled="householdImportBusy(item)">Zutat hinzufügen</button>
+              <h3>Zubereitung</h3>
+              <template x-for="(step, index) in item.suggestion.steps" :key="index">
+                <div class="account-import-row">
+                  <label><span x-text="'Schritt ' + (index + 1)"></span><textarea x-model="step.instruction" :disabled="householdImportBusy(item)"></textarea></label>
+                  <button type="button" class="btn btn-secondary" @click="item.suggestion.steps.splice(index, 1)" :disabled="householdImportBusy(item)">Schritt entfernen</button>
+                </div>
+              </template>
+              <button type="button" class="btn btn-secondary" @click="item.suggestion.steps.push({ instruction: '' })" :disabled="householdImportBusy(item)">Schritt hinzufügen</button>
+            </details>
+            <label>Rezeptfoto ergänzen<input type="file" accept="image/jpeg,image/png" @change="scanPendingPhoto({ ...item, visibility: 'private' }, $event)" :disabled="householdImportBusy(item)"></label>
+            <button type="button" class="btn btn-secondary" @click="changeHouseholdImport(item, 'reanalyze')" :disabled="householdImportBusy(item)">Erneut analysieren</button>
+            <button type="button" class="btn btn-secondary" @click="changeHouseholdImport(item, 'skip')" :disabled="householdImportBusy(item)">Import verwerfen</button>
             <button type="button" class="btn btn-primary" @click="saveHouseholdImport(item)"
-                    :disabled="account.busy || !item.name?.trim() || ['queued','running'].includes(item.suggestion?.analysis_state)">Rezept übernehmen</button>
+                    :disabled="householdImportBusy(item) || !item.name?.trim()">Rezept übernehmen</button>
           </div>
         </template>
       </div>
       <p x-show="account.loading" role="status">Konto wird geladen …</p>
       <div x-show="account.error" role="alert" class="error"><span x-text="account.error"></span> <button type="button" class="btn" @click="loadAccount()">Erneut laden</button></div>
       <p x-show="account.notice" role="status" x-text="account.notice"></p>
-      <div x-show="canWrite() && account.profile" class="card account-security">
+      <div x-show="canManageOwnAccount()" class="card account-security">
         <h2>Anmeldung &amp; Sicherheit</h2>
-        <p><strong x-text="account.profile?.username"></strong> · <span x-text="account.profile?.role==='admin' ? 'Administrator' : 'Benutzer'"></span></p>
+        <p><strong x-text="account.profile?.username"></strong> · <span x-text="userRoleLabel(account.profile?.role)"></span></p>
         <p class="muted" x-text="'Konto erstellt: ' + formatTs(account.profile?.created_at)"></p>
         <details @toggle="if (!$el.open) clearAccountPasswords()">
           <summary>Passwort ändern oder einrichten</summary>
@@ -187,7 +212,7 @@
         <h2>Als Gast ansehen</h2><p>Du kannst die globalen Rezepte lesen. Mit einem Konto bekommst du eine eigene Sammlung, Einkaufsliste und einen Wochenplan und kannst eine zweite Person einladen.</p>
         <a class="btn btn-primary" href="/register">Konto erstellen</a> <a class="btn btn-secondary" href="/login">Anmelden</a>
       </div>
-      <div x-show="account.data && !account.data.is_guest" class="card">
+      <div x-show="canWrite() && account.data && !account.data.is_guest" class="card">
         <h2>Personen im Konto</h2>
         <template x-for="member in account.data?.members || []" :key="member.id"><p x-text="member.username + (member.disabled ? ' · deaktiviert' : '')"></p></template>
         <div x-show="account.data?.is_owner && (account.data?.members?.length || 0) < 2">
@@ -436,8 +461,7 @@
         </div>
         <p class="muted" style="font-size: 12px; margin: 0 0 12px;">
           URLs deren Download mehrfach gescheitert ist (yt-dlp Fehler nach 3 Versuchen).
-          Beim Zurücksetzen werden sie beim nächsten Mail-Sync nochmal versucht -
-          aber nur wenn sie noch in einer Email vorhanden sind.
+          Nach dem Zurücksetzen des Fehlerzählers kann die URL erneut importiert werden.
         </p>
         <div x-show="failedDownloads.length === 0" class="muted" style="text-align:center; padding: 12px;">
           Keine fehlgeschlagenen Downloads.
@@ -546,13 +570,13 @@
     <!-- ========== CONFIG ========== -->
     <section x-show="session.is_admin && page==='admin' && admin.tab==='users'" class="admin-panel">
       <div class="page-head"><h1>Benutzerverwaltung</h1><button class="btn btn-primary" @click="editUser()" :disabled="users.busy">Benutzer erstellen</button></div>
-      <p>Administratoren verwalten Konten und das System. Benutzer können Rezepte und ihren Haushalt nutzen.</p>
+      <p>Gast: nur lesen. Benutzer: Rezepte und Haushalt nutzen. Vollbenutzer: zusätzlich importieren. Admin: alle Funktionen und Systemverwaltung.</p>
       <p x-show="users.error" class="error" role="alert" x-text="users.error"></p>
       <p x-show="users.notice" role="status" x-text="users.notice"></p>
       <p x-show="users.loading" role="status">Benutzer werden geladen …</p>
       <form class="account-form" role="search" autocomplete="off" @submit.prevent="loadUsers()">
         <label for="user-directory-search">Benutzer suchen</label>
-        <input id="user-directory-search" name="user-directory-search" type="search" x-model="users.search" autocomplete="off" placeholder="Benutzername, Apple, Google oder Passwort">
+        <input id="user-directory-search" name="user-directory-search" type="search" x-model="users.search" autocomplete="off" placeholder="Benutzername, Rolle oder Anmeldeart">
         <div class="account-user-actions">
           <button class="btn btn-secondary" type="submit" :disabled="users.busy || users.loading">Aktualisieren</button>
           <button class="btn btn-secondary" type="button" x-show="users.search" @click="resetUserSearch()">Suche zurücksetzen</button>
@@ -563,7 +587,7 @@
         <form class="card account-form" @submit.prevent="saveUser()">
           <h2 x-text="users.draft.id ? 'Benutzer bearbeiten' : 'Benutzer erstellen'"></h2>
           <label>Benutzername<input x-model="users.draft.username" :readonly="!!users.draft.id" :disabled="users.busy" required autocomplete="off" minlength="3" maxlength="32" pattern="[a-zA-Z0-9_.-]{3,32}"></label>
-          <label>Rolle<select aria-label="Rolle" x-model="users.draft.role" :disabled="users.busy"><option value="user">Benutzer</option><option value="admin">Administrator</option></select></label>
+          <label>Rolle<select aria-label="Rolle" x-model="users.draft.role" :disabled="users.busy"><option value="guest">Gast</option><option value="user">Benutzer</option><option value="full_user">Vollbenutzer</option><option value="admin">Admin</option></select></label>
           <label x-show="users.draft.id"><input type="checkbox" x-model="users.draft.disabled" :disabled="users.busy || users.draft.username===session.username"> Konto deaktiviert</label>
           <label x-text="users.draft.id ? 'Neues Passwort (optional)' : 'Passwort'"></label><input aria-label="Passwort für Benutzer" type="password" x-model="users.draft.password" autocomplete="new-password" :required="!users.draft.id" :disabled="users.busy">
           <p class="muted">Mindestens 10 Zeichen, höchstens 72 UTF-8-Bytes. Ein neues Passwort oder geänderte Rechte beenden bestehende Sitzungen.</p>
@@ -571,7 +595,7 @@
         </form>
       </template>
       <template x-for="item in filteredUsers()" :key="item.id">
-        <div class="card account-session"><div><h2 x-text="item.username + (item.username===session.username ? ' · Du' : '')"></h2><p x-text="(item.role==='admin' ? 'Administrator' : 'Benutzer') + (item.disabled ? ' · deaktiviert' : ' · aktiv')"></p><p x-show="userAuthMethods(item).length" x-text="'Anmeldung: ' + userAuthMethods(item).join(' · ')"></p><p class="muted" x-text="'Erstellt: ' + formatTs(item.created_at) + ' · letzte Anmeldung: ' + (item.last_login_at ? formatTs(item.last_login_at) : 'noch nie')"></p></div><div class="account-user-actions"><button class="btn btn-secondary" @click="editUser(item)" :disabled="users.busy">Bearbeiten</button><button class="btn btn-secondary" @click="revokeUserSessions(item)" :disabled="users.busy">Alle Sitzungen beenden</button><button class="btn btn-danger" @click="deleteUser(item)" :disabled="users.busy || item.username===session.username">Löschen</button></div></div>
+        <div class="card account-session"><div><h2 x-text="item.username + (item.username===session.username ? ' · Du' : '')"></h2><p x-text="userRoleLabel(item.role) + (item.disabled ? ' · deaktiviert' : ' · aktiv')"></p><p x-show="userAuthMethods(item).length" x-text="'Anmeldung: ' + userAuthMethods(item).join(' · ')"></p><p class="muted" x-text="'Erstellt: ' + formatTs(item.created_at) + ' · letzte Anmeldung: ' + (item.last_login_at ? formatTs(item.last_login_at) : 'noch nie')"></p></div><div class="account-user-actions"><button class="btn btn-secondary" @click="editUser(item)" :disabled="users.busy">Bearbeiten</button><button class="btn btn-secondary" @click="revokeUserSessions(item)" :disabled="users.busy">Alle Sitzungen beenden</button><button class="btn btn-danger" @click="deleteUser(item)" :disabled="users.busy || item.username===session.username">Löschen</button></div></div>
       </template>
       <p x-show="!users.loading && !users.error && !filteredUsers().length">Keine passenden Benutzer.</p>
     </section>
@@ -649,173 +673,6 @@
             </div>
           </div>
 
-
-          <!-- Schedule (Startzeit-Planung) -->
-          <div class="config-section">
-            <div class="head">
-              <span style="flex: 1;">Zeitplan / Schedule</span>
-              <button class="btn" @click="previewSchedule()" :disabled="testing.schedule_preview">
-                <span x-show="!testing.schedule_preview">⌬ Vorschau</span>
-                <span x-show="testing.schedule_preview">… berechnet</span>
-              </button>
-            </div>
-            <div class="body">
-              <!-- Job-Karten -->
-              <div class="row" style="margin-bottom: 18px;">
-                <div class="job-card">
-                  <div class="job-card-head">
-                    <span class="job-icon">🤖</span>
-                    <strong>Scraper</strong>
-                    <span class="muted" style="margin-left: auto; font-size: 11px;">E-Mails abrufen + KI</span>
-                  </div>
-                  <div class="job-stat-row">
-                    <span class="muted">Letzter Lauf</span>
-                    <span class="mono" x-text="schedule.scraper && schedule.scraper.last_run ? formatTs(schedule.scraper.last_run) : 'noch nicht gelaufen'"></span>
-                  </div>
-                  <div class="job-stat-row" x-show="schedule.scraper && schedule.scraper.last_summary">
-                    <span class="muted">Ergebnis</span>
-                    <span class="mono" x-text="schedule.scraper && schedule.scraper.last_summary ? ((schedule.scraper.last_summary.auto || 0) + ' auto / ' + (schedule.scraper.last_summary.pending || 0) + ' pending / ' + (schedule.scraper.last_summary.errors || 0) + ' err · ' + (schedule.scraper.last_summary.duration || 0) + 's') : '—'"></span>
-                  </div>
-                  <div class="job-stat-row">
-                    <span class="muted">Nächster Lauf</span>
-                    <span class="mono" style="color: var(--accent)" x-text="(schedule.scraper && schedule.scraper.next_run) || '—'"></span>
-                  </div>
-                  <div style="margin-top: 12px; display: flex; gap: 8px;">
-                    <button type="button" class="btn btn-sm btn-primary"
-                            @click="runScraper()" :disabled="status.scraper"
-                            x-text="status.scraper ? '… läuft' : '▶ Jetzt ausführen'"></button>
-                    <button type="button" class="btn btn-sm btn-danger" x-show="status.scraper"
-                            @click="cancelScraper()">Abbrechen</button>
-                  </div>
-                  <div style="margin-top: 14px;">
-                    <div class="muted" style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;">Schnellauswahl</div>
-                    <div class="preset-chips">
-                      <template x-for="preset in SCHEDULE_PRESETS_SCRAPER" :key="preset.value">
-                        <button type="button" class="chip" :class="scheduleEdit.scraper === preset.value && 'active'"
-                                @click="scheduleEdit.scraper = preset.value" x-text="preset.label"></button>
-                      </template>
-                    </div>
-                    <div class="field" style="margin: 12px 0 0;">
-                      <label style="display:flex; justify-content:space-between; align-items:baseline;">
-                        <span>Cron-Ausdruck</span>
-                        <span class="muted" style="font-size: 10px;" x-text="humanCron(scheduleEdit.scraper)"></span>
-                      </label>
-                      <input class="mono" x-model="scheduleEdit.scraper" placeholder="*:0/30">
-                    </div>
-                  </div>
-                </div>
-
-              </div>
-
-              <div class="hint" style="margin-bottom: 14px;">
-                Wähle einen der Presets oder schreib einen eigenen systemd-OnCalendar-Ausdruck.
-                Mit <strong>⌬ Vorschau</strong> rechnest du die nächsten 5 Termine durch.
-              </div>
-
-              <div x-show="schedulePreview" class="test-result ok">
-                <strong>Nächste Termine laut Vorschau:</strong>
-                <template x-for="(info, kind) in (schedulePreview || {})" :key="kind">
-                  <div style="margin-top: 8px;">
-                    <strong x-text="kind"></strong>:
-                    <span x-show="info.ok" class="muted" style="font-size: 11px;">
-                      <template x-for="t in info.next_runs" :key="t">
-                        <div style="margin-left: 12px;" x-text="'· ' + t"></div>
-                      </template>
-                    </span>
-                    <span x-show="!info.ok" style="color: var(--err)" x-text="'✗ ' + info.error"></span>
-                  </div>
-                </template>
-              </div>
-
-              <div style="margin-top: 14px; text-align: right;">
-                <button class="btn btn-primary" @click="saveSchedule()" :disabled="testing.schedule_save">
-                  <span x-show="!testing.schedule_save">💾 Schedule speichern + Timer neu laden</span>
-                  <span x-show="testing.schedule_save">… speichert</span>
-                </button>
-              </div>
-            </div>
-          </div>
-          <!-- Mail Recipe -->
-          <div class="config-section">
-            <div class="head">
-              <span style="flex: 1;">E-Mail · Rezepte (alle Links → Rezept-Ordner)</span>
-              <button class="btn" @click="testMail('recipe')" :disabled="testing.mail_recipe">
-                <span x-show="!testing.mail_recipe">⌬ Verbindung testen</span>
-                <span x-show="testing.mail_recipe">… testet</span>
-              </button>
-            </div>
-            <div class="body">
-              <div x-show="testResults.mail_recipe" class="test-result" :class="(testResults.mail_recipe && testResults.mail_recipe.ok) ? 'ok' : 'err'">
-                <span x-text="(testResults.mail_recipe && (testResults.mail_recipe.message || testResults.mail_recipe.error))"></span>
-              </div>
-              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
-                <input type="checkbox" x-model="config.mail.recipe.enabled" id="mr-en">
-                <label for="mr-en">Aktiv</label>
-              </div>
-              <div class="row">
-                <div class="field"><label>IMAP Host</label><input x-model="config.mail.recipe.imap_host"></div>
-                <div class="field"><label>Port</label><input type="number" x-model.number="config.mail.recipe.imap_port"></div>
-              </div>
-              <div class="row">
-                <div class="field"><label>Benutzer / E-Mail</label><input x-model="config.mail.recipe.username"></div>
-                <div class="field"><label>Passwort / App-Pass</label><input type="password" x-model="config.mail.recipe.password"></div>
-              </div>
-              <div class="row">
-                <div class="field"><label>Folder</label><input x-model="config.mail.recipe.folder"></div>
-                <div class="field"><label>Max Mails</label><input type="number" x-model.number="config.mail.recipe.max_mails"></div>
-              </div>
-              <div class="field" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 6px;">
-                <input type="checkbox" x-model="config.mail.recipe.delete_processed" id="mr-del">
-                <label for="mr-del" style="font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--fg);">
-                  Verarbeitete Mails <strong>löschen</strong> (nach erfolgreichem Import aus dem Postfach entfernen)
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <!-- Mail Wedding -->
-          <div class="config-section">
-            <div class="head">
-              <span style="flex: 1;">E-Mail · Hochzeit (alle Links → Hochzeit-Ordner)</span>
-              <button class="btn" @click="testMail('wedding')" :disabled="testing.mail_wedding">
-                <span x-show="!testing.mail_wedding">⌬ Verbindung testen</span>
-                <span x-show="testing.mail_wedding">… testet</span>
-              </button>
-            </div>
-            <div class="body">
-              <div x-show="testResults.mail_wedding" class="test-result" :class="(testResults.mail_wedding && testResults.mail_wedding.ok) ? 'ok' : 'err'">
-                <span x-text="(testResults.mail_wedding && (testResults.mail_wedding.message || testResults.mail_wedding.error))"></span>
-              </div>
-              <div class="field" style="flex-direction: row; align-items: center; gap: 8px">
-                <input type="checkbox" x-model="config.mail.wedding.enabled" id="mw-en">
-                <label for="mw-en">Aktiv</label>
-              </div>
-              <div class="row">
-                <div class="field"><label>IMAP Host</label><input x-model="config.mail.wedding.imap_host"></div>
-                <div class="field"><label>Port</label><input type="number" x-model.number="config.mail.wedding.imap_port"></div>
-              </div>
-              <div class="row">
-                <div class="field"><label>Benutzer / E-Mail</label><input x-model="config.mail.wedding.username"></div>
-                <div class="field"><label>Passwort / App-Pass</label><input type="password" x-model="config.mail.wedding.password"></div>
-              </div>
-              <div class="row">
-                <div class="field"><label>Folder</label><input x-model="config.mail.wedding.folder"></div>
-                <div class="field"><label>Default-Kategorie</label><input x-model="config.mail.wedding.default_category"></div>
-              </div>
-              <div class="field" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 6px;">
-                <input type="checkbox" x-model="config.mail.wedding.always_pending" id="wd-pending">
-                <label for="wd-pending" style="font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--fg);">
-                  Hochzeit-Items <strong>immer</strong> in Pending – Name/Kategorie manuell vergeben
-                </label>
-              </div>
-              <div class="field" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 6px;">
-                <input type="checkbox" x-model="config.mail.wedding.delete_processed" id="mw-del">
-                <label for="mw-del" style="font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--fg);">
-                  Verarbeitete Mails <strong>löschen</strong> (nach erfolgreichem Import aus dem Postfach entfernen)
-                </label>
-              </div>
-            </div>
-          </div>
 
           <!-- Pfade -->
           <div class="config-section">
@@ -1079,7 +936,7 @@
                 <div class="field">
                   <label>Events (Mehrfachauswahl)</label>
                   <div class="flex" style="flex-wrap: wrap; gap: 8px;">
-                    <template x-for="ev in ['scraper_done','job_failed','pending_high']" :key="ev">
+                    <template x-for="ev in ['job_failed','pending_high']" :key="ev">
                       <label style="display:inline-flex; align-items:center; gap:5px; text-transform:none; letter-spacing:0; font-size:12px; color:var(--fg);">
                         <input type="checkbox" :value="ev"
                                :checked="(hook.events || []).includes(ev)"
@@ -1407,9 +1264,9 @@
             <option value="mine" x-show="canWrite()">Mein Haushalt</option>
           </select>
         </label>
-        <button type="button" class="btn btn-primary" x-show="canUseAdminTools()" :disabled="!canUseAdminTools()" @click="canUseAdminTools() && (householdImportOpen=!householdImportOpen)" :aria-expanded="householdImportOpen.toString()">Rezept hinzufügen</button>
+        <button type="button" class="btn btn-primary" x-show="canImport()" :disabled="!canImport()" @click="canImport() && (householdImportOpen=!householdImportOpen)" :aria-expanded="householdImportOpen.toString()">Rezept hinzufügen</button>
       </div>
-      <form class="household-import card" x-show="householdImportOpen && canUseAdminTools()" @submit.prevent="importUrl()">
+      <form class="household-import card" x-show="householdImportOpen && canImport()" @submit.prevent="importUrl()">
         <label for="household-import-url">Rezeptlink</label>
         <input id="household-import-url" type="url" x-model="manualImportUrl" placeholder="https://…" required :disabled="manualImporting" autocomplete="off">
         <label x-show="session.is_admin" for="household-import-visibility">Sichtbarkeit</label>
@@ -1419,6 +1276,9 @@
         <p class="muted">Ein privater Import bleibt im Haushalt. Ist der Link bereits global vorhanden, speichert dein Haushalt einen Verweis auf dieses Rezept.</p>
         <button type="submit" class="btn btn-primary" :disabled="manualImporting || !manualImportUrl.trim()" x-text="manualImporting ? 'Wird übernommen …' : 'In Sammlung übernehmen'"></button>
         <p role="status" x-show="manualImportNotice" x-text="manualImportNotice"></p>
+        <label for="household-import-file">Oder PDF / Foto importieren</label>
+        <input id="household-import-file" type="file" accept="application/pdf,image/jpeg,image/png" @change="importRecipeFile($event)" :disabled="manualImporting">
+        <p class="muted">PDF, JPEG oder PNG bis 25 MB. Offene Importvorschläge findest du unter Mein Konto.</p>
       </form>
       <div class="recipes-layout">
         <!-- Filter-Drawer-Backdrop (nur Mobile, beim Tippen schließen) -->
@@ -2860,7 +2720,7 @@
           <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
             Download scheiterte mehrfach (z.B. IG-Login, gelöschtes Video).
             🔄 Retry setzt den Zähler zurück — der nächste Lauf versucht es
-            automatisch neu (Mail nicht nötig). 🗑 Verwerfen sperrt die URL dauerhaft.
+            automatisch neu. 🗑 Verwerfen sperrt die URL dauerhaft.
           </div>
           <template x-for="f in (audit.data?.failed_downloads || [])" :key="f.url">
             <div class="audit-finding">

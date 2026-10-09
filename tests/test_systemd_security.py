@@ -42,7 +42,6 @@ def test_review_instance_binds_for_the_dedicated_tunnel_peer():
 def test_mutating_services_are_sandboxed_and_resource_bounded():
     for name in (
         "scrapper-web.service",
-        "scrapper-job.service",
         "scrapper-db-backup.service",
         "video-archiver.service",
     ):
@@ -54,9 +53,6 @@ def test_mutating_services_are_sandboxed_and_resource_bounded():
         assert "TasksMax=" in unit
 
 
-def test_scheduled_scraper_uses_the_installed_playwright_browsers():
-    unit = (ROOT / "systemd" / "scrapper-job.service").read_text(encoding="utf-8")
-    assert 'Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/scrapper/playwright-browsers"' in unit
 
 
 def test_video_archiver_syncs_read_only_recipe_links_before_download():
@@ -66,22 +62,6 @@ def test_video_archiver_syncs_read_only_recipe_links_before_download():
     assert "--queue-user videoarchive" in unit
 
 
-def test_schedule_permissions_are_limited_to_the_single_timer():
-    web = (ROOT / "systemd" / "scrapper-web.service").read_text(encoding="utf-8")
-    rule = (ROOT / "systemd" / "49-scrapper-systemctl.rules").read_text(encoding="utf-8")
-    installer = (ROOT / "proxmox" / "install.sh").read_text(encoding="utf-8")
-
-    helper = (ROOT / "systemd" / "scrapper-schedule-apply.service").read_text(encoding="utf-8")
-    assert "/etc/systemd/system" not in next(
-        line for line in web.splitlines() if line.startswith("ReadWritePaths=")
-    )
-    assert 'action.lookup("unit") === "scrapper-schedule-apply.service"' in rule
-    assert "org.freedesktop.systemd1.reload-daemon" not in rule
-    assert "User=root" in helper
-    assert "ReadWritePaths=/etc/systemd/system/scrapper-job.timer.d /opt/scrapper/data" in helper
-    assert "sudoers-scrapper" not in installer
-    assert "49-scrapper-systemctl.rules" in installer
-    assert "scrapper-schedule-apply.service" in installer
 
 
 def test_repository_normalizes_text_files_to_lf():

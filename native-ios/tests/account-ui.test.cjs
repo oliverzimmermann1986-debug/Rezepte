@@ -110,3 +110,16 @@ test('native account deletion requires confirmation and retains server guard err
   assert.equal(h.logouts.length, 0);
   assert.equal(h.field('Aktuelles Passwort').value, '');
 });
+
+
+for (const [role, label] of [['guest', 'Gast'], ['user', 'Benutzer'], ['full_user', 'Vollbenutzer'], ['admin', 'Admin']]) {
+  test(`admin can explicitly assign the ${role} role`, async () => {
+    const h = harness('AdminUsers');
+    h.button('Benutzer erstellen').onPress();
+    h.field('Benutzername').onChangeText('NewUser');
+    h.field('Passwort').onChangeText('synthetic-password');
+    if (role !== 'user') h.button(label).onPress();
+    h.button('Speichern').onPress(); await flush();
+    assert.equal(h.calls.find(call => call.method === 'POST').body.role, role);
+  });
+}
