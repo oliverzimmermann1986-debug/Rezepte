@@ -9,7 +9,7 @@ BUILD_ROOT="${CM_BUILD_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 DERIVED_DATA="$BUILD_ROOT/ios-swift/build/DerivedData"
 ARTIFACT_DIR="$BUILD_ROOT/ios-swift/artifacts"
 RESULT_BUNDLE="$BUILD_ROOT/ios-swift/ReviewVideoResults.xcresult"
-VIDEO_PATH="$ARTIFACT_DIR/Rezeptregal-App-Review-1.3.0.mp4"
+VIDEO_PATH="$ARTIFACT_DIR/Rezeptregal-App-Review-1.4.0.mp4"
 
 mkdir -p "$ARTIFACT_DIR"
 rm -rf "$DERIVED_DATA" "$RESULT_BUNDLE"
@@ -40,6 +40,7 @@ xcodebuild build-for-testing \
     -only-testing:RezepteReviewUITests/AppReviewVideoUITests/testReviewTour \
     -parallel-testing-enabled NO \
     -maximum-parallel-testing-workers 1 \
+    CODE_SIGNING_ALLOWED=NO \
     | tee "$ARTIFACT_DIR/xcodebuild-review-video-build.log" || build_status="$?"
 
 if [[ "$build_status" -ne 0 ]]; then
@@ -74,6 +75,7 @@ xcodebuild test-without-building \
     -only-testing:RezepteReviewUITests/AppReviewVideoUITests/testReviewTour \
     -parallel-testing-enabled NO \
     -maximum-parallel-testing-workers 1 \
+    CODE_SIGNING_ALLOWED=NO \
     | tee "$ARTIFACT_DIR/xcodebuild-review-video.log" || test_status="$?"
 
 sleep 2

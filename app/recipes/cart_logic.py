@@ -26,6 +26,7 @@ from .canonical import (
     canonical_for_existing,
 )
 from .units import normalize_unit, to_base, from_base_display, unit_class
+from .shopping_history import contribution, combine_contributions, display_contributions
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,7 @@ def add_recipe_to_cart(db, recipe_id: int, multiplier: float = 1.0) -> Dict[str,
             "amount": base_amount,
             "unit": base_unit,
             "source_recipe_ids": [recipe_id],
+            "source_contributions": [contribution(recipe_id, base_amount, base_unit)],
         })
 
     # Alle Zutaten und Katalogänderungen gehören in dieselbe Transaktion.
@@ -169,6 +171,7 @@ def aggregate_recipes_for_cart(
                 aggregated[key] = {
                     **prepared,
                     "source_recipe_ids": [recipe_id],
+                    "source_contributions": [contribution(recipe_id, prepared["amount"], prepared["unit"])],
                 }
                 continue
             if prepared["amount"] is not None:
@@ -176,6 +179,8 @@ def aggregate_recipes_for_cart(
                     float(existing["amount"] or 0) + float(prepared["amount"])
                 )
             sources = existing["source_recipe_ids"]
+            existing["source_contributions"] = combine_contributions(existing["source_contributions"], [
+                contribution(recipe_id, prepared["amount"], prepared["unit"])])
             if recipe_id not in sources:
                 sources.append(recipe_id)
 
@@ -199,10 +204,22 @@ def aggregated_cart_for_display(items: List[Dict[str, object]]) -> List[Dict[str
     return out
 
 
+def cart_content_revision(row) -> str:
+    """Stable precondition for edits; checks have their own ordered guard."""
+    import hashlib
+    import json
+    values = [row.get(key) for key in (
+        "id", "name", "canonical_name", "amount", "unit", "added_at", "source_recipe_ids",
+        "source_contributions",
+    )]
+    return hashlib.sha256(json.dumps(values, separators=(",", ":")).encode()).hexdigest()
+
+
 def cart_for_display(db) -> List[Dict[str, object]]:
     """Holt den Cart-Inhalt aus der DB und konvertiert Basis-Mengen in
        Anzeige-Mengen. Frontend rendert direkt dieses Resultat."""
     out = []
+    recipe_cache = {}
     from .shopping_catalog import category_icon, infer_shopping_category
 
     for row in db.cart_list():
@@ -212,6 +229,7 @@ def cart_for_display(db) -> List[Dict[str, object]]:
         )
         out.append({
             "id": row["id"],
+            "sync_revision": cart_content_revision(row),
             "name": row["name"],
             "canonical_name": row.get("canonical_name"),
             "amount": d_amount,
@@ -221,6 +239,7 @@ def cart_for_display(db) -> List[Dict[str, object]]:
             "checked": bool(row.get("checked")),
             "added_at": row.get("added_at"),
             "source_recipe_ids": _parse_json_array(row.get("source_recipe_ids")),
+            "source_contributions": display_contributions(db, row, recipe_cache),
             "category": category,
             "icon": row.get("icon") or category_icon(category),
             "sort_order": row.get("sort_order"),

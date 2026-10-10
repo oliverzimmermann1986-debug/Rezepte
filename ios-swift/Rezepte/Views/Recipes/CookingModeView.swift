@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 
+@MainActor
 struct CookingModeView: View {
     let recipe: Recipe
 
@@ -8,6 +9,10 @@ struct CookingModeView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.recipeTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var voice = CookingVoiceController()
+    @State private var completionHistoryID: Int?
+    @State private var showCompletionNotes = false
     @State private var completedSteps: Set<Int> = []
     @State private var activeStep = 0
     @State private var servings: Int
@@ -21,6 +26,8 @@ struct CookingModeView: View {
     @State private var saveState: CookingSaveState = .idle
     @State private var warningMessage: String?
     @State private var errorMessage: String?
+    @State private var active = false
+    @State private var finished = false
 
     init(recipe: Recipe) {
         self.recipe = recipe
@@ -53,7 +60,21 @@ struct CookingModeView: View {
         }
         .navigationTitle(recipe.name)
         .navigationBarTitleDisplayMode(.inline)
-        .task { await loadProgress() }
+        .task(id: session.identity) { active = true; await loadProgress() }
+        .onAppear { voice.onCommand = handleVoiceCommand }
+        .onDisappear { active = false; voice.stop(); voice.onCommand = nil }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { voice.stop() }
+            else { KitchenTimerStore.shared.refresh() }
+        }
+        .onChange(of: activeStep) { _, _ in if voice.reading { voice.read(currentStep?.instruction ?? "") } }
+        .sheet(isPresented: $showCompletionNotes) {
+            NavigationStack {
+                ScrollView { CookingNotesView(recipeID: recipe.id, editHistoryID: completionHistoryID).padding() }
+                    .navigationTitle("So war das Kochen")
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Fertig") { showCompletionNotes = false; dismiss() } } }
+            }
+        }
         .confirmationDialog(
             "Kochfortschritt zurücksetzen?",
             isPresented: $showResetConfirmation,
@@ -67,6 +88,9 @@ struct CookingModeView: View {
             Text("Abgehakte Schritte werden gelöscht. Die Kochhistorie bleibt erhalten.")
         }
         .alert("Guten Appetit!", isPresented: $showCompletion) {
+            if session.supports("cooking-notes-photos") {
+                Button("Notiz oder Foto ergänzen") { showCompletionNotes = true }
+            }
             Button("Fertig") { dismiss() }
         } message: {
             Text(
@@ -146,6 +170,8 @@ struct CookingModeView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 progressHeader
+                voiceControls
+                if session.supports("cooking-notes-photos") { CookingNotesView(recipeID: recipe.id, compact: true) }
 
                 if let warningMessage {
                     Label(warningMessage, systemImage: "exclamationmark.triangle")
@@ -252,8 +278,8 @@ struct CookingModeView: View {
                 .lineSpacing(4)
 
             if let seconds = step.timerSeconds, seconds > 0 {
-                CookingTimerView(
-                    identity: "\(recipe.id)-\(step.id ?? activeStep)",
+                KitchenTimerView(
+                    identity: KitchenTimerEntry.identifier(recipeID: recipe.id, stepID: step.id, index: activeStep),
                     seconds: seconds,
                     label: "\(recipe.name), Schritt \(activeStep + 1)"
                 )
@@ -379,7 +405,10 @@ struct CookingModeView: View {
 
     @ViewBuilder
     private var finishSection: some View {
-        if allDone {
+        if finished {
+            Label("Kochen wurde gespeichert", systemImage: "checkmark.seal.fill")
+                .foregroundStyle(theme.success).cardSurface()
+        } else if allDone {
             VStack(alignment: .leading, spacing: 10) {
                 Label("Alles erledigt", systemImage: "checkmark.seal.fill")
                     .font(.title3.bold())
@@ -416,13 +445,16 @@ struct CookingModeView: View {
     }
 
     private func loadProgress() async {
-        defer { isLoading = false }
+        let identity = session.identity
+        defer { if session.identity == identity { isLoading = false } }
         guard !recipe.steps.isEmpty else { return }
         do {
             let progress = try await session.api.cookingProgress(id: recipe.id)
+            guard session.identity == identity, active, !Task.isCancelled else { return }
             apply(progress)
             hasStartedCooking = progress.exists
         } catch {
+            guard session.identity == identity, active, !Task.isCancelled else { return }
             warningMessage = "Der bisherige Fortschritt ist gerade nicht erreichbar. Du kannst neu beginnen."
         }
     }
@@ -461,11 +493,12 @@ struct CookingModeView: View {
 
     @discardableResult
     private func persist(completed: Set<Int>, active: Int, servings: Int) async -> Bool {
-        guard !isSaving && !isFinishing else { return false }
+        guard !isSaving && !isFinishing, !finished, self.active, !session.readOnly else { return false }
+        let identity = session.identity
         isSaving = true
         saveState = .saving
         errorMessage = nil
-        defer { isSaving = false }
+        defer { if identity == session.identity { isSaving = false } }
         do {
             let progress = try await session.api.updateCookingProgress(
                 id: recipe.id,
@@ -473,10 +506,12 @@ struct CookingModeView: View {
                 activeStep: active,
                 servings: servings
             )
+            guard identity == session.identity, self.active, !Task.isCancelled else { return false }
             animate { apply(progress) }
             saveState = .saved
             return true
         } catch {
+            guard identity == session.identity, self.active, !Task.isCancelled else { return false }
             saveState = .error
             errorMessage = error.localizedDescription
             session.handle(error)
@@ -485,22 +520,26 @@ struct CookingModeView: View {
     }
 
     private func resetProgress() async {
-        guard !isSaving && !isFinishing else { return }
+        guard !isSaving && !isFinishing, active, !session.readOnly else { return }
+        let identity = session.identity
         isSaving = true
         saveState = .saving
         errorMessage = nil
-        defer { isSaving = false }
+        defer { if identity == session.identity { isSaving = false } }
         do {
             _ = try await session.api.clearCookingProgress(id: recipe.id)
+            guard identity == session.identity, active, !Task.isCancelled else { return }
             animate {
                 completedSteps = []
                 activeStep = 0
                 servings = originalServings
                 hasStartedCooking = false
+                finished = false
             }
             UserDefaults.standard.removeObject(forKey: completionStorageKey)
             saveState = .saved
         } catch {
+            guard identity == session.identity, active, !Task.isCancelled else { return }
             saveState = .error
             errorMessage = error.localizedDescription
             session.handle(error)
@@ -508,20 +547,27 @@ struct CookingModeView: View {
     }
 
     private func finishCooking() async {
-        guard allDone, !isSaving && !isFinishing else { return }
+        guard allDone, !isSaving && !isFinishing, !finished, active, !session.readOnly else { return }
+        let identity = session.identity
+        let storageKey = completionStorageKey
         isFinishing = true
         errorMessage = nil
-        defer { isFinishing = false }
+        defer { if identity == session.identity { isFinishing = false } }
         let key = completionRequestID()
         do {
-            _ = try await session.api.completeCooking(
+            let result = try await session.api.completeCooking(
                 id: recipe.id,
                 servings: servings,
                 idempotencyKey: key
             )
-            UserDefaults.standard.removeObject(forKey: completionStorageKey)
+            guard identity == session.identity, active, !Task.isCancelled else { return }
+            completionHistoryID = result.completedHistoryID
+            finished = true
+            voice.stop()
+            UserDefaults.standard.removeObject(forKey: storageKey)
             showCompletion = true
         } catch {
+            guard identity == session.identity, active, !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
             session.handle(error)
         }
@@ -531,6 +577,38 @@ struct CookingModeView: View {
         completedSteps = Set(progress.completedSteps.filter { recipe.steps.indices.contains($0) })
         activeStep = min(max(0, progress.activeStep), max(0, recipe.steps.count - 1))
         servings = min(50, max(1, progress.servings ?? originalServings))
+    }
+
+    private var voiceControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button(voice.listening ? "Sprachsteuerung aus" : "Sprachsteuerung an") {
+                    if voice.listening || voice.reading { voice.stop() }
+                    else { Task { await voice.start() } }
+                }.buttonStyle(.bordered).frame(minHeight: 44)
+                Button("Vorlesen") { voice.read(currentStep?.instruction ?? "") }
+                    .buttonStyle(.bordered).frame(minHeight: 44)
+            }
+            Text("Weiter · Zurück · Erledigt · Vorlesen · Timer starten · Timer pausieren").font(.caption).foregroundStyle(theme.muted)
+            if let message = voice.message { Text(message).font(.caption).foregroundStyle(theme.warning) }
+        }
+    }
+    private func handleVoiceCommand(_ command: CookingVoiceCommand) {
+        guard active, scenePhase == .active, !isSaving, !isFinishing, !finished, !session.readOnly else { return }
+        switch command {
+        case .next: Task { await selectStep(activeStep + 1) }
+        case .previous: Task { await selectStep(activeStep - 1) }
+        case .done: Task { await toggleCurrentStep() }
+        case .read: voice.read(currentStep?.instruction ?? "")
+        case .stop: voice.stop()
+        case .startTimer:
+            if let seconds = currentStep?.timerSeconds, seconds > 0 {
+                let key = KitchenTimerEntry.identifier(recipeID: recipe.id, stepID: currentStep?.id, index: activeStep)
+                Task { await KitchenTimerStore.shared.start(id: key, seconds: seconds, label: "\(recipe.name) · Schritt \(activeStep + 1)") }
+            }
+        case .pauseTimer:
+            KitchenTimerStore.shared.pause(id: KitchenTimerEntry.identifier(recipeID: recipe.id, stepID: currentStep?.id, index: activeStep))
+        }
     }
 
     private var completionStorageKey: String {
@@ -577,74 +655,4 @@ private enum CookingSaveState {
     case saving
     case saved
     case error
-}
-
-private struct CookingTimerView: View {
-    let identity: String
-    let seconds: Int
-    let label: String
-
-    @Environment(\.recipeTheme) private var theme
-    @State private var remaining: Int
-    @State private var isRunning = false
-    @State private var timerTask: Task<Void, Never>?
-
-    init(identity: String, seconds: Int, label: String) {
-        self.identity = identity
-        self.seconds = seconds
-        self.label = label
-        _remaining = State(initialValue: seconds)
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: remaining == 0 ? "bell.fill" : "timer")
-                .font(.title2)
-                .foregroundStyle(remaining == 0 ? theme.success : theme.ink)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(remaining == 0 ? "Timer fertig" : formattedTime)
-                    .font(.title3.bold().monospacedDigit())
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(theme.muted)
-                    .lineLimit(1)
-            }
-            Spacer()
-            Button(isRunning ? "Pause" : remaining == 0 ? "Neu" : "Start") {
-                isRunning ? pause() : start()
-            }
-            .buttonStyle(.bordered)
-        }
-        .padding(14)
-        .background(theme.surface, in: RoundedRectangle(cornerRadius: 16))
-        .id(identity)
-        .onDisappear { timerTask?.cancel() }
-    }
-
-    private var formattedTime: String {
-        String(format: "%d:%02d", remaining / 60, remaining % 60)
-    }
-
-    private func start() {
-        if remaining == 0 { remaining = seconds }
-        isRunning = true
-        timerTask?.cancel()
-        timerTask = Task {
-            while remaining > 0 && !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { return }
-                remaining -= 1
-            }
-            if !Task.isCancelled && remaining == 0 {
-                isRunning = false
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
-            }
-        }
-    }
-
-    private func pause() {
-        timerTask?.cancel()
-        timerTask = nil
-        isRunning = false
-    }
 }

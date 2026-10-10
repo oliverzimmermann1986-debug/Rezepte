@@ -552,10 +552,15 @@ struct CookingProgress: Codable, Equatable {
 
 struct CookingCompletionResult: Codable {
     let ok: Bool
+    var historyId: Int? = nil
+    var entry: CookHistoryEntry? = nil
+
+    var completedHistoryID: Int? { entry?.id ?? historyId }
 }
 
 struct CartResponse: Codable {
     let items: [CartItem]
+    var householdId: Int? = nil
 }
 
 enum CartAmountError: LocalizedError, Equatable {
@@ -582,6 +587,8 @@ struct CartItem: Codable, Identifiable, Hashable {
     let icon: String?
     var amountBase: Double? = nil
     var unitBase: String? = nil
+    var syncRevision: String? = nil
+    var sourceContributions: [ShoppingContribution]? = nil
 
     /// PATCH /api/cart/{id} accepts the stored base amount, not the rounded display value.
     func baseAmount(forDisplayAmountText text: String) throws -> Double {

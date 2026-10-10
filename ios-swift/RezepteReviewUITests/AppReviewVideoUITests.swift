@@ -34,9 +34,13 @@ final class AppReviewVideoUITests: XCTestCase {
         loginButton.tap()
         let archiveTab = app.tabBars.buttons["Archiv"]
         XCTAssertTrue(archiveTab.waitForExistence(timeout: 35), "Login to the isolated review server failed.")
+        XCTAssertTrue(app.navigationBars["Heute"].waitForExistence(timeout: 20))
+        pause(4)
+        capture("01-heute")
         archiveTab.tap()
         XCTAssertTrue(app.navigationBars["Archiv"].waitForExistence(timeout: 20))
         pause(4)
+        capture("02-rezepte")
 
         let recipe = app.staticTexts["Zitronen-Ricotta-Pasta"].firstMatch
         reveal(recipe, maximumSwipes: 4)
@@ -44,6 +48,7 @@ final class AppReviewVideoUITests: XCTestCase {
         let passportTitle = app.staticTexts["Rezeptpass"]
         XCTAssertTrue(passportTitle.waitForExistence(timeout: 20))
         pause(4)
+        capture("03-rezept")
 
         reveal(passportTitle)
         pause(4)
@@ -52,6 +57,12 @@ final class AppReviewVideoUITests: XCTestCase {
 
         app.navigationBars.buttons["Archiv"].tap()
         XCTAssertTrue(archiveTab.waitForExistence(timeout: 10))
+
+        let planTab = app.tabBars.buttons["Plan"]
+        planTab.tap()
+        XCTAssertTrue(app.navigationBars["Wochenplan"].waitForExistence(timeout: 20))
+        pause(4)
+        capture("04-wochenplan")
 
         let todayTab = app.tabBars.buttons["Heute"]
         todayTab.tap()
@@ -62,6 +73,7 @@ final class AppReviewVideoUITests: XCTestCase {
         shoppingTab.tap()
         XCTAssertTrue(app.navigationBars["Einkauf"].waitForExistence(timeout: 20))
         pause(3)
+        capture("05-einkauf")
         let recurring = app.segmentedControls.buttons["Wiederkehrend"]
         XCTAssertTrue(recurring.waitForExistence(timeout: 10))
         recurring.tap()
@@ -72,6 +84,7 @@ final class AppReviewVideoUITests: XCTestCase {
         settingsTab.tap()
         XCTAssertTrue(app.navigationBars["Einstellungen"].waitForExistence(timeout: 20))
         pause(4)
+        capture("06-einstellungen")
 
         let administration = app.buttons["Administration öffnen"]
         reveal(administration, maximumSwipes: 6)
@@ -98,5 +111,12 @@ final class AppReviewVideoUITests: XCTestCase {
 
     private func pause(_ seconds: TimeInterval) {
         Thread.sleep(forTimeInterval: seconds)
+    }
+
+    private func capture(_ name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

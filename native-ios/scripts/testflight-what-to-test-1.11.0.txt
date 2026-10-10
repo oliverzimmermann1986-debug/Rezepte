@@ -1,0 +1,9 @@
+Bitte Rezeptregal 1.4.0 mit Backend 1.11.0 prüfen:
+• Heute zeigt Gerichte des lokalen Tages, offene Einkäufe und Wünsche des eigenen Haushalts.
+• Im Archiv unter Sammlung & Import: vorhandene Zutaten eingeben, Treffer öffnen und fehlende Zutaten übernehmen; Kochbücher erstellen und Rezepte mehrfach zuordnen.
+• Im Wochenplan Wünsche abstimmen und Vorschläge vor der Übernahme bearbeiten.
+• Einkauf ohne Netz ändern, App neu starten und erneut verbinden: Einträge, Abhaken und Löschen werden einmalig abgeglichen. Rückgängig bleibt nach Neustart verfügbar.
+• Mehrere Einkaufszeilen gemeinsam einfügen und Mengen in der Vorschau korrigieren. Die Rezeptherkunft zeigt zugehörige Mengenanteile.
+• Im Kochmodus lokale Sprachsteuerung aktivieren, vorlesen lassen sowie Timer mit Benachrichtigung und Live Activity verwenden. Mikrofon und Mitteilungen sind optional; ohne Erlaubnis bleibt die manuelle Bedienung verfügbar.
+• Nach dem Kochen eine Notiz oder ein Foto hinterlegen. Andere Haushalte und Gäste dürfen diese privaten Daten nicht lesen.
+• Abmelden, Haushaltswechsel, Kontoverwaltung, Rollen und Apple-/Google-Anmeldung auf Regressionen prüfen.

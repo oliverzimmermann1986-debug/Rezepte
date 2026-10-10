@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List
 
 from .cart_logic import display_amount, prepare_for_cart
 from .shopping_catalog import SHOPPING_CATEGORIES
+from .shopping_history import combine_contributions, contributions
 _CATEGORY_ORDER = {name: index for index, name in enumerate(SHOPPING_CATEGORIES)}
 
 
@@ -47,6 +48,7 @@ def cart_fingerprint(items: Iterable[Dict[str, Any]]) -> str:
             "checked": bool(item.get("checked")),
             "added_at": item.get("added_at"),
             "source_recipe_ids": _source_ids(item.get("source_recipe_ids")),
+            "source_contributions": contributions(item),
             "category": item.get("category"),
             "sort_order": item.get("sort_order"),
         })
@@ -109,6 +111,7 @@ def build_optimized_cart(
                 "checked": bool(item.get("checked")),
                 "added_at": float(item.get("added_at") or 0),
                 "source_recipe_ids": source_ids,
+                "source_contributions": contributions(item),
                 "source_item_ids": [item_id],
                 "category": category,
             }
@@ -121,6 +124,7 @@ def build_optimized_cart(
             float(existing.get("added_at") or 0), float(item.get("added_at") or 0)
         )
         existing["source_item_ids"].append(item_id)
+        existing["source_contributions"] = combine_contributions(existing["source_contributions"], contributions(item))
         for recipe_id in source_ids:
             if recipe_id not in existing["source_recipe_ids"]:
                 existing["source_recipe_ids"].append(recipe_id)

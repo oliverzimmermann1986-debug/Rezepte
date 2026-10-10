@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 import OSLog
 
@@ -33,6 +34,8 @@ final class SessionStore: ObservableObject {
     private let removeSharedImport: (String) -> Void
     private var isDrainingSharedImports = false
     private let serverKey = "server-url"
+    private let offlineSessionKey = "offline-session-v1"
+    private var verifiedSession: SessionResponse?
 
     init(api: APIClient = APIClient(), defaults: UserDefaults = .standard,
          persistence: LocalSessionPersistence? = nil, webAuthentication: (any NativeAuthenticating)? = nil,
@@ -78,7 +81,17 @@ final class SessionStore: ObservableObject {
             guard identity == expectedIdentity else { return }
             await drainSharedImports()
         } catch {
-            if identity == expectedIdentity { signOut() }
+            guard identity == expectedIdentity else { return }
+            if let urlError = error as? URLError,
+               [.notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed].contains(urlError.code),
+               let data = defaults.data(forKey: offlineSessionKey),
+               let cached = try? JSONDecoder().decode(OfflineSessionSnapshot.self, from: data),
+               cached.matches(server: savedServer, token: token), cached.session.id != nil {
+                apply(cached.session, persist: false)
+                serverVersion = cached.version
+                serverCapabilities = Set(cached.capabilities)
+                compatibilityWarning = "Offline: zuletzt bestätigte Sitzung. Gespeicherte Einkäufe bleiben verfügbar; Änderungen warten auf Serverbestätigung."
+            } else { signOut() }
         }
     }
 
@@ -129,6 +142,7 @@ final class SessionStore: ObservableObject {
     }
 
     func signOut() {
+        KitchenTimerStore.shared.clear()
         webAuthentication.cancel()
         let previousIdentity = identity
         if canImport, !username.isEmpty {
@@ -138,6 +152,8 @@ final class SessionStore: ObservableObject {
         URLCache.shared.removeAllCachedResponses()
         Task { await api.clearAuthentication(ifSessionID: previousIdentity) }
         persistence.signOut()
+        defaults.removeObject(forKey: offlineSessionKey)
+        verifiedSession = nil
         removeLegacyAccessCredentials()
         username = ""
         userID = nil
@@ -228,6 +244,10 @@ final class SessionStore: ObservableObject {
 
     func householdDidChange() async throws {
         guard let token = persistence.restoredToken() else { throw APIError.unauthenticated }
+        defaults.removeObject(forKey: offlineSessionKey)
+        verifiedSession = nil
+        NotificationCenter.default.post(name: Notification.Name("KitchenHouseholdChanged"), object: nil)
+        KitchenTimerStore.shared.clear()
         identity = UUID()
         let expectedIdentity = identity
         try await api.configure(server: savedServer, token: token, sessionID: expectedIdentity)
@@ -286,7 +306,7 @@ final class SessionStore: ObservableObject {
         await drainSharedImports()
     }
 
-    private func apply(_ session: SessionResponse) {
+    private func apply(_ session: SessionResponse, persist: Bool = true) {
         username = session.username
         userID = session.id
         role = session.effectiveRole
@@ -294,6 +314,15 @@ final class SessionStore: ObservableObject {
         readOnly = role == .guest
         passwordEnabled = session.passwordEnabled ?? (role != .guest)
         state = .signedIn
+        if persist { verifiedSession = session; cacheVerifiedSession() }
+    }
+
+    private func cacheVerifiedSession() {
+        guard let verifiedSession, let token = persistence.restoredToken(), verifiedSession.id != nil else { return }
+        let snapshot = OfflineSessionSnapshot(session: verifiedSession, server: savedServer,
+            tokenDigest: OfflineSessionSnapshot.digest(token), version: serverVersion,
+            capabilities: Array(serverCapabilities), verifiedAt: Date())
+        if let data = try? JSONEncoder().encode(snapshot) { defaults.set(data, forKey: offlineSessionKey) }
     }
 
     func supports(_ capability: String) -> Bool {
@@ -307,6 +336,7 @@ final class SessionStore: ObservableObject {
             guard identity == expectedIdentity else { return }
             serverVersion = info.version
             serverCapabilities = Set(info.capabilities)
+            cacheVerifiedSession()
             let required = Set([
                 "shopping-categories",
                 "recurring-shopping",
@@ -368,5 +398,19 @@ final class SessionStore: ObservableObject {
                 ? "Der geteilte Rezeptlink wurde importiert."
                 : "\(imported) geteilte Links wurden importiert."
         }
+    }
+}
+
+struct OfflineSessionSnapshot: Codable {
+    let session: SessionResponse
+    let server: String
+    let tokenDigest: String
+    let version: String
+    let capabilities: [String]
+    let verifiedAt: Date
+    static func digest(_ token: String) -> String { SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined() }
+    func matches(server: String, token: String, now: Date = Date()) -> Bool {
+        self.server == server && tokenDigest == Self.digest(token)
+            && now.timeIntervalSince(verifiedAt) >= 0 && now.timeIntervalSince(verifiedAt) < 30 * 24 * 60 * 60
     }
 }

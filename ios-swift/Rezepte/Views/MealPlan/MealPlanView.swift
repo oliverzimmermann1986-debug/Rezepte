@@ -10,6 +10,9 @@ struct MealPlanView: View {
     @State private var conductorDay: MealDay?
     @State private var cartConfirmation = false
     @State private var showPDF = false
+    @State private var showWishes = false
+    @State private var showSuggestions = false
+    @State private var loadID = UUID()
 
     var body: some View {
         NavigationStack {
@@ -24,6 +27,19 @@ struct MealPlanView: View {
                     ScrollView {
                         LazyVStack(spacing: 14) {
                             weekHeader(week)
+                            if !session.readOnly, session.role != .guest {
+                                HStack {
+                                    if session.supports("household-meal-wishes") {
+                                        Button("Wochenwünsche", systemImage: "hand.thumbsup") { showWishes = true }
+                                            .frame(minHeight: 44)
+                                    }
+                                    Spacer()
+                                    if session.supports("meal-plan-suggestions") {
+                                        Button("Vorschlagen", systemImage: "sparkles") { showSuggestions = true }
+                                            .frame(minHeight: 44)
+                                    }
+                                }.buttonStyle(.bordered)
+                            }
 
                             ForEach(week.days) { day in
                                 dayCard(day)
@@ -37,7 +53,7 @@ struct MealPlanView: View {
                 }
             }
             .background(theme.background)
-            .navigationTitle("Heute")
+            .navigationTitle("Wochenplan")
             .toolbar {
                 if let week, session.supports("weekly-meal-plan-pdf") {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -65,7 +81,19 @@ struct MealPlanView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .task { await load() }
+            .task(id: session.identity) { week = nil; await load() }
+            .sheet(isPresented: $showWishes) {
+                if let week {
+                    MealWishesView(week: week) { await load(start: week.weekStart) }
+                        .id("\(session.identity)-\(week.weekStart)")
+                }
+            }
+            .sheet(isPresented: $showSuggestions) {
+                if let week {
+                    MealPlanSuggestionsView(week: week) { await load(start: week.weekStart) }
+                        .id("\(session.identity)-\(week.weekStart)")
+                }
+            }
             .sheet(isPresented: $showPDF) {
                 if let week {
                     PDFPreviewSheet(title: "Wochenplan") {
@@ -221,12 +249,18 @@ struct MealPlanView: View {
     }
 
     private func load(start: String? = nil) async {
+        let expectedIdentity = session.identity
+        let token = UUID()
+        loadID = token
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer { if loadID == token, session.identity == expectedIdentity { isLoading = false } }
         do {
-            week = try await session.api.mealWeek(start: start)
+            let result = try await session.api.mealWeek(start: start)
+            guard loadID == token, session.identity == expectedIdentity, !Task.isCancelled else { return }
+            week = result
         } catch {
+            guard loadID == token, session.identity == expectedIdentity, !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
             session.handle(error)
         }

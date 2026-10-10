@@ -23,11 +23,11 @@ import secrets
 import threading
 import time
 from datetime import date
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field, FiniteFloat
+from pydantic import BaseModel, Field, FiniteFloat, model_validator
 
 from ..auth import require_admin, require_auth
 from ..config_store import get_config
@@ -58,7 +58,82 @@ _optimize_previews: Dict[str, Dict[str, Any]] = {}
 def get_cart():
     db = get_db()
     materialized = db.recurring_run_due()
-    return {"items": cart_for_display(db), "recurring_added": len(materialized)}
+    return {"items": cart_for_display(db), "recurring_added": len(materialized),
+            "household_id": int(getattr(db, "account_id", 0))}
+
+
+class SyncOperation(BaseModel):
+    operation_id: str = Field(min_length=12, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+    after_operation_id: Optional[str] = Field(default=None, min_length=12, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+
+
+class SyncAdd(SyncOperation):
+    kind: Literal["add"]
+    name: str = Field(min_length=1, max_length=200)
+    amount: Optional[float] = Field(default=None, gt=0, le=1_000_000, allow_inf_nan=False)
+    unit: Optional[str] = Field(default=None, max_length=40)
+    category: Optional[str] = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def valid_name(self):
+        if not self.name.strip():
+            raise ValueError("Artikelname fehlt")
+        return self
+
+
+class SyncTarget(SyncOperation):
+    item_id: Optional[int] = Field(default=None, gt=0)
+    target_operation_id: Optional[str] = Field(default=None, min_length=12, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+    expected_checked: bool
+    expected_revision: Optional[str] = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def one_target(self):
+        if (self.item_id is None) == (self.target_operation_id is None):
+            raise ValueError("Genau ein Artikelziel ist erforderlich")
+        if self.item_id is not None and not self.expected_revision:
+            raise ValueError("Der zuletzt geladene Artikelstand ist erforderlich")
+        return self
+
+
+class SyncCheck(SyncTarget):
+    kind: Literal["check"]
+    checked: bool
+
+
+class SyncDelete(SyncTarget):
+    kind: Literal["delete"]
+
+
+class SyncRestore(SyncOperation):
+    kind: Literal["restore"]
+    target_operation_id: str = Field(min_length=12, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+
+
+class SyncPayload(BaseModel):
+    household_id: int = Field(ge=0)
+    operations: list[Union[SyncAdd, SyncCheck, SyncDelete, SyncRestore]] = Field(min_length=1, max_length=100)
+
+
+@router.post("/sync")
+def sync_cart(payload: SyncPayload):
+    from ..tenant_db import HouseholdDatabase
+    from ..tenancy import HouseholdScope
+    db = get_db()
+    if not isinstance(db, HouseholdDatabase):
+        db = HouseholdDatabase(db, HouseholdScope(0))
+    if db.scope.is_guest:
+        raise HTTPException(403, "Gastzugang ist schreibgeschützt")
+    if db.account_id != payload.household_id:
+        raise HTTPException(409, "Der Haushalt wurde geändert. Offene Änderungen bleiben auf diesem Gerät gespeichert.")
+    operations = [operation.model_dump(exclude_none=True) for operation in payload.operations]
+    if len({operation["operation_id"] for operation in operations}) != len(operations):
+        raise HTTPException(422, "Vorgangs-IDs müssen innerhalb einer Anfrage eindeutig sein")
+    try:
+        results = db.cart_sync(operations)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return {"results": results, "items": cart_for_display(db), "household_id": db.account_id}
 
 
 @router.get("/suggestions")

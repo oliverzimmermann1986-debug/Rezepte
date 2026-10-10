@@ -2,6 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSSupportsLiveActivities</key><true/>
+	<key>NSMicrophoneUsageDescription</key><string>Steuere beim Kochen die Schritte mit deiner Stimme. Audio bleibt auf deinem iPhone.</string>
+	<key>NSSpeechRecognitionUsageDescription</key><string>Erkenne Kochbefehle direkt auf deinem iPhone, ohne Audio an einen Server zu senden.</string>
 	<key>CFBundleDisplayName</key>
 	<string>Quellenküche</string>
 	<key>CFBundleDevelopmentRegion</key>

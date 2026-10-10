@@ -7,7 +7,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.10"
-    MARKETING_VERSION: "1.3.0"
+    MARKETING_VERSION: "1.4.0"
     CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
@@ -34,6 +34,8 @@ targets:
     dependencies:
       - target: RezepteShare
         embed: true
+      - target: RezepteTimers
+        embed: true
     scheme:
       testTargets:
         - RezepteTests
@@ -55,6 +57,24 @@ targets:
         SKIP_INSTALL: true
         GENERATE_INFOPLIST_FILE: false
         TARGETED_DEVICE_FAMILY: "1"
+  RezepteTimers:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: RezepteTimers
+        excludes:
+          - Info.plist
+      - path: Shared/KitchenTimerAttributes.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.mausbaeren.rezepte.timers
+        PRODUCT_NAME: RezepteTimers
+        INFOPLIST_FILE: RezepteTimers/Info.plist
+        PROVISIONING_PROFILE_SPECIFIER: "$(IOS_TIMERS_PROFILE_NAME)"
+        SKIP_INSTALL: true
+        GENERATE_INFOPLIST_FILE: false
+        TARGETED_DEVICE_FAMILY: "1"
+        APPLICATION_EXTENSION_API_ONLY: true
   RezepteTests:
     type: bundle.unit-test
     platform: iOS

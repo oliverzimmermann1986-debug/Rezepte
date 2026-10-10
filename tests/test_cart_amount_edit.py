@@ -36,7 +36,9 @@ def test_amount_only_patch_persists_without_changing_other_item_fields(
         after = dict(connection.execute(
             "SELECT * FROM shopping_cart WHERE id=?", (item_id,),
         ).fetchone())
-    assert after == {**before, "amount": base_amount}
+    # The historical split is explicitly invalidated when editing the total;
+    # every other field, including household, checks and recipe IDs, is stable.
+    assert after == {**before, "amount": base_amount, "source_contributions": None}
     refreshed = client.get("/api/cart")
     assert refreshed.status_code == 200, refreshed.text
     item = next(item for item in refreshed.json()["items"] if item["id"] == item_id)

@@ -240,33 +240,156 @@ class HouseholdDatabase(Database):
         self._product_upsert(c, canonical_name, display_name, category, default_unit, increment_usage=increment_usage)
 
     def _cart_merge(self, c, item, *, reopen=False):
+        from .recipes.shopping_history import combine_contributions, contribution, contributions
         canonical, unit = item.get("canonical_name"), item.get("unit")
         existing = c.execute("SELECT * FROM shopping_cart WHERE account_id=? AND canonical_name=? AND unit IS ?",
                              (self.account_id, canonical, unit)).fetchone() if canonical else None
         sources = list(item.get("source_recipe_ids") or [])
+        incoming = contributions(item) if sources or item.get("source_contributions") else [
+            contribution(None, item.get("amount"), unit)]
         if existing:
             amount = (existing["amount"] or 0) + (item.get("amount") or 0) if item.get("amount") is not None else existing["amount"]
             sources = list(dict.fromkeys(json.loads(existing["source_recipe_ids"] or "[]") + sources))
-            c.execute("UPDATE shopping_cart SET amount=?, source_recipe_ids=?, checked=?, category=COALESCE(category,?) "
-                      "WHERE id=? AND account_id=?", (amount, json.dumps(sources), 0 if reopen else existing["checked"],
+            history = combine_contributions(contributions(dict(existing)), incoming)
+            c.execute("UPDATE shopping_cart SET amount=?, source_recipe_ids=?, source_contributions=?, checked=?, category=COALESCE(category,?) "
+                      "WHERE id=? AND account_id=?", (amount, json.dumps(sources), json.dumps(history), 0 if reopen else existing["checked"],
                                                      item.get("category"), existing["id"], self.account_id))
             item_id = int(existing["id"])
         else:
-            cur = c.execute("INSERT INTO shopping_cart(account_id,name,canonical_name,amount,unit,checked,added_at,source_recipe_ids,category,sort_order) "
-                            "VALUES(?,?,?,?,?,?,?,?,?,?)", (self.account_id, item.get("name") or "?", canonical, item.get("amount"), unit,
+            cur = c.execute("INSERT INTO shopping_cart(account_id,name,canonical_name,amount,unit,checked,added_at,source_recipe_ids,category,sort_order,source_contributions) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (self.account_id, item.get("name") or "?", canonical, item.get("amount"), unit,
                                                             int(bool(item.get("checked"))), time.time(), json.dumps(sources),
-                                                            item.get("category"), item.get("sort_order")))
+                                                            item.get("category"), item.get("sort_order"), json.dumps(incoming)))
             item_id = int(cur.lastrowid)
         self._product_upsert(c, canonical, item.get("name") or "?", item.get("category"), unit)
         return item_id, bool(existing)
 
     def cart_add_or_merge(self, *, name, canonical_name, amount, unit, source_recipe_id, category=None):
+        from .recipes.shopping_history import contribution
         if source_recipe_id and not self.recipe_get(source_recipe_id):
             raise LookupError("Rezept nicht gefunden")
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
             return self._cart_merge(c, {"name": name, "canonical_name": canonical_name, "amount": amount, "unit": unit,
-                                       "source_recipe_ids": [source_recipe_id] if source_recipe_id else [], "category": category}, reopen=True)[0]
+                                       "source_recipe_ids": [source_recipe_id] if source_recipe_id else [], "category": category,
+                                       "source_contributions": [contribution(source_recipe_id, amount, unit)]}, reopen=True)[0]
+
+    def discovery_cart_receipt(self, request_id, request_payload):
+        serialized = json.dumps(request_payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        with self.conn() as c:
+            row = c.execute("SELECT request_json,response_json FROM shopping_sync_operations WHERE account_id=? AND operation_id=?",
+                            (self.account_id, "discovery:" + request_id)).fetchone()
+        if row:
+            if row["request_json"] != serialized:
+                raise ValueError("Die Anfrage-ID gehört zu einer anderen Zutatenliste")
+            return json.loads(row["response_json"])
+        return None
+
+    def discovery_cart_merge(self, request_id, request_payload, items, response_extra):
+        if self.scope.is_guest:
+            raise PermissionError("Gastzugang ist schreibgeschützt")
+        key = "discovery:" + request_id
+        serialized = json.dumps(request_payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            previous = c.execute(
+                "SELECT request_json,response_json FROM shopping_sync_operations WHERE account_id=? AND operation_id=?",
+                (self.account_id, key),
+            ).fetchone()
+            if previous:
+                if previous["request_json"] != serialized:
+                    raise ValueError("Die Anfrage-ID gehört zu einer anderen Zutatenliste")
+                return json.loads(previous["response_json"])
+            added = merged = 0
+            for item in items:
+                _, was_merged = self._cart_merge(c, item, reopen=True)
+                added += int(not was_merged)
+                merged += int(was_merged)
+            result = {**response_extra, "ok": True, "added": added, "merged": merged}
+            c.execute("INSERT INTO shopping_sync_operations VALUES(?,?,?,?,?)",
+                      (self.account_id, key, serialized, json.dumps(result), time.time()))
+        return result
+
+    def cart_sync(self, operations):
+        """Apply ordered offline edits and receipts in one write transaction.
+
+        Replaying an operation never re-merges its amount. Failed preconditions
+        are receipts as well, so a retry cannot silently change its meaning.
+        """
+        from .recipes.cart_logic import cart_content_revision, prepare_for_cart
+        if self.scope.is_guest:
+            raise PermissionError("Gastzugang ist schreibgeschützt")
+        results = []
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            for operation in operations:
+                operation_id = operation["operation_id"]
+                serialized = json.dumps(operation, sort_keys=True, separators=(",", ":"), allow_nan=False)
+                receipt = c.execute(
+                    "SELECT request_json,response_json FROM shopping_sync_operations "
+                    "WHERE account_id=? AND operation_id=?", (self.account_id, operation_id),
+                ).fetchone()
+                if receipt:
+                    if receipt["request_json"] != serialized:
+                        raise ValueError("Eine Vorgangs-ID wurde für eine andere Änderung wiederverwendet")
+                    results.append(json.loads(receipt["response_json"]))
+                    continue
+                result = {"operation_id": operation_id, "status": "applied"}
+                previous_id = operation.get("after_operation_id")
+                if previous_id:
+                    previous = c.execute(
+                        "SELECT response_json FROM shopping_sync_operations WHERE account_id=? AND operation_id=?",
+                        (self.account_id, previous_id),
+                    ).fetchone()
+                    if not previous or json.loads(previous[0])["status"] != "applied":
+                        result.update(status="conflict", reason="dependency_failed")
+                if result["status"] == "applied" and operation["kind"] == "add":
+                    prepared = prepare_for_cart(operation["name"], operation.get("amount"), operation.get("unit"))
+                    item_id, _ = self._cart_merge(c, {**prepared, "category": operation.get("category")}, reopen=True)
+                    result["item_id"] = item_id
+                    added = c.execute("SELECT * FROM shopping_cart WHERE id=? AND account_id=?", (item_id, self.account_id)).fetchone()
+                    result["revision"] = cart_content_revision(dict(added))
+                elif result["status"] == "applied" and operation["kind"] == "restore":
+                    from .recipes.shopping_history import restore_deleted
+                    result.update(restore_deleted(c, self.account_id, operation))
+                elif result["status"] == "applied":
+                    item_id = operation.get("item_id")
+                    expected_revision = operation.get("expected_revision")
+                    target = operation.get("target_operation_id")
+                    if target:
+                        origin = c.execute(
+                            "SELECT request_json,response_json FROM shopping_sync_operations WHERE account_id=? AND operation_id=?",
+                            (self.account_id, target),
+                        ).fetchone()
+                        if origin and json.loads(origin["request_json"]).get("kind") in {"add", "restore"}:
+                            original_result = json.loads(origin["response_json"])
+                            item_id = original_result.get("item_id")
+                            expected_revision = original_result.get("revision")
+                    item = c.execute(
+                        "SELECT * FROM shopping_cart WHERE id=? AND account_id=?",
+                        (item_id, self.account_id),
+                    ).fetchone() if item_id else None
+                    if not item:
+                        result.update(status="conflict", reason="item_missing")
+                    elif not expected_revision or expected_revision != cart_content_revision(dict(item)):
+                        result.update(status="conflict", reason="item_changed", item_id=int(item["id"]))
+                    elif bool(item["checked"]) != operation["expected_checked"]:
+                        result.update(status="conflict", reason="item_changed", item_id=int(item["id"]))
+                    else:
+                        result["item_id"] = int(item["id"])
+                        if operation["kind"] == "check":
+                            c.execute("UPDATE shopping_cart SET checked=? WHERE id=? AND account_id=?",
+                                      (int(operation["checked"]), item["id"], self.account_id))
+                        else:
+                            c.execute("INSERT INTO shopping_deleted_items(account_id,operation_id,snapshot_json) VALUES(?,?,?)",
+                                      (self.account_id, operation_id, json.dumps(dict(item))))
+                            c.execute("DELETE FROM shopping_cart WHERE id=? AND account_id=?", (item["id"], self.account_id))
+                c.execute(
+                    "INSERT INTO shopping_sync_operations VALUES(?,?,?,?,?)",
+                    (self.account_id, operation_id, serialized, json.dumps(result), time.time()),
+                )
+                results.append(result)
+        return results
 
     def cart_merge_many(self, items):
         merged = 0
@@ -281,6 +404,9 @@ class HouseholdDatabase(Database):
         if not values:
             return False
         with self.conn() as c:
+            if amount is not None:
+                # A freely edited total cannot retain the historical split.
+                values["source_contributions"] = None
             return c.execute("UPDATE shopping_cart SET " + ",".join(f"{k}=?" for k in values) + " WHERE id=? AND account_id=?",
                              (*values.values(), item_id, self.account_id)).rowcount > 0
 
@@ -295,12 +421,14 @@ class HouseholdDatabase(Database):
 
     def _cart_replace(self, c, items):
         from .recipes.shopping_optimizer import _source_ids
+        from .recipes.shopping_history import contributions
         c.execute("DELETE FROM shopping_cart WHERE account_id=?", (self.account_id,))
         for item in items:
-            c.execute("INSERT INTO shopping_cart(account_id,name,canonical_name,amount,unit,checked,added_at,source_recipe_ids,category,sort_order) "
-                      "VALUES(?,?,?,?,?,?,?,?,?,?)", (self.account_id, item.get("name") or "?", item.get("canonical_name"), item.get("amount"),
+            c.execute("INSERT INTO shopping_cart(account_id,name,canonical_name,amount,unit,checked,added_at,source_recipe_ids,category,sort_order,source_contributions) "
+                      "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (self.account_id, item.get("name") or "?", item.get("canonical_name"), item.get("amount"),
                                                       item.get("unit"), int(bool(item.get("checked"))), item.get("added_at") or time.time(),
-                                                      json.dumps(_source_ids(item.get("source_recipe_ids"))), item.get("category"), item.get("sort_order")))
+                                                      json.dumps(_source_ids(item.get("source_recipe_ids"))), item.get("category"), item.get("sort_order"),
+                                                      json.dumps(contributions(item))))
         return len(items)
 
     def cart_replace(self, items):

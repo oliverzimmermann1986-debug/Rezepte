@@ -14,6 +14,9 @@ struct RecipesView: View {
     @State private var isLoadingMore = false
     @State private var errorMessage: String?
     @State private var requestID = UUID()
+    @State private var showCookbooks = false
+    @State private var showDiscovery = false
+    @State private var showInbox = false
 
     private var hasMore: Bool { recipes.count < total }
 
@@ -86,6 +89,17 @@ struct RecipesView: View {
             .searchable(text: $search, prompt: "Rezepte durchsuchen")
             .onSubmit(of: .search) { Task { await load() } }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        if !session.readOnly {
+                            Button("Was kann ich kochen?", systemImage: "carrot") { showDiscovery = true }
+                            Button("Meine Kochbücher", systemImage: "books.vertical") { showCookbooks = true }
+                        }
+                        if session.canImport {
+                            Button("Eingang & Import", systemImage: "tray.and.arrow.down") { showInbox = true }
+                        }
+                    } label: { Label("Sammlung & Import", systemImage: "plus.circle") }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showFilters = true
@@ -100,6 +114,14 @@ struct RecipesView: View {
                         )
                     }
                     .accessibilityValue("\(filters.activeCount) aktiv")
+                }
+            }
+            .sheet(isPresented: $showCookbooks) { CookbooksView() }
+            .sheet(isPresented: $showDiscovery) { IngredientDiscoveryView() }
+            .sheet(isPresented: $showInbox) {
+                InboxView().safeAreaInset(edge: .top) {
+                    HStack { Spacer(); Button("Schließen") { showInbox = false }.padding() }
+                        .background(theme.background)
                 }
             }
             .sheet(isPresented: $showFilters) {

@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 268
+CURRENT_SCHEMA_VERSION = 271
 RECIPE_VARIANT_PENDING_STATUS = "variant_pending"
 _READ_CONNECTION = ContextVar('recipe_read_connection', default=None)
 
@@ -1503,6 +1503,26 @@ class Database:
 
         from .oidc import migrate_oidc
         migrate_oidc(c)
+
+        # Receipts are retained for the household's lifetime: an offline device
+        # may retry an acknowledged-but-lost response months later.
+        c.execute("""CREATE TABLE IF NOT EXISTS shopping_sync_operations (
+            account_id INTEGER NOT NULL,
+            operation_id TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            response_json TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            PRIMARY KEY(account_id, operation_id))""")
+        c.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (269, "durable_offline_shopping_receipts", time.time()),
+        )
+
+        from .recipes.household_features import migrate_schema as migrate_household_features
+        migrate_household_features(c)
+
+        from .recipes.shopping_history import migrate_schema as migrate_shopping_history
+        migrate_shopping_history(c)
 
     @contextmanager
     def read_snapshot(self):
@@ -3890,8 +3910,8 @@ class Database:
                               (recipe_id, username, key))
             cur = c.execute(
                 "INSERT INTO recipe_cook_history "
-                "(recipe_id, cooked_at, cooked_by, servings, account_id) VALUES (?, ?, ?, ?, ?)",
-                (recipe_id, now, username, servings, account_id),
+                "(recipe_id, cooked_at, cooked_by, servings, account_id, cooked_by_user_id) VALUES (?, ?, ?, ?, ?, ?)",
+                (recipe_id, now, username, servings, account_id, user_id),
             )
             c.execute(
                 "DELETE FROM recipe_cooking_progress WHERE recipe_id=? AND username=? AND user_id IS ?",
@@ -4617,7 +4637,9 @@ class Database:
                                         ("history", "owner_account_id"), ("account_recipe_state", "account_id"),
                                         ("shopping_cart", "account_id"), ("meal_plan_entries", "account_id"),
                                         ("shopping_recurring", "account_id"), ("shopping_products", "account_id"),
-                                        ("shopping_exclusions", "account_id"), ("recipe_cook_history", "account_id")))
+                                        ("shopping_exclusions", "account_id"), ("recipe_cook_history", "account_id"),
+                                        ("household_cookbooks", "account_id"), ("household_meal_wishes", "account_id"),
+                                        ("shopping_deleted_items", "account_id")))
                     busy = c.execute("SELECT 1 FROM background_tasks WHERE status IN ('queued','running') "
                                      "AND json_extract(payload_json,'$.account_id')=? LIMIT 1", (account[0],)).fetchone()
                     if populated or busy:
@@ -4942,66 +4964,31 @@ class Database:
                 ).fetchone()
             return dict(row) if row else None
 
-    def cart_add_or_merge(
-        self,
-        *,
-        name: str,
-        canonical_name: Optional[str],
-        amount: Optional[float],
-        unit: Optional[str],
-        source_recipe_id: Optional[int],
-        category: Optional[str] = None,
-    ) -> int:
-        """Insert oder Merge basierend auf canonical_name+unit.
-        Die eigentliche Einheiten-Konvertierung passiert vor diesem Call in
-        cart_logic.add_to_cart() — hier wird nur summiert wenn unit gleich ist."""
-        from .recipes.shopping_catalog import product_defaults
-        resolved_category = product_defaults(name, canonical_name, category)["category"]
+    def discovery_cart_receipt(self, request_id, request_payload):
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        return HouseholdDatabase(self, HouseholdScope(0)).discovery_cart_receipt(request_id, request_payload)
+
+    def discovery_cart_merge(self, request_id, request_payload, items, response_extra):
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        return HouseholdDatabase(self, HouseholdScope(0)).discovery_cart_merge(
+            request_id, request_payload, items, response_extra,
+        )
+
+    def cart_add_or_merge(self, *, name, canonical_name, amount, unit, source_recipe_id, category=None):
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        from .recipes.shopping_history import contribution
+        scoped = HouseholdDatabase(self, HouseholdScope(0))
         with self.conn() as c:
-            # Lesen und Schreiben müssen in derselben Write-Transaction liegen.
-            # Sonst können zwei schnelle Adds beide "nicht vorhanden" sehen und
-            # doppelte Zeilen erzeugen bzw. Mengen verlieren.
             c.execute("BEGIN IMMEDIATE")
-            existing = None
-            if canonical_name:
-                if unit is None:
-                    existing = c.execute(
-                        "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit IS NULL",
-                        (canonical_name,),
-                    ).fetchone()
-                else:
-                    existing = c.execute(
-                        "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit=?",
-                        (canonical_name, unit),
-                    ).fetchone()
-            if existing:
-                existing = dict(existing)
-                new_amount = (existing.get("amount") or 0) + (amount or 0) if amount is not None else existing.get("amount")
-                src_ids = json.loads(existing.get("source_recipe_ids") or "[]")
-                if source_recipe_id and source_recipe_id not in src_ids:
-                    src_ids.append(source_recipe_id)
-                c.execute(
-                    "UPDATE shopping_cart SET amount=?, source_recipe_ids=?, "
-                    "checked=0, category=COALESCE(category, ?) WHERE id=?",
-                    (new_amount, json.dumps(src_ids), resolved_category, existing["id"]),
-                )
-                self._shopping_product_upsert_conn(
-                    c, canonical_name=canonical_name, display_name=name,
-                    category=resolved_category or existing.get("category"), default_unit=unit,
-                )
-                return int(existing["id"])
-            src_json = json.dumps([source_recipe_id] if source_recipe_id else [])
-            cur = c.execute(
-                "INSERT INTO shopping_cart (name, canonical_name, amount, unit, "
-                "checked, added_at, source_recipe_ids, category) "
-                "VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
-                (name, canonical_name, amount, unit, time.time(), src_json, resolved_category),
-            )
-            self._shopping_product_upsert_conn(
-                c, canonical_name=canonical_name, display_name=name,
-                category=resolved_category, default_unit=unit,
-            )
-            return int(cur.lastrowid)
+            return scoped._cart_merge(c, {
+                "name": name, "canonical_name": canonical_name, "amount": amount, "unit": unit,
+                "source_recipe_ids": [source_recipe_id] if source_recipe_id else [], "category": category,
+                "source_contributions": [contribution(source_recipe_id, amount, unit)],
+            }, reopen=True)[0]
+
 
     def job_reset_running(self, kind: str, reason: str) -> int:
         with self.conn() as c:
@@ -5114,234 +5101,35 @@ class Database:
             cur = c.execute("DELETE FROM shopping_recurring WHERE id=?", (int(item_id),))
             return bool(cur.rowcount)
 
-    def recurring_run_due(self, *, due_on: Optional[date] = None) -> List[Dict[str, Any]]:
-        """Fällige Regeln und Cart-Merge als eine atomare Operation.
+    def recurring_run_due(self, *, due_on=None):
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        return HouseholdDatabase(self, HouseholdScope(0)).recurring_run_due(due_on=due_on)
 
-        ``next_due_on`` wird so oft um das Intervall erhöht, bis es nach dem
-        Lauftag liegt. Dadurch erzeugt ein verspäteter Lauf keinen Stapel aus
-        identischen Artikeln und ein wiederholter Aufruf am selben Tag ist
-        idempotent.
-        """
-        run_day = due_on or date.today()
-        now = time.time()
-        added: List[Dict[str, Any]] = []
-        with self.conn() as c:
-            if not c.execute("SELECT 1 FROM shopping_recurring WHERE active=1 AND next_due_on<=? LIMIT 1",
-                             (run_day.isoformat(),)).fetchone():
-                return []
-            c.execute("BEGIN IMMEDIATE")
-            rows = c.execute(
-                "SELECT * FROM shopping_recurring "
-                "WHERE active=1 AND next_due_on<=? ORDER BY next_due_on, id",
-                (run_day.isoformat(),),
-            ).fetchall()
-            for row in rows:
-                canonical = row["canonical_name"]
-                unit = row["unit"]
-                existing = None
-                if canonical:
-                    if unit is None:
-                        existing = c.execute(
-                            "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit IS NULL",
-                            (canonical,),
-                        ).fetchone()
-                    else:
-                        existing = c.execute(
-                            "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit=?",
-                            (canonical, unit),
-                        ).fetchone()
-                if existing:
-                    amount = row["amount"]
-                    old_amount = existing["amount"]
-                    new_amount = (
-                        (old_amount or 0) + (amount or 0)
-                        if amount is not None else old_amount
-                    )
-                    c.execute(
-                        "UPDATE shopping_cart SET amount=?, checked=0, added_at=?, "
-                        "category=COALESCE(category, ?) WHERE id=?",
-                        (new_amount, now, row["category"], existing["id"]),
-                    )
-                    cart_id = int(existing["id"])
-                else:
-                    cur = c.execute(
-                        "INSERT INTO shopping_cart "
-                        "(name, canonical_name, amount, unit, checked, added_at, "
-                        "source_recipe_ids, category) "
-                        "VALUES (?, ?, ?, ?, 0, ?, '[]', ?)",
-                        (row["name"], canonical, row["amount"], unit, now, row["category"]),
-                    )
-                    cart_id = int(cur.lastrowid)
 
-                try:
-                    next_due = date.fromisoformat(row["next_due_on"])
-                except (TypeError, ValueError):
-                    next_due = run_day
-                interval = timedelta(days=max(1, int(row["interval_days"])))
-                while next_due <= run_day:
-                    next_due += interval
-                c.execute(
-                    "UPDATE shopping_recurring SET next_due_on=?, last_added_at=?, updated_at=? WHERE id=?",
-                    (next_due.isoformat(), now, now, row["id"]),
-                )
-                added.append({"id": int(row["id"]), "cart_id": cart_id, "name": row["name"]})
-        return added
+    def cart_replace(self, items):
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        return HouseholdDatabase(self, HouseholdScope(0)).cart_replace(items)
 
-    def cart_replace(self, items: List[Dict[str, Any]]) -> int:
-        """Ersetzt den lokalen Warenkorb atomar durch bereits aggregierte Items."""
-        now = time.time()
-        with self.conn() as c:
-            c.execute("DELETE FROM shopping_cart")
-            for item in items:
-                c.execute(
-                    "INSERT INTO shopping_cart "
-                    "(name, canonical_name, amount, unit, checked, added_at, "
-                    "source_recipe_ids, category, sort_order) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        item.get("name") or "?",
-                        item.get("canonical_name"),
-                        item.get("amount"),
-                        item.get("unit"),
-                        1 if item.get("checked") else 0,
-                        float(item.get("added_at") or now),
-                        json.dumps(item.get("source_recipe_ids") or []),
-                        item.get("category"),
-                        item.get("sort_order"),
-                    ),
-                )
-            return len(items)
 
-    def cart_replace_if_unchanged(
-        self,
-        items: List[Dict[str, Any]],
-        expected_fingerprint: str,
-    ) -> Optional[int]:
-        """Ersetzt den Cart nur, wenn er noch exakt dem Preview-Stand entspricht."""
-        from .recipes.shopping_optimizer import cart_fingerprint
+    def cart_replace_if_unchanged(self, items, expected_fingerprint):
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        return HouseholdDatabase(self, HouseholdScope(0)).cart_replace_if_unchanged(items, expected_fingerprint)
 
-        now = time.time()
-        with self.conn() as c:
-            c.execute("BEGIN IMMEDIATE")
-            current = []
-            for row in c.execute(
-                "SELECT sc.*, COALESCE(sc.category, sp.category, 'Sonstiges') "
-                "AS resolved_category FROM shopping_cart sc "
-                "LEFT JOIN shopping_products sp ON sp.canonical_name=sc.canonical_name "
-                "ORDER BY sc.id"
-            ).fetchall():
-                item = dict(row)
-                item["category"] = item.pop("resolved_category")
-                current.append(item)
-            if cart_fingerprint(current) != expected_fingerprint:
-                return None
-            c.execute("DELETE FROM shopping_cart")
-            for item in items:
-                c.execute(
-                    "INSERT INTO shopping_cart "
-                    "(name, canonical_name, amount, unit, checked, added_at, "
-                    "source_recipe_ids, category, sort_order) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        item.get("name") or "?",
-                        item.get("canonical_name"),
-                        item.get("amount"),
-                        item.get("unit"),
-                        1 if item.get("checked") else 0,
-                        float(item.get("added_at") or now),
-                        json.dumps(item.get("source_recipe_ids") or []),
-                        item.get("category"),
-                        item.get("sort_order"),
-                    ),
-                )
-            return len(items)
 
-    def cart_merge_many(self, items: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Fügt Rezept- oder Wochenplan-Zutaten atomar zum Warenkorb hinzu.
+    def cart_merge_many(self, items):
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        return HouseholdDatabase(self, HouseholdScope(0)).cart_merge_many(items)
 
-        Bestehende manuelle Einträge bleiben erhalten. Gleiche Canonical-/
-        Einheiten-Paare werden summiert und erneut als offen markiert.
-        """
-        from .recipes.shopping_catalog import product_defaults
-        added = 0
-        merged = 0
-        now = time.time()
-        with self.conn() as c:
-            c.execute("BEGIN IMMEDIATE")
-            for item in items:
-                name = item.get("name") or "?"
-                canonical = item.get("canonical_name")
-                unit = item.get("unit")
-                resolved_category = product_defaults(name, canonical, item.get("category"))["category"]
-                if canonical:
-                    if unit is None:
-                        existing = c.execute(
-                            "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit IS NULL",
-                            (canonical,),
-                        ).fetchone()
-                    else:
-                        existing = c.execute(
-                            "SELECT * FROM shopping_cart WHERE canonical_name=? AND unit=?",
-                            (canonical, unit),
-                        ).fetchone()
-                else:
-                    existing = None
 
-                source_ids = list(item.get("source_recipe_ids") or [])
-                if existing:
-                    old_amount = existing["amount"]
-                    amount = item.get("amount")
-                    new_amount = (
-                        (old_amount or 0) + (amount or 0)
-                        if amount is not None
-                        else old_amount
-                    )
-                    old_sources = json.loads(existing["source_recipe_ids"] or "[]")
-                    for recipe_id in source_ids:
-                        if recipe_id not in old_sources:
-                            old_sources.append(recipe_id)
-                    c.execute(
-                        "UPDATE shopping_cart SET amount=?, checked=0, source_recipe_ids=?, "
-                        "category=COALESCE(category, ?) WHERE id=?",
-                        (new_amount, json.dumps(old_sources), resolved_category, existing["id"]),
-                    )
-                    merged += 1
-                else:
-                    c.execute(
-                        "INSERT INTO shopping_cart "
-                        "(name, canonical_name, amount, unit, checked, added_at, source_recipe_ids, category) "
-                        "VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
-                        (
-                            name,
-                            canonical,
-                            item.get("amount"),
-                            unit,
-                            now,
-                            json.dumps(source_ids),
-                            resolved_category,
-                        ),
-                    )
-                    added += 1
-                self._shopping_product_upsert_conn(
-                    c, canonical_name=canonical, display_name=name,
-                    category=resolved_category, default_unit=unit,
-                )
-        return {"added": added, "merged": merged}
+    def cart_update(self, item_id, *, amount=None, checked=None, name=None):
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        return HouseholdDatabase(self, HouseholdScope(0)).cart_update(item_id, amount=amount, checked=checked, name=name)
 
-    def cart_update(self, item_id: int, *, amount: Optional[float] = None,
-                    checked: Optional[bool] = None, name: Optional[str] = None) -> None:
-        sets, params = [], []
-        if amount is not None:
-            sets.append("amount=?"); params.append(amount)
-        if checked is not None:
-            sets.append("checked=?"); params.append(1 if checked else 0)
-        if name is not None:
-            sets.append("name=?"); params.append(name)
-        if not sets:
-            return
-        params.append(item_id)
-        with self.conn() as c:
-            c.execute(f"UPDATE shopping_cart SET {', '.join(sets)} WHERE id=?", params)
 
     def cart_delete(self, item_id: int) -> None:
         with self.conn() as c:

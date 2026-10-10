@@ -23,12 +23,17 @@ on:
         required: false
         default: ""
         type: string
+      record_review:
+        description: "Aktuelle Store-Screenshots und Review-Video am isolierten Reviewserver aufnehmen"
+        required: false
+        default: false
+        type: boolean
   push:
     paths:
       - "ios-swift/**"
       - "native-ios/scripts/testflight-ensure.mjs"
       - "native-ios/scripts/testflight-ensure.test.mjs"
-      - "native-ios/scripts/testflight-what-to-test-1.10.0.txt"
+      - "native-ios/scripts/testflight-what-to-test-1.11.0.txt"
       - "app/main.py"
       - "app/auth.py"
       - "app/db.py"
@@ -41,7 +46,7 @@ on:
       - "ios-swift/**"
       - "native-ios/scripts/testflight-ensure.mjs"
       - "native-ios/scripts/testflight-ensure.test.mjs"
-      - "native-ios/scripts/testflight-what-to-test-1.10.0.txt"
+      - "native-ios/scripts/testflight-what-to-test-1.11.0.txt"
       - "app/main.py"
       - "app/auth.py"
       - "app/db.py"
@@ -142,6 +147,7 @@ jobs:
     env:
       IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID || 'de.mausbaeren.rezepte' }}
       IOS_SHARE_BUNDLE_ID: ${{ vars.IOS_SHARE_BUNDLE_ID || 'de.mausbaeren.rezepte.share' }}
+      IOS_TIMERS_BUNDLE_ID: de.mausbaeren.rezepte.timers
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
       KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
@@ -184,6 +190,7 @@ jobs:
           IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
           IOS_APPSTORE_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROFILE_BASE64 }}
           IOS_SHARE_PROFILE_BASE64: ${{ secrets.IOS_SHARE_PROFILE_BASE64 }}
+          IOS_TIMERS_PROFILE_BASE64: ${{ secrets.IOS_TIMERS_PROFILE_BASE64 }}
           ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
         run: |
           set -euo pipefail
@@ -191,7 +198,7 @@ jobs:
             APPLE_TEAM_ID P12_PASSWORD KEYCHAIN_PASSWORD
             ASC_KEY_ID ASC_ISSUER_ID ASC_APP_ID IOS_BUNDLE_ID IOS_SHARE_BUNDLE_ID
             IOS_DISTRIBUTION_P12_BASE64 IOS_APPSTORE_PROFILE_BASE64
-            IOS_SHARE_PROFILE_BASE64 ASC_PRIVATE_KEY_BASE64
+            IOS_SHARE_PROFILE_BASE64 IOS_TIMERS_PROFILE_BASE64 ASC_PRIVATE_KEY_BASE64
           )
           for name in "${required[@]}"; do
             if [[ -z "${!name:-}" ]]; then
@@ -208,12 +215,14 @@ jobs:
           certificate_path="$RUNNER_TEMP/ios-distribution.p12"
           app_profile_path="$RUNNER_TEMP/ios-appstore.mobileprovision"
           share_profile_path="$RUNNER_TEMP/ios-share-appstore.mobileprovision"
+          timers_profile_path="$RUNNER_TEMP/ios-timers-appstore.mobileprovision"
           keychain_path="$RUNNER_TEMP/quellenkueche-signing.keychain-db"
           profile_plist="$RUNNER_TEMP/profile.plist"
 
           echo -n "${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}" | base64 --decode > "$certificate_path"
           echo -n "${{ secrets.IOS_APPSTORE_PROFILE_BASE64 }}" | base64 --decode > "$app_profile_path"
           echo -n "${{ secrets.IOS_SHARE_PROFILE_BASE64 }}" | base64 --decode > "$share_profile_path"
+          echo -n "${{ secrets.IOS_TIMERS_PROFILE_BASE64 }}" | base64 --decode > "$timers_profile_path"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
           security set-keychain-settings -lut 21600 "$keychain_path"
@@ -240,11 +249,22 @@ jobs:
             exit 1
           fi
 
+          security cms -D -i "$timers_profile_path" > "$profile_plist"
+          timers_profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
+          timers_profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile_plist")"
+          timers_profile_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile_plist")"
+          if [[ "$timers_profile_id" != "$APPLE_TEAM_ID.$IOS_TIMERS_BUNDLE_ID" ]]; then
+            echo "Timer profile bundle does not match $IOS_TIMERS_BUNDLE_ID" >&2
+            exit 1
+          fi
+
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           cp "$app_profile_path" "$HOME/Library/MobileDevice/Provisioning Profiles/$app_profile_uuid.mobileprovision"
           cp "$share_profile_path" "$HOME/Library/MobileDevice/Provisioning Profiles/$share_profile_uuid.mobileprovision"
+          cp "$timers_profile_path" "$HOME/Library/MobileDevice/Provisioning Profiles/$timers_profile_uuid.mobileprovision"
           echo "app_profile_name=$app_profile_name" >> "$GITHUB_OUTPUT"
           echo "share_profile_name=$share_profile_name" >> "$GITHUB_OUTPUT"
+          echo "timers_profile_name=$timers_profile_name" >> "$GITHUB_OUTPUT"
 
       - name: Resolve unique build number
         id: buildnum
@@ -278,12 +298,13 @@ jobs:
             CODE_SIGN_IDENTITY="Apple Distribution" \
             IOS_APP_PROFILE_NAME="${{ steps.signing.outputs.app_profile_name }}" \
             IOS_SHARE_PROFILE_NAME="${{ steps.signing.outputs.share_profile_name }}" \
+            IOS_TIMERS_PROFILE_NAME="${{ steps.signing.outputs.timers_profile_name }}" \
             CURRENT_PROJECT_VERSION="${{ steps.buildnum.outputs.value }}"
 
       - name: Validate archive metadata
         shell: bash
         env:
-          EXPECTED_MARKETING_VERSION: "1.3.0"
+          EXPECTED_MARKETING_VERSION: "1.4.0"
           EXPECTED_BUILD_NUMBER: ${{ steps.buildnum.outputs.value }}
         run: |
           set -euo pipefail
@@ -319,6 +340,7 @@ jobs:
           assert_bundle_metadata "Main app" "$app_path/Info.plist" "$IOS_BUNDLE_ID"
 
           share_path=""
+          timers_path=""
           for candidate in "$app_path"/PlugIns/*.appex; do
             [[ -d "$candidate" ]] || continue
             candidate_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Info.plist" 2>/dev/null || true)"
@@ -329,12 +351,24 @@ jobs:
               fi
               share_path="$candidate"
             fi
+            if [[ "$candidate_bundle_id" == "$IOS_TIMERS_BUNDLE_ID" ]]; then
+              if [[ -n "$timers_path" ]]; then
+                echo "Found more than one Timer extension" >&2
+                exit 1
+              fi
+              timers_path="$candidate"
+            fi
           done
           if [[ -z "$share_path" ]]; then
             echo "Share extension $IOS_SHARE_BUNDLE_ID is missing from the archive" >&2
             exit 1
           fi
           assert_bundle_metadata "Share extension" "$share_path/Info.plist" "$IOS_SHARE_BUNDLE_ID"
+          if [[ -z "$timers_path" ]]; then
+            echo "Timer extension is missing from the archive" >&2
+            exit 1
+          fi
+          assert_bundle_metadata "Timer extension" "$timers_path/Info.plist" "$IOS_TIMERS_BUNDLE_ID"
 
       - name: Export signed IPA
         shell: bash
@@ -348,6 +382,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$export_options"
           /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$IOS_BUNDLE_ID string ${{ steps.signing.outputs.app_profile_name }}" "$export_options"
           /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$IOS_SHARE_BUNDLE_ID string ${{ steps.signing.outputs.share_profile_name }}" "$export_options"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$IOS_TIMERS_BUNDLE_ID string ${{ steps.signing.outputs.timers_profile_name }}" "$export_options"
           /usr/libexec/PlistBuddy -c "Add :stripSwiftSymbols bool true" "$export_options"
           /usr/libexec/PlistBuddy -c "Add :uploadSymbols bool true" "$export_options"
 
@@ -380,7 +415,7 @@ jobs:
           ASC_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_BUILD_NUMBER: ${{ steps.buildnum.outputs.value }}
-          ASC_MARKETING_VERSION: "1.3.0"
+          ASC_MARKETING_VERSION: "1.4.0"
           ASC_UPLOAD_STARTED_AT: ${{ steps.upload.outputs.started_at }}
           ASC_ASSIGN_INTERNAL_GROUP: "false"
           ASC_ASSIGN_EXTERNAL_GROUP: ${{ inputs.assign_external_group && 'true' || 'false' }}
@@ -409,9 +444,53 @@ jobs:
             "$RUNNER_TEMP/ios-distribution.p12" \
             "$RUNNER_TEMP/ios-appstore.mobileprovision" \
             "$RUNNER_TEMP/ios-share-appstore.mobileprovision" \
+            "$RUNNER_TEMP/ios-timers-appstore.mobileprovision" \
             "$RUNNER_TEMP/profile.plist" \
             "$RUNNER_TEMP/ExportOptions.plist" \
             "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
+
+  review-media:
+    name: Capture current native Store screenshots and review video
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.record_review && !inputs.distribute_existing_build }}
+    needs: test
+    runs-on: macos-26
+    timeout-minutes: 30
+    environment: testflight
+    defaults:
+      run:
+        working-directory: ios-swift
+    env:
+      APP_REVIEW_SERVER: https://rezepte-review.mausbaeren.me
+      APP_REVIEW_USERNAME: ${{ secrets.APP_REVIEW_USERNAME }}
+      APP_REVIEW_PASSWORD: ${{ secrets.APP_REVIEW_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen-dist"
+          xcodegen_bin="$(find "$RUNNER_TEMP/xcodegen-dist" -type f -name xcodegen -path '*/bin/*' -print -quit)"
+          test -n "$xcodegen_bin"
+          chmod +x "$xcodegen_bin"
+          "$xcodegen_bin" --version | grep -F "$XCODEGEN_VERSION"
+          dirname "$xcodegen_bin" >> "$GITHUB_PATH"
+      - name: Record review tour against isolated household
+        run: |
+          xcodegen generate
+          bash scripts/record-review-video.sh
+          xcrun xcresulttool export attachments --path ReviewVideoResults.xcresult --output-path artifacts/screenshots
+      - name: Upload current review media
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftui-review-media-${{ github.sha }}
+          path: |
+            ios-swift/artifacts/*.mp4
+            ios-swift/artifacts/screenshots
+          retention-days: 14
 
   distribute-existing:
     name: Distribute exact existing build to private TestFlight group
@@ -423,7 +502,7 @@ jobs:
       ASC_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_APP_ID: ${{ vars.ASC_APP_ID || '6803595058' }}
-      ASC_MARKETING_VERSION: "1.3.0"
+      ASC_MARKETING_VERSION: "1.4.0"
       ASC_BUILD_NUMBER: ${{ inputs.build_number }}
       ASC_ALLOW_EXISTING_BUILD: "true"
       ASC_ASSIGN_EXTERNAL_GROUP: "true"

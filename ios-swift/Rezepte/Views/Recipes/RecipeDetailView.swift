@@ -33,6 +33,9 @@ struct RecipeDetailView: View {
     @State private var showPDF = false
     @State private var showDuplicatePrompt = false
     @State private var showSubstitutionLab = false
+    @State private var showCookbooks = false
+    @State private var showCookingNotes = false
+    @State private var showRecipeWish = false
     @State private var duplicateName = ""
     @State private var createdVariantID: Int?
     @State private var isManaging = false
@@ -77,6 +80,7 @@ struct RecipeDetailView: View {
 
                         librarySection(recipe)
                         actionBar(recipe)
+                        householdActions(recipe)
                         recipePassportSection(recipe)
 
                         ratingAndNutritionSection(recipe)
@@ -228,6 +232,19 @@ struct RecipeDetailView: View {
                     .environmentObject(session)
             }
         }
+        .sheet(isPresented: $showCookbooks) {
+            CookbooksView(recipeID: recipeID).id(session.identity)
+        }
+        .sheet(isPresented: $showCookingNotes) {
+            NavigationStack {
+                ScrollView { CookingNotesView(recipeID: recipeID).padding() }
+                    .navigationTitle("Kochnotizen")
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { showCookingNotes = false } } }
+            }.id(session.identity)
+        }
+        .sheet(isPresented: $showRecipeWish) {
+            RecipeWishSheet(recipeID: recipeID).id(session.identity)
+        }
         .sheet(isPresented: $showShoppingServings) {
             if let recipe, let originalServings = recipe.servings {
                 ShoppingServingsSheet(
@@ -373,6 +390,28 @@ struct RecipeDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func householdActions(_ recipe: Recipe) -> some View {
+        if !session.readOnly, session.role != .guest {
+            VStack(alignment: .leading, spacing: 10) {
+                if session.supports("household-cookbooks") {
+                    Button("In Kochbüchern sammeln", systemImage: "books.vertical") { showCookbooks = true }
+                        .frame(minHeight: 44)
+                }
+                if session.supports("cooking-notes-photos") {
+                    Button("Kochhistorie, Notizen & Fotos", systemImage: "note.text") { showCookingNotes = true }
+                        .frame(minHeight: 44)
+                }
+                if session.supports("household-meal-wishes"), !recipe.needsManualCare {
+                    Button("Gericht wünschen", systemImage: "hand.thumbsup") { showRecipeWish = true }
+                        .frame(minHeight: 44)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .cardSurface()
         }
     }
 

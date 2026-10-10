@@ -9,9 +9,10 @@ struct CartView: View {
     }
 
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var shopping: ShoppingSyncStore
     @Environment(\.recipeTheme) private var theme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var mode = ShoppingMode.current
-    @State private var items: [CartItem] = []
     @State private var recurringItems: [RecurringCartItem] = []
     @State private var suggestions: [ShoppingSuggestion] = []
     @State private var categories: [ShoppingCategory] = []
@@ -30,6 +31,10 @@ struct CartView: View {
     @State private var recurringEditor: RecurringDraft?
     @State private var recurringToDelete: RecurringCartItem?
     @State private var showShoppingTools = false
+    @State private var showBulkAdd = false
+
+    private var items: [CartItem] { shopping.items }
+    private var canWrite: Bool { !session.readOnly && session.role != .guest }
 
     fileprivate static let commonUnits = [
         "Stück", "g", "kg", "ml", "l", "TL", "EL", "Packung", "Dose", "Glas", "Bund", "Becher"
@@ -63,9 +68,11 @@ struct CartView: View {
             .background(theme.background)
             .navigationTitle("Einkauf")
             .toolbar {
-                if mode == .current, !items.isEmpty {
+                if mode == .current, canWrite {
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
+                            Button("Mehrere Artikel einfügen", systemImage: "text.badge.plus") { showBulkAdd = true }
+                                .disabled(!shopping.isReady)
                             Button(
                                 session.fullAccess && session.supports("ai-shopping-optimization")
                                     ? "KI sortieren & exportieren" : "Einkaufsliste teilen & übertragen",
@@ -73,6 +80,7 @@ struct CartView: View {
                             ) {
                                 showShoppingTools = true
                             }
+                            .disabled(shopping.pendingCount > 0 || !shopping.isReady)
                             Button("Erledigte löschen", systemImage: "checkmark.circle") {
                                 Task { await clear(onlyChecked: true) }
                             }
@@ -83,7 +91,7 @@ struct CartView: View {
                             Image(systemName: "ellipsis.circle")
                         }
                     }
-                } else if mode == .recurring {
+                } else if mode == .recurring, canWrite {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
                             recurringEditor = RecurringDraft()
@@ -95,9 +103,16 @@ struct CartView: View {
                 }
             }
             .sheet(item: $amountEditor) { item in
+                let expectedIdentity = session.identity
                 CartAmountEditorView(item: item) { amount in
+                    guard session.identity == expectedIdentity else { throw APIError.sessionChanged }
                     try await saveAmount(item, amount: amount)
                 }
+            }
+            .sheet(isPresented: $showBulkAdd) {
+                ShoppingBulkAddView(identity: session.identity, householdID: shopping.householdID)
+                    .environmentObject(session)
+                    .environmentObject(shopping)
             }
             .sheet(item: $recurringEditor) { draft in
                 RecurringEditorView(
@@ -128,23 +143,38 @@ struct CartView: View {
             } message: {
                 Text("Der Artikel wird künftig nicht mehr automatisch eingetragen.")
             }
-            .task {
+            .task(id: session.identity) {
                 await load()
                 await loadRecurring()
             }
             .task(id: newItem) { await loadSuggestions() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active, canWrite { Task { await load() } }
+            }
+            .onChange(of: shopping.isSyncing) { _, syncing in
+                if !syncing, shopping.errorMessage == nil { errorMessage = nil }
+            }
+            .task {
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(30)) } catch { break }
+                    if scenePhase == .active, canWrite, shopping.pendingCount > 0 { try? await shopping.refresh() }
+                }
+            }
         }
     }
 
     @ViewBuilder
     private var currentContent: some View {
-        if isLoading && items.isEmpty {
+        if !canWrite {
+            EmptyState(icon: "lock", title: "Persönlicher Einkauf", message: "Melde dich mit deinem Konto an, um die Einkaufsliste zu verwenden.")
+        } else if isLoading && !shopping.isReady {
             ProgressView("Einkaufsliste wird geladen …")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let errorMessage, items.isEmpty {
+        } else if let errorMessage = errorMessage ?? shopping.errorMessage, !shopping.isReady {
             ErrorState(message: errorMessage) { Task { await load() } }
         } else {
             List {
+                syncSection
                 addSection
 
                 if items.isEmpty {
@@ -189,7 +219,9 @@ struct CartView: View {
 
     @ViewBuilder
     private var recurringContent: some View {
-        if isRecurringLoading && recurringItems.isEmpty {
+        if !canWrite {
+            EmptyState(icon: "lock", title: "Persönlicher Einkauf", message: "Melde dich mit deinem Konto an, um wiederkehrende Einkäufe zu verwenden.")
+        } else if isRecurringLoading && recurringItems.isEmpty {
             ProgressView("Wiederkehrende Einkäufe werden geladen …")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let recurringErrorMessage, recurringItems.isEmpty {
@@ -271,6 +303,9 @@ struct CartView: View {
 
     private var addSection: some View {
         Section {
+            Button("Mehrere Artikel einfügen", systemImage: "text.badge.plus") { showBulkAdd = true }
+                .frame(minHeight: 44)
+                .disabled(!shopping.isReady)
             HStack(spacing: 10) {
                 TextField("Was fehlt?", text: $newItem)
                     .textInputAutocapitalization(.sentences)
@@ -296,7 +331,7 @@ struct CartView: View {
                     Image(systemName: "plus.circle.fill")
                         .font(.title2)
                 }
-                .disabled(newItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(newItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !shopping.isReady)
                 .accessibilityLabel("Artikel hinzufügen")
             }
 
@@ -368,6 +403,7 @@ struct CartView: View {
     }
 
     private func cartRow(_ item: CartItem) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 4) {
             Button {
                 Task { await toggle(item) }
@@ -401,6 +437,61 @@ struct CartView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Menge von \(item.name) bearbeiten")
             .accessibilityIdentifier("cart.edit-amount.\(item.id)")
+            .disabled(item.id < 0 || shopping.pendingCount > 0 || shopping.isSyncing)
+        }
+        if let contributions = item.sourceContributions, !contributions.isEmpty {
+            DisclosureGroup("Herkunft & Mengen") {
+                ForEach(Array(contributions.enumerated()), id: \.offset) { _, source in
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let recipeID = source.recipeId {
+                            NavigationLink(source.recipeName) { RecipeDetailView(recipeID: recipeID) }
+                        } else {
+                            Text(source.recipeName)
+                        }
+                        Text(source.quantityText).font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+                }
+            }
+            .font(.subheadline)
+            .padding(.leading, 42)
+        }
+        }
+    }
+
+    private var syncSection: some View {
+        Section {
+            if let message = shopping.errorMessage ?? errorMessage {
+                Label(message, systemImage: "wifi.exclamationmark").font(.footnote)
+            }
+            if shopping.pendingCount > 0 || shopping.isSyncing {
+                HStack {
+                    Label(shopping.isSyncing ? "Wird synchronisiert …" : "\(shopping.pendingCount) Änderungen auf diesem Gerät gespeichert",
+                          systemImage: "arrow.triangle.2.circlepath")
+                    Spacer()
+                    if !shopping.isSyncing {
+                        Button("Erneut") { Task { try? await shopping.refresh() } }
+                    }
+                }.font(.footnote)
+            }
+            if shopping.conflictCount > 0 {
+                DisclosureGroup("\(shopping.conflictCount) Änderungen prüfen") {
+                    ForEach(Array(shopping.conflictDetails.enumerated()), id: \.offset) { _, detail in Text(detail).font(.footnote) }
+                    Button("Serverstand übernehmen") {
+                        do { try shopping.discardConflicts() } catch { errorMessage = error.localizedDescription }
+                    }
+                }
+            }
+            if let label = shopping.undoLabel {
+                Button("Rückgängig: \(label)", systemImage: "arrow.uturn.backward") {
+                    do {
+                        try shopping.undoLatest(groupID: shopping.undoID)
+                        Task { try? await shopping.refresh() }
+                    } catch { errorMessage = error.localizedDescription }
+                }
+                .frame(minHeight: 44)
+            }
         }
     }
 
@@ -450,34 +541,43 @@ struct CartView: View {
     }
 
     private func load() async {
+        guard canWrite else { return }
+        let identity = session.identity
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
-            async let cart = session.api.cart()
-            async let catalog = session.api.shoppingCategories()
-            let (cartResponse, categoryResponse) = try await (cart, catalog)
-            items = cartResponse.items
-            categories = categoryResponse.items
+            await shopping.activate(session: session)
+            try await shopping.refresh()
         } catch {
-            errorMessage = error.localizedDescription
-            session.handle(error)
+            if session.identity == identity {
+                errorMessage = error.localizedDescription
+                if case APIError.unauthenticated = error { session.handle(error) }
+            }
         }
+        if let catalog = try? await session.api.shoppingCategories(), session.identity == identity { categories = catalog.items }
     }
 
     private func loadRecurring() async {
+        guard canWrite else { return }
+        let identity = session.identity
         isRecurringLoading = true
         recurringErrorMessage = nil
         defer { isRecurringLoading = false }
         do {
-            recurringItems = try await session.api.recurringCart().items
+            let result = try await session.api.recurringCart().items
+            guard session.identity == identity else { return }
+            recurringItems = result
         } catch {
+            guard session.identity == identity else { return }
             recurringErrorMessage = error.localizedDescription
             session.handle(error)
         }
     }
 
     private func loadSuggestions() async {
+        guard canWrite else { return }
+        let identity = session.identity
         let query = newItem.trimmingCharacters(in: .whitespacesAndNewlines)
         guard query.isEmpty || query.count >= 2 else {
             suggestions = []
@@ -488,11 +588,14 @@ struct CartView: View {
         }
         guard !Task.isCancelled else { return }
         do {
-            suggestions = try await session.api.shoppingSuggestions(
+            let result = try await session.api.shoppingSuggestions(
                 query: query,
                 limit: query.isEmpty ? 12 : 8
             ).items
+            guard session.identity == identity, !Task.isCancelled else { return }
+            suggestions = result
         } catch {
+            guard session.identity == identity, !Task.isCancelled else { return }
             suggestions = []
         }
     }
@@ -523,41 +626,32 @@ struct CartView: View {
         let unit = amount == nil ? nil : newUnit.nilIfEmpty
         let category = selectedCategory.nilIfEmpty
         do {
-            _ = try await session.api.addCartItem(
-                name: name,
-                amount: amount,
-                unit: unit,
-                category: category
-            )
+            try shopping.addMany([ShoppingAddItem(name: name, amount: amount, unit: unit, category: category)], expectedHouseholdID: shopping.householdID)
             newItem = ""
             newAmount = ""
             newUnit = ""
             selectedCategory = ""
             addErrorMessage = nil
             suggestions = []
-            await load()
+            Task { try? await shopping.refresh() }
         } catch {
             addErrorMessage = error.localizedDescription
-            session.handle(error)
         }
     }
 
     private func toggle(_ item: CartItem) async {
         do {
-            _ = try await session.api.setCartItem(id: item.id, checked: !item.checked)
-            await load()
+            try shopping.change(item.id, kind: "check", expectedHouseholdID: shopping.householdID)
+            Task { try? await shopping.refresh() }
         } catch {
-            session.handle(error)
+            errorMessage = error.localizedDescription
         }
     }
 
     private func saveAmount(_ item: CartItem, amount: Double) async throws {
         let expectedIdentity = session.identity
         do {
-            _ = try await session.api.updateCartItemAmount(id: item.id, amount: amount)
-            let updatedCart = try await session.api.cart()
-            guard session.identity == expectedIdentity else { throw APIError.sessionChanged }
-            items = updatedCart.items
+            try await shopping.updateAmount(item: item, amount: amount, session: session)
         } catch {
             if session.identity == expectedIdentity,
                let apiError = error as? APIError, case .unauthenticated = apiError {
@@ -568,25 +662,19 @@ struct CartView: View {
     }
 
     private func delete(_ offsets: IndexSet, from visibleItems: [CartItem]) {
-        let ids = offsets.map { visibleItems[$0].id }
-        Task {
-            for id in ids {
-                do {
-                    _ = try await session.api.deleteCartItem(id: id)
-                } catch {
-                    session.handle(error)
-                }
-            }
-            await load()
-        }
+        let captured = offsets.map { visibleItems[$0] }
+        do {
+            try shopping.remove(captured, expectedHouseholdID: shopping.householdID)
+            Task { try? await shopping.refresh() }
+        } catch { errorMessage = error.localizedDescription }
     }
 
     private func clear(onlyChecked: Bool) async {
         do {
-            _ = try await session.api.clearCart(onlyChecked: onlyChecked)
-            await load()
+            try shopping.remove(onlyChecked ? doneItems : items, checkedOnly: onlyChecked, expectedHouseholdID: shopping.householdID)
+            Task { try? await shopping.refresh() }
         } catch {
-            session.handle(error)
+            errorMessage = error.localizedDescription
         }
     }
 

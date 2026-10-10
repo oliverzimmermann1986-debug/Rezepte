@@ -26,8 +26,8 @@ from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, password_login_identity,
                     request_user, require_auth, verify_session, revoke_current_session)
 from .config_store import get_config, migrate_pdf_quality_defaults
 from .db import get_db
-from .routes import (api_account, api_admin, api_audit, api_auth, api_oidc, api_browse, api_config, api_einkauf, api_events, api_hdd,
-                     api_history, api_jobs, api_master, api_metrics, api_pending, api_recipes,
+from .routes import (api_account, api_admin, api_audit, api_auth, api_oidc, api_browse, api_config, api_discovery, api_einkauf, api_events, api_hdd,
+                     api_history, api_household_features, api_jobs, api_master, api_metrics, api_pending, api_recipes,
                      api_meal_plan, api_share, api_shopping, api_stats, api_test,
                      api_users, sharing)
 from .security import (SameOriginMiddleware, SecurityHeadersMiddleware,
@@ -410,6 +410,14 @@ APP_CAPABILITIES = [
     "weekly-meal-plan",
     "weekly-meal-plan-pdf",
     "meal-conductor-v1",
+    "ingredient-recipe-discovery",
+    "meal-plan-suggestions",
+    "offline-shopping-sync",
+    "shopping-quantity-provenance",
+    "shopping-delete-undo",
+    "household-cookbooks",
+    "cooking-notes-photos",
+    "household-meal-wishes",
     "recipe-pdf-export",
     "source-integrity-v1",
     "source-integrity-v2",
@@ -506,6 +514,8 @@ app.include_router(api_recipes.router)
 app.include_router(api_einkauf.router)
 app.include_router(api_shopping.router)
 app.include_router(api_meal_plan.router)
+app.include_router(api_discovery.router)
+app.include_router(api_household_features.router)
 app.include_router(api_audit.router)
 app.include_router(api_master.router)
 app.include_router(api_users.router)
@@ -616,7 +626,9 @@ Adresse in der App eingetragen wurde.</p>
 <p>Die App verarbeitet die Server-Adresse, den Benutzernamen, ein
 Sitzungstoken sowie die auf dem privaten Server gespeicherten
 Rezepte, Einkaufslisten und Wochenpläne. Dazu können vom Nutzer geteilte
-Quellenlinks sowie hochgeladene Bilder und PDF-Dokumente gehören. Das Passwort
+Quellenlinks sowie hochgeladene Bilder und PDF-Dokumente gehören. Hinzu kommen
+Kochbücher, Kochnotizen und zugehörige Fotos sowie Essenswünsche und Abstimmungen
+innerhalb des eigenen Haushalts. Das Passwort
 wird zur Anmeldung oder Registrierung verschlüsselt an den Rezepteserver
 übertragen. Der Server speichert einen Passwort-Hash; die App speichert das
 Passwort nicht.</p>
@@ -641,6 +653,22 @@ auf das bestehende Rezept an.</p>
 Passwort wird nicht gespeichert. Die Kommunikation
 erfolgt über HTTPS direkt mit dem eingetragenen Rezepteserver. Die App enthält
 keine Werbung, keine Telemetrie und keine Analyse-SDKs.</p>
+<p>Die Einkaufsliste und noch nicht übertragene Änderungen werden auf dem iPhone
+getrennt nach Server, Konto und Haushalt gespeichert. Nach einem Netzfehler kann
+die App diese Änderungen erneut abgleichen. Diese lokalen Einkaufsdaten bleiben
+für eine spätere Anmeldung desselben Kontos erhalten; sie werden nach dem Abmelden
+nicht angezeigt. Ein Haushaltswechsel sperrt die bisherige Liste bis zur Bestätigung
+des neuen Haushalts durch den Server.</p>
+<h2>Sprachsteuerung und Koch-Timer</h2>
+<p>Die optionale Sprachsteuerung verwendet nach Erlaubnis Mikrofon und lokale
+Spracherkennung des iPhones. Sie ist nur auf Geräten mit verfügbarer lokaler
+Erkennung aktiv. Sprachbefehle werden nicht an den Rezepteserver oder einen
+KI-Dienst übertragen oder als Audiodatei gespeichert. Beim Verlassen des Kochmodus
+oder Wechsel in den Hintergrund endet die Spracherkennung.</p>
+<p>Koch-Timer werden lokal gespeichert. Nach Erlaubnis können sie lokale
+Benachrichtigungen und eine Live Activity mit Rezepttitel und Restzeit auf dem
+Sperrbildschirm anzeigen. Diese Anzeigen lassen sich in den iOS-Einstellungen
+abschalten. Beim Abmelden werden laufende Timer entfernt.</p>
 <h2>KI-gestützte Verarbeitung</h2>
 <p>Wenn eine KI-Funktion verwendet wird, kann der Rezepteserver die dafür
 erforderlichen Rezepttexte, Bilder, PDF-Inhalte, Videoframes und extrahierte
@@ -678,7 +706,7 @@ Abmelden werden Sitzungstoken und private Bildcaches vom iPhone entfernt;
 reguläre Serversitzungen werden widerrufen.
 Gastsitzungen laufen spätestens nach 24 Stunden ab. Beim Wechsel von Gast zur
 Anmeldung bleibt die Server-Adresse auf dem Gerät gespeichert.</p>
-<p><small>Stand: 7. Oktober 2026</small></p>
+<p><small>Stand: 10. Oktober 2026</small></p>
 </main></body></html>"""
     )
 

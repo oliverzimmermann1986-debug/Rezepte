@@ -9,13 +9,16 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_swiftui_is_the_primary_native_path_with_source_first_navigation():
+def test_swiftui_is_the_primary_native_path_with_today_and_archive_navigation():
     tabs = _read(SWIFT / "Views" / "MainTabView.swift")
+    archive = _read(SWIFT / "Views" / "Recipes" / "RecipesView.swift")
     readme = _read(ROOT / "README.md")
     workflow = _read(ROOT / ".github" / "workflows" / "ios-swift.yml")
 
-    assert "InboxView()" in tabs
-    assert 'Label("Eingang"' in tabs
+    assert "TodayView()" in tabs
+    assert 'Label("Heute"' in tabs
+    assert "InboxView()" in archive
+    assert 'Eingang & Import' in archive
     assert "SettingsView()" in tabs
     assert "ios-swift/" in readme and "iPhone-Hauptpfad" in readme
     assert "xcodegen generate" in workflow
@@ -314,7 +317,7 @@ def test_swiftui_cooking_mode_persists_progress_scales_and_completes_idempotentl
     assert '"Kochen starten"' in cooking
     assert "hasStartedCooking = progress.exists" in cooking
     assert "startCooking()" in cooking
-    assert "CookingTimerView" in cooking
+    assert "KitchenTimerView" in cooking
     assert "completionRequestID" in cooking
     assert '"Idempotency-Key": idempotencyKey' in api
     assert '"/api/recipes/\\(id)/cooking-complete"' in api
@@ -389,7 +392,8 @@ def test_swiftui_guest_login_is_read_only_across_navigation_and_recipe_actions()
     assert "@Published private(set) var readOnly" in session
     assert "guard case .signedIn = state else { return false }" in session
     assert "return !readOnly || userID != nil" in session
-    assert "if session.canImport {\n                InboxView()" in tabs
+    archive = _read(SWIFT / "Views" / "Recipes" / "RecipesView.swift")
+    assert "if session.canImport" in archive and "InboxView()" in archive
     assert "if !session.readOnly {\n                MealPlanView()" in tabs
     assert "Gastzugang · Rezept nur ansehen" in detail
     assert detail.count("if !session.readOnly") >= 4

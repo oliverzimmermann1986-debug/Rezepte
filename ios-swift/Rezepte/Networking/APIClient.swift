@@ -1086,6 +1086,37 @@ actor APIClient {
         try await send("/api/recipes/images/backfill/\(runID)")
     }
 
+    // Feature extensions share the same authentication, decoding and session guards.
+    func kitchenRequest<Response: Decodable>(
+        _ path: String, method: String = "GET", query: [URLQueryItem] = []
+    ) async throws -> Response {
+        try await send(path, method: method, query: query)
+    }
+
+    func kitchenRequest<Body: Encodable, Response: Decodable>(
+        _ path: String, method: String, query: [URLQueryItem] = [], body: Body
+    ) async throws -> Response {
+        try await send(path, method: method, query: query, body: body)
+    }
+
+    func kitchenImage(_ path: String) async throws -> Data {
+        try await download(path, accept: "image/jpeg")
+    }
+
+    func kitchenUpload<Response: Decodable>(_ path: String, jpeg: Data) async throws -> Response {
+        let boundary = "Kitchen-\(UUID().uuidString)"
+        var request = URLRequest(url: try endpoint(path))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        var data = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"cooking.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n".utf8)
+        data.append(jpeg)
+        data.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        request.httpBody = data
+        authorize(&request, includeBearer: true)
+        return try await execute(request, authenticated: true)
+    }
+
     private func send<Response: Decodable>(
         _ path: String,
         method: String = "GET",

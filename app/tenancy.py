@@ -184,6 +184,8 @@ def claim_legacy_data(c, account_id: int) -> None:
     c.execute("""INSERT OR IGNORE INTO account_recipe_state(account_id,recipe_id,saved_at,is_favorite,rating)
         SELECT ?, id, ?, is_favorite, rating FROM recipes
         WHERE is_favorite=1 OR rating>0""", (account_id, time.time()))
+    from .recipes.household_features import claim_legacy_features
+    claim_legacy_features(c, account_id)
     c.execute("INSERT INTO tenant_migration_state(id,account_id) VALUES(1,?)", (account_id,))
 
 
@@ -256,8 +258,10 @@ def merge_households(c, source: int, target: int) -> None:
             amount = None if item["amount"] is None and existing["amount"] is None else (item["amount"] or 0)+(existing["amount"] or 0)
             import json
             sources = list(dict.fromkeys(json.loads(item["source_recipe_ids"] or "[]")+json.loads(existing["source_recipe_ids"] or "[]")))
-            c.execute("UPDATE shopping_cart SET amount=?,source_recipe_ids=?,checked=? WHERE id=?",
-                      (amount, json.dumps(sources), int(bool(item["checked"] and existing["checked"])), existing["id"]))
+            from .recipes.shopping_history import combine_contributions, contributions
+            history = combine_contributions(contributions(dict(item)), contributions(dict(existing)))
+            c.execute("UPDATE shopping_cart SET amount=?,source_recipe_ids=?,source_contributions=?,checked=? WHERE id=?",
+                      (amount, json.dumps(sources), json.dumps(history), int(bool(item["checked"] and existing["checked"])), existing["id"]))
             c.execute("DELETE FROM shopping_cart WHERE id=?", (item["id"],))
         else:
             c.execute("UPDATE shopping_cart SET account_id=? WHERE id=?", (target, item["id"]))
@@ -277,6 +281,8 @@ def merge_households(c, source: int, target: int) -> None:
         c.execute(f"DELETE FROM {table} WHERE account_id=?", (source,))
     for table in ("shopping_recurring", "recipe_cook_history"):
         c.execute(f"UPDATE {table} SET account_id=? WHERE account_id=?", (target, source))
+    from .recipes.household_features import merge_household_features
+    merge_household_features(c, source, target)
     for recipe in c.execute("SELECT * FROM recipes WHERE owner_account_id=?", (source,)).fetchall():
         source_url = recipe["source_url"]
         new_key = private_source_key(target, source_url)
