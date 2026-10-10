@@ -24,6 +24,7 @@ final class SessionStore: ObservableObject {
     @Published private(set) var identity = UUID()
     @Published private(set) var registrationRequested = false
     @Published private(set) var isEndingSession = false
+    @Published private(set) var isOfflineSession = false
     @Published var alertMessage: String?
 
     let api: APIClient
@@ -88,6 +89,7 @@ final class SessionStore: ObservableObject {
                let cached = try? JSONDecoder().decode(OfflineSessionSnapshot.self, from: data),
                cached.matches(server: savedServer, token: token), cached.session.id != nil {
                 apply(cached.session, persist: false)
+                isOfflineSession = true
                 serverVersion = cached.version
                 serverCapabilities = Set(cached.capabilities)
                 compatibilityWarning = "Offline: zuletzt bestätigte Sitzung. Gespeicherte Einkäufe bleiben verfügbar; Änderungen warten auf Serverbestätigung."
@@ -164,6 +166,7 @@ final class SessionStore: ObservableObject {
         serverVersion = ""
         serverCapabilities = []
         compatibilityWarning = nil
+        isOfflineSession = false
         registrationRequested = false
         state = .signedOut
     }
@@ -265,7 +268,9 @@ final class SessionStore: ObservableObject {
         do {
             let session = try await api.sessionInfo()
             guard identity == expectedIdentity else { return }
+            let wasOffline = isOfflineSession
             apply(session)
+            if wasOffline { await refreshSystemInfo() }
         } catch {
             if identity == expectedIdentity { handle(error) }
         }
@@ -300,6 +305,9 @@ final class SessionStore: ObservableObject {
             server.trimmingCharacters(in: .whitespacesAndNewlines),
             forKey: serverKey
         )
+        // A new server/account must not inherit capabilities from the previous login.
+        serverVersion = ""
+        serverCapabilities = []
         apply(activeSession)
         await refreshSystemInfo()
         guard identity == expectedIdentity else { throw APIError.sessionChanged }
@@ -307,6 +315,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func apply(_ session: SessionResponse, persist: Bool = true) {
+        if persist { isOfflineSession = false }
         username = session.username
         userID = session.id
         role = session.effectiveRole
@@ -410,7 +419,11 @@ struct OfflineSessionSnapshot: Codable {
     let verifiedAt: Date
     static func digest(_ token: String) -> String { SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined() }
     func matches(server: String, token: String, now: Date = Date()) -> Bool {
-        self.server == server && tokenDigest == Self.digest(token)
-            && now.timeIntervalSince(verifiedAt) >= 0 && now.timeIntervalSince(verifiedAt) < 30 * 24 * 60 * 60
+        guard !token.isEmpty, let id = session.id, id > 0, session.effectiveRole != .guest,
+              let savedURL = APIClient.normalizedServerURL(self.server), savedURL.scheme == "https",
+              let requestedURL = APIClient.normalizedServerURL(server), requestedURL.scheme == "https" else { return false }
+        let age = now.timeIntervalSince(verifiedAt)
+        return savedURL == requestedURL && tokenDigest == Self.digest(token)
+            && age.isFinite && age >= 0 && age < 30 * 24 * 60 * 60
     }
 }

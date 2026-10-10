@@ -40,7 +40,6 @@ xcodebuild build-for-testing \
     -only-testing:RezepteReviewUITests/AppReviewVideoUITests/testReviewTour \
     -parallel-testing-enabled NO \
     -maximum-parallel-testing-workers 1 \
-    CODE_SIGNING_ALLOWED=NO \
     | tee "$ARTIFACT_DIR/xcodebuild-review-video-build.log" || build_status="$?"
 
 if [[ "$build_status" -ne 0 ]]; then
@@ -75,7 +74,6 @@ xcodebuild test-without-building \
     -only-testing:RezepteReviewUITests/AppReviewVideoUITests/testReviewTour \
     -parallel-testing-enabled NO \
     -maximum-parallel-testing-workers 1 \
-    CODE_SIGNING_ALLOWED=NO \
     | tee "$ARTIFACT_DIR/xcodebuild-review-video.log" || test_status="$?"
 
 sleep 2

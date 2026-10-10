@@ -318,7 +318,8 @@ def test_swiftui_cooking_mode_persists_progress_scales_and_completes_idempotentl
     assert "hasStartedCooking = progress.exists" in cooking
     assert "startCooking()" in cooking
     assert "KitchenTimerView" in cooking
-    assert "completionRequestID" in cooking
+    assert "CookingCompletionIntent" in cooking
+    assert "pendingCompletion" in cooking
     assert '"Idempotency-Key": idempotencyKey' in api
     assert '"/api/recipes/\\(id)/cooking-complete"' in api
     assert '"Für heute einplanen"' in detail

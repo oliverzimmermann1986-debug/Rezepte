@@ -118,8 +118,12 @@ struct KitchenTimerEntry: Codable, Identifiable, Equatable {
         enqueueEffects()
     }
     private func storageURL() throws -> URL {
-        let directory = try self.directory ?? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("KitchenTimers", isDirectory: true)
+        let directory: URL
+        if let override = self.directory { directory = override }
+        else {
+            directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                .appendingPathComponent("KitchenTimers", isDirectory: true)
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var resourceURL = directory
         var values = URLResourceValues(); values.isExcludedFromBackup = true

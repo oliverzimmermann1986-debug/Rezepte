@@ -2,8 +2,11 @@ import SwiftUI
 
 enum KitchenDay {
     static func string(_ date: Date = Date(), calendar: Calendar = .current) -> String {
-        let parts = calendar.dateComponents([.year, .month, .day], from: date)
-        return String(format: "%04d-%02d-%02d", parts.year!, parts.month!, parts.day!)
+        // API dates are Gregorian even when the user's display calendar is not.
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        let parts = gregorian.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
     }
 }
 
@@ -16,6 +19,7 @@ private struct TodayWish: Decodable, Identifiable {
 }
 private struct TodayWishes: Decodable { let items: [TodayWish] }
 
+@MainActor
 struct TodayView: View {
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var shopping: ShoppingSyncStore
@@ -30,6 +34,7 @@ struct TodayView: View {
     @State private var loadingWishes = false
     @State private var generation = UUID()
     @State private var active = false
+    @State private var loadedIdentity: UUID?
 
     var body: some View {
         NavigationStack {
@@ -41,7 +46,7 @@ struct TodayView: View {
                         Text("Was möchtest du heute kochen?").font(.title2.bold())
                         NavigationLink("Rezepte entdecken") { RecipesView() }
                         Text("Mit einem Konto planst du die Woche und teilst Einkäufe mit deinem Haushalt.")
-                    } else {
+                    } else if loadedIdentity == session.identity {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Heute auf dem Tisch").font(.title2.bold())
                             if loadingMeals { ProgressView("Plan wird aktualisiert …") }
@@ -97,11 +102,15 @@ struct TodayView: View {
             .refreshable { await refresh() }
             .task(id: session.identity) {
                 active = true
+                if loadedIdentity != session.identity {
+                    week = nil; wishes = nil; mealError = nil; wishError = nil
+                    loadedIdentity = session.identity
+                }
                 await refresh()
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(30))
                     guard !Task.isCancelled else { break }
-                    if day != KitchenDay.string() { await refresh() }
+                    if scenePhase == .active, active, day != KitchenDay.string() { await refresh() }
                 }
             }
             .onAppear { active = true }
@@ -116,24 +125,30 @@ struct TodayView: View {
         }
     }
     @MainActor private func refresh() async {
-        guard !session.readOnly, active else { return }
+        guard !session.readOnly, session.role != .guest, active, !Task.isCancelled else { return }
         let identity = session.identity, request = UUID(), today = KitchenDay.string()
         generation = request
         if day != today { week = nil; wishes = nil; day = today }
         loadingMeals = true; loadingWishes = true; mealError = nil; wishError = nil
         async let meals: Void = loadMeals(day: today, identity: identity, request: request)
         async let wanted: Void = loadWishes(day: today, identity: identity, request: request)
+        async let cart: Void = refreshShopping(identity: identity)
+        _ = await (meals, wanted, cart)
+    }
+    @MainActor private func refreshShopping(identity: UUID) async {
+        guard session.identity == identity, active, !Task.isCancelled else { return }
         await shopping.activate(session: session)
+        guard session.identity == identity, active, !Task.isCancelled else { return }
         try? await shopping.refresh()
-        _ = await (meals, wanted)
     }
     @MainActor private func loadMeals(day: String, identity: UUID, request: UUID) async {
         do {
             let value = try await session.api.mealWeek(start: day)
-            guard session.identity == identity, generation == request, active else { return }
+            guard session.identity == identity, generation == request, active, !Task.isCancelled else { return }
             week = value
         } catch {
-            guard session.identity == identity, generation == request, active else { return }
+            guard session.identity == identity, generation == request, active, !Task.isCancelled else { return }
+            if case APIError.unauthenticated = error { session.handle(error); return }
             mealError = week == nil ? "Der Wochenplan ist gerade nicht erreichbar." : "Zuletzt geladener Plan; Aktualisierung fehlgeschlagen."
         }
         loadingMeals = false
@@ -141,10 +156,11 @@ struct TodayView: View {
     @MainActor private func loadWishes(day: String, identity: UUID, request: UUID) async {
         do {
             let value: TodayWishes = try await session.api.kitchenRequest("/api/meal-wishes", query: [.init(name: "week_start", value: day)])
-            guard session.identity == identity, generation == request, active else { return }
+            guard session.identity == identity, generation == request, active, !Task.isCancelled else { return }
             wishes = value.items
         } catch {
-            guard session.identity == identity, generation == request, active else { return }
+            guard session.identity == identity, generation == request, active, !Task.isCancelled else { return }
+            if case APIError.unauthenticated = error { session.handle(error); return }
             wishError = wishes == nil ? "Die Haushaltswünsche sind gerade nicht erreichbar." : "Zuletzt geladene Wünsche; Aktualisierung fehlgeschlagen."
         }
         loadingWishes = false

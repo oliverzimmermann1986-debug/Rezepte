@@ -28,6 +28,7 @@ struct CookingModeView: View {
     @State private var errorMessage: String?
     @State private var active = false
     @State private var finished = false
+    @State private var pendingCompletion: CookingCompletionIntent?
 
     init(recipe: Recipe) {
         self.recipe = recipe
@@ -127,7 +128,7 @@ struct CookingModeView: View {
                     ServingPicker(
                         value: $servings,
                         original: originalServings,
-                        disabled: isSaving
+                        disabled: isSaving || pendingCompletion != nil
                     )
                 }
 
@@ -146,10 +147,10 @@ struct CookingModeView: View {
                 }
 
                 Button {
-                    Task { await startCooking() }
+                    Task { if pendingCompletion != nil { await finishCooking() } else { await startCooking() } }
                 } label: {
                     Label(
-                        isSaving ? "Wird vorbereitet …" : "Kochen starten",
+                        isFinishing ? "Wird bestätigt …" : pendingCompletion != nil ? "Kochabschluss erneut bestätigen" : isSaving ? "Wird vorbereitet …" : "Kochen starten",
                         systemImage: "play.fill"
                     )
                     .frame(maxWidth: .infinity, minHeight: 50)
@@ -157,7 +158,11 @@ struct CookingModeView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(theme.accent)
                 .foregroundStyle(theme.ink)
-                .disabled(isSaving)
+                .disabled(isSaving || isFinishing)
+                if pendingCompletion != nil {
+                    Text("Für den letzten Kochabschluss fehlt noch die Bestätigung. Die Wiederholung verwendet dieselbe Anfrage und Portionszahl.")
+                        .font(.caption).foregroundStyle(theme.muted)
+                }
             }
             .frame(maxWidth: 520)
             .padding(24)
@@ -249,7 +254,7 @@ struct CookingModeView: View {
                     .frame(width: 42, height: 42)
             }
             .buttonStyle(.bordered)
-            .disabled(servings <= 1 || isSaving || isFinishing)
+            .disabled(servings <= 1 || isSaving || isFinishing || pendingCompletion != nil)
 
             Text("\(servings)")
                 .font(.title3.bold().monospacedDigit())
@@ -262,7 +267,7 @@ struct CookingModeView: View {
                     .frame(width: 42, height: 42)
             }
             .buttonStyle(.bordered)
-            .disabled(servings >= 50 || isSaving || isFinishing)
+            .disabled(servings >= 50 || isSaving || isFinishing || pendingCompletion != nil)
         }
         .cardSurface()
     }
@@ -446,13 +451,19 @@ struct CookingModeView: View {
 
     private func loadProgress() async {
         let identity = session.identity
+        if let data = UserDefaults.standard.data(forKey: completionStorageKey),
+           let stored = try? JSONDecoder().decode(CookingCompletionIntent.self, from: data), stored.isValid {
+            pendingCompletion = stored
+            servings = stored.servings
+        }
         defer { if session.identity == identity { isLoading = false } }
         guard !recipe.steps.isEmpty else { return }
         do {
             let progress = try await session.api.cookingProgress(id: recipe.id)
             guard session.identity == identity, active, !Task.isCancelled else { return }
             apply(progress)
-            hasStartedCooking = progress.exists
+            hasStartedCooking = progress.exists && pendingCompletion == nil
+            if let pendingCompletion { servings = pendingCompletion.servings }
         } catch {
             guard session.identity == identity, active, !Task.isCancelled else { return }
             warningMessage = "Der bisherige Fortschritt ist gerade nicht erreichbar. Du kannst neu beginnen."
@@ -493,7 +504,7 @@ struct CookingModeView: View {
 
     @discardableResult
     private func persist(completed: Set<Int>, active: Int, servings: Int) async -> Bool {
-        guard !isSaving && !isFinishing, !finished, self.active, !session.readOnly else { return false }
+        guard !isSaving && !isFinishing, !finished, pendingCompletion == nil, self.active, !session.readOnly else { return false }
         let identity = session.identity
         isSaving = true
         saveState = .saving
@@ -537,6 +548,8 @@ struct CookingModeView: View {
                 finished = false
             }
             UserDefaults.standard.removeObject(forKey: completionStorageKey)
+            UserDefaults.standard.removeObject(forKey: legacyCompletionStorageKey)
+            pendingCompletion = nil
             saveState = .saved
         } catch {
             guard identity == session.identity, active, !Task.isCancelled else { return }
@@ -547,24 +560,28 @@ struct CookingModeView: View {
     }
 
     private func finishCooking() async {
-        guard allDone, !isSaving && !isFinishing, !finished, active, !session.readOnly else { return }
+        guard allDone || pendingCompletion != nil, !isSaving && !isFinishing, !finished, active, !session.readOnly else { return }
         let identity = session.identity
         let storageKey = completionStorageKey
+        let legacyStorageKey = legacyCompletionStorageKey
         isFinishing = true
         errorMessage = nil
         defer { if identity == session.identity { isFinishing = false } }
-        let key = completionRequestID()
+        let intent = completionRequest()
         do {
             let result = try await session.api.completeCooking(
                 id: recipe.id,
-                servings: servings,
-                idempotencyKey: key
+                servings: intent.servings,
+                idempotencyKey: intent.requestID
             )
             guard identity == session.identity, active, !Task.isCancelled else { return }
             completionHistoryID = result.completedHistoryID
             finished = true
+            servings = intent.servings
+            pendingCompletion = nil
             voice.stop()
             UserDefaults.standard.removeObject(forKey: storageKey)
+            UserDefaults.standard.removeObject(forKey: legacyStorageKey)
             showCompletion = true
         } catch {
             guard identity == session.identity, active, !Task.isCancelled else { return }
@@ -612,17 +629,18 @@ struct CookingModeView: View {
     }
 
     private var completionStorageKey: String {
-        "cooking-completion-v1-\(session.username)-\(recipe.id)"
+        CookingCompletionIntent.storageKey(server: session.savedServer, userID: session.userID, recipeID: recipe.id)
     }
 
-    private func completionRequestID() -> String {
-        if let existing = UserDefaults.standard.string(forKey: completionStorageKey),
-           !existing.isEmpty,
-           existing.count <= 200 {
-            return existing
-        }
-        let created = UUID().uuidString
-        UserDefaults.standard.set(created, forKey: completionStorageKey)
+    private var legacyCompletionStorageKey: String { "cooking-completion-v1-\(session.username)-\(recipe.id)" }
+
+    private func completionRequest() -> CookingCompletionIntent {
+        if let pendingCompletion { return pendingCompletion }
+        let legacy = UserDefaults.standard.string(forKey: legacyCompletionStorageKey)
+        let key = legacy.flatMap { !$0.isEmpty && $0.count <= 200 ? $0 : nil } ?? UUID().uuidString
+        let created = CookingCompletionIntent(requestID: key, servings: servings)
+        if let data = try? JSONEncoder().encode(created) { UserDefaults.standard.set(data, forKey: completionStorageKey) }
+        pendingCompletion = created
         return created
     }
 
@@ -635,8 +653,8 @@ struct CookingModeView: View {
     }
 
     private func format(_ value: Double) -> String {
-        if value.rounded() == value { return String(Int(value)) }
-        return value.formatted(.number.precision(.fractionLength(0...2)))
+        guard value.isFinite else { return "—" }
+        return value.formatted(.number.precision(.fractionLength(0...2)).grouping(.never))
     }
 
     private func animate(_ update: () -> Void) {
@@ -647,6 +665,16 @@ struct CookingModeView: View {
                 update()
             }
         }
+    }
+}
+
+struct CookingCompletionIntent: Codable, Equatable {
+    let requestID: String
+    let servings: Int
+    var isValid: Bool { !requestID.isEmpty && requestID.count <= 200 && (1...50).contains(servings) }
+    static func storageKey(server: String, userID: Int?, recipeID: Int) -> String {
+        let normalized = APIClient.normalizedServerURL(server)?.absoluteString ?? server
+        return "cooking-completion-v2-" + OfflineSessionSnapshot.digest("\(normalized)\u{0}\(userID ?? -1)\u{0}\(recipeID)")
     }
 }
 

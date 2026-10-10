@@ -36,11 +36,11 @@ def test_swiftui_build_number_is_unique_per_run_attempt():
     assert "build_number:" in swiftui
 
 
-def test_xcodegen_version_is_pinned_and_identical_in_both_jobs():
+def test_xcodegen_version_is_pinned_and_identical_in_all_native_jobs():
     swiftui = _read(".github/workflows/ios-swift.yml")
     assert 'XCODEGEN_VERSION: "2.46.0"' in swiftui
     assert 'XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"' in swiftui
-    assert swiftui.count("shasum -a 256 -c -") == 2
+    assert swiftui.count("shasum -a 256 -c -") == 3
     assert "brew install xcodegen" not in swiftui
 
 
@@ -72,7 +72,7 @@ def test_testflight_upload_waits_for_processing_without_assigning_a_group():
     assert "ASC_APP_ID: ${{ vars.ASC_APP_ID || '6803595058' }}" in swiftui
     assert "Wait for TestFlight processing" in swiftui
     assert "node ../native-ios/scripts/testflight-ensure.mjs" in swiftui
-    assert 'ASC_MARKETING_VERSION: "1.3.0"' in swiftui
+    assert 'ASC_MARKETING_VERSION: "1.4.0"' in swiftui
     assert "ASC_UPLOAD_STARTED_AT: ${{ steps.upload.outputs.started_at }}" in swiftui
     assert 'ASC_ASSIGN_INTERNAL_GROUP: "false"' in swiftui
     assert 'ASC_ASSIGN_INTERNAL_GROUP: "true"' not in swiftui
@@ -81,7 +81,7 @@ def test_testflight_upload_waits_for_processing_without_assigning_a_group():
 def test_signed_archive_metadata_is_verified_before_export():
     swiftui = _read(".github/workflows/ios-swift.yml")
     assert swiftui.index("Validate archive metadata") < swiftui.index("Export signed IPA")
-    assert 'EXPECTED_MARKETING_VERSION: "1.3.0"' in swiftui
+    assert 'EXPECTED_MARKETING_VERSION: "1.4.0"' in swiftui
     assert "EXPECTED_BUILD_NUMBER: ${{ steps.buildnum.outputs.value }}" in swiftui
     assert 'assert_bundle_metadata "Main app" "$app_path/Info.plist" "$IOS_BUNDLE_ID"' in swiftui
     assert (
@@ -94,8 +94,10 @@ def test_signed_archive_metadata_is_verified_before_export():
         "CFBundleVersion",
         "IOS_BUNDLE_ID",
         "IOS_SHARE_BUNDLE_ID",
+        "IOS_TIMERS_BUNDLE_ID",
     ):
         assert key in swiftui
+    assert 'assert_bundle_metadata "Timer extension" "$timers_path/Info.plist" "$IOS_TIMERS_BUNDLE_ID"' in swiftui
 
 
 def test_existing_testflight_distribution_cannot_build_or_upload():
@@ -114,7 +116,7 @@ def test_existing_testflight_distribution_cannot_build_or_upload():
     assert env["ASC_ALLOW_EXISTING_BUILD"] == "true"
     assert env["ASC_ASSIGN_EXTERNAL_GROUP"] == "true"
     assert env["ASC_BUILD_NUMBER"] == "${{ inputs.build_number }}"
-    assert env["ASC_MARKETING_VERSION"] == "1.3.0"
+    assert env["ASC_MARKETING_VERSION"] == "1.4.0"
     scripts = "\n".join(step.get("run", "") for step in distribution["steps"])
     assert "xcodebuild" not in scripts and "altool" not in scripts
     assert "GITHUB_RUN_NUMBER" not in scripts
@@ -130,10 +132,10 @@ def test_release_versions_are_explicit_and_coherent():
     index = _read("app/static/index.html")
     service_worker = _read("app/static/sw.js")
 
-    assert '__version__ = "1.10.0"' in package
-    assert 'MARKETING_VERSION: "1.3.0"' in project
-    assert "systemInfo.version || '1.10.0'" in index
-    assert "rezepte-static-v1.10.0-import-roles" in service_worker
+    assert '__version__ = "1.11.0"' in package
+    assert 'MARKETING_VERSION: "1.4.0"' in project
+    assert "systemInfo.version || '1.11.0'" in index
+    assert "rezepte-static-v1.11.0-kitchen" in service_worker
 
 
 def test_static_cache_key_changes_across_releases_with_normalized_timestamps(tmp_path, monkeypatch):
@@ -163,7 +165,7 @@ def test_codemagic_review_video_uses_a_secret_and_exports_preview_artifacts():
     assert "app_review" in config
     assert "APP_REVIEW_PASSWORD" not in config
     assert "Rezepte.app" in config
-    assert "Rezeptregal-App-Review-1.3.0.mp4" in config
+    assert "Rezeptregal-App-Review-1.4.0.mp4" in config
     assert "recordVideo" in script
     assert '${APP_REVIEW_PASSWORD:?' in script
     assert "xcodebuild build-for-testing" in script
@@ -202,6 +204,7 @@ def test_signing_secrets_are_checked_via_env_not_shell_interpolation():
         "IOS_DISTRIBUTION_P12_BASE64",
         "IOS_APPSTORE_PROFILE_BASE64",
         "IOS_SHARE_PROFILE_BASE64",
+        "IOS_TIMERS_PROFILE_BASE64",
         "ASC_PRIVATE_KEY_BASE64",
     ):
         assert f"{name}: ${{{{ secrets.{name} }}}}" in swiftui
