@@ -16,13 +16,10 @@ rm -rf "$DERIVED_DATA" "$RESULT_BUNDLE"
 rm -f "$VIDEO_PATH"
 
 simulator_id="$({
-    xcrun simctl list devices available | awk -F '[()]' '/iPhone 16 Pro Max/{print $2; exit}'
+    xcrun simctl list devices available | awk -F '[()]' '/iPhone.*Pro Max/{print $2; exit}'
 } || true)"
 if [[ -z "$simulator_id" ]]; then
-    simulator_id="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/{print $2; exit}')"
-fi
-if [[ -z "$simulator_id" ]]; then
-    echo "No available iPhone simulator found." >&2
+    echo "No available Pro Max simulator found for current large-iPhone Store screenshots." >&2
     exit 1
 fi
 

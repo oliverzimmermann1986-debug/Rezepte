@@ -68,7 +68,7 @@ concurrency:
 jobs:
   test:
     name: Generate project, build and test
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.distribute_existing_build }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.distribute_existing_build && (!inputs.record_review || inputs.upload_testflight)) }}
     runs-on: macos-26
     timeout-minutes: 35
     defaults:
@@ -452,7 +452,6 @@ jobs:
   review-media:
     name: Capture current native Store screenshots and review video
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.record_review && !inputs.distribute_existing_build }}
-    needs: test
     runs-on: macos-26
     timeout-minutes: 30
     environment: testflight

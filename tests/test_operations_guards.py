@@ -210,6 +210,20 @@ def test_signing_secrets_are_checked_via_env_not_shell_interpolation():
         assert f"{name}: ${{{{ secrets.{name} }}}}" in swiftui
 
 
+def test_review_media_is_explicit_isolated_and_does_not_export_test_credentials():
+    jobs = yaml.safe_load(_read(".github/workflows/ios-swift.yml"))["jobs"]
+    review = jobs["review-media"]
+    assert "inputs.record_review" in review["if"]
+    assert "github.event_name == 'workflow_dispatch'" in review["if"]
+    assert review["env"]["APP_REVIEW_SERVER"] == "https://rezepte-review.mausbaeren.me"
+    assert review["environment"] == "testflight"
+    exported = review["steps"][-1]["with"]["path"]
+    assert "*.mp4" in exported and "screenshots" in exported
+    assert "xcresult" not in exported and ".log" not in exported
+    assert jobs["testflight"]["needs"] == "test"
+    assert "inputs.upload_testflight" in jobs["test"]["if"]
+
+
 def test_update_script_preserves_review_instance_isolation():
     update = _read("proxmox/update-local.sh")
     setup = _read("proxmox/setup-review-instance.sh")
