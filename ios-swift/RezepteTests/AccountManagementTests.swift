@@ -92,6 +92,8 @@ final class AccountManagementTests: XCTestCase {
 
     func testHouseholdDeletionSendsOnlyTheExplicitPasswordAndConfirmation() async throws {
         let client = try await client()
+        MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["household-deletion-v1"]}"#)
+        _ = try await client.systemInfo()
         MockURLProtocol.respond(json: #"{"ok":true}"#)
         _ = try await client.deleteAccount(currentPassword: "confirmed-password", deleteHousehold: true,
                                            confirmation: "HAUSHALT LÖSCHEN")
@@ -103,6 +105,78 @@ final class AccountManagementTests: XCTestCase {
         XCTAssertEqual(deletion["current_password"] as? String, "confirmed-password")
         XCTAssertEqual(deletion["delete_household"] as? Bool, true)
         XCTAssertEqual(deletion["confirmation"] as? String, "HAUSHALT LÖSCHEN")
+    }
+
+    func testUnverifiedAndOlderServersRejectHouseholdDeletionButKeepAccountDeletionAvailable() async throws {
+        let client = try await client()
+        for oldServer in [false, true] {
+            if oldServer {
+                MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.11.0","capabilities":[]}"#)
+                _ = try await client.systemInfo()
+            }
+            let before = MockURLProtocol.requestCount
+            do {
+                _ = try await client.deleteAccount(currentPassword: "confirmed", deleteHousehold: true,
+                                                   confirmation: "HAUSHALT LÖSCHEN")
+                XCTFail("An unverified or older server must not silently discard household deletion")
+            } catch APIError.householdDeletionUnsupported {}
+            XCTAssertEqual(MockURLProtocol.requestCount, before)
+
+            MockURLProtocol.respond(json: #"{"ok":true}"#)
+            _ = try await client.deleteAccount(currentPassword: "confirmed")
+            XCTAssertEqual(MockURLProtocol.requestCount, before + 1)
+            XCTAssertEqual(try body()["delete_household"] as? Bool, false)
+        }
+    }
+
+    func testHouseholdDeletionCapabilityIsResetOnConfigurationAndSignOut() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        let identity = UUID()
+        try await client.configure(server: "https://example.de/rezepte", token: "account-token", sessionID: identity)
+        for signingOut in [false, true] {
+            MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["household-deletion-v1"]}"#)
+            _ = try await client.systemInfo()
+            if signingOut {
+                await client.clearAuthentication(ifSessionID: identity)
+            } else {
+                try await client.configure(server: "https://example.de/rezepte", token: "account-token", sessionID: identity)
+            }
+            let before = MockURLProtocol.requestCount
+            do {
+                _ = try await client.deleteAccount(currentPassword: "confirmed", deleteHousehold: true,
+                                                   confirmation: "HAUSHALT LÖSCHEN")
+                XCTFail("A previous capability result must not survive reconfiguration or sign-out")
+            } catch APIError.householdDeletionUnsupported {}
+            XCTAssertEqual(MockURLProtocol.requestCount, before)
+        }
+    }
+
+    func testLateSystemInfoCannotEnableHouseholdDeletionForAnotherSessionOrServer() async throws {
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        for reuseIdentity in [false, true] {
+            let identity = UUID()
+            try await client.configure(server: "https://example.de/rezepte", token: "previous", sessionID: identity)
+            MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["household-deletion-v1"]}"#)
+            let started = expectation(description: "Capability request started")
+            MockURLProtocol.suspendNextResponse { started.fulfill() }
+            defer { MockURLProtocol.resumeResponse() }
+            let previous = Task { try await client.systemInfo() }
+            await fulfillment(of: [started], timeout: 2)
+            try await client.configure(server: "https://other.example", token: "current",
+                                       sessionID: reuseIdentity ? identity : UUID())
+            MockURLProtocol.resumeResponse()
+            do {
+                _ = try await previous.value
+                XCTFail("A stale capability response must not authorize another server or session")
+            } catch APIError.sessionChanged {}
+            let before = MockURLProtocol.requestCount
+            do {
+                _ = try await client.deleteAccount(currentPassword: "confirmed", deleteHousehold: true,
+                                                   confirmation: "HAUSHALT LÖSCHEN")
+                XCTFail("The new server must require its own capability handshake")
+            } catch APIError.householdDeletionUnsupported {}
+            XCTAssertEqual(MockURLProtocol.requestCount, before)
+        }
     }
 
     func testSessionRevocationAndBothLogoutScopesUseProtectedEndpoints() async throws {

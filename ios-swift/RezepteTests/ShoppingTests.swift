@@ -35,12 +35,16 @@ final class ShoppingSyncTests: XCTestCase {
     private final class Memory {
         var values: [String: Data] = [:]
         var failWrites = false
+        var failErases = false
         var writes = 0
         var storage: ShoppingJournalStorage {
             ShoppingJournalStorage(read: { self.values[$0] }, write: { key, data in
                 if self.failWrites { throw CocoaError(.fileWriteOutOfSpace) }
                 self.values[key] = data
                 self.writes += 1
+            }, eraseNamespace: { digest in
+                if self.failErases { throw CocoaError(.fileWriteNoPermission) }
+                self.values = self.values.filter { !$0.key.hasPrefix(digest + "-") }
             })
         }
         var documents: [ShoppingDocument] {
@@ -414,6 +418,152 @@ final class ShoppingSyncTests: XCTestCase {
         XCTAssertThrowsError(try store.addMany([ShoppingAddItem(name: "Unzulässig")]))
         store.deactivate()
         XCTAssertTrue(store.items.isEmpty)
+    }
+
+    func testAccountErasureRemovesFormerHouseholdsAndPreservesOtherAccountsAndServers() async throws {
+        let memory = Memory()
+        let suite = "ShoppingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let own = "https://one.example/\u{0}12"
+        let otherAccount = "https://one.example/\u{0}13"
+        let otherServer = "https://two.example/\u{0}12"
+        let store = ShoppingSyncStore(storage: memory.storage, defaults: defaults)
+        await store.activate(context: context(namespace: own, items: [row()]))
+        try store.addMany([ShoppingAddItem(name: "Früherer Haushalt")])
+        try store.invalidateHousehold()
+        await store.activate(context: ShoppingSyncContext(identity: UUID(), namespace: own, writable: true,
+            isCurrent: { true }, fetch: { ShoppingCartResponse(householdId: 9, items: []) },
+            synchronize: { _ in XCTFail("Former household must not upload"); throw URLError(.notConnectedToInternet) }))
+        try store.addMany([ShoppingAddItem(name: "Aktueller Haushalt")])
+        XCTAssertEqual(Set(memory.documents.map(\.householdId)), [7, 9])
+        let ownKeys = Set(memory.values.keys)
+        await store.activate(context: context(namespace: otherAccount, items: [row(2)]))
+        await store.activate(context: context(namespace: otherServer, items: [row(3)]))
+        let foreign = memory.values.filter { !ownKeys.contains($0.key) }
+        XCTAssertFalse(foreign.isEmpty)
+        try store.eraseAccountData(namespace: own)
+        XCTAssertEqual(memory.values, foreign)
+        XCTAssertEqual(store.items.map(\.id), [3], "Erasing a different namespace preserves the active account")
+        store.deactivate()
+        XCTAssertEqual(memory.values, foreign, "Ordinary sign-out preserves journals")
+        await store.activate(context: context(namespace: otherAccount, items: [row(2)]))
+        XCTAssertTrue(store.isReady)
+        XCTAssertEqual(store.items.map(\.id), [2])
+    }
+
+    func testAccountErasureFailureBlocksReadsAndUploadsAfterRestartThenRetriesCleanup() async throws {
+        let memory = Memory()
+        let namespace = UUID().uuidString
+        let suite = "ShoppingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ShoppingSyncStore(storage: memory.storage, defaults: defaults)
+        await store.activate(context: context(namespace: namespace, items: [row()]))
+        try store.addMany([ShoppingAddItem(name: "Privat")])
+        let previous = memory.values
+        memory.failErases = true
+        XCTAssertThrowsError(try store.eraseAccountData(namespace: namespace)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("gesperrt"))
+            XCTAssertFalse(error.localizedDescription.contains("NSCocoaErrorDomain"))
+        }
+        XCTAssertFalse(store.isReady)
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertEqual(memory.values, previous)
+        let protectedStorage = ShoppingJournalStorage(read: { _ in
+            XCTFail("A deleted account's journal must never be read"); return nil
+        }, write: { _, _ in XCTFail("A deleted account's journal must never be written") },
+            eraseNamespace: memory.storage.eraseNamespace)
+        let restarted = ShoppingSyncStore(storage: protectedStorage,
+            defaults: try XCTUnwrap(UserDefaults(suiteName: suite)))
+        let blocked = ShoppingSyncContext(identity: UUID(), namespace: namespace, writable: true,
+            isCurrent: { true }, fetch: { XCTFail("Deleted namespace must not fetch"); throw URLError(.notConnectedToInternet) },
+            synchronize: { _ in XCTFail("Deleted namespace must not upload"); throw URLError(.notConnectedToInternet) })
+        await restarted.activate(context: blocked)
+        XCTAssertFalse(restarted.isReady)
+        XCTAssertTrue(restarted.errorMessage?.contains("gesperrt") == true)
+        XCTAssertThrowsError(try restarted.addMany([ShoppingAddItem(name: "Unzulässig")]))
+        memory.failErases = false
+        await restarted.activate(context: blocked)
+        XCTAssertTrue(memory.values.isEmpty)
+        XCTAssertFalse(restarted.isReady)
+        XCTAssertTrue(restarted.items.isEmpty)
+    }
+
+    func testSuccessfulLateSyncCannotRecreateErasedAccountJournal() async throws {
+        let memory = Memory()
+        let suite = "ShoppingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ShoppingSyncStore(storage: memory.storage, defaults: defaults)
+        let namespace = UUID().uuidString
+        let started = expectation(description: "sync is in flight")
+        var continuation: CheckedContinuation<ShoppingCartResponse, Error>?
+        var operationID: String?
+        let active = context(namespace: namespace, sync: { payload in
+            operationID = payload.operations.first?.operationId
+            return try await withCheckedThrowingContinuation { continuation = $0; started.fulfill() }
+        })
+        await store.activate(context: active)
+        try store.addMany([ShoppingAddItem(name: "Gelöscht")])
+        let task = Task { try await store.refresh() }
+        await fulfillment(of: [started], timeout: 2)
+        try store.eraseAccountData(namespace: namespace)
+        await store.activate(context: active)
+        XCTAssertFalse(store.isReady)
+        XCTAssertTrue(memory.values.isEmpty)
+        let writes = memory.writes
+        continuation?.resume(returning: ShoppingCartResponse(householdId: 7, items: [row(8)],
+            results: [ShoppingReceipt(operationId: try XCTUnwrap(operationID), status: "applied", itemId: 8)]))
+        do { try await task.value; XCTFail("A deleted account's response must be discarded") } catch {}
+        XCTAssertEqual(memory.writes, writes)
+        XCTAssertTrue(memory.values.isEmpty)
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertFalse(store.isSyncing)
+    }
+
+    func testFileStorageErasureUsesExactDigestAndKeepsOtherNamespaces() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ShoppingErasure-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storage = ShoppingJournalStorage.files(directory: directory)
+        let own = String(repeating: "a", count: 64)
+        let foreign = String(repeating: "b", count: 64)
+        let privateData = Data("private".utf8)
+        try storage.eraseNamespace(own) // An account without journals is already clean.
+        for suffix in ["active", "household-7", "household-9"] {
+            try storage.write("\(own)-\(suffix).json", privateData)
+        }
+        try storage.write("\(foreign)-active.json", Data("foreign".utf8))
+        try storage.write("unrelated.json", Data("unrelated".utf8))
+        XCTAssertThrowsError(try storage.eraseNamespace("../"))
+        XCTAssertEqual(try storage.read("\(own)-active.json"), privateData)
+        try storage.eraseNamespace(own)
+        XCTAssertNil(try storage.read("\(own)-active.json"))
+        XCTAssertNil(try storage.read("\(own)-household-7.json"))
+        XCTAssertNil(try storage.read("\(own)-household-9.json"))
+        XCTAssertEqual(try storage.read("\(foreign)-active.json"), Data("foreign".utf8))
+        XCTAssertEqual(try storage.read("unrelated.json"), Data("unrelated".utf8))
+    }
+
+    func testMissingUserIDUsesOnlyMatchingActiveSessionOrReportsUnidentifiedData() async throws {
+        let memory = Memory()
+        let suite = "ShoppingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let session = SessionStore(defaults: defaults)
+        XCTAssertNil(session.userID)
+        let store = ShoppingSyncStore(storage: memory.storage, defaults: defaults)
+        await store.activate(context: context(identity: session.identity, items: [row()]))
+        try store.eraseAccountData(session: session)
+        XCTAssertTrue(memory.values.isEmpty)
+        XCTAssertFalse(store.isReady)
+        await store.activate(context: context(identity: UUID(), items: [row(2)]))
+        let unrelated = memory.values
+        XCTAssertThrowsError(try store.eraseAccountData(session: session)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("nicht sicher zugeordnet"))
+        }
+        XCTAssertFalse(store.isReady)
+        XCTAssertEqual(memory.values, unrelated, "Unidentified data must not erase a different account")
     }
 }
 

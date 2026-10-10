@@ -5,6 +5,8 @@ import Foundation
 struct ShoppingJournalStorage {
     var read: (String) throws -> Data?
     var write: (String, Data) throws -> Void
+    /// Receives only the account namespace digest, never a server, user ID or path.
+    var eraseNamespace: (String) throws -> Void = { _ in throw CocoaError(.fileWriteUnknown) }
 
     static func files(directory: URL? = nil) -> Self {
         let root = directory ?? FileManager.default.urls(for: .applicationSupportDirectory,
@@ -23,6 +25,30 @@ struct ShoppingJournalStorage {
             var values = URLResourceValues()
             values.isExcludedFromBackup = true
             try? resourceURL.setResourceValues(values)
+        }, eraseNamespace: { digest in
+            guard digest.count == 64, digest.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+                throw CocoaError(.fileWriteInvalidFileName)
+            }
+            let files: [URL]
+            do {
+                guard try root.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                files = try FileManager.default.contentsOfDirectory(at: root,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile { return }
+            var failure: Error?
+            for file in files where file.lastPathComponent.hasPrefix(digest + "-") {
+                do {
+                    let values = try file.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                    // Journals are files. Never recursively remove an unexpected directory.
+                    guard values.isDirectory != true || values.isSymbolicLink == true else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                    try FileManager.default.removeItem(at: file)
+                } catch { failure = failure ?? error }
+            }
+            if let failure { throw failure }
         })
     }
 }
@@ -64,6 +90,7 @@ final class ShoppingSyncStore: ObservableObject {
     private var onlineEdit = false
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private static let erasureFailure = "Dein Konto ist serverseitig gelöscht. Die lokalen Einkaufsdaten bleiben gesperrt, konnten aber nicht vollständig vom Gerät entfernt werden."
 
     init(storage: ShoppingJournalStorage = .files(), defaults: UserDefaults = .standard) {
         self.storage = storage
@@ -92,6 +119,16 @@ final class ShoppingSyncStore: ObservableObject {
         if context?.identity == next.identity, context?.namespace == next.namespace { return }
         deactivate()
         context = next
+        if isErased(next.namespace) {
+            // A failed erase must never restore or upload an old journal, even
+            // after restarting the app or receiving a late network response.
+            do {
+                try storage.eraseNamespace(digest(next.namespace))
+                errorMessage = "Dieses Konto wurde gelöscht. Gespeicherte Einkaufsdaten werden nicht mehr geöffnet."
+            } catch { errorMessage = Self.erasureFailure }
+            context = nil
+            return
+        }
         guard next.writable, next.isCurrent() else { return }
         do {
             if !defaults.bool(forKey: key("invalidated", context: next)),
@@ -131,6 +168,35 @@ final class ShoppingSyncStore: ObservableObject {
         undoID = nil
     }
 
+    /// Call only after the server acknowledged deletion, before signing out.
+    /// Ordinary sign-out intentionally keeps the account's offline journal.
+    func eraseAccountData(session: SessionStore) throws {
+        guard let userID = session.userID else {
+            if let context, context.identity == session.identity {
+                try eraseAccountData(namespace: context.namespace)
+                return
+            }
+            deactivate()
+            throw APIError.server(0, "Dein Konto ist serverseitig gelöscht. Die lokalen Einkaufsdaten konnten diesem Konto nicht sicher zugeordnet und deshalb nicht vollständig entfernt werden.")
+        }
+        let server = APIClient.normalizedServerURL(session.savedServer)?.absoluteString ?? session.savedServer
+        try eraseAccountData(namespace: "\(server)\u{0}\(userID)")
+    }
+
+    /// Injectable account boundary also covers journals from former households.
+    func eraseAccountData(namespace: String) throws {
+        defaults.set(true, forKey: erasedKey(namespace))
+        if context?.namespace == namespace { deactivate() }
+        do {
+            try storage.eraseNamespace(digest(namespace))
+            defaults.removeObject(forKey: "\(digest(namespace))-invalidated.json")
+        } catch {
+            throw APIError.server(0, Self.erasureFailure)
+        }
+        // Keep the non-content tombstone: a stale task or restored session must
+        // never recreate this deleted account's namespace, even after success.
+    }
+
     func invalidateHousehold() throws {
         let context = try requireContext()
         let message = "Änderungen des vorherigen Haushalts bleiben separat gespeichert und werden nicht übertragen."
@@ -139,13 +205,21 @@ final class ShoppingSyncStore: ObservableObject {
         try storage.write(key("active", context: context), encoder.encode(Pointer(householdId: -1, notice: message)))
     }
 
+    private func digest(_ namespace: String) -> String {
+        SHA256.hash(data: Data(namespace.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func erasedKey(_ namespace: String) -> String { "\(digest(namespace))-erased.json" }
+
+    private func isErased(_ namespace: String) -> Bool { defaults.bool(forKey: erasedKey(namespace)) }
+
     private func key(_ suffix: String, context: ShoppingSyncContext) -> String {
-        let digest = SHA256.hash(data: Data(context.namespace.utf8)).map { String(format: "%02x", $0) }.joined()
-        return "\(digest)-\(suffix).json"
+        "\(digest(context.namespace))-\(suffix).json"
     }
 
     private func isCurrent(_ expected: ShoppingSyncContext) -> Bool {
-        context?.identity == expected.identity && context?.namespace == expected.namespace && expected.isCurrent()
+        context?.identity == expected.identity && context?.namespace == expected.namespace
+            && !isErased(expected.namespace) && expected.isCurrent()
     }
 
     private func assertCurrent(_ expected: ShoppingSyncContext) throws {

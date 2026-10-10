@@ -7,6 +7,7 @@ enum APIError: LocalizedError {
     case sessionChanged
     case aiConsentRequired
     case aiServerUpgradeRequired
+    case householdDeletionUnsupported
     case server(Int, String)
     case invalidResponse(String)
 
@@ -18,6 +19,8 @@ enum APIError: LocalizedError {
             return "Bitte eine HTTPS-Adresse verwenden."
         case .unauthenticated:
             return "Die Sitzung ist abgelaufen. Bitte erneut anmelden."
+        case .householdDeletionUnsupported:
+            return "Zum vollständigen Löschen deines privaten Haushalts benötigt dieser Server ein Update. Bitte den Server aktualisieren und erneut anmelden."
         case .aiServerUpgradeRequired:
             return "Für KI-Funktionen benötigt dieser Server ein Update. Bitte den Server aktualisieren und erneut anmelden."
         case .aiConsentRequired:
@@ -43,6 +46,7 @@ actor APIClient {
     private var configurationID = UUID()
     private var consumedAIConsents: Set<UUID> = []
     private var supportsAIActionConsent = false
+    private var supportsHouseholdDeletion = false
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -80,6 +84,7 @@ actor APIClient {
         hasAccount = false
         configurationID = sessionID ?? UUID()
         supportsAIActionConsent = false
+        supportsHouseholdDeletion = false
         URLCache.shared.removeAllCachedResponses()
     }
 
@@ -90,6 +95,7 @@ actor APIClient {
         hasAccount = false
         configurationID = UUID()
         supportsAIActionConsent = false
+        supportsHouseholdDeletion = false
         URLCache.shared.removeAllCachedResponses()
     }
 
@@ -199,6 +205,7 @@ actor APIClient {
     }
 
     func deleteAccount(currentPassword: String, deleteHousehold: Bool = false, confirmation: String = "") async throws -> APIResult {
+        if deleteHousehold, !supportsHouseholdDeletion { throw APIError.householdDeletionUnsupported }
         struct DeletionPayload: Encodable {
             let current_password: String
             let delete_household: Bool
@@ -312,9 +319,11 @@ actor APIClient {
         let expectedConfiguration = configurationID
         let expectedServer = baseURL
         supportsAIActionConsent = false
+        supportsHouseholdDeletion = false
         let result: SystemInfo = try await send("/api/system/info", authenticated: false)
         guard configurationID == expectedConfiguration, baseURL == expectedServer else { throw APIError.sessionChanged }
         supportsAIActionConsent = result.capabilities.contains("ai-action-consent-v1")
+        supportsHouseholdDeletion = result.capabilities.contains("household-deletion-v1")
         return result
     }
 

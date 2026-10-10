@@ -143,6 +143,7 @@ struct AccountPasswordView: View {
 struct AccountDeletionView: View {
     let passwordEnabled: Bool
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var shopping: ShoppingSyncStore
     @Environment(\.recipeTheme) private var theme
     @State private var password = ""
     @State private var confirmDeletion = false
@@ -156,11 +157,18 @@ struct AccountDeletionView: View {
         Form {
             Section {
                 Text("Dein Benutzerkonto und deine Anmeldungen werden endgültig gelöscht. Gemeinsame Haushaltsdaten bleiben für weitere Mitglieder erhalten.")
-                Text("Als letztes Mitglied kannst du deinen privaten Haushalt ausdrücklich mitlöschen. Der letzte aktive Serveradministrator muss zuerst einen weiteren Administrator benennen.")
-                if household?.members.count == 1 {
-                    Toggle("Privaten Haushalt mitlöschen", isOn: $deleteHousehold)
+                Text("Der letzte aktive Serveradministrator muss zuerst einen weiteren Administrator benennen.")
+                if session.supports("household-deletion-v1") {
+                    Text("Als letztes Mitglied kannst du deinen privaten Haushalt ausdrücklich mitlöschen.")
+                    if household?.members.count == 1 {
+                        Toggle("Privaten Haushalt mitlöschen", isOn: $deleteHousehold)
+                    }
+                } else {
+                    Text("Für das vollständige Löschen deines privaten Haushalts muss dieser Server aktualisiert werden.")
+                        .foregroundStyle(theme.muted)
+                        .accessibilityIdentifier("account.delete.household-update-required")
                 }
-                if deleteHousehold {
+                if deleteHousehold, session.supports("household-deletion-v1") {
                     Text("Private Rezepte, Bilder, PDFs, Einkauf, Wochenplan, Kochbücher und Kochhistorie werden dauerhaft entfernt. Freigaben und Einladungen verfallen. Globale Rezepte und fremde Haushalte bleiben erhalten. Bei laufenden Importen bitte nach deren Abschluss erneut bestätigen.")
                     TextField("HAUSHALT LÖSCHEN", text: $deletionPhrase)
                         .textInputAutocapitalization(.characters)
@@ -177,7 +185,7 @@ struct AccountDeletionView: View {
             Section {
                 Button(deleteHousehold ? "Konto und Haushalt endgültig löschen" : "Konto endgültig löschen", role: .destructive) { confirmDeletion = true }
                     .disabled(isDeleting || household == nil || (passwordEnabled && password.isEmpty)
-                              || (deleteHousehold && deletionPhrase != "HAUSHALT LÖSCHEN"))
+                              || (deleteHousehold && (!session.supports("household-deletion-v1") || deletionPhrase != "HAUSHALT LÖSCHEN")))
                 if isDeleting { ProgressView("Konto wird gelöscht …") }
             }
         }
@@ -201,6 +209,10 @@ struct AccountDeletionView: View {
 
     private func delete() async {
         guard !isDeleting else { return }
+        guard !deleteHousehold || session.supports("household-deletion-v1") else {
+            errorMessage = APIError.householdDeletionUnsupported.localizedDescription
+            return
+        }
         let identity = session.identity
         isDeleting = true
         errorMessage = nil
@@ -210,10 +222,19 @@ struct AccountDeletionView: View {
                                                             deleteHousehold: deleteHousehold,
                                                             confirmation: deleteHousehold ? deletionPhrase : "")
             guard session.identity == identity else { return }
+            guard result.ok != false else {
+                errorMessage = result.message ?? "Dein Konto konnte nicht gelöscht werden."
+                return
+            }
+            var localCleanupFailed = false
+            do { try shopping.eraseAccountData(session: session) }
+            catch { localCleanupFailed = true }
             password = ""
             for url in SharedImportQueue.all() { SharedImportQueue.remove(url) }
             session.signOut()
-            session.alertMessage = result.message ?? "Dein Konto wurde gelöscht."
+            session.alertMessage = localCleanupFailed
+                ? "Dein Konto wurde auf dem Server gelöscht. Die lokalen Einkaufsdaten konnten aber nicht vollständig entfernt werden. Entferne die App von diesem Gerät, um sie zu löschen."
+                : result.message ?? "Dein Konto wurde gelöscht."
         } catch { errorMessage = accountErrorMessage(error, session: session, identity: identity) }
     }
 }
