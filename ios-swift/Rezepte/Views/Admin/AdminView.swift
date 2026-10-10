@@ -7,6 +7,7 @@ struct AdminView: View {
     let presented: Bool
 
     @EnvironmentObject private var session: SessionStore
+    @StateObject private var aiConsent = AIConsentCoordinator()
     @Environment(\.openURL) private var openURL
     @Environment(\.dismiss) private var dismiss
     @Environment(\.recipeTheme) private var theme
@@ -236,6 +237,7 @@ struct AdminView: View {
             .overlay {
                 if isLoading { ProgressView() }
             }
+            .aiConsentPrompt(aiConsent)
             .navigationTitle("Administration")
             .toolbar {
                 if presented {
@@ -340,8 +342,9 @@ struct AdminView: View {
         isImporting = true
         resultMessage = nil
         defer { isImporting = false }
+        guard let consent = await aiConsent.request(.importLink, session: session) else { return }
         do {
-            let result = try await session.api.importURL(link)
+            let result = try await session.api.importURL(link, consent: consent)
             resultMessage = result.message ?? "Der Link wurde übernommen."
             importLink = ""
             await load()
@@ -355,8 +358,10 @@ struct AdminView: View {
         guard !isStartingImageBackfill else { return }
         isStartingImageBackfill = true
         resultMessage = nil
+        defer { isStartingImageBackfill = false }
+        guard let consent = await aiConsent.request(.imageBackfill, session: session) else { return }
         do {
-            let start = try await session.api.startImageBackfill()
+            let start = try await session.api.startImageBackfill(consent: consent)
             isStartingImageBackfill = false
             resultMessage = "Bildlauf gestartet. Zuerst wird der vollständige Altbestand gesichert."
             await monitorImageBackfill(runID: start.runId)
@@ -395,6 +400,7 @@ struct AdminView: View {
             isUploading = false
             selectedPhoto = nil
         }
+        guard let consent = await aiConsent.request(.importFile, session: session) else { return }
         do {
             guard let original = try await item.loadTransferable(type: Data.self),
                   let image = UIImage(data: original),
@@ -406,7 +412,7 @@ struct AdminView: View {
             let result = try await session.api.importFile(
                 data: data,
                 filename: "rezept-\(Int(Date().timeIntervalSince1970)).jpg",
-                mimeType: "image/jpeg"
+                mimeType: "image/jpeg", consent: consent
             )
             resultMessage = result.message ?? "Foto wurde übernommen."
             await load()
@@ -420,6 +426,7 @@ struct AdminView: View {
         isUploading = true
         resultMessage = nil
         defer { isUploading = false }
+        guard let consent = await aiConsent.request(.importFile, session: session) else { return }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -428,7 +435,7 @@ struct AdminView: View {
             let mimeType = ext == "pdf" ? "application/pdf"
                 : (ext == "png" ? "image/png" : "image/jpeg")
             let result = try await session.api.importFile(
-                data: data, filename: url.lastPathComponent, mimeType: mimeType
+                data: data, filename: url.lastPathComponent, mimeType: mimeType, consent: consent
             )
             resultMessage = result.message ?? "Datei wurde übernommen."
             await load()

@@ -54,7 +54,7 @@ def test_full_user_imports_privately_without_administration_or_cross_household_a
     session = client.get('/api/session').json()
     assert session['can_import'] is True and session['is_admin'] is False
     assert session['full_access'] is False and session['read_only'] is False
-    response = client.post('/api/pending/import-url', json={'url': 'https://recipes.example/role-test', 'visibility': 'private'})
+    response = client.post('/api/pending/import-url', json={"ai_processing_consent": "openai-recipe-v1", 'url': 'https://recipes.example/role-test', 'visibility': 'private'})
     assert response.status_code == 200 and response.json()['accepted'] is True
     account_id = client.get('/api/account').json()['id']
     assert queued == [('share_ingest', {'url': 'https://recipes.example/role-test', 'type': 'recipe', 'account_id': account_id})]
@@ -62,7 +62,7 @@ def test_full_user_imports_privately_without_administration_or_cross_household_a
     assert len(client.get('/api/account/imports').json()['items']) == 1
     assert client.get('/api/admin/overview').status_code == 403
     assert client.get('/api/users').status_code == 403
-    assert client.post('/api/pending/import-url', json={'url': 'https://recipes.example/global-denied', 'visibility': 'global'}).status_code == 403
+    assert client.post('/api/pending/import-url', json={"ai_processing_consent": "openai-recipe-v1", 'url': 'https://recipes.example/global-denied', 'visibility': 'global'}).status_code == 403
     assert len(queued) == 1
     login('other-importer')
     assert client.get('/api/pending').json() == []
@@ -75,9 +75,9 @@ def test_role_downgrade_revokes_import_session_and_blocks_new_user_session(role_
     login('importer')
     db.user_set_role(db.user_get_by_name('importer')['id'], 'user')
     payload = {'url': 'https://recipes.example/denied-after-role-change'}
-    assert client.post('/api/pending/import-url', json=payload).status_code == 401
+    assert client.post('/api/pending/import-url', json={**(payload or {}), "ai_processing_consent": "openai-recipe-v1"}).status_code == 401
     login('importer')
-    assert client.post('/api/pending/import-url', json=payload).status_code == 403
+    assert client.post('/api/pending/import-url', json={**(payload or {}), "ai_processing_consent": "openai-recipe-v1"}).status_code == 403
     assert queued == []
 
 
@@ -146,7 +146,7 @@ def test_full_user_file_imports_and_retries_are_private_to_each_household(role_c
         account_id = client.get('/api/account').json()['id']
         for repeat in range(2):
             response = client.post('/api/pending/import-file',
-                                   data={'client_request_id': 'same-upload', 'visibility': 'private',
+                                   data={"ai_processing_consent": "openai-recipe-v1", 'client_request_id': 'same-upload', 'visibility': 'private',
                                          'owner_account_id': '999999', 'account_id': '999999'},
                                    files={'file': upload})
             assert response.status_code == 200, response.text
@@ -174,7 +174,7 @@ def test_valid_file_uploads_cannot_bypass_role_or_global_import_limits(role_clie
     calls, _ = synthetic_pipeline
     login(name)
     before = _work_snapshot(db)
-    response = client.post('/api/pending/import-file', data={'visibility': visibility},
+    response = client.post('/api/pending/import-file', data={"ai_processing_consent": "openai-recipe-v1", 'visibility': visibility},
                            files={'file': _synthetic_file(kind)})
     assert response.status_code == 403, response.text
     assert calls == [] and queued == [] and _work_snapshot(db) == before
@@ -197,10 +197,10 @@ def test_private_pending_ocr_and_reanalysis_enforce_role_and_ownership(role_clie
     visibility = 'global' if target == 'global' else 'private'
     if operation == 'ocr':
         jpeg = _jpeg_bytes('green')
-        response = client.post('/api/pending/scan-photo', params={'url': urls[target], 'visibility': visibility},
+        response = client.post('/api/pending/scan-photo', data={"ai_processing_consent": "openai-recipe-v1"}, params={'url': urls[target], 'visibility': visibility},
                                files={'file': ('pending.jpg', jpeg, 'image/jpeg')})
     else:
-        response = client.post('/api/pending/reanalyze', json={'url': urls[target], 'visibility': visibility})
+        response = client.post('/api/pending/reanalyze', json={"ai_processing_consent": "openai-recipe-v1", 'url': urls[target], 'visibility': visibility})
     if name == 'member' or target != 'own':
         assert response.status_code == (403 if name == 'member' else 404), response.text
         assert calls == [] and _work_snapshot(db) == before

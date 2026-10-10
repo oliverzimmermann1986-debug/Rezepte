@@ -49,7 +49,7 @@ def test_native_file_upload_uses_attachment_pipeline(client, monkeypatch):
     monkeypatch.setattr(api_pending, "file_lock_or_none", available_lock)
     jpeg = _jpeg_bytes()
     response = client.post(
-        "/api/pending/import-file",
+        "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
         files={"file": ("Mein_Rezept.jpg", jpeg, "image/jpeg")},
     )
 
@@ -70,7 +70,7 @@ def test_native_file_upload_returns_conflict_when_scraper_is_busy(client, monkey
 
     monkeypatch.setattr(api_pending, "file_lock_or_none", busy_lock)
     response = client.post(
-        "/api/pending/import-file",
+        "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
         files={"file": ("Rezept.jpg", _jpeg_bytes(), "image/jpeg")},
     )
     assert response.status_code == 409
@@ -110,7 +110,7 @@ def test_pending_photo_upload_targets_existing_item_and_starts_vision(client, te
     monkeypatch.setattr(api_pending, "file_lock_or_none", available_lock)
     jpeg = _jpeg_bytes("blue")
     response = client.post(
-        "/api/pending/scan-photo",
+        "/api/pending/scan-photo", data={"ai_processing_consent": "openai-recipe-v1"},
         params={"url": url},
         files={"file": ("Rezept Foto.jpg", jpeg, "image/jpeg")},
     )
@@ -127,7 +127,7 @@ def test_pending_photo_upload_targets_existing_item_and_starts_vision(client, te
 
 def test_pending_photo_upload_requires_open_recipe_item(client):
     response = client.post(
-        "/api/pending/scan-photo",
+        "/api/pending/scan-photo", data={"ai_processing_consent": "openai-recipe-v1"},
         params={"url": "https://www.tiktok.com/@koch/video/missing"},
         files={"file": ("rezept.jpg", _jpeg_bytes(), "image/jpeg")},
     )
@@ -145,7 +145,7 @@ def test_file_import_offloads_blocking_pipeline_to_threadpool():
 
 def test_native_file_upload_rejects_unsupported_type(client):
     response = client.post(
-        "/api/pending/import-file",
+        "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
         files={"file": ("rezept.txt", b"text", "text/plain")},
     )
     assert response.status_code == 415
@@ -153,13 +153,13 @@ def test_native_file_upload_rejects_unsupported_type(client):
 
 def test_native_file_upload_rejects_renamed_or_mismatched_content(client):
     renamed = client.post(
-        "/api/pending/import-file",
+        "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
         files={"file": ("rezept.pdf", b"not-a-pdf", "application/pdf")},
     )
     assert renamed.status_code == 415
 
     mismatched = client.post(
-        "/api/pending/import-file",
+        "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
         files={"file": ("rezept.jpg", b"%PDF-1.7\n", "image/jpeg")},
     )
     assert mismatched.status_code == 415
@@ -173,7 +173,7 @@ def test_native_file_upload_rejects_when_work_disk_is_full(client, monkeypatch):
 
     monkeypatch.setattr(api_pending.shutil, "disk_usage", lambda _path: Usage())
     response = client.post(
-        "/api/pending/import-file",
+        "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
         files={"file": ("rezept.jpg", _jpeg_bytes(), "image/jpeg")},
     )
 
@@ -205,13 +205,13 @@ def test_file_import_is_idempotent_across_header_and_form(client, test_db, monke
     jpeg = _jpeg_bytes()
 
     first = client.post(
-        "/api/pending/import-file",
+        "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
         headers={"Idempotency-Key": "upload-123"},
         files={"file": ("suppe.jpg", jpeg, "image/jpeg")},
     )
     replay = client.post(
         "/api/pending/import-file",
-        data={"client_request_id": "upload-123"},
+        data={"ai_processing_consent": "openai-recipe-v1", "client_request_id": "upload-123"},
         files={"file": ("  SUPPE.JPG  ", jpeg, "image/jpeg")},
     )
 
@@ -252,12 +252,12 @@ def test_file_import_rejects_request_id_reuse_for_other_semantics(
     monkeypatch.setattr(api_pending, "get_scraper_job", lambda: FakeJob())
     monkeypatch.setattr(api_pending, "file_lock_or_none", available_lock)
     first = client.post(
-        "/api/pending/import-file",
+        "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
         headers={"Idempotency-Key": "same-request"},
         files={"file": ("eins.jpg", _jpeg_bytes("red"), "image/jpeg")},
     )
     conflict = client.post(
-        "/api/pending/import-file",
+        "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
         headers={"Idempotency-Key": "same-request"},
         params={"type": second_type},
         files={"file": (second_filename, _jpeg_bytes(second_color), "image/jpeg")},
@@ -297,7 +297,7 @@ def test_parallel_identical_file_imports_are_processed_once(client, test_db, mon
         # Je Thread ein eigener Client: ein geteilter TestClient serialisiert
         # Requests intern und würde den eigentlichen Parallelfall verdecken.
         return TestClient(app).post(
-            "/api/pending/import-file",
+            "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
             headers={"Idempotency-Key": "parallel-upload"},
             files={"file": ("parallel.jpg", jpeg, "image/jpeg")},
         )
@@ -331,11 +331,11 @@ def test_file_import_uses_short_content_hash_window_without_request_id(
     monkeypatch.setattr(api_pending, "file_lock_or_none", available_lock)
     jpeg = _jpeg_bytes("green")
     first = client.post(
-        "/api/pending/import-file",
+        "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
         files={"file": ("hash.jpg", jpeg, "image/jpeg")},
     )
     replay = client.post(
-        "/api/pending/import-file",
+        "/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1"},
         files={"file": ("hash.jpg", jpeg, "image/jpeg")},
     )
 
@@ -518,7 +518,7 @@ def test_pending_image_import_can_be_named_and_saved(test_db, tmp_path):
 def test_pending_editor_rejects_fractional_timer_before_processing(client):
     response = client.post(
         "/api/pending",
-        json={
+        json={"ai_processing_consent": "openai-recipe-v1",
             "url": "manual-upload://missing/test.jpg",
             "action": "save",
             "steps": [{"instruction": "Warten", "timer_seconds": 2.5}],
@@ -560,7 +560,7 @@ def test_native_social_import_is_visible_before_background_analysis(
     monkeypatch.setattr(api_pending, "enqueue", fake_enqueue)
     response = client.post(
         "/api/pending/import-url",
-        json={"url": "https://www.instagram.com/reel/ABC123/?igsh=share", "type": "recipe"},
+        json={"ai_processing_consent": "openai-recipe-v1", "url": "https://www.instagram.com/reel/ABC123/?igsh=share", "type": "recipe"},
     )
 
     assert response.status_code == 200, response.text

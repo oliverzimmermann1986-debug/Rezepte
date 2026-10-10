@@ -44,7 +44,7 @@ final class SessionAccessTests: XCTestCase {
     }
 
     @MainActor
-    func testAdministratorStillImportsSharedLinksAndRemovesOnlySuccessfulEntries() async throws {
+    func testAdministratorStagesSharedLinksUntilExplicitConsentAndRemovesOnlySuccessfulEntries() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         fixture.links = ["https://example.org/recipe"]
@@ -52,6 +52,9 @@ final class SessionAccessTests: XCTestCase {
         await fixture.store.restore()
 
         XCTAssertTrue(fixture.store.fullAccess)
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/system/info", "Restore must only stage local links")
+        XCTAssertEqual(fixture.store.queuedSharedImports, fixture.links)
+        await fixture.store.importSharedURL(fixture.links[0], consent: fixture.consent())
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/pending/import-url")
         XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
         XCTAssertTrue(fixture.links.isEmpty)
@@ -59,6 +62,7 @@ final class SessionAccessTests: XCTestCase {
         fixture.links = ["https://example.org/retry"]
         MockURLProtocol.respond(body: #"{"detail":"Import derzeit nicht verfügbar"}"#, statusCode: 503)
         await fixture.store.drainSharedImports()
+        await fixture.store.importSharedURL(fixture.links[0], consent: fixture.consent())
         XCTAssertEqual(fixture.links, ["https://example.org/retry"])
         XCTAssertTrue(fixture.store.alertMessage?.contains("noch nicht importiert") == true)
     }
@@ -73,7 +77,7 @@ final class SessionAccessTests: XCTestCase {
         MockURLProtocol.respond(json: #"{"ok":true}"#)
         let started = expectation(description: "First import started")
         MockURLProtocol.suspendNextResponse { started.fulfill() }
-        let importing = Task { await fixture.store.drainSharedImports() }
+        let importing = Task { await fixture.store.importSharedURL(fixture.links[0], consent: fixture.consent()) }
         await fulfillment(of: [started], timeout: 2)
 
         MockURLProtocol.respond(json: response(role: "user"))
@@ -98,6 +102,8 @@ final class SessionAccessTests: XCTestCase {
         XCTAssertTrue(fixture.store.canImport)
         XCTAssertFalse(fixture.store.fullAccess)
         XCTAssertFalse(fixture.store.readOnly)
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/api/system/info")
+        await fixture.store.importSharedURL(fixture.links[0], consent: fixture.consent())
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/pending/import-url")
         XCTAssertTrue(fixture.links.isEmpty)
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: String])
@@ -215,6 +221,10 @@ private final class Fixture {
     init() throws {
         defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.set("https://example.de", forKey: "server-url")
+    }
+
+    func consent() -> AIProcessingConsent {
+        AIProcessingConsent(id: UUID(), action: .importLink, identity: store.identity, server: "https://example.de")
     }
 
     func cleanUp() {

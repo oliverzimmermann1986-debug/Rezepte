@@ -108,6 +108,9 @@ class OpenAIAnalyzer:
 
     def request(self, method: str, path: str, **kwargs) -> requests.Response:
         """Einziger OpenAI-Transportpfad für öffentliche und interne Ziele."""
+        from ..ai_consent import CURRENT_AI_CONSENT, require_supported_provider
+        if CURRENT_AI_CONSENT.get():
+            require_supported_provider(self.base_url)
         normalized_path = "/" + (path or "").lstrip("/")
         from ..ai_budget import reserve_request
         reserve_request(method, normalized_path)

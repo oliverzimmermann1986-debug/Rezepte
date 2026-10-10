@@ -132,10 +132,10 @@ def test_release_versions_are_explicit_and_coherent():
     index = _read("app/static/index.html")
     service_worker = _read("app/static/sw.js")
 
-    assert '__version__ = "1.11.0"' in package
+    assert '__version__ = "1.12.0"' in package
     assert 'MARKETING_VERSION: "1.4.0"' in project
-    assert "systemInfo.version || '1.11.0'" in index
-    assert "rezepte-static-v1.11.0-kitchen" in service_worker
+    assert "systemInfo.version || '1.12.0'" in index
+    assert "rezepte-static-v1.12.0-legal-consent" in service_worker
 
 
 def test_static_cache_key_changes_across_releases_with_normalized_timestamps(tmp_path, monkeypatch):

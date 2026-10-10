@@ -281,6 +281,8 @@
     async runAdminPdf(dryRun = true) {
       if (!this.canUseAdminTools()) return;
       if (this.admin.pdf.running) return;
+      const usesAI = !!this.admin.pdf.extract_recipe_data;
+      if (usesAI && !this.confirmAIProcessing('Rezeptdaten aus PDFs ermitteln', 'Die aus den ausgewählten PDFs gelesenen Texte', 'Auch ein Probelauf überträgt die Inhalte zur Analyse. Die PDF-Aufbereitung ohne Rezeptdaten-Ermittlung benötigt diese Erlaubnis nicht.')) return;
       this.admin.pdf.running = true;
       this.admin.pdf.result = null;
       clearTimeout(this.admin.pdf.pollTimer);
@@ -309,6 +311,7 @@
           keep_original: !!p.keep_original,
           extract_recipe_data: !!p.extract_recipe_data,
           overwrite_recipe_data: !!p.overwrite_recipe_data,
+          ...(usesAI ? this.aiProcessingPayload() : {}),
         };
         let accepted;
         try {
@@ -353,14 +356,14 @@
 
     async startRecipeImageBackfill() {
       if (!this.canUseAdminTools()) return;
-      if (!confirm(
+      if (!this.confirmAIProcessing('Bilder für alle Rezepte erzeugen', 'Rezepttitel, Zutaten und Zubereitungshinweise aller betroffenen Rezepte',
         'Für alle Rezepte neue Bilder generieren?\n\n' +
         'Vor der ersten Generierung werden ausnahmslos alle vorhandenen Bilder ' +
         'checksummiert gesichert. Der Lauf nutzt die kostenpflichtige OpenAI Image API.'
       )) return;
       this.admin.maintenanceBusy = 'recipe_images';
       try {
-        const result = await this.api('POST', '/api/recipes/images/backfill', {});
+        const result = await this.api('POST', '/api/recipes/images/backfill', this.aiProcessingPayload());
         this.admin.imageBackfill = { status: 'running', result };
         this.showToast('Bildsicherung und anschließende Generierung gestartet');
         this.pollRecipeImageBackfill(result.run_id);

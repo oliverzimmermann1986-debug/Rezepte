@@ -9,6 +9,7 @@ struct AdminLibraryToolsView: View {
     }
 
     @EnvironmentObject private var session: SessionStore
+    @StateObject private var aiConsent = AIConsentCoordinator()
     @Environment(\.recipeTheme) private var theme
     @State private var tool = Tool.trash
     @State private var trash: [TrashRecipe] = []
@@ -40,6 +41,7 @@ struct AdminLibraryToolsView: View {
             }
         }
         .background(theme.background)
+        .aiConsentPrompt(aiConsent)
         .navigationTitle("Bibliothek pflegen")
         .toolbar {
             if tool == .trash, !trash.isEmpty {
@@ -180,7 +182,8 @@ struct AdminLibraryToolsView: View {
     private func emptyTrash() async { await perform { _ = try await session.api.emptyTrash() } }
 
     private func startAudit() async {
-        await perform(reloadImmediately: true) { _ = try await session.api.startAudit() }
+        guard let consent = await aiConsent.request(.libraryAudit, session: session) else { return }
+        await perform(reloadImmediately: true) { _ = try await session.api.startAudit(consent: consent) }
     }
 
     private func perform(reloadImmediately: Bool = true, action: () async throws -> Void) async {

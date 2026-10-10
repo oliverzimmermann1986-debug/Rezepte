@@ -6,6 +6,15 @@
   window.RezepteFeatures["imports"] = function () {
     return {
 
+    // Zustimmung gilt nur für die jetzt gestartete Aktion, nie für spätere Importe.
+    confirmAIProcessing(action, dataDescription = 'Rezepttexte, Fotos, PDF-Inhalte und gegebenenfalls Video- und Audiodaten', details = '') {
+      return confirm(`${action}?\n\n${dataDescription} werden über den Rezeptserver an OpenAI zur KI-Verarbeitung für diese Aktion übermittelt. Je nach Quelle gehören Erkennung, Übersetzung, die Ermittlung von Zutaten und Schritten sowie die Erzeugung eines Rezeptbilds dazu. Auch enthaltene personenbezogene Angaben können übertragen werden.\n\n${details ? details + '\n\n' : ''}Mit OK erlaubst du diese Übertragung für diese Aktion. Abbrechen startet keine Verarbeitung. Datenschutzhinweise findest du unter Datenschutz.`);
+    },
+
+    aiProcessingPayload(payload = {}) {
+      return { ...payload, ai_processing_consent: 'openai-recipe-v1' };
+    },
+
     // ------------- Jobs -------------
     async loadJobs() {
       this.jobs = await this.api('GET', '/api/jobs/list?limit=50');
@@ -46,9 +55,10 @@
       if (!this.canImport()) return;
       const url = (this.manualImportUrl || '').trim();
       if (!url || this.manualImporting) return;
+      if (!this.confirmAIProcessing('Rezeptlink importieren')) return;
       this.manualImporting = true;
       try {
-        const r = await this.api('POST', '/api/pending/import-url', { url, type: 'recipe', visibility: this.session.is_admin ? (this.manualImportVisibility || 'private') : 'private' });
+        const r = await this.api('POST', '/api/pending/import-url', this.aiProcessingPayload({ url, type: 'recipe', visibility: this.session.is_admin ? (this.manualImportVisibility || 'private') : 'private' }));
         if (r && r.ok) {
           this.manualImportNotice = r.message || 'Link übernommen';
           if (r.status === 'linked_global') this.showToast('Globales Rezept im Haushalt gespeichert');
@@ -75,11 +85,16 @@
       const input = event?.target;
       const file = input?.files?.[0];
       if (!file || this.manualImporting) return;
+      if (!this.confirmAIProcessing('Foto oder PDF importieren', 'Die ausgewählte Datei einschließlich Fotos, PDF-Inhalten und lesbaren Texten')) {
+        if (input) input.value = '';
+        return;
+      }
       this.manualImporting = true;
       this.manualImportNotice = '';
       try {
         if (file.size > 25 * 1024 * 1024) throw new Error('Die Datei darf höchstens 25 MB groß sein.');
         const form = new FormData();
+        form.append('ai_processing_consent', this.aiProcessingPayload().ai_processing_consent);
         form.append('file', file, file.name);
         form.append('visibility', this.session.is_admin ? (this.manualImportVisibility || 'private') : 'private');
         const result = await this.fetchWithTimeout('/api/pending/import-file', { method: 'POST', body: form }, 120000, async response => {
@@ -189,8 +204,9 @@
         if (item.content_type === 'wedding' && !payload.category) {
           this.showToast('Kategorie wählen', 'error'); return;
         }
+        if (!this.confirmAIProcessing('Import speichern und Rezeptdaten vervollständigen', 'Die Rezeptquelle, Texte, Foto- und PDF-Inhalte sowie Rezepttitel und Zutaten', 'Beim Speichern können weitere Rezeptdaten erkannt, Texte übersetzt und ein Rezeptbild erzeugt werden.')) return;
       }
-      const r = await this.api('POST', '/api/pending', payload);
+      const r = await this.api('POST', '/api/pending', action === 'save' ? this.aiProcessingPayload(payload) : payload);
       if ((r && r.ok)) {
         this.showToast(action === 'skip' ? 'Übersprungen' : 'Gespeichert ✓');
         await this.loadPending();
@@ -206,11 +222,12 @@
     },
     async reanalyzeHistoryOne(item, fromJunk = false) {
       if (!this.canUseAdminTools()) return;
+      if (!this.confirmAIProcessing('Diese Quelle erneut analysieren')) return;
       this.reanalyzingHistoryUrl = item.url;
       try {
         const r = await this.api('POST', '/api/history/reanalyze',
-                                  { url: item.url, dry_run: false,
-                                    auto_move: this.historyAutoMove });
+                                  this.aiProcessingPayload({ url: item.url, dry_run: false,
+                                    auto_move: this.historyAutoMove }));
         if (!r.ok) {
           this.showToast('Reanalyze fail: ' + (r.error || 'unbekannt'), 'error');
           return;
@@ -246,12 +263,12 @@
         ? 'Dry-Run starten? Liest alle History-URLs neu via yt-dlp und schickt durch den AI-Provider. Zeigt nur was sich ändern WÜRDE, kein DB-/FS-Write.' + moveHint
         : 'Alle History-URLs neu analysieren? Aktualisiert die Klassifikation, wenn der neue Provider sicher ist.' + moveHint
           + '\n\nDas kann je nach History-Größe ein paar Minuten dauern.';
-      if (!confirm(msg)) return;
+      if (!this.confirmAIProcessing('Alle History-Quellen erneut analysieren', 'Die Texte und Medien aller betroffenen History-Quellen', msg)) return;
       try {
         this.historyReanalyzing = true;
         const r = await this.api('POST', '/api/history/reanalyze-all',
-                                  { dry_run, limit: 1000,
-                                    auto_move: this.historyAutoMove });
+                                  this.aiProcessingPayload({ dry_run, limit: 1000,
+                                    auto_move: this.historyAutoMove }));
         if (!r.ok) {
           this.showToast('Start fail: ' + (r.error || 'unbekannt'), 'error');
           this.historyReanalyzing = false;
@@ -283,15 +300,15 @@
       const moveHint = this.historyAutoMove
         ? ' Auto-Move ist aktiv - Files werden in neue Ordner verschoben.'
         : ' Nur DB-Updates, Files bleiben.';
-      if (!confirm(`${n} Junk-Items einzeln re-analysieren?${moveHint}`)) return;
+      if (!this.confirmAIProcessing(`${n} Junk-Quellen erneut analysieren`, 'Die Texte und Medien dieser ausgewählten Quellen', moveHint)) return;
 
       this.historyReanalyzing = true;
       let updated = 0, moved = 0, unchanged = 0, lowConf = 0, failed = 0;
       for (const j of this.junkItems.items) {
         try {
           const r = await this.api('POST', '/api/history/reanalyze',
-                                    { url: j.url, dry_run: false,
-                                      auto_move: this.historyAutoMove });
+                                    this.aiProcessingPayload({ url: j.url, dry_run: false,
+                                      auto_move: this.historyAutoMove }));
           if (r.action === 'moved') moved++;
           else if (r.action === 'updated') updated++;
           else if (r.action === 'unchanged') unchanged++;
@@ -312,7 +329,7 @@
       const moveWarn = this.historyAutoMove
         ? '\n\n⚠️ Auto-Move ist AN - Files werden physisch in andere Ordner verschoben.'
         : '\n\nAuto-Move ist AUS - nur die DB-Namen werden aktualisiert, Files bleiben wo sie sind.';
-      if (!confirm('Junk-Cleanup starten?' + moveWarn
+      if (!this.confirmAIProcessing('Junk-Cleanup starten', 'Die Texte und Medien der als verdächtig erkannten Quellen', moveWarn
                    + '\n\nDas läuft in 2 Schritten:\n'
                    + '1. Verdächtige Items finden (Unbekannt, Auto-Fallback-Namen, etc.)\n'
                    + '2. Jedes mit OpenAI neu klassifizieren (yt-dlp + KI pro Item)\n\n'
@@ -336,8 +353,8 @@
         for (const j of this.junkItems.items) {
           try {
             const r = await this.api('POST', '/api/history/reanalyze',
-                                      { url: j.url, dry_run: false,
-                                        auto_move: this.historyAutoMove });
+                                      this.aiProcessingPayload({ url: j.url, dry_run: false,
+                                        auto_move: this.historyAutoMove }));
             if (r.action === 'moved') {
               moved++;
               details.push({ from: r.old.name, to: r.new && r.new.name });
@@ -403,9 +420,11 @@
       const file = input && input.files && input.files[0];
       if (input) input.value = '';
       if (!file || this.reanalyzing[item.url]) return;
+      if (!this.confirmAIProcessing('Rezeptfoto auslesen', 'Das ausgewählte Foto mit lesbaren Texten und die zugehörige Rezeptquelle')) return;
       this.reanalyzing[item.url] = true;
       try {
         const form = new FormData();
+        form.append('ai_processing_consent', this.aiProcessingPayload().ai_processing_consent);
         form.append('file', file, file.name || 'rezeptfoto.jpg');
         const endpoint = '/api/pending/scan-photo?visibility=' + (item.visibility === 'private' ? 'private' : 'global') + '&url=' + encodeURIComponent(item.url);
         const { response, result } = await this.fetchWithTimeout(
@@ -441,9 +460,10 @@
     },
     async reanalyzeOne(item) {
       if (!this.canUseAdminTools()) return;
+      if (!this.confirmAIProcessing('Rezept erneut analysieren')) return;
       this.reanalyzing[item.url] = true;
       try {
-        const r = await this.api('POST', '/api/pending/reanalyze', { url: item.url, visibility: 'global' });
+        const r = await this.api('POST', '/api/pending/reanalyze', this.aiProcessingPayload({ url: item.url, visibility: 'global' }));
         if (r && r.ok) {
           if (r.action === 'auto_saved') {
             this.showToast('Automatisch einsortiert: ' + (r.analysis && r.analysis.name));
@@ -502,9 +522,9 @@
 
     async reanalyzeAll() {
       if (!this.canUseAdminTools()) return;
-      if (!confirm('Alle ' + this.pending.length + ' Pending-Items neu analysieren? Das läuft im Hintergrund als Job.')) return;
+      if (!this.confirmAIProcessing('Alle ' + this.pending.length + ' offenen Importe erneut analysieren', 'Die Rezepttexte und Medien aller offenen Importe', 'Der bestätigte Lauf arbeitet im Hintergrund weiter.')) return;
       try {
-        const r = await this.api('POST', '/api/pending/reanalyze-all', {});
+        const r = await this.api('POST', '/api/pending/reanalyze-all', this.aiProcessingPayload());
         if (r && r.job_id) {
           this.showToast('Reanalyze-Job gestartet (#' + r.job_id + ')');
           this.refreshStatus();

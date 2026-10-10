@@ -524,7 +524,7 @@ def test_rescrape_prefers_expanded_caption_and_queues_extraction(
     )
     monkeypatch.setattr(api_recipes, "ensure_extraction_running", lambda: True)
 
-    response = client.post(f"/api/recipes/{recipe_id}/rescrape")
+    response = client.post(f"/api/recipes/{recipe_id}/rescrape", json={"ai_processing_consent": "openai-recipe-v1"})
 
     assert response.status_code == 200
     body = response.json()
@@ -604,7 +604,7 @@ def test_rescrape_restores_tiktok_photo_thumbnail(
         ),
     )
 
-    response = client.post(f"/api/recipes/{recipe_id}/rescrape")
+    response = client.post(f"/api/recipes/{recipe_id}/rescrape", json={"ai_processing_consent": "openai-recipe-v1"})
 
     assert response.status_code == 200
     body = response.json()
@@ -667,7 +667,7 @@ def test_rescrape_reanalyze_queues_unchanged_description(
     )
     monkeypatch.setattr(api_recipes, "ensure_extraction_running", lambda: True)
 
-    response = client.post(f"/api/recipes/{recipe_id}/rescrape?reanalyze=true")
+    response = client.post(f"/api/recipes/{recipe_id}/rescrape?reanalyze=true", json={"ai_processing_consent": "openai-recipe-v1"})
 
     assert response.status_code == 200
     body = response.json()

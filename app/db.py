@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 271
+CURRENT_SCHEMA_VERSION = 272
 RECIPE_VARIANT_PENDING_STATUS = "variant_pending"
 _READ_CONNECTION = ContextVar('recipe_read_connection', default=None)
 
@@ -1524,6 +1524,9 @@ class Database:
         from .recipes.shopping_history import migrate_schema as migrate_shopping_history
         migrate_shopping_history(c)
 
+        from .account_deletion import migrate_schema as migrate_account_deletion
+        migrate_account_deletion(c)
+
     @contextmanager
     def read_snapshot(self):
         """Eine kurzlebige, schreibgeschützte Verbindung für zusammengesetzte Reads."""
@@ -2531,7 +2534,7 @@ class Database:
         columns = "id" if ids_only else "*"
         with self.conn() as c:
             rows = c.execute(
-                f"SELECT {columns} FROM recipes WHERE deleted_at IS NULL "
+                f"SELECT {columns} FROM recipes WHERE deleted_at IS NULL AND owner_account_id IS NULL "
                 "AND COALESCE(ingredients_status, '')<>? ORDER BY id",
                 (RECIPE_VARIANT_PENDING_STATUS,),
             ).fetchall()
@@ -3407,6 +3410,8 @@ class Database:
         limit: int,
         owner: str,
         lease_seconds: int = 1800,
+        account_id: Optional[int] = None,
+        recipe_ids: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         """Claimt einen Batch in EINER Write-Transaktion.
 
@@ -3416,6 +3421,11 @@ class Database:
         """
         if not owner:
             raise ValueError("owner darf nicht leer sein")
+        selected = None if recipe_ids is None else list(dict.fromkeys(int(value) for value in recipe_ids))
+        if selected == []:
+            return []
+        selection_sql = "" if selected is None else " AND id IN (SELECT value FROM json_each(?))"
+        selection_values = () if selected is None else (json.dumps(selected),)
         limit = max(1, min(int(limit), 100))
         now = time.time()
         cutoff = now - max(60, int(lease_seconds))
@@ -3425,16 +3435,16 @@ class Database:
                 "UPDATE recipes SET ingredients_status='pending', "
                 "extraction_claimed_at=NULL, extraction_claim_owner=NULL "
                 "WHERE ingredients_status='running' "
-                "AND COALESCE(extraction_claimed_at, 0) < ?",
-                (cutoff,),
+                "AND COALESCE(extraction_claimed_at, 0) < ? AND owner_account_id IS ?" + selection_sql,
+                (cutoff, account_id, *selection_values),
             )
             ids = [
                 int(r["id"])
                 for r in c.execute(
                     "SELECT id FROM recipes WHERE ingredients_status='pending' "
-                    "AND deleted_at IS NULL "
+                    "AND deleted_at IS NULL AND owner_account_id IS ? " + selection_sql + " "
                     "ORDER BY COALESCE(source_added_at, indexed_at) DESC LIMIT ?",
-                    (limit,),
+                    (account_id, *selection_values, limit),
                 ).fetchall()
             ]
             if not ids:

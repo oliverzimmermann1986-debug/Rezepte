@@ -16,7 +16,7 @@ function deferred() {
 
 function createApp(overrides = {}) {
   const context = vm.createContext({
-    window: {}, navigator: {}, console, AbortController, URLSearchParams, URL, TextEncoder,
+    window: {}, navigator: {}, console, AbortController, URLSearchParams, URL, TextEncoder, confirm: () => true,
     setTimeout, clearTimeout, ...overrides,
   });
   for (const name of fs.readdirSync(path.join(root, 'features'))) {
@@ -827,7 +827,8 @@ test('four roles separate normal editing, import and administration', () => {
 });
 
 test('full users import privately even with stale global visibility and cannot run maintenance', async () => {
-  const app = createApp({ confirm: () => assert.fail('No maintenance confirmation') });
+  const confirmations = [];
+  const app = createApp({ confirm: message => { confirmations.push(message); return true; } });
   app.session = { loaded: true, role: 'full_user', is_admin: false };
   app.manualImportUrl = 'https://recipes.example/meal';
   app.manualImportVisibility = 'global';
@@ -841,6 +842,9 @@ test('full users import privately even with stale global visibility and cannot r
   await app.runMaintenance();
   await app.bulkSkipPending();
   assert.equal(calls.length, 1);
+  assert.equal(confirmations.length, 1, 'Only the allowed import asks for consent');
+  assert.match(confirmations[0], /OpenAI/);
+  assert.equal(calls[0].body.ai_processing_consent, 'openai-recipe-v1');
   assert.equal(app.runScraper, undefined);
   assert.equal(app.testMail, undefined);
   assert.equal(app.saveSchedule, undefined);

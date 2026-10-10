@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from ..ai_consent import consent_bound, require_ai_consent, require_audit_ai_consent
 from ..auth import require_admin
 from ..config_store import get_config
 from ..core.analyzer import build_analyzer
@@ -82,7 +83,7 @@ def _openai_config_for_audit() -> Optional[Dict[str, Any]]:
     }
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_audit_ai_consent)])
 def get_audit(
     with_ai: bool = Query(False, description="OpenAI-Namensvorschläge anfordern"),
     similarity: float = Query(0.85, ge=0.5, le=0.99,
@@ -312,7 +313,7 @@ def get_audit(
     return result
 
 
-@router.post("/ai-sanity")
+@router.post("/ai-sanity", dependencies=[Depends(require_ai_consent)])
 def start_ai_sanity_check() -> Dict[str, Any]:
     """Startet einen Background-Job der KI-Konsistenz für ALLE Rezepte prüft.
     Nicht blockierend — Progress via GET /ai-sanity/status pollen.
@@ -342,7 +343,7 @@ def start_ai_sanity_check() -> Dict[str, Any]:
         global _ai_sanity_thread
         _ai_sanity_stop.clear()
         _ai_sanity_thread = threading.Thread(
-            target=_ai_sanity_worker, args=(openai_cfg,),
+            target=consent_bound(_ai_sanity_worker), args=(openai_cfg,),
             name="audit-ai-sanity", daemon=True,
         )
         try:
@@ -463,7 +464,7 @@ def _ai_sanity_worker(openai_cfg: Dict[str, Any]) -> None:
         findings_count = 0
         processed = 0
         with ThreadPoolExecutor(max_workers=3, thread_name_prefix="sanity") as ex:
-            futures = {ex.submit(_check_one, r): r for r in recipes}
+            futures = {ex.submit(consent_bound(_check_one), r): r for r in recipes}
             for f in as_completed(futures):
                 if _ai_sanity_stop.is_set():
                     for pending in futures:

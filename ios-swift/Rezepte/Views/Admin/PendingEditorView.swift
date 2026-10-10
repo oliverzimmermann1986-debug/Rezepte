@@ -7,6 +7,7 @@ struct PendingEditorView: View {
     let onChanged: () async -> Void
 
     @EnvironmentObject private var session: SessionStore
+    @StateObject private var aiConsent = AIConsentCoordinator()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.recipeTheme) private var theme
@@ -197,6 +198,7 @@ struct PendingEditorView: View {
                     .disabled(isBusy)
                 }
             }
+            .aiConsentPrompt(aiConsent)
             .navigationTitle("Import prüfen")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -240,6 +242,7 @@ struct PendingEditorView: View {
             isPhotoScanning = false
             selectedPhoto = nil
         }
+        guard let consent = await aiConsent.request(.scanPhoto, session: session) else { return }
         do {
             guard let original = try await photo.loadTransferable(type: Data.self),
                   let image = UIImage(data: original),
@@ -252,7 +255,7 @@ struct PendingEditorView: View {
                 data: data,
                 filename: "rezeptfoto-\(Int(Date().timeIntervalSince1970)).jpg",
                 mimeType: "image/jpeg",
-                visibility: visibility
+                visibility: visibility, consent: consent
             )
             await apply(result, fallbackMessage: "Das Foto wurde erkannt.")
         } catch {
@@ -267,8 +270,9 @@ struct PendingEditorView: View {
         errorMessage = nil
         statusMessage = nil
         defer { isReanalyzing = false }
+        guard let consent = await aiConsent.request(.reanalyze, session: session) else { return }
         do {
-            let result = try await session.api.reanalyzePending(url: item.url, visibility: visibility)
+            let result = try await session.api.reanalyzePending(url: item.url, visibility: visibility, consent: consent)
             await apply(result, fallbackMessage: "Der KI-Vorschlag wurde aktualisiert.")
         } catch {
             errorMessage = error.localizedDescription
@@ -314,6 +318,7 @@ struct PendingEditorView: View {
             let cleanServings = try parsedServings()
             let cleanIngredients = try parsedIngredients()
             let cleanSteps = try parsedSteps()
+            guard let consent = await aiConsent.request(.saveRecipe, session: session) else { return }
             let result = try await session.api.resolvePending(
                 url: item.url,
                 action: "save",
@@ -325,7 +330,7 @@ struct PendingEditorView: View {
                 steps: cleanSteps,
                 servings: cleanServings,
                 verified: verified && !cleanIngredients.isEmpty,
-                visibility: visibility
+                visibility: visibility, consent: consent
             )
             guard result.ok != false else {
                 errorMessage = result.message ?? "Der Import konnte nicht gespeichert werden."

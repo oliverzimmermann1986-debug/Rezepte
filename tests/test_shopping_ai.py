@@ -59,7 +59,7 @@ def test_ai_cart_preview_and_apply_preserve_amounts_and_sources(
         test_db, name="Kartoffeln", canonical="kartoffeln", amount=3, source_ids=[12]
     )
 
-    preview_response = client.post("/api/cart/optimize/preview")
+    preview_response = client.post("/api/cart/optimize/preview", json={"ai_processing_consent": "openai-recipe-v1"})
 
     assert preview_response.status_code == 200, preview_response.text
     preview = preview_response.json()
@@ -97,7 +97,7 @@ def test_ai_cart_apply_rejects_a_list_changed_after_preview(
 ):
     _configure_fake_ai(monkeypatch)
     _insert_cart_item(test_db, name="Kartoffel", canonical="kartoffel", amount=2)
-    preview = client.post("/api/cart/optimize/preview").json()
+    preview = client.post("/api/cart/optimize/preview", json={"ai_processing_consent": "openai-recipe-v1"}).json()
 
     added = client.post("/api/cart/add", json={"name": "Milch"})
     assert added.status_code == 200

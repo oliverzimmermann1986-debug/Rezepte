@@ -59,10 +59,11 @@
       if (!this.canUseAdminTools()) return;
       const recipe = this.recipeDetail.data;
       if (!recipe || this.recipeDetail.imageGenerating) return;
+      if (!this.confirmAIProcessing('Ein Rezeptbild erzeugen', 'Rezepttitel, Zutaten und Zubereitungshinweise', 'OpenAI erzeugt daraus ein neues Bild. Das bisherige Bild wird vorher gesichert.')) return;
       const context = this._detailContext();
       this.recipeDetail.imageGenerating = true;
       try {
-        await this.api('POST', `/api/recipes/${recipe.id}/generate-image`, {});
+        await this.api('POST', `/api/recipes/${recipe.id}/generate-image`, this.aiProcessingPayload());
         if (this._detailOwns(context)) recipe.image_generation_status = 'pending';
         this.showToast('Bildgenerierung gestartet; das bisherige Bild wird vorher gesichert');
       } finally {
@@ -723,10 +724,11 @@
     async extractIngredients() {
       if (!this.canUseAdminTools()) return;
       if (!this.recipeDetail.data || this.recipeDetail.extracting) return;
+      if (!this.confirmAIProcessing('Zutaten und Schritte ermitteln')) return;
       const context = this._detailContext();
       this.recipeDetail.extracting = true;
       try {
-        const r = await this.api('POST', `/api/recipes/${context.id}/extract`);
+        const r = await this.api('POST', `/api/recipes/${context.id}/extract`, this.aiProcessingPayload());
         if (r && r.ok && this._detailOwns(context)) {
           this.showToast(`✓ ${r.count || 0} Zutaten extrahiert`);
           // Frisch laden um Zutatenliste im Modal zu aktualisieren
@@ -890,9 +892,10 @@
         this.showToast('Mindestens 3 Zutaten nötig', 'err');
         return;
       }
+      if (!this.confirmAIProcessing('Nährwerte schätzen', 'Die Zutaten mit Mengen und die Portionszahl dieses Rezepts')) return;
       this.recipeDetail.computingNutrition = true;
       try {
-        const r = await this.api('POST', `/api/recipes/${context.id}/nutrition`);
+        const r = await this.api('POST', `/api/recipes/${context.id}/nutrition`, this.aiProcessingPayload());
         if (r && r.ok && this._detailOwns(context)) {
           // In-place die data-Felder updaten damit Modal sofort die Werte zeigt
           this.recipeDetail.data.calories_per_serving = r.calories;
@@ -1123,13 +1126,14 @@
       if (!this.canUseAdminTools()) return;
       const context = this._detailContext();
       if (!context.id || this.recipeDetail.rescraping) return;
+      if (!this.confirmAIProcessing('Quelle neu abrufen und analysieren', 'Neu geladene Rezepttexte und Medien der Quelle', 'Bei geänderten Inhalten werden Zutaten und Schritte erneut ermittelt.')) return;
       this.recipeDetail.rescraping = true;
       try {
         // Bei leeren Rezepten muss auch bei unveränderter Caption die aktuelle
         // Zutatenanalyse erneut eingeplant werden.
         const needsReanalysis = !(this.recipeDetail.data?.ingredients?.length);
         const endpoint = `/api/recipes/${context.id}/rescrape${needsReanalysis ? '?reanalyze=true' : ''}`;
-        const r = await this.api('POST', endpoint);
+        const r = await this.api('POST', endpoint, this.aiProcessingPayload());
         if (r && r.ok && this._detailOwns(context)) {
           if (r.any_change || r.ingredients_queued) {
             const parts = [];

@@ -221,9 +221,11 @@ class ScraperJob:
             else:
                 return
         try:
+            from ..ai_consent import CURRENT_AI_CONSENT
             self.db.background_task_enqueue(
                 "recipe_image_generate",
-                {"recipe_id": int(recipe_id), "batch_id": uuid.uuid4().hex, "replace_existing": False},
+                {"recipe_id": int(recipe_id), "batch_id": uuid.uuid4().hex, "replace_existing": False,
+                 "ai_processing_consent": CURRENT_AI_CONSENT.get()},
                 dedupe_key=str(int(recipe_id)),
             )
         except Exception:

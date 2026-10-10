@@ -22,7 +22,7 @@ def test_url_replay_retains_partial_analysis_and_media(households, monkeypatch, 
                         get_db().background_task_enqueue(kind, payload, **values))
     login("anna")
     url = "https://recipes.example/partial-analysis"
-    first = client.post("/api/pending/import-url", json={"url": url})
+    first = client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": url})
     assert first.status_code == 200, first.text
     task_id = first.json()["task_id"]
     scoped = HouseholdDatabase(db, HouseholdScope(users["anna"][1]), import_owner=users["anna"][1])
@@ -41,7 +41,7 @@ def test_url_replay_retains_partial_analysis_and_media(households, monkeypatch, 
             db.background_task_finish(task_id, ok=True, result={})
             return get_db().background_task_enqueue(kind, payload, **values)
         monkeypatch.setattr(api_pending, "enqueue", finish)
-    replay = client.post("/api/pending/import-url", json={"url": url})
+    replay = client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": url})
     assert replay.status_code == (429 if finish_before_enqueue else 200), replay.text
     if not finish_before_enqueue:
         assert replay.json()["task_id"] == task_id

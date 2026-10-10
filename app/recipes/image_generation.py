@@ -291,7 +291,8 @@ def run_image_backfill(
     else:
         state = {
             "phase": "backup", "batch_id": batch_id,
-            "recipe_ids": [int(recipe["id"]) for recipe in db.recipes_for_image_backfill(ids_only=True)],
+            "recipe_ids": (list(payload["recipe_ids"]) if "recipe_ids" in payload else
+                           [int(recipe["id"]) for recipe in db.recipes_for_image_backfill(ids_only=True)]),
             "backup_processed": 0, "backed_up": 0, "generated": 0,
             "completed_ids": [], "errors": [],
         }

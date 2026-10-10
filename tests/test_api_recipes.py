@@ -185,7 +185,7 @@ def test_recipe_text_translation_uses_selected_language_without_overwriting_sour
 
     response = client.post(
         f"/api/recipes/{recipe['id']}/translate",
-        json={"target_language": "en", "text": "Kommentar mit 200 g Mehl"},
+        json={"ai_processing_consent": "openai-recipe-v1", "target_language": "en", "text": "Kommentar mit 200 g Mehl"},
     )
 
     assert response.status_code == 200
@@ -201,7 +201,7 @@ def test_recipe_text_translation_rejects_unknown_language(client, test_db):
 
     response = client.post(
         f"/api/recipes/{recipe['id']}/translate",
-        json={"target_language": "xx", "text": "Kommentar"},
+        json={"ai_processing_consent": "openai-recipe-v1", "target_language": "xx", "text": "Kommentar"},
     )
 
     assert response.status_code == 422

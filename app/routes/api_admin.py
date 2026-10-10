@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from ..ai_consent import consent_bound, require_pdf_ai_consent
 from ..auth import (
     ROLE_ADMIN,
     ROLE_GUEST,
@@ -656,7 +657,7 @@ def _run_pdf_background(payload_data: Dict[str, Any], targets: List[Path], run_i
         _release_pdf_run(run_id)
 
 
-@router.post("/pdf/process")
+@router.post("/pdf/process", dependencies=[Depends(require_pdf_ai_consent)])
 def process_pdfs(payload: PdfBatchPayload, request: Request, response: Response) -> Dict[str, Any]:
     db = get_db(); actor = _username(request)
     _PDF_STOP.clear()
@@ -698,7 +699,7 @@ def process_pdfs(payload: PdfBatchPayload, request: Request, response: Response)
         initial["preflight"] = preflight
         db.maintenance_progress(run_id, initial)
         _pdf_executor().submit(
-            _run_pdf_background, payload.model_dump(), targets, run_id, actor,
+            consent_bound(_run_pdf_background), payload.model_dump(), targets, run_id, actor,
         )
     except Exception as exc:
         db.maintenance_finish(

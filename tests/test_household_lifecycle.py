@@ -90,7 +90,7 @@ def test_import_in_flight_and_queued_task_block_join_then_pending_moves(househol
     monkeypatch.setattr(api_pending, "enqueue", db.background_task_enqueue)
     with ThreadPoolExecutor(max_workers=1) as pool:
         importing = pool.submit(client.post, "/api/pending/import-url", headers=bearer,
-                                json={"url": "https://recipes.example/overlap", "visibility": "private"})
+                                json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/overlap", "visibility": "private"})
         try:
             assert reached.wait(15)
             joined = client.post("/api/account/invitations/accept", headers=bearer, json={"token": invitation["token"]})
@@ -174,7 +174,7 @@ def test_synchronous_analysis_blocks_join_and_releases_guard_on_completion(house
     Image.new("RGB", (2, 2)).save(data, format="PNG")
     path = "/api/pending/import-file" if kind == "file" else "/api/pending/scan-photo?url=https%3A%2F%2Frecipes.example%2Fphoto"
     with ThreadPoolExecutor(max_workers=1) as pool:
-        importing = pool.submit(client.post, path, headers=bearer, data={"visibility": "private"},
+        importing = pool.submit(client.post, path, headers=bearer, data={"ai_processing_consent": "openai-recipe-v1", "visibility": "private"},
                                 files={"file": ("recipe.png", data.getvalue(), "image/png")})
         try:
             assert reached.wait(15)
@@ -236,7 +236,7 @@ def test_guard_releases_after_route_validation_failure(households):
     client, db, users, login = households
     db.user_set_role(users["anna"][0], "admin")
     login("anna")
-    assert client.post("/api/pending/import-url", json={"url": "http://localhost/private"}).status_code == 400
+    assert client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "http://localhost/private"}).status_code == 400
     assert client.post("/api/account/invitations").status_code == 201
 
 
@@ -251,7 +251,7 @@ def test_global_url_import_stays_global_in_persisted_queue_and_worker(households
 
     monkeypatch.setattr(api_pending, "enqueue", enqueue)
     login("operator")
-    response = client.post("/api/pending/import-url", json={"url": "https://recipes.example/new-global", "visibility": "global"})
+    response = client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/new-global", "visibility": "global"})
     assert response.status_code == 200, response.text
     task = db.background_task_get(response.json()["task_id"])
     assert task["payload"]["account_id"] is None
@@ -285,6 +285,6 @@ def test_share_token_import_remains_global_when_sender_is_also_logged_in(househo
     monkeypatch.setattr(get_config(), "get", config)
     monkeypatch.setattr(api_share, "enqueue", lambda kind, payload, **values: get_db().background_task_enqueue(kind, payload, **values))
     login("operator")
-    response = client.post("/api/share", json={"url": "https://recipes.example/token-global", "token": secret})
+    response = client.post("/api/share", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/token-global", "token": secret})
     assert response.status_code == 200, response.text
     assert db.background_task_get(response.json()["task_id"])["payload"]["account_id"] is None

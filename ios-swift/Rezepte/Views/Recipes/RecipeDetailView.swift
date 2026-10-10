@@ -5,6 +5,7 @@ struct RecipeDetailView: View {
     let recipeID: Int
 
     @EnvironmentObject private var session: SessionStore
+    @StateObject private var aiConsent = AIConsentCoordinator()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.recipeTheme) private var theme
@@ -113,6 +114,7 @@ struct RecipeDetailView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .aiConsentPrompt(aiConsent)
         .toolbar {
             if let recipe {
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -757,6 +759,13 @@ struct RecipeDetailView: View {
                 .buttonStyle(.bordered)
 
                 if showOriginalText {
+                    if session.fullAccess, translatedDescription == nil {
+                        Button("Quelltext übersetzen", systemImage: "translate") {
+                            Task { await translateSource() }
+                        }
+                        .disabled(isManaging)
+                        .accessibilityIdentifier("recipe.translate-source")
+                    }
                     Text(description)
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -775,20 +784,6 @@ struct RecipeDetailView: View {
         do {
             recipe = try await session.api.recipe(id: recipeID)
             translatedDescription = nil
-            if session.fullAccess, contentLanguage != ContentLanguage.de.rawValue,
-               let source = recipe?.descriptionOriginal ?? recipe?.description,
-               !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                do {
-                    translatedDescription = try await session.api.translateRecipeText(
-                        id: recipeID,
-                        language: contentLanguage,
-                        text: source
-                    ).translation
-                } catch {
-                    // Das Rezept bleibt auch ohne optionale KI-Übersetzung lesbar.
-                    translatedDescription = nil
-                }
-            }
             showOriginalText = false
         } catch {
             errorMessage = error.localizedDescription
@@ -910,11 +905,26 @@ struct RecipeDetailView: View {
         catch { session.handle(error) }
     }
 
+    private func translateSource() async {
+        guard session.fullAccess, !isManaging,
+              let source = recipe?.descriptionOriginal ?? recipe?.description else { return }
+        let language = contentLanguage
+        isManaging = true
+        defer { isManaging = false }
+        guard let consent = await aiConsent.request(.translation, session: session) else { return }
+        do {
+            translatedDescription = try await session.api.translateRecipeText(
+                id: recipeID, language: language, text: source, consent: consent
+            ).translation
+        } catch { session.handle(error) }
+    }
+
     private func computeNutrition() async {
         guard session.fullAccess else { return }
         isManaging = true
         defer { isManaging = false }
-        do { _ = try await session.api.computeRecipeNutrition(id: recipeID); await load() }
+        guard let consent = await aiConsent.request(.nutrition, session: session) else { return }
+        do { _ = try await session.api.computeRecipeNutrition(id: recipeID, consent: consent); await load() }
         catch { session.handle(error) }
     }
 
@@ -922,8 +932,9 @@ struct RecipeDetailView: View {
         guard session.fullAccess else { return }
         isManaging = true
         defer { isManaging = false }
+        guard let consent = await aiConsent.request(.extractSource, session: session) else { return }
         do {
-            _ = try await session.api.reextractRecipeSource(id: recipeID)
+            _ = try await session.api.reextractRecipeSource(id: recipeID, consent: consent)
             await load()
         } catch {
             session.handle(error)

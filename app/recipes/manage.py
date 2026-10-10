@@ -869,7 +869,8 @@ def _safe_delete_recipe_locked(
                               default="/opt/scrapper/data/trash"))
             qpath = quarantine_move(folder_path, trash_root,
                                     reason="hard_delete" if hard else "soft_delete",
-                                    source={"recipe_id": recipe_id, "name": name})
+                                    source={"recipe_id": recipe_id, "name": name,
+                                            "owner_account_id": recipe.get("owner_account_id")})
             moved_folder = folder_path
             folder_deleted = True
             logger.info(f"Recipe #{recipe_id}: folder → Quarantäne {qpath}")
@@ -883,7 +884,7 @@ def _safe_delete_recipe_locked(
             "content_type": recipe.get("type"),
             "name": name,
             "target_dir": folder,
-            "metadata": {"recipe_id": recipe_id},
+            "metadata": {"recipe_id": recipe_id, "owner_account_id": recipe.get("owner_account_id")},
         }
     purge_parent: Optional[Path] = None
     try:

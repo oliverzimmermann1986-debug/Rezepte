@@ -240,6 +240,9 @@ def migrate_cooking_identity(c) -> None:
 
 def merge_households(c, source: int, target: int) -> None:
     """Invitation acceptance moves the joining person's data, never deletes it."""
+    import json
+    from pathlib import Path
+    from .config_store import get_config
     busy = c.execute("SELECT 1 FROM background_tasks WHERE status IN ('queued','running') "
                      "AND json_extract(payload_json,'$.account_id')=? LIMIT 1", (source,)).fetchone()
     if busy:
@@ -283,6 +286,25 @@ def merge_households(c, source: int, target: int) -> None:
         c.execute(f"UPDATE {table} SET account_id=? WHERE account_id=?", (target, source))
     from .recipes.household_features import merge_household_features
     merge_household_features(c, source, target)
+    # Keep archived private provenance with its household even when the recipe
+    # row was already hard-deleted. Ambiguous historical archives stay untouched.
+    old_tree = Path(get_config().get("paths", "recipe_dir", default="/mnt/rezepte")).resolve() / ".households" / str(source)
+    for archive in c.execute("SELECT id,metadata,target_dir FROM deleted_history").fetchall():
+        try:
+            metadata = json.loads(archive["metadata"] or "{}")
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        recipe_id = metadata.get("recipe_id")
+        owner = c.execute("SELECT owner_account_id FROM recipes WHERE id=?", (recipe_id,)).fetchone() if isinstance(recipe_id, int) else None
+        archived_path = Path(archive["target_dir"]) if archive["target_dir"] else None
+        belongs = metadata.get("owner_account_id") == source or (owner and owner[0] == source)
+        if not owner and archived_path and archived_path.is_absolute() and archived_path.is_relative_to(old_tree):
+            belongs = True
+        if belongs and (not owner or owner[0] == source):
+            metadata["owner_account_id"] = target
+            c.execute("UPDATE deleted_history SET metadata=? WHERE id=?", (json.dumps(metadata), archive["id"]))
     for recipe in c.execute("SELECT * FROM recipes WHERE owner_account_id=?", (source,)).fetchall():
         source_url = recipe["source_url"]
         new_key = private_source_key(target, source_url)

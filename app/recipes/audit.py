@@ -290,6 +290,9 @@ def ai_suggest_batch(
 
     try:
         from ..ai_budget import reserve_request
+        from ..ai_consent import CURRENT_AI_CONSENT, require_supported_provider
+        if CURRENT_AI_CONSENT.get():
+            require_supported_provider(base_url)
         reserve_request("POST", "/chat/completions")
         r = server_configured_request(
             "POST",

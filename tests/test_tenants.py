@@ -84,7 +84,7 @@ def test_admin_global_url_import_links_without_queue_or_download(households, mon
     db.user_set_role(users["anna"][0], "admin")
     login("anna")
     for _ in range(2):
-        response = client.post("/api/pending/import-url", json={"url": "https://recipes.example/soup?utm_source=new#recipe", "visibility": "private"})
+        response = client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/soup?utm_source=new#recipe", "visibility": "private"})
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "linked_global"
         assert response.json()["recipe_id"] == rid and response.json()["downloaded"] is False
@@ -254,11 +254,11 @@ def test_private_import_jobs_and_pending_status_are_separate(households, monkeyp
     monkeypatch.setattr(api_pending, "enqueue", lambda kind, payload, **kwargs: queued.append((payload, kwargs)) or 42)
     for name in ("anna", "bert"):
         login(name)
-        assert client.post("/api/pending/import-url", json={"url": "https://recipes.example/new"}).status_code == 403
-        assert client.post("/api/pending/import-url", json={"url": "https://recipes.example/new", "visibility": "global"}).status_code == 403
+        assert client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/new"}).status_code == 403
+        assert client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/new", "visibility": "global"}).status_code == 403
         db.user_set_role(users[name][0], "admin")
         login(name)
-        result = client.post("/api/pending/import-url", json={"url": "https://recipes.example/new"})
+        result = client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/new"})
         assert result.status_code == 200, result.text
         assert queued[-1][0]["account_id"] == users[name][1]
         assert len(client.get("/api/account/imports").json()["items"]) == 1
@@ -334,11 +334,11 @@ def test_global_shortlink_alias_reuses_recipe_without_enqueue(households, monkey
     monkeypatch.setattr(api_pending, "enqueue", lambda *a, **k: pytest.fail("Alias must reuse global recipe"))
     db.user_set_role(users["anna"][0], "admin")
     login("anna")
-    response = client.post("/api/pending/import-url", json={"url": "https://recipes.example/short"})
+    response = client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/short"})
     assert response.status_code == 200 and response.json()["recipe_id"] == rid
     assert response.json()["downloaded"] is False
     login("operator")
-    response = client.post("/api/pending/import-url", json={"url": "https://recipes.example/short", "visibility": "global"})
+    response = client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/short", "visibility": "global"})
     assert response.status_code == 200 and response.json()["status"] == "duplicate"
 
 
@@ -369,7 +369,7 @@ def test_private_file_upload_retries_are_scoped_to_household(households, monkeyp
         db.user_set_role(users[name][0], "admin")
         login(name)
         for repeat in range(2):
-            response = client.post("/api/pending/import-file", data={"client_request_id": "same-mobile-upload", "visibility": "private"},
+            response = client.post("/api/pending/import-file", data={"ai_processing_consent": "openai-recipe-v1", "client_request_id": "same-mobile-upload", "visibility": "private"},
                                    files={"file": ("rezept.jpg", buffer.getvalue(), "image/jpeg")})
             assert response.status_code == 200, response.text
             assert response.json()["idempotent_replay"] is bool(repeat)
@@ -406,24 +406,24 @@ def test_import_roles_can_approve_only_own_pending_and_keep_household_isolation(
     original_pending = db.pending_list()
     assert client.get("/api/pending").status_code == 403
     assert client.get("/api/pending/file", params={"url": url}).status_code == 403
-    assert client.post("/api/pending", json={"url": url, "action": "save", "name": "Fremd"}).status_code == 403
-    assert client.post("/api/pending/reanalyze", json={"url": url}).status_code == 403
+    assert client.post("/api/pending", json={"ai_processing_consent": "openai-recipe-v1", "url": url, "action": "save", "name": "Fremd"}).status_code == 403
+    assert client.post("/api/pending/reanalyze", json={"ai_processing_consent": "openai-recipe-v1", "url": url}).status_code == 403
     db.user_set_role(users["bert"][0], import_role)
     login("bert")
     assert client.get("/api/pending").json() == []
     assert client.get("/api/pending/file", params={"url": url}).status_code == 404
-    assert client.post("/api/pending", json={"url": url, "action": "save", "name": "Fremd"}).status_code == 404
-    assert client.post("/api/pending/reanalyze", json={"url": url}).status_code == 404
+    assert client.post("/api/pending", json={"ai_processing_consent": "openai-recipe-v1", "url": url, "action": "save", "name": "Fremd"}).status_code == 404
+    assert client.post("/api/pending/reanalyze", json={"ai_processing_consent": "openai-recipe-v1", "url": url}).status_code == 404
     assert calls == [] and db.pending_list() == original_pending
     login("anna")
     assert client.get("/api/pending").status_code == 403
-    assert client.post("/api/pending", json={"url": url, "action": "save", "name": "MeinRezept"}).status_code == 403
+    assert client.post("/api/pending", json={"ai_processing_consent": "openai-recipe-v1", "url": url, "action": "save", "name": "MeinRezept"}).status_code == 403
     db.user_set_role(users["anna"][0], import_role)
     login("anna")
     session = client.get("/api/session").json()
     assert session["can_import"] is True and session["is_admin"] is (import_role == "admin")
     assert len(client.get("/api/pending").json()) == 1
-    response = client.post("/api/pending", json={"url": url, "visibility": "private", "action": "save", "name": "MeinRezept"})
+    response = client.post("/api/pending", json={"ai_processing_consent": "openai-recipe-v1", "url": url, "visibility": "private", "action": "save", "name": "MeinRezept"})
     assert response.status_code == 200, response.text
     rid = response.json()["recipe_id"]
     assert db.recipe_get(rid)["owner_account_id"] == users["anna"][1]
@@ -702,7 +702,7 @@ def test_private_import_without_household_is_rejected_instead_of_published_globa
     login("operator")
     import app.tenancy as tenancy
     monkeypatch.setattr(tenancy, "scope_for_request", lambda _request: HouseholdScope(0, is_admin=True))
-    response = client.post("/api/pending/import-url", json={"url": "https://recipes.example/must-remain-private", "visibility": "private"})
+    response = client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/must-remain-private", "visibility": "private"})
     assert response.status_code == 409
     assert db.pending_list() == [] and db.recipe_count() == 0
 

@@ -131,7 +131,7 @@ def test_nutrition_endpoint_uses_owner_claim_and_publishes_atomically(
             }
 
     monkeypatch.setattr(api_recipes, "build_analyzer", lambda config: Analyzer())
-    response = client.post(f"/api/recipes/{rid}/nutrition")
+    response = client.post(f"/api/recipes/{rid}/nutrition", json={"ai_processing_consent": "openai-recipe-v1"})
 
     assert response.status_code == 200
     recipe = test_db.recipe_get(rid)
@@ -245,7 +245,7 @@ def test_nutrition_endpoint_claims_before_authoritative_ingredient_snapshot(
     monkeypatch.setattr(test_db, "recipe_claim_nutrition", mutate_then_claim)
     monkeypatch.setattr(api_recipes, "build_analyzer", lambda config: Analyzer())
 
-    response = client.post(f"/api/recipes/{rid}/nutrition")
+    response = client.post(f"/api/recipes/{rid}/nutrition", json={"ai_processing_consent": "openai-recipe-v1"})
 
     assert response.status_code == 200, response.text
     assert observed == ["Neu A", "Neu B", "Neu C"]

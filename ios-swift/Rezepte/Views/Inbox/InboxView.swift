@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 struct InboxView: View {
     @EnvironmentObject private var session: SessionStore
+    @StateObject private var aiConsent = AIConsentCoordinator()
     @Environment(\.recipeTheme) private var theme
     @State private var importLink = ""
     @State private var pending: [PendingItem] = []
@@ -23,6 +24,7 @@ struct InboxView: View {
                     if session.canImport {
                         hero
                         importComposer
+                        sharedLinks
                         reviewQueue
                     } else {
                         Label(
@@ -38,6 +40,7 @@ struct InboxView: View {
                 .padding(.bottom, 42)
             }
             .background(theme.background)
+            .aiConsentPrompt(aiConsent)
             .navigationTitle("Eingang")
             .refreshable { await loadPending() }
             .task { await loadPending() }
@@ -64,6 +67,44 @@ struct InboxView: View {
                 .environmentObject(session)
             }
         }
+    }
+
+    @ViewBuilder
+    private var sharedLinks: some View {
+        if !session.queuedSharedImports.isEmpty {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Auf diesem Gerät geteilte Links").font(.headline)
+                Text("Noch nicht hochgeladen. Starte den Import für jeden Link einzeln.")
+                    .font(.callout).foregroundStyle(theme.muted)
+                ForEach(session.queuedSharedImports, id: \.self) { link in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(URL(string: link)?.host ?? "Rezeptlink").font(.headline)
+                        if let path = URL(string: link)?.path, !path.isEmpty, path != "/" {
+                            Text(path).font(.caption).foregroundStyle(theme.muted)
+                                .lineLimit(3).textSelection(.enabled)
+                        }
+                        Button("Prüfen und importieren", systemImage: "sparkles") {
+                            Task { await importSharedLink(link) }
+                        }
+                        .disabled(isWorking)
+                        .accessibilityIdentifier("inbox.shared-link.import")
+                        Button("Vom Gerät entfernen", role: .destructive) { session.discardSharedURL(link) }
+                            .disabled(isWorking)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .cardSurface()
+        }
+    }
+
+    private func importSharedLink(_ link: String) async {
+        guard session.canImport, !isWorking else { return }
+        isWorking = true
+        defer { isWorking = false }
+        guard let consent = await aiConsent.request(.importLink, session: session) else { return }
+        await session.importSharedURL(link, consent: consent)
+        await loadPending()
     }
 
     private var hero: some View {
@@ -276,8 +317,9 @@ struct InboxView: View {
         isWorking = true
         resultMessage = nil
         defer { isWorking = false }
+        guard let consent = await aiConsent.request(.importLink, session: session) else { return }
         do {
-            let result = try await session.api.importURL(link, visibility: session.fullAccess ? importVisibility : "private")
+            let result = try await session.api.importURL(link, visibility: session.fullAccess ? importVisibility : "private", consent: consent)
             importLink = ""
             resultMessage = result.status == "linked_global"
                 ? "Globales Rezept im Haushalt gespeichert. Kein erneuter Download."
@@ -297,6 +339,7 @@ struct InboxView: View {
             isWorking = false
             selectedPhoto = nil
         }
+        guard let consent = await aiConsent.request(.importFile, session: session) else { return }
         do {
             guard let original = try await item.loadTransferable(type: Data.self),
                   let image = UIImage(data: original),
@@ -309,7 +352,7 @@ struct InboxView: View {
                 data: data,
                 filename: "rezept-\(Int(Date().timeIntervalSince1970)).jpg",
                 mimeType: "image/jpeg",
-                visibility: session.fullAccess ? importVisibility : "private"
+                visibility: session.fullAccess ? importVisibility : "private", consent: consent
             )
             resultMessage = result.message ?? "Das Foto wurde in den Eingang gelegt."
             await loadPending()
@@ -323,6 +366,7 @@ struct InboxView: View {
         isWorking = true
         resultMessage = nil
         defer { isWorking = false }
+        guard let consent = await aiConsent.request(.importFile, session: session) else { return }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -333,7 +377,7 @@ struct InboxView: View {
                 data: data,
                 filename: url.lastPathComponent,
                 mimeType: mimeType,
-                visibility: session.fullAccess ? importVisibility : "private"
+                visibility: session.fullAccess ? importVisibility : "private", consent: consent
             )
             resultMessage = result.message ?? "Die Datei wurde in den Eingang gelegt."
             await loadPending()

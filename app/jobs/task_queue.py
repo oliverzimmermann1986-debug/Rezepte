@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict
 
 from ..db import get_db
+from ..ai_consent import CURRENT_AI_CONSENT, validate_ai_consent
 
 logger = logging.getLogger(__name__)
 _stop = threading.Event()
@@ -25,6 +26,8 @@ def enqueue(
     max_active: int | None = None,
     reserve_budget: bool = False,
 ) -> int:
+    if CURRENT_AI_CONSENT.get():
+        payload = {**payload, "ai_processing_consent": CURRENT_AI_CONSENT.get()}
     if kind == "recipe_image_generate" and payload.get("recipe_id") and "account_id" not in payload:
         recipe = get_db().recipe_get(int(payload["recipe_id"]))
         if recipe and recipe.get("owner_account_id") is not None:
@@ -173,6 +176,17 @@ def worker_status() -> Dict[str, Any]:
 
 
 def _dispatch(kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    # Persisted user jobs must retain permission across restarts. Old jobs need
+    # a fresh explicit action; they must not silently inherit another request.
+    validate_ai_consent(payload.get("ai_processing_consent"))
+    token = CURRENT_AI_CONSENT.set(payload["ai_processing_consent"])
+    try:
+        return _dispatch_with_consent(kind, payload)
+    finally:
+        CURRENT_AI_CONSENT.reset(token)
+
+
+def _dispatch_with_consent(kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     from ..tenancy import HouseholdScope, household_context
     account_id = payload.get("account_id")
     if kind in {"recipe_image_generate", "recipe_image_backfill"} and account_id is not None:

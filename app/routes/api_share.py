@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from ..auth import require_admin
+from ..ai_consent import validate_ai_consent
 from ..config_store import get_config
 from ..db import get_db
 from ..jobs import scraper as scraper_job
@@ -85,6 +86,7 @@ class ShareIn(BaseModel):
     url: str
     type: str = "recipe"          # recipe | wedding
     token: Optional[str] = None   # Alternative zum X-Share-Token-Header
+    ai_processing_consent: Optional[str] = None
 
 
 class ShareTokenCreate(BaseModel):
@@ -197,6 +199,7 @@ def share_intake(payload: ShareIn, request: Request,
         fingerprint = hashlib.sha256(str(supplied).encode("utf-8")).hexdigest()[:16]
         _consume_rate_limit(f"token:{fingerprint}")
     token_id = _check_token(supplied)
+    validate_ai_consent(payload.ai_processing_consent)
     url = _normalized_share_url(payload.url)
     ctype = payload.type if payload.type in ("recipe", "wedding") else "recipe"
     dedupe_key = hashlib.sha256(
@@ -211,7 +214,8 @@ def share_intake(payload: ShareIn, request: Request,
         )))
         task_id = enqueue(
             "share_ingest",
-            {"url": url, "type": ctype, "account_id": None},
+            {"url": url, "type": ctype, "account_id": None,
+             "ai_processing_consent": payload.ai_processing_consent},
             dedupe_key=dedupe_key,
             max_active=queue_limit,
             reserve_budget=not budget_reserved,

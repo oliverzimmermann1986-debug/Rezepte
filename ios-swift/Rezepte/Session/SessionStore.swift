@@ -33,7 +33,7 @@ final class SessionStore: ObservableObject {
     private let webAuthentication: any NativeAuthenticating
     private let sharedImportURLs: () -> [String]
     private let removeSharedImport: (String) -> Void
-    private var isDrainingSharedImports = false
+    @Published private(set) var queuedSharedImports: [String] = []
     private let serverKey = "server-url"
     private let offlineSessionKey = "offline-session-v1"
     private var verifiedSession: SessionResponse?
@@ -147,9 +147,7 @@ final class SessionStore: ObservableObject {
         KitchenTimerStore.shared.clear()
         webAuthentication.cancel()
         let previousIdentity = identity
-        if canImport, !username.isEmpty {
-            for url in sharedImportURLs() { removeSharedImport(url) }
-        }
+        queuedSharedImports = []
         identity = UUID()
         URLCache.shared.removeAllCachedResponses()
         Task { await api.clearAuthentication(ifSessionID: previousIdentity) }
@@ -373,41 +371,43 @@ final class SessionStore: ObservableObject {
         alertMessage = error.localizedDescription
     }
 
+    /// Sharing only stages a link locally. Foregrounding or login never starts AI work.
     func drainSharedImports() async {
-        guard case .signedIn = state, !isDrainingSharedImports else { return }
+        guard case .signedIn = state else { return }
+        let previous = queuedSharedImports
+        queuedSharedImports = sharedImportURLs()
+        guard !queuedSharedImports.isEmpty, queuedSharedImports != previous else { return }
+        alertMessage = canImport
+            ? "Geteilte Links warten im Eingang. Prüfe jeden Link und bestätige die KI-Verarbeitung, bevor etwas hochgeladen wird."
+            : "Geteilte Rezeptlinks können nur Vollbenutzer und Admins importieren. Deine Links bleiben auf diesem Gerät gespeichert und wurden nicht verarbeitet."
+    }
+
+    func importSharedURL(_ url: String, consent: AIProcessingConsent) async {
+        guard case .signedIn = state, canImport, sharedImportURLs().contains(url) else { return }
         let expectedIdentity = identity
-        let queued = sharedImportURLs()
-        guard !queued.isEmpty else { return }
-        guard canImport else {
-            alertMessage = "Geteilte Rezeptlinks können nur Vollbenutzer und Admins importieren. Deine Links bleiben auf diesem Gerät gespeichert und wurden nicht verarbeitet."
-            return
-        }
-        isDrainingSharedImports = true
-        defer { isDrainingSharedImports = false }
-        var imported = 0
-        var linked = 0
-        for url in queued {
+        do {
+            let result = try await api.importURL(url, consent: consent)
             guard identity == expectedIdentity, canImport else { return }
-            do {
-                let result = try await api.importURL(url)
-                guard identity == expectedIdentity, canImport else { return }
-                removeSharedImport(url)
-                imported += 1
-                if result.status == "linked_global" { linked += 1 }
-            } catch {
-                guard identity == expectedIdentity else { return }
-                alertMessage = "Ein geteilter Link konnte noch nicht importiert werden: \(error.localizedDescription)"
-                break
+            guard result.ok != false else {
+                alertMessage = result.message ?? "Der Link konnte noch nicht importiert werden."
+                return
             }
-        }
-        if imported > 0 {
-            alertMessage = imported == 1 && linked == 1
+            removeSharedImport(url)
+            queuedSharedImports = sharedImportURLs()
+            alertMessage = result.status == "linked_global"
                 ? "Das globale Rezept wurde in deinem Haushalt gespeichert. Kein erneuter Download."
-                : imported == 1
-                ? "Der geteilte Rezeptlink wurde importiert."
-                : "\(imported) geteilte Links wurden importiert."
+                : "Der geteilte Rezeptlink wurde importiert."
+        } catch {
+            guard identity == expectedIdentity else { return }
+            alertMessage = "Ein geteilter Link konnte noch nicht importiert werden: \(error.localizedDescription)"
         }
     }
+
+    func discardSharedURL(_ url: String) {
+        removeSharedImport(url)
+        queuedSharedImports = sharedImportURLs()
+    }
+
 }
 
 struct OfflineSessionSnapshot: Codable {

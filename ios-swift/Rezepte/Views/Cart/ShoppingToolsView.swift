@@ -4,6 +4,7 @@ struct ShoppingToolsView: View {
     let onApplied: () async -> Void
 
     @EnvironmentObject private var session: SessionStore
+    @StateObject private var aiConsent = AIConsentCoordinator()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.recipeTheme) private var theme
     @State private var preview: ShoppingOptimizePreview?
@@ -65,6 +66,7 @@ struct ShoppingToolsView: View {
                 if let notice { Section { Label(notice, systemImage: "checkmark.circle.fill").foregroundStyle(theme.success) } }
                 if let errorMessage { Section { Text(errorMessage).foregroundStyle(.red) } }
             }
+            .aiConsentPrompt(aiConsent)
             .navigationTitle("Einkaufsliste")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -75,7 +77,10 @@ struct ShoppingToolsView: View {
 
     private func createPreview() async {
         guard session.fullAccess else { return }
-        await perform { preview = try await session.api.shoppingOptimizationPreview() }
+        await perform {
+            guard let consent = await aiConsent.request(.shoppingOptimization, session: session) else { return }
+            preview = try await session.api.shoppingOptimizationPreview(consent: consent)
+        }
     }
 
     private func apply(_ preview: ShoppingOptimizePreview) async {

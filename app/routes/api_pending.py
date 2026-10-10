@@ -30,6 +30,7 @@ from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
+from ..ai_consent import consent_bound, require_ai_consent, require_pending_save_consent
 from ..auth import require_admin, require_auth, require_import
 from ..config_store import get_config
 from ..db import get_db
@@ -263,7 +264,7 @@ def _assert_upload_capacity(payload_size: int) -> None:
         )
 
 
-@router.post("/import-url", dependencies=[Depends(require_import)])
+@router.post("/import-url", dependencies=[Depends(require_import), Depends(require_ai_consent)])
 def import_url(body: ImportUrlBody, request: Request) -> Dict[str, Any]:
     """Nimmt eine Rezept-Webquelle sofort an und analysiert sie im Hintergrund.
 
@@ -359,7 +360,7 @@ def import_url(body: ImportUrlBody, request: Request) -> Dict[str, Any]:
     }
 
 
-@router.post("/import-file", dependencies=[Depends(require_import)])
+@router.post("/import-file", dependencies=[Depends(require_import), Depends(require_ai_consent)])
 async def import_file(
     request: Request,
     file: UploadFile = File(...),
@@ -501,7 +502,7 @@ async def import_file(
     return result
 
 
-@router.post("/scan-photo", dependencies=[Depends(require_import)])
+@router.post("/scan-photo", dependencies=[Depends(require_import), Depends(require_ai_consent)])
 async def scan_pending_photo(
     request: Request,
     url: str = Query(..., min_length=1),
@@ -669,7 +670,7 @@ class ResolveBody(BaseModel):
     verified: bool = False
 
 
-@router.post("", dependencies=[Depends(require_import)])
+@router.post("", dependencies=[Depends(require_import), Depends(require_pending_save_consent)])
 def resolve(body: ResolveBody):
     if body.action not in ("save", "skip"):
         raise HTTPException(400, "action muss 'save' oder 'skip' sein")
@@ -706,7 +707,7 @@ class FailedActionRequest(BaseModel):
     url: str
 
 
-@router.post("/reanalyze", dependencies=[Depends(require_import)])
+@router.post("/reanalyze", dependencies=[Depends(require_import), Depends(require_ai_consent)])
 def reanalyze(body: ReanalyzeRequest):
     """Lässt ein Pending-Item neu durch die KI-Cascade laufen."""
     db, _entry, job = _pending_import(body.url, body.visibility)
@@ -807,7 +808,7 @@ def _reanalyze_all_thread(job_id: int):
         _reanalyze_lock.release()
 
 
-@router.post("/reanalyze-all", dependencies=[Depends(require_admin)])
+@router.post("/reanalyze-all", dependencies=[Depends(require_admin), Depends(require_ai_consent)])
 def reanalyze_all():
     """Startet Background-Job der alle Pending-Items neu analysiert."""
     if not _reanalyze_lock.acquire(blocking=False):
@@ -820,7 +821,7 @@ def reanalyze_all():
         _reanalyze_lock.release()
         raise HTTPException(409, str(exc)) from exc
     _reanalyze_thread = _threading.Thread(
-        target=_reanalyze_all_thread, args=(job_id,), daemon=True,
+        target=consent_bound(_reanalyze_all_thread), args=(job_id,), daemon=True,
         name="pending-reanalyze",
     )
     _reanalyze_thread.start()

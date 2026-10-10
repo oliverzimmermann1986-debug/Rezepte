@@ -50,9 +50,10 @@ final class APIClientTests: XCTestCase {
 
     func testPrivateImportReportsReusedGlobalRecipe() async throws {
         let client = APIClient(session: MockURLProtocol.makeSession())
-        try await client.configure(server: "https://example.de", token: "token")
+        let consentIdentity = UUID()
+        try await client.configure(server: "https://example.de", token: "token", sessionID: consentIdentity)
         MockURLProtocol.respond(json: #"{"ok":true,"status":"linked_global","recipe_id":42}"#)
-        let response = try await client.importURL("https://recipes.example/soup")
+        let response = try await client.importURL("https://recipes.example/soup", consent: AIProcessingConsent(id: UUID(), action: .importLink, identity: consentIdentity, server: "https://example.de"))
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: String])
         XCTAssertEqual(body["visibility"], "private")
         XCTAssertEqual(response.status, "linked_global")
@@ -601,13 +602,15 @@ final class APIClientTests: XCTestCase {
     func testFileImportUsesAuthenticatedMultipartRequest() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
-        try await client.configure(server: "https://example.de", token: "api-token")
+        let consentIdentity = UUID()
+        try await client.configure(server: "https://example.de", token: "api-token", sessionID: consentIdentity)
         MockURLProtocol.respond(json: """
         {"ok":true,"message":"Datei wurde importiert."}
         """)
 
         let result = try await client.importFile(
-            data: Data("jpeg-data".utf8), filename: "rezept.jpg", mimeType: "image/jpeg"
+            data: Data("jpeg-data".utf8), filename: "rezept.jpg", mimeType: "image/jpeg",
+            consent: AIProcessingConsent(id: UUID(), action: .importFile, identity: consentIdentity, server: "https://example.de")
         )
 
         XCTAssertEqual(result.ok, true)
@@ -617,6 +620,7 @@ final class APIClientTests: XCTestCase {
         let body = String(data: MockURLProtocol.lastBody(), encoding: .utf8) ?? ""
         XCTAssertTrue(body.contains("filename=\"rezept.jpg\""))
         XCTAssertTrue(body.contains("jpeg-data"))
+        XCTAssertTrue(body.contains("name=\"ai_processing_consent\"\r\n\r\nopenai-recipe-v1"))
     }
 
     func testPendingSuggestionDecodesEditableRecipeContent() throws {
@@ -651,7 +655,8 @@ final class APIClientTests: XCTestCase {
     func testResolvePendingSendsCompleteReviewedRecipe() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
-        try await client.configure(server: "https://example.de", token: "token")
+        let consentIdentity = UUID()
+        try await client.configure(server: "https://example.de", token: "token", sessionID: consentIdentity)
         MockURLProtocol.respond(json: #"{"ok":true}"#)
 
         _ = try await client.resolvePending(
@@ -664,7 +669,8 @@ final class APIClientTests: XCTestCase {
             ingredients: [PendingIngredient(name: "Kartoffeln", amount: 500, unit: "g", raw: nil)],
             steps: [PendingStep(instruction: "Kochen", timerSeconds: 1200)],
             servings: 4,
-            verified: true
+            verified: true,
+            consent: AIProcessingConsent(id: UUID(), action: .saveRecipe, identity: consentIdentity, server: "https://example.de")
         )
 
         let data = MockURLProtocol.lastBody()
@@ -679,12 +685,13 @@ final class APIClientTests: XCTestCase {
     func testPendingReanalysisUsesDedicatedEndpoint() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
-        try await client.configure(server: "https://example.de", token: "token")
+        let consentIdentity = UUID()
+        try await client.configure(server: "https://example.de", token: "token", sessionID: consentIdentity)
         MockURLProtocol.respond(json: """
         {"ok":true,"action":"still_pending","analysis":{"name":"Neu erkannt"}}
         """)
 
-        let result = try await client.reanalyzePending(url: "https://example.de/rezept")
+        let result = try await client.reanalyzePending(url: "https://example.de/rezept", consent: AIProcessingConsent(id: UUID(), action: .reanalyze, identity: consentIdentity, server: "https://example.de"))
 
         XCTAssertEqual(result.analysis?.name, "Neu erkannt")
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/pending/reanalyze")
@@ -693,17 +700,18 @@ final class APIClientTests: XCTestCase {
 
     func testPrivatePendingActionsKeepTheirVisibilityScope() async throws {
         let client = APIClient(session: MockURLProtocol.makeSession())
-        try await client.configure(server: "https://example.de", token: "full-user-token")
+        let consentIdentity = UUID()
+        try await client.configure(server: "https://example.de", token: "full-user-token", sessionID: consentIdentity)
         MockURLProtocol.respond(json: #"{"ok":true}"#)
         _ = try await client.resolvePending(url: "https://example.de/rezept", action: "skip", visibility: "private")
         var body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any])
         XCTAssertEqual(body["visibility"] as? String, "private")
 
-        _ = try await client.reanalyzePending(url: "https://example.de/rezept", visibility: "private")
+        _ = try await client.reanalyzePending(url: "https://example.de/rezept", visibility: "private", consent: AIProcessingConsent(id: UUID(), action: .reanalyze, identity: consentIdentity, server: "https://example.de"))
         body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any])
         XCTAssertEqual(body["visibility"] as? String, "private")
 
-        _ = try await client.scanPendingPhoto(url: "https://example.de/rezept", data: Data([1, 2, 3]), filename: "test.jpg", mimeType: "image/jpeg", visibility: "private")
+        _ = try await client.scanPendingPhoto(url: "https://example.de/rezept", data: Data([1, 2, 3]), filename: "test.jpg", mimeType: "image/jpeg", visibility: "private", consent: AIProcessingConsent(id: UUID(), action: .scanPhoto, identity: consentIdentity, server: "https://example.de"))
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/pending/scan-photo")
         XCTAssertEqual(MockURLProtocol.lastQueryItems()["visibility"], "private")
     }
@@ -912,12 +920,13 @@ final class APIClientTests: XCTestCase {
     func testImageBackfillUsesBackupFirstEndpoint() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
-        try await client.configure(server: "https://example.de", token: "token")
+        let consentIdentity = UUID()
+        try await client.configure(server: "https://example.de", token: "token", sessionID: consentIdentity)
         MockURLProtocol.respond(json: """
         {"ok":true,"task_id":14,"run_id":8,"batch_id":"safe-batch"}
         """)
 
-        let result = try await client.startImageBackfill()
+        let result = try await client.startImageBackfill(consent: AIProcessingConsent(id: UUID(), action: .imageBackfill, identity: consentIdentity, server: "https://example.de"))
 
         XCTAssertEqual(result.runId, 8)
         XCTAssertEqual(MockURLProtocol.lastMethod(), "POST")
@@ -1026,12 +1035,13 @@ final class APIClientTests: XCTestCase {
     func testShoppingOptimizationPreviewDecodesServerContract() async throws {
         let session = MockURLProtocol.makeSession()
         let client = APIClient(session: session)
-        try await client.configure(server: "https://example.de", token: "api-token")
+        let consentIdentity = UUID()
+        try await client.configure(server: "https://example.de", token: "api-token", sessionID: consentIdentity)
         MockURLProtocol.respond(json: """
         {"preview_id":"abcdefghijklmnopqrstuvwxyz","items":[{"name":"Burrata","amount":1,"unit":"Stück","category":"Kühlregal"}],"summary":{"original_count":2,"optimized_count":1,"merged_count":1,"renamed_count":0,"categorized_count":1},"categories":["Kühlregal"],"expires_in_seconds":900}
         """)
 
-        let preview = try await client.shoppingOptimizationPreview()
+        let preview = try await client.shoppingOptimizationPreview(consent: AIProcessingConsent(id: UUID(), action: .shoppingOptimization, identity: consentIdentity, server: "https://example.de"))
 
         XCTAssertEqual(preview.items.first?.category, "Kühlregal")
         XCTAssertEqual(preview.summary.mergedCount, 1)
@@ -1151,6 +1161,7 @@ final class APIClientTests: XCTestCase {
 /// Fängt Requests des injizierten URLSession ab, damit der Query-Aufbau
 /// prüfbar ist, ohne einen Server zu brauchen.
 final class MockURLProtocol: URLProtocol {
+    nonisolated(unsafe) private(set) static var requestCount = 0
     nonisolated(unsafe) private static var body = Data("{}".utf8)
     nonisolated(unsafe) private static var lastRequestURL: URL?
     nonisolated(unsafe) private static var lastRequestHeaders: [String: String] = [:]
@@ -1231,6 +1242,7 @@ final class MockURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        Self.requestCount += 1
         Self.lastRequestURL = request.url
         Self.lastRequestHeaders = request.allHTTPHeaderFields ?? [:]
         if let body = request.httpBody {

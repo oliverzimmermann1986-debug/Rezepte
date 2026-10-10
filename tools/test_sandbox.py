@@ -37,6 +37,8 @@ def install_test_environment(root: Path) -> Path:
     # Eingehende SCRAPPER_CONFIG-Werte können auf echte Installationen zeigen.
     # Testläufe bekommen deshalb immer eine eigene Konfiguration.
     os.environ["SCRAPPER_CONFIG"] = str(config_file)
+    # Betreiberangaben gehören nicht in Testantworten oder Testartefakte.
+    os.environ.pop("SCRAPPER_LEGAL_CONFIG_FILE", None)
     os.environ["REZEPTE_BROWSER_ARTIFACT_DIR"] = str(sandbox / "browser")
     _sandbox = sandbox
     return sandbox

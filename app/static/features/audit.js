@@ -136,11 +136,17 @@
     // Audit-Dashboard
     // ════════════════════════════════════════════════════════════════════
 
-    async loadAudit() {
+    async loadAudit({ requestAI = false } = {}) {
+      // Automatisches Nachladen liest nur Befunde; jeder neue KI-Lauf braucht einen Klick.
+      const withAI = requestAI && this.audit.withAi;
+      if (withAI && !this.confirmAIProcessing('KI-Namensvorschläge ermitteln', 'Rezeptnamen, Kategorien und Ordnerbezeichnungen der geprüften Rezepte')) return;
       this.audit.loading = true;
       try {
         const params = new URLSearchParams();
-        if (this.audit.withAi) params.set('with_ai', 'true');
+        if (withAI) {
+          params.set('with_ai', 'true');
+          params.set('ai_processing_consent', this.aiProcessingPayload().ai_processing_consent);
+        }
         const r = await this.api('GET', '/api/audit?' + params.toString());
         if (r) {
           this.audit.data = r;
@@ -194,7 +200,8 @@
     async startAiSanity() {
       if (!this.canUseAdminTools()) return;
       if (this.audit.aiSanity.running) return;
-      const r = await this.api('POST', '/api/audit/ai-sanity');
+      if (!this.confirmAIProcessing('Rezepte mit KI auf Widersprüche prüfen', 'Rezepttitel, Kategorien, Zutaten und Zubereitungsschritte der geprüften Rezepte')) return;
+      const r = await this.api('POST', '/api/audit/ai-sanity', this.aiProcessingPayload());
       if (!r || !r.ok) return;
       this.audit.aiSanity = {
         running: true, processed: 0, total: r.total, findings: 0, pollHandle: null,
@@ -232,8 +239,8 @@
     async recoverEmpty() {
       if (!this.canUseAdminTools()) return;
       const n = this.audit.summary?.empty_recipe_count || 0;
-      if (!confirm(`${n} Rezepte auf 'pending' zurücksetzen?\n\nDer Worker extrahiert sie dann neu mit dem aktuellen Prompt. Bestehende Zutaten/Schritte würden überschrieben (sind ja eh leer).`)) return;
-      const r = await this.api('POST', '/api/recipes/recover-empty');
+      if (!this.confirmAIProcessing(`${n} unvollständige Rezepte neu analysieren`, 'Die gespeicherten Rezepttexte und Medien dieser Rezepte', 'Die Ermittlung von Zutaten und Schritten läuft anschließend im Hintergrund.')) return;
+      const r = await this.api('POST', '/api/recipes/recover-empty', this.aiProcessingPayload());
       if (r && r.ok) {
         this.showToast(`✓ ${r.reset_count} Rezepte auf pending — Worker läuft`);
         await this.loadAudit();
@@ -255,7 +262,7 @@
       }
       const etaSec = ids.length * 15;
       const eta = etaSec > 60 ? `~${Math.ceil(etaSec / 60)} Min` : `~${etaSec}s`;
-      if (!confirm(
+      if (!this.confirmAIProcessing(`${ids.length} Rezeptquellen erneut analysieren`, 'Neu geladene Texte und Medien der ausgewählten Rezeptquellen',
         `${ids.length} Rezepte ${label} erneut von ihrer URL abrufen?\n\n` +
         `TikTok-Captions werden aufgeklappt und anschließend neu analysiert. ` +
         `Der Lauf ist sequenziell und dauert ungefähr ${eta}.\n\n` +
@@ -272,7 +279,7 @@
           this.audit.rescrapeProgress++;
           try {
             const response = await this.api(
-              'POST', `/api/recipes/${id}/rescrape?reanalyze=true`
+              'POST', `/api/recipes/${id}/rescrape?reanalyze=true`, this.aiProcessingPayload()
             );
             if (response?.ok && response.ingredients_queued) {
               queued++;
@@ -317,10 +324,10 @@
       const total = this.audit.data?.data_gaps?.no_nutrition?.length || 0;
       if (total === 0) return;
       const batch = Math.min(total, 50);
-      if (!confirm(`Nährwerte für ${batch} Rezepte berechnen?\n\n~$${(batch * 0.0005).toFixed(3)} Kosten, ~${batch * 0.6}s Laufzeit.\n${total > 50 ? `\nNoch ${total - batch} bleiben übrig — Button danach erneut klicken.` : ''}`)) return;
+      if (!this.confirmAIProcessing(`Nährwerte für ${batch} Rezepte schätzen`, 'Zutaten mit Mengen und Portionszahlen dieser Rezepte', `${total > 50 ? `Noch ${total - batch} bleiben übrig; ein weiterer Lauf braucht eine neue Bestätigung.` : ''}`)) return;
       this.audit.computingNutritionBulk = true;
       try {
-        const r = await this.api('POST', '/api/recipes/compute-nutrition-bulk?limit=50');
+        const r = await this.api('POST', '/api/recipes/compute-nutrition-bulk?limit=50', this.aiProcessingPayload());
         if (r && r.ok) {
           const failedN = r.failed?.length || 0;
           if (failedN === 0) {
@@ -434,9 +441,10 @@
     },
     async rescrapeRecipe(recipeId) {
       if (!this.canUseAdminTools()) return;
+      if (!this.confirmAIProcessing('Rezeptquelle neu abrufen und analysieren')) return;
       this.audit.rescrapingId = recipeId;
       try {
-        const r = await this.api('POST', `/api/recipes/${recipeId}/rescrape`);
+        const r = await this.api('POST', `/api/recipes/${recipeId}/rescrape`, this.aiProcessingPayload());
         if (r && r.ok) {
           if (r.any_change) {
             const parts = [];
@@ -584,7 +592,7 @@
       if (list.length === 0) return;
       const eta_sec = list.length * 15;
       const eta_str = eta_sec > 60 ? `~${Math.ceil(eta_sec/60)} Min` : `~${eta_sec}s`;
-      if (!confirm(`${list.length} Rezepte sequenziell re-scrapen?\n\nDauert ${eta_str}. Bei Fehlern (URL down/geo-blocked) wird das Rezept übersprungen.\n\nCancel: erneut auf den Button klicken.`)) return;
+      if (!this.confirmAIProcessing(`${list.length} Rezeptquellen neu abrufen und analysieren`, 'Neu geladene Texte und Medien dieser Rezeptquellen', `Dauert ungefähr ${eta_str}. Bei Fehlern wird das Rezept übersprungen.`)) return;
       this.audit.rescrapingBulk = true;
       this.audit.rescrapeProgress = 0;
       this.audit.rescrapeTotal = list.length;
@@ -594,7 +602,7 @@
           if (!this.audit.rescrapingBulk) break;  // cancel
           this.audit.rescrapeProgress++;
           try {
-            const resp = await this.api('POST', `/api/recipes/${r.id}/rescrape`);
+            const resp = await this.api('POST', `/api/recipes/${r.id}/rescrape`, this.aiProcessingPayload());
             if (resp && resp.ok && resp.any_change) ok++; else fail++;
           } catch (e) {
             fail++;

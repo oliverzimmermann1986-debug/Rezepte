@@ -441,7 +441,7 @@ def test_admin_pdf_dry_run_detects_rotation_without_writing(client, test_db: Dat
     monkeypatch.setattr(admin_api, "get_config", lambda: FakeConfig())
     app.dependency_overrides[require_admin] = lambda: None
     try:
-        response = client.post("/api/admin/pdf/process", json={
+        response = client.post("/api/admin/pdf/process", json={"ai_processing_consent": "openai-recipe-v1",
             "recipe_id": recipe_id, "dry_run": True, "auto_rotate": True,
             "remove_blank_pages": False, "auto_crop": False,
             "deskew_scans": False, "ocr_scans": False,
@@ -583,7 +583,7 @@ def test_pdf_background_job_persists_result(client, test_db: Database, tmp_path:
     })
     app.dependency_overrides[require_admin] = lambda: None
     try:
-        response = client.post("/api/admin/pdf/process", json={
+        response = client.post("/api/admin/pdf/process", json={"ai_processing_consent": "openai-recipe-v1",
             "recipe_id": recipe_id, "dry_run": True, "background": True,
             "auto_rotate": True, "remove_blank_pages": False, "auto_crop": False,
             "deskew_scans": False, "ocr_scans": False,
@@ -671,7 +671,7 @@ def test_pdf_sync_and_background_runs_share_exclusive_lock(
     try:
         response = client.post(
             "/api/admin/pdf/process",
-            json={"process_all": True, "dry_run": True, "background": background},
+            json={"ai_processing_consent": "openai-recipe-v1", "process_all": True, "dry_run": True, "background": background},
         )
         assert response.status_code == 409
         assert "PDF-Verarbeitung läuft bereits" in response.json()["detail"]

@@ -146,6 +146,9 @@ struct AccountDeletionView: View {
     @Environment(\.recipeTheme) private var theme
     @State private var password = ""
     @State private var confirmDeletion = false
+    @State private var deleteHousehold = false
+    @State private var deletionPhrase = ""
+    @State private var household: HouseholdAccount?
     @State private var isDeleting = false
     @State private var errorMessage: String?
 
@@ -153,7 +156,17 @@ struct AccountDeletionView: View {
         Form {
             Section {
                 Text("Dein Benutzerkonto und deine Anmeldungen werden endgültig gelöscht. Gemeinsame Haushaltsdaten bleiben für weitere Mitglieder erhalten.")
-                Text("Das letzte Konto eines Haushalts mit Daten oder laufenden Importen kann erst gelöscht werden, wenn eine weitere Person dem Haushalt angehört.")
+                Text("Als letztes Mitglied kannst du deinen privaten Haushalt ausdrücklich mitlöschen. Der letzte aktive Serveradministrator muss zuerst einen weiteren Administrator benennen.")
+                if household?.members.count == 1 {
+                    Toggle("Privaten Haushalt mitlöschen", isOn: $deleteHousehold)
+                }
+                if deleteHousehold {
+                    Text("Private Rezepte, Bilder, PDFs, Einkauf, Wochenplan, Kochbücher und Kochhistorie werden dauerhaft entfernt. Freigaben und Einladungen verfallen. Globale Rezepte und fremde Haushalte bleiben erhalten. Bei laufenden Importen bitte nach deren Abschluss erneut bestätigen.")
+                    TextField("HAUSHALT LÖSCHEN", text: $deletionPhrase)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .accessibilityLabel("Zur Bestätigung HAUSHALT LÖSCHEN eingeben")
+                }
                 if passwordEnabled {
                     SecureField("Aktuelles Passwort", text: $password).textContentType(.password)
                 } else {
@@ -162,8 +175,9 @@ struct AccountDeletionView: View {
             }
             if let errorMessage { Section { Text(errorMessage).foregroundStyle(theme.danger) } }
             Section {
-                Button("Konto endgültig löschen", role: .destructive) { confirmDeletion = true }
-                    .disabled(isDeleting || (passwordEnabled && password.isEmpty))
+                Button(deleteHousehold ? "Konto und Haushalt endgültig löschen" : "Konto endgültig löschen", role: .destructive) { confirmDeletion = true }
+                    .disabled(isDeleting || household == nil || (passwordEnabled && password.isEmpty)
+                              || (deleteHousehold && deletionPhrase != "HAUSHALT LÖSCHEN"))
                 if isDeleting { ProgressView("Konto wird gelöscht …") }
             }
         }
@@ -171,10 +185,18 @@ struct AccountDeletionView: View {
         .navigationTitle("Konto löschen")
         .scrollContentBackground(.hidden)
         .background(theme.background)
+        .task {
+            let identity = session.identity
+            do {
+                let result = try await session.api.account()
+                guard session.identity == identity else { return }
+                household = result
+            } catch { errorMessage = accountErrorMessage(error, session: session, identity: identity) }
+        }
         .confirmationDialog("Konto \(session.username) endgültig löschen?", isPresented: $confirmDeletion, titleVisibility: .visible) {
             Button("Endgültig löschen", role: .destructive) { Task { await delete() } }
             Button("Abbrechen", role: .cancel) {}
-        } message: { Text("Diese Aktion kann nicht rückgängig gemacht werden.") }
+        } message: { Text(deleteHousehold ? "Auch dein gesamter privater Haushalt wird dauerhaft gelöscht. Diese Aktion kann nicht rückgängig gemacht werden." : "Diese Aktion kann nicht rückgängig gemacht werden.") }
     }
 
     private func delete() async {
@@ -184,11 +206,14 @@ struct AccountDeletionView: View {
         errorMessage = nil
         defer { isDeleting = false }
         do {
-            _ = try await session.api.deleteAccount(currentPassword: password)
+            let result = try await session.api.deleteAccount(currentPassword: password,
+                                                            deleteHousehold: deleteHousehold,
+                                                            confirmation: deleteHousehold ? deletionPhrase : "")
             guard session.identity == identity else { return }
             password = ""
+            for url in SharedImportQueue.all() { SharedImportQueue.remove(url) }
             session.signOut()
-            session.alertMessage = "Dein Konto wurde gelöscht."
+            session.alertMessage = result.message ?? "Dein Konto wurde gelöscht."
         } catch { errorMessage = accountErrorMessage(error, session: session, identity: identity) }
     }
 }

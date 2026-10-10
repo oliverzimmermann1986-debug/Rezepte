@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from ..ai_consent import consent_bound, require_ai_consent
 from ..auth import require_admin
 from ..db import get_db
 from ..jobs.scraper import get_scraper_job
@@ -56,7 +57,7 @@ class ReanalyzeOneRequest(BaseModel):
     auto_move: bool = False
 
 
-@router.post("/reanalyze")
+@router.post("/reanalyze", dependencies=[Depends(require_ai_consent)])
 def reanalyze_one(req: ReanalyzeOneRequest):
     """Holt Description via yt-dlp neu, schickt durch aktuellen AI-Provider,
     aktualisiert DB falls Confidence > threshold und Ergebnis abweicht.
@@ -92,7 +93,7 @@ def _reanalyze_history_all_thread(job_id: int, dry_run: bool, limit: int, auto_m
             pass
 
 
-@router.post("/reanalyze-all")
+@router.post("/reanalyze-all", dependencies=[Depends(require_ai_consent)])
 def reanalyze_all(payload: dict = None):
     """Startet einen Background-Job der alle History-Items reanalysiert.
 
@@ -116,7 +117,7 @@ def reanalyze_all(payload: dict = None):
     from ..jobs.scraper import reset_history_cancel
     reset_history_cancel()
     _history_reanalyze_thread = _th.Thread(
-        target=_reanalyze_history_all_thread,
+        target=consent_bound(_reanalyze_history_all_thread),
         args=(job_id, dry_run, limit, auto_move),
         daemon=True,
         name="history-reanalyze",

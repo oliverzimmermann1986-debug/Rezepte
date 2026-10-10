@@ -38,13 +38,13 @@ def test_account_and_server_limits_precede_pending_and_queue_writes(households, 
     db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
     for index in range(2):
-        assert client.post("/api/pending/import-url", json={"url": f"https://recipes.example/quota/{index}"}).status_code == 200
-    account_denied = client.post("/api/pending/import-url", json={"url": "https://recipes.example/quota/denied"})
+        assert client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": f"https://recipes.example/quota/{index}"}).status_code == 200
+    account_denied = client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/quota/denied"})
     assert account_denied.status_code == 429 and int(account_denied.headers["retry-after"]) > 0
     db.user_set_role(db.user_get_by_name("bert")["id"], "admin")
     login("bert")
-    assert client.post("/api/pending/import-url", json={"url": "https://recipes.example/bert/1"}).status_code == 200
-    server_denied = client.post("/api/pending/import-url", json={"url": "https://recipes.example/bert/denied"})
+    assert client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/bert/1"}).status_code == 200
+    server_denied = client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/bert/denied"})
     assert server_denied.status_code == 429 and "Servers" in server_denied.json()["detail"]
     assert len(queued) == 3
     with db.conn() as c:
@@ -59,7 +59,7 @@ def test_linking_an_existing_global_recipe_remains_free_after_budget_exhaustion(
     monkeypatch.setattr(api_pending, "enqueue", lambda *a, **k: pytest.fail("No analysis needed"))
     db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
-    response = client.post("/api/pending/import-url", json={"url": "https://recipes.example/free-global"})
+    response = client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/free-global"})
     assert response.status_code == 200 and response.json()["recipe_id"] == rid
     with db.conn() as c:
         assert c.execute("SELECT COUNT(*) FROM import_budget_usage").fetchone()[0] == 0
@@ -71,7 +71,7 @@ def test_queued_url_replay_does_not_consume_another_slot(households, limits, mon
     monkeypatch.setattr(api_pending, "enqueue", db.background_task_enqueue)
     db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
-    responses = [client.post("/api/pending/import-url", json={"url": "https://recipes.example/replay"}) for _ in range(2)]
+    responses = [client.post("/api/pending/import-url", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/replay"}) for _ in range(2)]
     assert [r.status_code for r in responses] == [200, 200]
     assert responses[0].json()["task_id"] == responses[1].json()["task_id"]
     with db.conn() as c:
@@ -117,7 +117,7 @@ def test_exhausted_budget_does_not_call_synchronous_analyzer(households, limits,
     db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
     if kind == "reanalyze":
-        response = client.post("/api/pending/reanalyze", json={"url": "https://recipes.example/photo"})
+        response = client.post("/api/pending/reanalyze", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/photo"})
     else:
         data = io.BytesIO()
         Image.new("RGB", (2, 2)).save(data, format="PNG")
@@ -153,7 +153,7 @@ def test_exhausted_analysis_budget_also_blocks_private_image_generation(househol
         import_budget.reserve_import(db)
     db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
-    response = client.post(f"/api/recipes/{rid}/generate-image", json={})
+    response = client.post(f"/api/recipes/{rid}/generate-image", json={"ai_processing_consent": "openai-recipe-v1", })
     assert response.status_code == 429, response.text
     assert int(response.headers["retry-after"]) > 0
     assert db.background_task_list() == []
@@ -166,15 +166,15 @@ def test_active_image_replay_is_free_but_new_generation_is_limited(households, l
     limits["import_daily_limit"] = 1
     db.user_set_role(db.user_get_by_name("anna")["id"], "admin")
     login("anna")
-    first = client.post(f"/api/recipes/{rid}/generate-image", json={})
+    first = client.post(f"/api/recipes/{rid}/generate-image", json={"ai_processing_consent": "openai-recipe-v1", })
     assert first.status_code == 202, first.text
-    replay = client.post(f"/api/recipes/{rid}/generate-image", json={})
+    replay = client.post(f"/api/recipes/{rid}/generate-image", json={"ai_processing_consent": "openai-recipe-v1", })
     assert replay.status_code == 202 and replay.json()["task_id"] == first.json()["task_id"]
     assert replay.json()["batch_id"] == first.json()["batch_id"]
     with db.conn() as c:
         assert c.execute("SELECT COUNT(*) FROM import_budget_usage").fetchone()[0] == 1
     db.background_task_finish(first.json()["task_id"], ok=True, result={})
-    assert client.post(f"/api/recipes/{rid}/generate-image", json={}).status_code == 429
+    assert client.post(f"/api/recipes/{rid}/generate-image", json={"ai_processing_consent": "openai-recipe-v1", }).status_code == 429
     assert len(db.background_task_list()) == 1
 
 
@@ -187,7 +187,7 @@ def test_server_budget_counts_images_from_different_households(households, limit
         rid = _recipe(db, username, f"https://recipes.example/{username}/image", owner=users[username][1])
         db.user_set_role(users[username][0], "admin")
         login(username)
-        response = client.post(f"/api/recipes/{rid}/generate-image", json={})
+        response = client.post(f"/api/recipes/{rid}/generate-image", json={"ai_processing_consent": "openai-recipe-v1", })
         assert response.status_code == status, response.text
 
 

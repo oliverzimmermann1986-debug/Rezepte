@@ -4,7 +4,6 @@ struct SettingsView: View {
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.recipeTheme) private var theme
-    @Environment(\.openURL) private var openURL
     @State private var showAdministration = false
     @AppStorage("content-language-v1") private var contentLanguage = ContentLanguage.de.rawValue
 
@@ -54,7 +53,7 @@ struct SettingsView: View {
                                 Text(language.title).tag(language.rawValue)
                             }
                         }
-                        Text("Importierte Beschreibungen und mitgesendete Kommentartexte werden beim Anzeigen automatisch in diese Sprache übersetzt. Der Originaltext bleibt erhalten.")
+                        Text("Diese Sprache wird für „Quelltext übersetzen“ verwendet. Die Übersetzung startet erst nach deiner ausdrücklichen Zustimmung zur KI-Verarbeitung. Der Originaltext bleibt erhalten.")
                             .font(.caption)
                             .foregroundStyle(theme.muted)
                     }
@@ -94,20 +93,12 @@ struct SettingsView: View {
                     }
                     LabeledContent("Angemeldet als", value: session.username)
                     LabeledContent("Rolle", value: session.role.title)
-                    Button {
-                        Task {
-                            do {
-                                let url = try await session.api.privacyURL()
-                                openURL(url)
-                            } catch {
-                                session.handle(error)
-                            }
-                        }
-                    } label: {
-                        Label("Datenschutz", systemImage: "hand.raised")
-                    }
                     Button("Abmelden", role: .destructive) { Task { await session.logOut() } }
                         .disabled(session.isEndingSession)
+                }
+
+                Section("Rechtliches & Hilfe") {
+                    LegalLinksView(server: session.savedServer, accessibilityPrefix: "settings.legal")
                 }
 
                 Section {

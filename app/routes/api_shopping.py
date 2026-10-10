@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, FiniteFloat, model_validator
 
+from ..ai_consent import require_ai_consent
 from ..auth import require_admin, require_auth
 from ..config_store import get_config
 from ..core.analyzer import build_analyzer
@@ -418,7 +419,7 @@ def _store_optimize_preview(payload: Dict[str, Any]) -> str:
     return preview_id
 
 
-@router.post("/optimize/preview", dependencies=[Depends(require_admin)])
+@router.post("/optimize/preview", dependencies=[Depends(require_admin), Depends(require_ai_consent)])
 def preview_cart_optimization() -> Dict[str, Any]:
     """Erzeugt eine KI-Vorschau; der aktuelle Cart bleibt unverändert."""
     db = get_db()

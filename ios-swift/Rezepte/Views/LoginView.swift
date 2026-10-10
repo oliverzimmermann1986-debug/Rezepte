@@ -187,6 +187,13 @@ struct LoginView: View {
                     )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Rechtliches & Hilfe")
+                            .font(.headline)
+                            .foregroundStyle(theme.ink)
+                        LegalLinksView(server: server, accessibilityPrefix: "login.legal")
+                    }
                 }
                 .padding(24)
             }

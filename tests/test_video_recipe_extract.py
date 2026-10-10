@@ -290,7 +290,7 @@ def test_manual_extract_fills_missing_steps_without_replacing_ingredients(
         ),
     )
 
-    response = client.post(f"/api/recipes/{recipe_id}/extract")
+    response = client.post(f"/api/recipes/{recipe_id}/extract", json={"ai_processing_consent": "openai-recipe-v1"})
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"

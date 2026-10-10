@@ -301,7 +301,7 @@ def test_manual_image_also_wins_over_an_older_queued_generation(test_db, tmp_pat
     from app.routes.api_recipes import _publish_thumbnail
 
     recipe_id, folder, _, _ = _image_recipe(test_db, tmp_path, monkeypatch)
-    payload = {"recipe_id": recipe_id, "batch_id": "older-queued-batch"}
+    payload = {"recipe_id": recipe_id, "batch_id": "older-queued-batch", "ai_processing_consent": "openai-recipe-v1"}
     test_db.background_task_enqueue("recipe_image_generate", payload)
     staged = folder / ".manual-upload.jpg"
     manual = _jpeg("blue")
@@ -331,7 +331,7 @@ def test_fast_completed_generation_is_not_reset_to_pending_by_the_route(client, 
         return task_id
 
     monkeypatch.setattr(task_queue, "enqueue", complete_before_return)
-    response = client.post(f"/api/recipes/{recipe_id}/generate-image", json={})
+    response = client.post(f"/api/recipes/{recipe_id}/generate-image", json={"ai_processing_consent": "openai-recipe-v1", })
     assert response.status_code == 202
     assert test_db.recipe_get(recipe_id)["image_generation_status"] == "ok"
 
@@ -358,7 +358,7 @@ def test_image_enqueue_and_pending_status_share_one_transaction(test_db, tmp_pat
 def test_new_queued_intent_during_image_commit_rolls_back_the_old_publication(test_db, tmp_path, monkeypatch):
     recipe_id, _, active, original = _image_recipe(test_db, tmp_path, monkeypatch)
     old_batch = "older-publishing-batch"
-    new_payload = {"recipe_id": recipe_id, "batch_id": "newer-publishing-batch", "replace_existing": True}
+    new_payload = {"recipe_id": recipe_id, "batch_id": "newer-publishing-batch", "replace_existing": True, "ai_processing_consent": "openai-recipe-v1"}
     real_status = test_db.recipe_image_generation_status
 
     def enqueue_before_commit(*args, **kwargs):

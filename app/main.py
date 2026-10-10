@@ -26,6 +26,7 @@ from .auth import (SESSION_COOKIE, SESSION_MAX_AGE, password_login_identity,
                     request_user, require_auth, verify_session, revoke_current_session)
 from .config_store import get_config, migrate_pdf_quality_defaults
 from .db import get_db
+from . import legal
 from .routes import (api_account, api_admin, api_audit, api_auth, api_oidc, api_browse, api_config, api_discovery, api_einkauf, api_events, api_hdd,
                      api_history, api_household_features, api_jobs, api_master, api_metrics, api_pending, api_recipes,
                      api_meal_plan, api_share, api_shopping, api_stats, api_test,
@@ -287,12 +288,25 @@ async def _provider_revocation_loop(db):
         await asyncio.sleep(60)
 
 
+async def _household_purge_loop(db):
+    import asyncio
+    from .account_deletion import recover_purges
+    while True:
+        try:
+            await asyncio.to_thread(recover_purges, db, limit=10)
+        except Exception:
+            logger.warning("Ausstehende Haushaltslöschung wird erneut versucht")
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def _lifespan(app):
     import asyncio
     from contextlib import suppress
 
     db = _initialize_runtime_state()
+    from .account_deletion import recover_purges
+    await asyncio.to_thread(recover_purges, db, limit=10)
     from .routes.api_admin import reset_pdf_runtime
     reset_pdf_runtime()
     # Trash-Cleanup-Background-Thread starten: einmal pro Tag prüft er ob
@@ -310,9 +324,13 @@ async def _lifespan(app):
     logger.info("App ready (workers running, sd_notify READY=1 sent)")
     watchdog_task = asyncio.create_task(_watchdog_loop(), name="systemd-watchdog")
     provider_task = asyncio.create_task(_provider_revocation_loop(db), name="provider-revocations")
+    purge_task = asyncio.create_task(_household_purge_loop(db), name="household-purges")
     try:
         yield
     finally:
+        purge_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await purge_task
         provider_task.cancel()
         with suppress(asyncio.CancelledError):
             await provider_task
@@ -422,6 +440,8 @@ APP_CAPABILITIES = [
     "source-integrity-v1",
     "source-integrity-v2",
     "substitution-lab-v1",
+    "ai-action-consent-v1",
+    "household-deletion-v1",
 ]
 
 # Docs nur aktiv wenn explizit angefragt (Default: aus für Production).
@@ -525,6 +545,7 @@ app.include_router(api_share.info_router)
 app.include_router(sharing.print_router)
 app.include_router(sharing.share_api_router)
 app.include_router(sharing.public_router)
+app.include_router(legal.router)
 
 
 # -------- Cookie-Helper --------
@@ -564,6 +585,7 @@ LOGIN_HTML = """\
   <a class="btn btn-secondary" href="/register">Konto erstellen</a>
   <button type="submit" formaction="/login/guest" formnovalidate>Als Gast ansehen</button>
   <p class="muted">Gäste können Rezepte, Einkauf und Wochenplan ansehen. Änderungen bleiben angemeldeten Konten vorbehalten.</p>
+  {legal_links}
 </form>
 </body></html>
 """
@@ -592,7 +614,7 @@ def _provider_login_links(invitation: str = "") -> str:
 
 
 def _login_html(*, error: str, next: str):
-    return LOGIN_HTML.format(error=error, next=next, providers=_provider_login_links())
+    return LOGIN_HTML.format(error=error, next=next, providers=_provider_login_links(), legal_links=legal.LEGAL_NAV_HTML)
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -608,7 +630,7 @@ def login_page(next: str = "/", provider_error: str = "", logout_warning: str = 
 @app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
 def privacy_page():
     """Öffentliche Datenschutzhinweise für App Store und native App."""
-    return HTMLResponse(
+    content = (
         """<!doctype html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -619,12 +641,13 @@ main{max-width:720px;margin:auto;padding:40px 20px 80px}h1{font-size:36px;line-h
 h2{margin-top:32px;font-size:22px}a{color:#433427}small{color:#7b6a5c}
 </style></head><body><main>
 <h1>Datenschutz</h1>
-<p><strong>Rezepte</strong> ist eine private, selbst gehostete
-Rezeptverwaltung. Verantwortlich ist der Betreiber des Servers, dessen
-Adresse in der App eingetragen wurde.</p>
+<p><strong>Rezeptregal</strong> verbindet die App mit dem ausgewählten Rezeptserver.
+Du kannst den voreingestellten Rezeptregal-Dienst oder einen kompatiblen eigenen Server verwenden.
+Die folgenden Hinweise beziehen sich auf diesen Server.</p>
+<!-- LEGAL_OPERATOR -->
 <h2>Verarbeitete Daten</h2>
 <p>Die App verarbeitet die Server-Adresse, den Benutzernamen, ein
-Sitzungstoken sowie die auf dem privaten Server gespeicherten
+Sitzungstoken sowie die auf dem ausgewählten Server gespeicherten
 Rezepte, Einkaufslisten und Wochenpläne. Dazu können vom Nutzer geteilte
 Quellenlinks sowie hochgeladene Bilder und PDF-Dokumente gehören. Hinzu kommen
 Kochbücher, Kochnotizen und zugehörige Fotos sowie Essenswünsche und Abstimmungen
@@ -670,6 +693,11 @@ Benachrichtigungen und eine Live Activity mit Rezepttitel und Restzeit auf dem
 Sperrbildschirm anzeigen. Diese Anzeigen lassen sich in den iOS-Einstellungen
 abschalten. Beim Abmelden werden laufende Timer entfernt.</p>
 <h2>KI-gestützte Verarbeitung</h2>
+<p>Vor jeder von dir gestarteten KI-Aktion fragt die App ausdrücklich nach deiner
+Zustimmung. Bei einem Abbruch startet diese Aktion keine Übermittlung an OpenAI.
+Die Freigabe gilt für die angezeigte Aktion einschließlich ihrer beschriebenen
+Folgeschritte, nicht dauerhaft für weitere Aktionen. Geteilte Links werden zunächst
+lokal vorgemerkt und erst nach deiner Bestätigung importiert.</p>
 <p>Wenn eine KI-Funktion verwendet wird, kann der Rezepteserver die dafür
 erforderlichen Rezepttexte, Bilder, PDF-Inhalte, Videoframes und extrahierte
 Audiospuren an OpenAI übermitteln. Für die Bildgenerierung werden Rezepttitel,
@@ -700,15 +728,28 @@ Cover sehen. In der iPhone-App sind neue Links sieben Tage gültig und enthalten
 keinen Benutzernamen. Aktive Links können in der App eingesehen und jederzeit
 sofort widerrufen werden.</p>
 <h2>Löschung und Auskunft</h2>
-<p>Rezepte und Kontodaten werden vom Betreiber des privaten Servers verwaltet.
-Anfragen zu Auskunft oder Löschung sind an diesen Betreiber zu richten. Durch
-Abmelden werden Sitzungstoken und private Bildcaches vom iPhone entfernt;
+<p>Dein Konto kannst du in der iPhone-App unter Einstellungen → Mein Konto → Konto löschen
+oder im Browser unter <a href="/account">Mein Konto</a> → Konto löschen entfernen.
+Dafür ist eine erneute Bestätigung deiner Anmeldung erforderlich. Gemeinsame Haushaltsdaten
+bleiben für weitere Mitglieder erhalten. Als einziges Mitglied kannst du zusätzlich deinen
+gesamten Haushalt mit privaten Rezepten, Importen, Listen und Dateien löschen.
+Dafür musst du ausdrücklich „HAUSHALT LÖSCHEN“ bestätigen. Laufende Verarbeitungen
+müssen zuvor beendet sein. Bei einer unterbrochenen Datei-Bereinigung bleibt die
+Löschung vorgemerkt und wird serverseitig erneut versucht. Das letzte Administratorkonto
+erfordert vor der Löschung die Übergabe der Serververwaltung.
+Bei fehlendem Kontozugriff, gesperrter Löschung oder Auskunftsanfragen nutze den
+oben angegebenen Betreiberkontakt beziehungsweise die <a href="/support">Supportseite</a>.</p>
+<p>Durch Abmelden werden Sitzungstoken und private Bildcaches vom iPhone entfernt;
 reguläre Serversitzungen werden widerrufen.
 Gastsitzungen laufen spätestens nach 24 Stunden ab. Beim Wechsel von Gast zur
 Anmeldung bleibt die Server-Adresse auf dem Gerät gespeichert.</p>
 <p><small>Stand: 10. Oktober 2026</small></p>
+<!-- LEGAL_LINKS -->
 </main></body></html>"""
     )
+    content = content.replace("<!-- LEGAL_OPERATOR -->", legal.privacy_operator_html())
+    content = content.replace("<!-- LEGAL_LINKS -->", legal.LEGAL_NAV_HTML)
+    return HTMLResponse(content, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/login")

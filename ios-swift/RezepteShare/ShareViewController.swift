@@ -7,7 +7,7 @@ final class ShareViewController: SLComposeServiceViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Zu Quellenküche"
-        placeholder = "Rezeptlink speichern. Der Import in der App erfordert ein Administratorkonto."
+        placeholder = "Link auf diesem Gerät speichern. Öffne anschließend den Eingang in Quellenküche und bestätige dort die KI-Verarbeitung durch OpenAI. Jetzt wird nichts hochgeladen."
         loadSharedURL()
     }
 

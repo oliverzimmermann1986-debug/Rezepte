@@ -41,6 +41,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from ..ai_consent import require_ai_consent
 from ..auth import require_admin, require_auth, request_is_guest
 from ..tenancy import CURRENT_HOUSEHOLD, RECIPE_LIBRARY, require_recipe_editor, require_recipe_variant_creator
 from ..core.analyzer import build_analyzer
@@ -211,15 +212,10 @@ def list_recipes(
     limit: int = Query(60, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    """Hauptlisten-Endpoint; nur Administratoren starten die Lazy-Extraktion."""
+    """Hauptlisten-Endpoint; Lesen startet keine externe KI-Verarbeitung."""
     db = get_db()
     if rating and any(value < 0 or value > 5 for value in rating):
         raise HTTPException(422, "Bewertungen müssen zwischen 0 und 5 liegen")
-
-    # Reading recipes must not grant ordinary accounts permission to start AI.
-    identity = CURRENT_HOUSEHOLD.get()
-    if identity is not None and identity.is_admin:
-        ensure_extraction_running()
 
     items = db.recipe_list(
         type=type,
@@ -455,7 +451,7 @@ def _public_image_backup(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.post(
-    "/images/backfill", status_code=202, dependencies=[Depends(require_admin)]
+    "/images/backfill", status_code=202, dependencies=[Depends(require_admin), Depends(require_ai_consent)]
 )
 def start_image_backfill(request: Request):
     """Sichert alle alten Bilder und startet erst danach die Generierung."""
@@ -468,11 +464,12 @@ def start_image_backfill(request: Request):
         raise HTTPException(409, str(exc)) from exc
     db = get_db()
     batch_id = uuid.uuid4().hex
+    recipe_ids = [int(recipe["id"]) for recipe in db.recipes_for_image_backfill(ids_only=True)]
     run_id = db.maintenance_start("recipe_image_backfill", _actor(request))
     try:
         task_id = enqueue(
             "recipe_image_backfill",
-            {"run_id": run_id, "batch_id": batch_id},
+            {"run_id": run_id, "batch_id": batch_id, "recipe_ids": recipe_ids},
             max_active=1,
         )
     except Exception as exc:
@@ -547,7 +544,7 @@ def backfill_allergen_info():
 @router.post(
     "/{recipe_id}/generate-image",
     status_code=202,
-    dependencies=[Depends(require_admin), Depends(require_recipe_editor)],
+    dependencies=[Depends(require_admin), Depends(require_recipe_editor), Depends(require_ai_consent)],
 )
 def queue_recipe_image(recipe_id: int):
     from ..jobs.task_queue import enqueue
@@ -1119,7 +1116,7 @@ class TranslationRequest(BaseModel):
     text: Optional[str] = Field(default=None, max_length=8_000)
 
 
-@router.post("/{recipe_id}/translate", dependencies=[Depends(require_admin)])
+@router.post("/{recipe_id}/translate", dependencies=[Depends(require_admin), Depends(require_ai_consent)])
 def translate_recipe_text(recipe_id: int, payload: TranslationRequest) -> Dict[str, Any]:
     """Übersetzt Beschreibung oder einen mitgesendeten Kommentar für die App.
 
@@ -1663,7 +1660,7 @@ def extraction_status():
     }
 
 
-@router.post("/recover-empty", dependencies=[Depends(require_admin)])
+@router.post("/recover-empty", dependencies=[Depends(require_admin), Depends(require_ai_consent)])
 def recover_empty(request: Request) -> Dict[str, Any]:
     """Setzt ingredients_status='pending' für alle aktiven Rezepte die status IN
     ('ok','error','skipped') haben aber 0 Zutaten in recipe_ingredients. Meist alte
@@ -1711,7 +1708,7 @@ def recover_empty(request: Request) -> Dict[str, Any]:
         from ..recipes.indexer import ensure_extraction_running
         worker_started = False
         try:
-            worker_started = ensure_extraction_running()
+            worker_started = ensure_extraction_running(recipe_ids=ids)
         except Exception as e:
             logger.warning(f"recover-empty: worker-start failed: {e}", exc_info=True)
 
@@ -1731,7 +1728,7 @@ def recover_empty(request: Request) -> Dict[str, Any]:
         raise HTTPException(500, f"recover-empty failed: {type(e).__name__}: {e}")
 
 
-@router.post("/{recipe_id}/rescrape", dependencies=[Depends(require_admin), Depends(require_recipe_editor)])
+@router.post("/{recipe_id}/rescrape", dependencies=[Depends(require_admin), Depends(require_recipe_editor), Depends(require_ai_consent)])
 def rescrape_recipe(
     recipe_id: int,
     request: Request,
@@ -1928,7 +1925,7 @@ def rescrape_recipe(
     worker_started = False
     if extraction_queued:
         try:
-            worker_started = ensure_extraction_running()
+            worker_started = ensure_extraction_running(recipe_ids=[recipe_id])
         except Exception as e:
             logger.warning("Re-Scrape: Extraktions-Worker konnte nicht starten: %s", e, exc_info=True)
 
@@ -2144,7 +2141,7 @@ def toggle_verify(recipe_id: int, request: Request,
     return {"ok": True, "verified": verified, "by": username}
 
 
-@router.post("/{recipe_id}/nutrition", dependencies=[Depends(require_admin), Depends(require_recipe_editor)])
+@router.post("/{recipe_id}/nutrition", dependencies=[Depends(require_admin), Depends(require_recipe_editor), Depends(require_ai_consent)])
 def compute_nutrition_for(recipe_id: int, request: Request) -> Dict[str, Any]:
     """On-Demand Nährwert-Berechnung für ein Rezept. KI-Single-Call.
     Setzt calories_per_serving + protein/carbs/fat_g + computed_at."""
@@ -2197,7 +2194,7 @@ def compute_nutrition_for(recipe_id: int, request: Request) -> Dict[str, Any]:
     return {"ok": True, **nutr}
 
 
-@router.post("/compute-nutrition-bulk", dependencies=[Depends(require_admin)])
+@router.post("/compute-nutrition-bulk", dependencies=[Depends(require_admin), Depends(require_ai_consent)])
 def compute_nutrition_bulk(request: Request, limit: int = Query(50, ge=1, le=200)) -> Dict[str, Any]:
     """Bulk: bis zu N Rezepte ohne Nährwerte berechnen. Synchroner Lauf —
     bei vielen Rezepten >30s, daher mit Limit. UI ruft das wiederholt auf
@@ -2250,7 +2247,7 @@ def compute_nutrition_bulk(request: Request, limit: int = Query(50, ge=1, le=200
     }
 
 
-@router.post("/{recipe_id}/extract", dependencies=[Depends(require_admin), Depends(require_recipe_editor)])
+@router.post("/{recipe_id}/extract", dependencies=[Depends(require_admin), Depends(require_recipe_editor), Depends(require_ai_consent)])
 def extract_one(
     recipe_id: int,
     background_tasks: BackgroundTasks,

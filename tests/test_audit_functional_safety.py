@@ -235,7 +235,7 @@ def test_manual_extract_cannot_bypass_source_check(client, test_db, tmp_path, mo
     monkeypatch.setattr(api_recipes, "analyze_recipe_with_video_fallback", lambda *_a, **_kw: VideoAnalysisResult(
         content={"ingredients": [{"name": "Hummer", "amount": 250, "unit": "g", "raw": "250 g Mehl"}],
                  "steps": [{"instruction": "Verrühren."}], "confidence": .99}, evidence_text=source))
-    response = client.post(f"/api/recipes/{rid}/extract")
+    response = client.post(f"/api/recipes/{rid}/extract", json={"ai_processing_consent": "openai-recipe-v1"})
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "error" and response.json()["needs_review"]
     assert test_db.recipe_get(rid)["ingredients_status"] == "error"

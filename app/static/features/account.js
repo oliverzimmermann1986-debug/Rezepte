@@ -69,10 +69,27 @@
         });
       },
       async deleteAccount() {
-        if (!confirm('Dein Konto endgültig löschen? Diese Aktion lässt sich nicht rückgängig machen. Haushaltsdaten können die Löschung verhindern.')) return;
+        const deleteHousehold = this.account.deleteHousehold === true;
+        if (deleteHousehold && this.account.deleteConfirmation !== 'HAUSHALT LÖSCHEN') {
+          this.account.error = 'Bitte HAUSHALT LÖSCHEN eingeben, um die dauerhafte Löschung zu bestätigen.';
+          return;
+        }
+        const consequences = deleteHousehold
+          ? 'Dein Konto und dein gesamter privater Haushalt mit Rezepten, Bildern, PDFs, Einkauf, Wochenplan und Kochhistorie werden dauerhaft gelöscht. Freigaben und Einladungen verfallen. Fortfahren?'
+          : 'Dein Konto endgültig löschen? Gemeinsame Haushaltsdaten bleiben für weitere Mitglieder erhalten. Diese Aktion lässt sich nicht rückgängig machen.';
+        if (!confirm(consequences)) return;
         await this.accountAction(async () => {
-          const result = await this.api('DELETE', '/api/account/profile', { current_password: this.account.deletePassword });
-          if (result?.ok) { this.clearAccountPasswords(); window.location.assign('/login'); }
+          const result = await this.api('DELETE', '/api/account/profile', {
+            current_password: this.account.deletePassword, delete_household: deleteHousehold,
+            confirmation: deleteHousehold ? this.account.deleteConfirmation : '',
+          });
+          if (result?.ok) {
+            this.clearAccountPasswords(); this.account.deleteConfirmation = '';
+            if (result.status === 'deletion_pending') {
+              this.account.deletionAccepted = true;
+              this.account.notice = result.message;
+            } else window.location.assign('/login');
+          }
         });
       },
       async revokeAccountSession(item) {
@@ -217,14 +234,15 @@
       },
       async saveHouseholdImport(item) {
         if (!this.canImport() || this.householdImportBusy(item) || !item.name?.trim()) return;
+        if (!this.confirmAIProcessing('Privates Rezept übernehmen', 'Die Rezeptquelle, Texte, Fotos, PDF-Inhalte und gegebenenfalls Video-/Audiodaten')) return;
         this.account.busy = true;
         try {
           const suggestion = item.suggestion || {};
-          const result = await this.api('POST', '/api/pending', { url: item.url, visibility: 'private', action: 'save', name: item.name.trim(),
+          const result = await this.api('POST', '/api/pending', this.aiProcessingPayload({ url: item.url, visibility: 'private', action: 'save', name: item.name.trim(),
             type: suggestion.type || 'Sonstiges', category: suggestion.category || 'Allgemein',
             ingredients: (suggestion.ingredients || []).filter(row => row.name?.trim()).map(row => ({ ...row, name: row.name.trim(), amount: row.amount === '' ? null : row.amount })),
             steps: (suggestion.steps || []).filter(row => row.instruction?.trim()).map((row, index) => ({ ...row, instruction: row.instruction.trim(), step_number: index + 1 })),
-            servings: suggestion.servings || null });
+            servings: suggestion.servings || null }));
           if (!result?.ok) throw new Error(result?.error || 'Rezept konnte nicht übernommen werden');
           await this.loadAccount();
           this.showToast('Privates Rezept übernommen');
@@ -237,11 +255,13 @@
       async changeHouseholdImport(item, action) {
         if (!this.canImport() || this.householdImportBusy(item) || !['skip', 'reanalyze'].includes(action)) return;
         if (action === 'skip' && !confirm('Diesen Importvorschlag verwerfen?')) return;
+        if (action === 'reanalyze' && !this.confirmAIProcessing('Rezept erneut analysieren', 'Die Rezeptquelle, Texte, Fotos, PDF-Inhalte und gegebenenfalls Video-/Audiodaten')) return;
         this.account.busy = true;
         this.account.error = '';
         try {
           const path = action === 'reanalyze' ? '/api/pending/reanalyze' : '/api/pending';
-          const result = await this.api('POST', path, { url: item.url, visibility: 'private', ...(action === 'skip' ? { action } : {}) });
+          const payload = { url: item.url, visibility: 'private', ...(action === 'skip' ? { action } : {}) };
+          const result = await this.api('POST', path, action === 'reanalyze' ? this.aiProcessingPayload(payload) : payload);
           if (!result?.ok) throw new Error(result?.error || 'Import konnte nicht aktualisiert werden.');
           await this.loadAccount();
           this.showToast(action === 'skip' ? 'Import verworfen.' : 'Import erneut analysiert.');

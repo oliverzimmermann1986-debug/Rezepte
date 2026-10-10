@@ -6,6 +6,7 @@ struct RecipeImageHistoryView: View {
     let recipeName: String
 
     @EnvironmentObject private var session: SessionStore
+    @StateObject private var aiConsent = AIConsentCoordinator()
     @Environment(\.recipeTheme) private var theme
     @State private var recipe: Recipe?
     @State private var backups: [ImageBackup] = []
@@ -71,6 +72,7 @@ struct RecipeImageHistoryView: View {
             .padding()
         }
         .background(theme.background)
+        .aiConsentPrompt(aiConsent)
         .navigationTitle("Bildverlauf")
         .navigationBarTitleDisplayMode(.inline)
         .overlay { if isLoading { ProgressView() } }
@@ -189,8 +191,9 @@ struct RecipeImageHistoryView: View {
         isGenerating = true
         errorMessage = nil
         defer { isGenerating = false }
+        guard let consent = await aiConsent.request(.generateImage, session: session) else { return }
         do {
-            _ = try await session.api.generateRecipeImage(id: recipeID)
+            _ = try await session.api.generateRecipeImage(id: recipeID, consent: consent)
             for _ in 0..<60 where !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 let updated = try await session.api.recipe(id: recipeID)

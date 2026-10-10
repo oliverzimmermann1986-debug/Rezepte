@@ -101,7 +101,7 @@
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
-        <span x-text="'v' + (systemInfo.version || '1.11.0')"></span>
+        <span x-text="'v' + (systemInfo.version || '1.12.0')"></span>
         <form method="post" action="/logout" class="logout-form">
           <button type="submit" class="sidebar-logout-button">Abmelden</button>
         </form>
@@ -200,11 +200,18 @@
         </details>
         <details @toggle="if (!$el.open) clearAccountPasswords()">
           <summary>Konto löschen</summary>
-          <form @submit.prevent="deleteAccount()" class="account-form">
-            <p>Dein Benutzerkonto wird endgültig gelöscht. Enthält dein Haushalt Daten, muss zuerst eine weitere Person beitreten. Der letzte Administrator kann nicht gelöscht werden.</p>
+          <p x-show="account.deletionAccepted" role="status" x-text="account.notice"></p>
+          <a x-show="account.deletionAccepted" class="btn btn-secondary" href="/login">Zur Anmeldung</a>
+          <form x-show="!account.deletionAccepted" @submit.prevent="deleteAccount()" class="account-form">
+            <p>Dein Benutzerkonto und deine Anmeldungen werden endgültig gelöscht. Gemeinsame Haushaltsdaten bleiben für weitere Mitglieder erhalten. Als letztes Mitglied kannst du deinen Haushalt ausdrücklich mitlöschen. Der letzte aktive Serveradministrator muss zuerst einen weiteren Administrator benennen.</p>
+            <label x-show="account.data?.members?.length === 1"><input type="checkbox" x-model="account.deleteHousehold" :disabled="account.busy">Auch meinen gesamten privaten Haushalt dauerhaft löschen</label>
+            <div x-show="account.deleteHousehold">
+              <p>Private Rezepte, Bilder, PDFs, Einkaufslisten, Wochenpläne, Kochbücher und Kochhistorie werden entfernt. Freigaben und Einladungen verfallen. Das kann nicht rückgängig gemacht werden. Globale Rezepte und fremde Haushalte bleiben erhalten. Bei laufenden Importen bitte nach deren Abschluss erneut bestätigen.</p>
+              <label>Zur Bestätigung HAUSHALT LÖSCHEN eingeben<input type="text" x-model="account.deleteConfirmation" autocomplete="off" :required="account.deleteHousehold" :disabled="account.busy"></label>
+            </div>
             <label x-show="account.profile?.password_enabled">Aktuelles Passwort<input type="password" x-model="account.deletePassword" autocomplete="current-password" :required="account.profile?.password_enabled" :disabled="account.busy"></label>
             <p x-show="!account.profile?.password_enabled">Bitte zuvor erneut mit Apple oder Google anmelden. Die Bestätigung gilt fünf Minuten.</p>
-            <button class="btn btn-danger" type="submit" :disabled="account.busy">Mein Konto endgültig löschen</button>
+            <button class="btn btn-danger" type="submit" :disabled="account.busy || (account.deleteHousehold && account.deleteConfirmation !== 'HAUSHALT LÖSCHEN')" x-text="account.deleteHousehold ? 'Konto und Haushalt endgültig löschen' : 'Mein Konto endgültig löschen'"></button>
           </form>
         </details>
       </div>
@@ -1267,13 +1274,14 @@
         <button type="button" class="btn btn-primary" x-show="canImport()" :disabled="!canImport()" @click="canImport() && (householdImportOpen=!householdImportOpen)" :aria-expanded="householdImportOpen.toString()">Rezept hinzufügen</button>
       </div>
       <form class="household-import card" x-show="householdImportOpen && canImport()" @submit.prevent="importUrl()">
+        <p>Zum Erkennen, Übersetzen und Erzeugen eines Rezeptbilds können Rezepttexte, Fotos, PDF-Inhalte sowie Video- und Audiodaten an OpenAI übertragen werden. Du bestätigst jede Verarbeitung vor dem Start. <a href="/privacy" target="_blank" rel="noopener noreferrer">Datenschutz zur KI-Verarbeitung</a></p>
         <label for="household-import-url">Rezeptlink</label>
         <input id="household-import-url" type="url" x-model="manualImportUrl" placeholder="https://…" required :disabled="manualImporting" autocomplete="off">
         <label x-show="session.is_admin" for="household-import-visibility">Sichtbarkeit</label>
         <select id="household-import-visibility" x-show="session.is_admin" x-model="manualImportVisibility" :disabled="manualImporting">
           <option value="private">Privat im Haushalt</option><option value="global">Global für alle</option>
         </select>
-        <p class="muted">Ein privater Import bleibt im Haushalt. Ist der Link bereits global vorhanden, speichert dein Haushalt einen Verweis auf dieses Rezept.</p>
+        <p class="muted">„Privat im Haushalt“ bestimmt, wer das gespeicherte Rezept lesen kann; die bestätigte KI-Verarbeitung erfolgt trotzdem über OpenAI. Ist der Link bereits global vorhanden, speichert dein Haushalt einen Verweis ohne erneute Analyse.</p>
         <button type="submit" class="btn btn-primary" :disabled="manualImporting || !manualImportUrl.trim()" x-text="manualImporting ? 'Wird übernommen …' : 'In Sammlung übernehmen'"></button>
         <p role="status" x-show="manualImportNotice" x-text="manualImportNotice"></p>
         <label for="household-import-file">Oder PDF / Foto importieren</label>
@@ -2337,7 +2345,7 @@
               <input type="checkbox" x-model="audit.withAi" />
               KI-Namensvorschläge (kostet ~$0.001 pro 50)
             </label>
-            <button class="btn btn-secondary" @click="loadAudit()" :disabled="audit.loading">
+            <button class="btn btn-secondary" @click="loadAudit({ requestAI: true })" :disabled="audit.loading">
               <span x-show="!audit.loading">↻ Neu scannen</span>
               <span x-show="audit.loading">… scannt</span>
             </button>
@@ -2905,7 +2913,7 @@
 
         <!-- Loading / leerer Zustand (global, außerhalb der Tabs) -->
         <div x-show="!audit.data && audit.loading" class="empty-state">
-          Scanne Rezepte<span x-show="audit.withAi"> + frage KI</span>…
+          Rezeptprüfung läuft…
         </div>
         <div x-show="!audit.data && !audit.loading" class="empty-state">
           Klick „Neu scannen" um zu starten.
@@ -3123,6 +3131,13 @@
       </template>
     </section>
 
+    <footer>
+      <nav aria-label="Rechtliches und Hilfe">
+        <a class="btn btn-ghost" href="/impressum">Impressum</a>
+        <a class="btn btn-ghost" href="/privacy">Datenschutz</a>
+        <a class="btn btn-ghost" href="/support">Support</a>
+      </nav>
+    </footer>
   </main>
 
   <!-- FS-Konflikt-Compare-Modal: Side-by-Side beider Folder -->

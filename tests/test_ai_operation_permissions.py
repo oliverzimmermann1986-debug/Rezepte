@@ -34,8 +34,8 @@ def _post(client, path, payload, upload, recipe_id):
     if upload:
         buffer = BytesIO()
         Image.new("RGB", (8, 8), "white").save(buffer, format="JPEG")
-        return client.post(path, files={"file": ("recipe.jpg", buffer.getvalue(), "image/jpeg")})
-    return client.post(path.format(id=recipe_id), json=payload)
+        return client.post(path, data={"ai_processing_consent": "openai-recipe-v1"}, files={"file": ("recipe.jpg", buffer.getvalue(), "image/jpeg")})
+    return client.post(path.format(id=recipe_id), json={**(payload or {}), "ai_processing_consent": "openai-recipe-v1"})
 
 
 def _files():
@@ -100,14 +100,14 @@ def test_admin_reaches_the_authorized_operation(households, monkeypatch, operati
 
 
 @pytest.mark.parametrize("username", ["anna", "guest", "operator"])
-def test_recipe_reads_start_background_extraction_only_for_admin(households, monkeypatch, username):
+def test_recipe_reads_never_start_background_extraction(households, monkeypatch, username):
     client, _, _, login = households
     calls = []
     monkeypatch.setattr(api_recipes, "ensure_extraction_running", lambda: calls.append("extract"))
     monkeypatch.setattr(indexer, "sync_filesystem", lambda *args: pytest.fail("A read started filesystem import"))
     login(username)
     assert client.get("/api/recipes").status_code == 200
-    assert calls == (["extract"] if username == "operator" else [])
+    assert calls == []
 
 
 def assert_provider_user_can_edit_but_cannot_start_jobs(client, db, username):
@@ -138,6 +138,6 @@ def test_user_session_does_not_replace_a_machine_import_token(households, monkey
     login("anna")
     monkeypatch.setattr(api_share, "_share_enabled", lambda: True)
     monkeypatch.setattr(api_share, "enqueue", lambda *args, **kwargs: pytest.fail("Ordinary session started machine import"))
-    response = client.post("/api/share", json={"url": "https://recipes.example/machine-import"})
+    response = client.post("/api/share", json={"ai_processing_consent": "openai-recipe-v1", "url": "https://recipes.example/machine-import"})
     assert response.status_code == 401
     assert _work_state(db) == {"background_tasks": [], "pending": [], "import_budget_usage": [], "recipe_versions": []}

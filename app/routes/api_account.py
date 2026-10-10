@@ -1,6 +1,7 @@
 """Eigenes Konto und die Einladung einer zweiten Person, ohne Adminrechte."""
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from .. import accounts
 from ..auth import (hash_password, request_is_guest, request_is_read_only, request_session, request_user,
@@ -42,6 +43,12 @@ class AccountConfirmation(BaseModel):
     current_password: str = Field(default="", max_length=512)
 
 
+class AccountDeletion(AccountConfirmation):
+    model_config = ConfigDict(extra="forbid")
+    delete_household: StrictBool = False
+    confirmation: str = Field(default="", max_length=80)
+
+
 class PasswordChange(AccountConfirmation):
     new_password: str = Field(min_length=10, max_length=72)
 
@@ -59,9 +66,15 @@ def change_password(payload: PasswordChange, request: Request):
 
 
 @router.delete("/profile")
-def delete_own_profile(payload: AccountConfirmation, request: Request):
+def delete_own_profile(payload: AccountDeletion, request: Request):
     user = require_recent_auth(request, payload.current_password)
     try:
+        if payload.delete_household:
+            from ..account_deletion import CONFIRMATION, delete_household
+            if payload.confirmation != CONFIRMATION:
+                raise HTTPException(400, "Bestätige die dauerhafte Haushaltslöschung mit HAUSHALT LÖSCHEN.")
+            result = delete_household(get_db(), user["id"], user["session_version"])
+            return JSONResponse(result, status_code=202 if result["status"] == "deletion_pending" else 200)
         deleted = get_db().user_delete(user["id"], expected_version=user["session_version"])
     except LastActiveAdminError as exc:
         raise HTTPException(400, str(exc)) from exc

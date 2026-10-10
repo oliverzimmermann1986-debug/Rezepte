@@ -147,9 +147,11 @@ def test_admin_private_link_import_shows_global_reuse(web):
     page.locator("#household-import-url").fill(fixture.recipes[1]["url"])
     expect(page.locator("#household-import-visibility")).to_be_visible()
     page.locator("#household-import-visibility").select_option("private")
+    page.once("dialog", lambda dialog: dialog.accept())
     page.get_by_role("button", name="In Sammlung übernehmen", exact=True).click()
     expect(page.locator(".household-import [role='status']")).to_contain_text("Kein erneuter Download")
     assert fixture.request_bodies[-1][1]["visibility"] == "private"
+    assert fixture.request_bodies[-1][1]["ai_processing_consent"] == "openai-recipe-v1"
     assert fixture.recipes[1]["in_library"] is True and len(fixture.recipes) == 3
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     capture(page, f"global-link-import-{width}")
@@ -188,12 +190,40 @@ def test_full_user_can_import_privately_without_admin_navigation(web):
     expect(page.locator("#household-import-visibility")).to_be_hidden()
     expect(page.get_by_label("Oder PDF / Foto importieren")).to_be_visible()
     page.locator("#household-import-url").fill(fixture.recipes[1]["url"])
+    page.once("dialog", lambda dialog: dialog.accept())
     page.get_by_role("button", name="In Sammlung übernehmen", exact=True).click()
     expect(page.locator(".household-import [role='status']")).to_contain_text("Kein erneuter Download")
     assert fixture.request_bodies[-1][1]["visibility"] == "private"
     assert not any(path.startswith('/api/admin/') for _, path, _ in fixture.requests)
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     capture(page, "full-user-private-import")
+    assert errors == []
+
+
+@pytest.mark.parametrize("web", [1440, 390, 320], indirect=True)
+def test_import_consent_cancel_preserves_link_and_sends_no_upload(web):
+    page, fixture, width, errors = web
+    fixture.role = "full_user"
+    open_library(page)
+    page.get_by_role("button", name="Rezept hinzufügen", exact=True).filter(visible=True).click()
+    link = fixture.recipes[1]["url"]
+    page.locator("#household-import-url").fill(link)
+    seen = []
+
+    def decline(dialog):
+        seen.append(dialog.message)
+        dialog.dismiss()
+
+    page.once("dialog", decline)
+    page.get_by_role("button", name="In Sammlung übernehmen", exact=True).click()
+    expect(page.locator("#household-import-url")).to_have_value(link)
+    expect(page.get_by_role("button", name="In Sammlung übernehmen", exact=True)).to_be_enabled()
+    expect(page.get_by_role("link", name="Datenschutz zur KI-Verarbeitung")).to_be_visible()
+    assert len(seen) == 1 and "OpenAI" in seen[0] and "personenbezogene" in seen[0]
+    assert not any(method == "POST" for method, _, _ in fixture.requests)
+    assert fixture.request_bodies == []
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    capture(page, f"ai-consent-cancel-{width}")
     assert errors == []
 
 
@@ -217,6 +247,7 @@ def test_full_user_can_correct_private_import_ingredients_and_steps(web):
     page.get_by_label('Menge', exact=True).filter(visible=True).fill('2')
     page.get_by_label('Schritt 1', exact=True).fill('Alles gründlich verrühren.')
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.once('dialog', lambda dialog: dialog.accept())
     page.get_by_role('button', name='Rezept übernehmen', exact=True).click()
     expect(page.get_by_role('heading', name='Private Importe prüfen')).to_be_hidden()
     assert saved[0]['visibility'] == 'private'

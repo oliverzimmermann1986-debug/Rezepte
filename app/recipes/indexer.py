@@ -31,8 +31,10 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Optional
+from ..ai_consent import CURRENT_AI_CONSENT, consent_bound, validate_ai_consent
 
 from ..core.analyzer import build_analyzer
 from ..config_store import get_config
@@ -48,6 +50,7 @@ logger = logging.getLogger(__name__)
 _worker_lock = threading.Lock()
 _worker_thread: Optional[threading.Thread] = None
 _worker_stop = threading.Event()
+_extraction_requests = deque()
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -423,28 +426,44 @@ def _index_one(db: Database, folder: Path, type_name: str, cat_name: str) -> str
 # Background Extraction Worker
 # ════════════════════════════════════════════════════════════════════════
 
-def ensure_extraction_running() -> bool:
-    """Startet den Worker-Thread, falls er noch nicht läuft UND es pending
-    Rezepte gibt. Wird vom /api/recipes-Endpoint aufgerufen — idempotent."""
+def ensure_extraction_running(recipe_ids=None) -> bool:
+    """Start an explicitly accepted snapshot; reading the library never starts AI."""
+    validate_ai_consent(CURRENT_AI_CONSENT.get())
     global _worker_thread
     with _worker_lock:
-        if _worker_thread and _worker_thread.is_alive():
-            return False
         db = get_db()
-        recovered = db.recipes_requeue_stale_extractions()
-        if recovered:
-            logger.warning(
-                "Extraction-Worker: %d verwaiste Claims erneut eingeplant",
-                recovered,
-            )
-        stats = db.recipes_extraction_stats()
-        if not stats.get("pending"):
-            return False  # nichts zu tun
+        visible = db.recipe_visibility_sql("r") if hasattr(db, "recipe_visibility_sql") else "r.owner_account_id IS NULL"
+        with db.conn() as c:
+            rows = c.execute(f"SELECT id, owner_account_id FROM recipes r WHERE ({visible}) AND ingredients_status='pending' AND deleted_at IS NULL").fetchall()
+        allowed = set(recipe_ids) if recipe_ids is not None else None
+        snapshot = [dict(row) for row in rows if allowed is None or int(row["id"]) in allowed]
+        if not snapshot:
+            return False
+        # Keep each accepted snapshot's context separate. A later user's action
+        # must neither disappear nor inherit the first user's household scope.
+        _extraction_requests.append((consent_bound(_extraction_loop), snapshot))
+        if _worker_thread and _worker_thread.is_alive():
+            return True
         _worker_stop.clear()
-        _worker_thread = threading.Thread(target=_extraction_loop, name="recipe-extractor", daemon=True)
+        _worker_thread = threading.Thread(target=_run_extraction_requests, name="recipe-extractor", daemon=True)
         _worker_thread.start()
-        logger.info(f"Recipe-Extraction-Worker gestartet ({stats.get('pending', 0)} pending)")
+        logger.info("Recipe-Extraction-Worker gestartet (%s bestätigt)", len(snapshot))
         return True
+
+
+def _run_extraction_requests():
+    global _worker_thread
+    while True:
+        with _worker_lock:
+            if _worker_stop.is_set() or not _extraction_requests:
+                _extraction_requests.clear()
+                _worker_thread = None
+                return
+            run, snapshot = _extraction_requests.popleft()
+        try:
+            run(snapshot)
+        except Exception:
+            logger.exception("Bestätigte Rezeptanalyse fehlgeschlagen")
 
 
 def stop_extraction() -> None:
@@ -456,9 +475,12 @@ def is_extraction_running() -> bool:
     return bool(_worker_thread and _worker_thread.is_alive())
 
 
-def _extraction_loop() -> None:
+def _extraction_loop(snapshot=None) -> None:
     """Worker-Hauptschleife. Stoppt von selbst wenn keine pending mehr sind."""
     db = get_db()
+    if snapshot is None:
+        return
+    remaining = {int(row["id"]): row.get("owner_account_id") for row in snapshot}
     cfg = get_config()
     ai_cfg = cfg.get("ai", default={}) or {}
 
@@ -479,7 +501,12 @@ def _extraction_loop() -> None:
     idle_loops = 0
     claim_owner = f"{os.getpid()}:{uuid.uuid4().hex}"
     while not _worker_stop.is_set():
-        batch = db.recipes_claim_extraction(limit=batch_size, owner=claim_owner)
+        batch = []
+        for account_id in set(remaining.values()):
+            batch.extend(db.recipes_claim_extraction(limit=batch_size - len(batch), owner=claim_owner,
+                account_id=account_id, recipe_ids=[rid for rid, owner in remaining.items() if owner == account_id]))
+            if len(batch) >= batch_size:
+                break
         if not batch:
             # 3x in Folge leer = wirklich nichts mehr, beenden
             idle_loops += 1
@@ -489,9 +516,11 @@ def _extraction_loop() -> None:
             time.sleep(2)
             continue
         idle_loops = 0
+        for recipe in batch:
+            remaining.pop(int(recipe["id"]), None)
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="extract") as ex:
             futures = {
-                ex.submit(_extract_for_recipe, db, analyzer, r, claim_owner): r
+                ex.submit(consent_bound(_extract_for_recipe), db, analyzer, r, claim_owner): r
                 for r in batch
             }
             for f in as_completed(futures):

@@ -11,7 +11,7 @@ function scrapperApp() {
     ...window.RezepteFeatures["account"](),
     page: 'recipes',
     session: { username: '', role: 'user', is_admin: false, full_access: false, can_import: false, loaded: false },
-    account: { imports: [], data: null, profile: null, sessions: [], identities: [], providers: [], loading: false, error: '', notice: '', busy: false, currentPassword: '', newPassword: '', confirmPassword: '', deletePassword: '', invitation: null, joinToken: '', _loadGeneration: 0, _loadController: null },
+    account: { imports: [], data: null, profile: null, sessions: [], identities: [], providers: [], loading: false, error: '', notice: '', busy: false, currentPassword: '', newPassword: '', confirmPassword: '', deletePassword: '', deleteHousehold: false, deleteConfirmation: '', deletionAccepted: false, invitation: null, joinToken: '', _loadGeneration: 0, _loadController: null },
     users: { items: [], loading: false, busy: false, error: '', notice: '', search: '', draft: null, _loadGeneration: 0 },
     systemInfo: { version: '', capabilities: [], loaded: false, backendOutdated: false },
     admin: {

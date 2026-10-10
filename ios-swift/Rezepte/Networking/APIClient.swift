@@ -5,6 +5,7 @@ enum APIError: LocalizedError {
     case insecureServer
     case unauthenticated
     case sessionChanged
+    case aiConsentRequired
     case server(Int, String)
     case invalidResponse(String)
 
@@ -16,6 +17,8 @@ enum APIError: LocalizedError {
             return "Bitte eine HTTPS-Adresse verwenden."
         case .unauthenticated:
             return "Die Sitzung ist abgelaufen. Bitte erneut anmelden."
+        case .aiConsentRequired:
+            return "Bitte bestätige die KI-Verarbeitung für diese Aktion erneut."
         case .sessionChanged:
             return "Die Sitzung hat sich geändert. Bitte erneut laden."
         case let .server(_, message):
@@ -35,6 +38,7 @@ actor APIClient {
     private var readOnly = false
     private var hasAccount = false
     private var configurationID = UUID()
+    private var consumedAIConsents: Set<UUID> = []
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -188,8 +192,15 @@ actor APIClient {
                        body: ["current_password": current, "new_password": new])
     }
 
-    func deleteAccount(currentPassword: String) async throws -> APIResult {
-        try await send("/api/account/profile", method: "DELETE", body: ["current_password": currentPassword])
+    func deleteAccount(currentPassword: String, deleteHousehold: Bool = false, confirmation: String = "") async throws -> APIResult {
+        struct DeletionPayload: Encodable {
+            let current_password: String
+            let delete_household: Bool
+            let confirmation: String
+        }
+        return try await send("/api/account/profile", method: "DELETE", body: DeletionPayload(
+            current_password: currentPassword, delete_household: deleteHousehold, confirmation: confirmation
+        ))
     }
 
     func accountSessions() async throws -> AccountSessions {
@@ -448,17 +459,18 @@ actor APIClient {
         )
     }
 
-    func computeRecipeNutrition(id: Int) async throws -> APIResult {
-        try await send(
+    func computeRecipeNutrition(id: Int, consent: AIProcessingConsent) async throws -> APIResult {
+        try await sendAI(
             "/api/recipes/\(id)/nutrition",
             method: "POST",
             body: EmptyBody(),
+            consent: consent, action: .nutrition,
             timeout: 120
         )
     }
 
-    func reextractRecipeSource(id: Int, refreshMedia: Bool = true) async throws -> APIResult {
-        try await send(
+    func reextractRecipeSource(id: Int, refreshMedia: Bool = true, consent: AIProcessingConsent) async throws -> APIResult {
+        try await sendAI(
             "/api/recipes/\(id)/extract",
             method: "POST",
             query: [
@@ -468,15 +480,17 @@ actor APIClient {
                 )
             ],
             body: EmptyBody(),
+            consent: consent, action: .extractSource,
             timeout: 180
         )
     }
 
-    func translateRecipeText(id: Int, language: String, text: String? = nil) async throws -> RecipeTranslationResponse {
-        try await send(
+    func translateRecipeText(id: Int, language: String, text: String? = nil, consent: AIProcessingConsent) async throws -> RecipeTranslationResponse {
+        try await sendAI(
             "/api/recipes/\(id)/translate",
             method: "POST",
             body: TranslationPayload(targetLanguage: language, text: text),
+            consent: consent, action: .translation,
             timeout: 120
         )
     }
@@ -590,11 +604,12 @@ actor APIClient {
         try await send("/api/cart/categories")
     }
 
-    func shoppingOptimizationPreview() async throws -> ShoppingOptimizePreview {
-        try await send(
+    func shoppingOptimizationPreview(consent: AIProcessingConsent) async throws -> ShoppingOptimizePreview {
+        try await sendAI(
             "/api/cart/optimize/preview",
             method: "POST",
             body: EmptyBody(),
+            consent: consent, action: .shoppingOptimization,
             timeout: 120
         )
     }
@@ -893,8 +908,8 @@ actor APIClient {
         try await send("/api/audit/ai-sanity/findings")
     }
 
-    func startAudit() async throws -> APIResult {
-        try await send("/api/audit/ai-sanity", method: "POST", body: EmptyBody())
+    func startAudit(consent: AIProcessingConsent) async throws -> APIResult {
+        try await sendAI("/api/audit/ai-sanity", method: "POST", body: EmptyBody(), consent: consent, action: .libraryAudit)
     }
 
     func applyAuditFinding(id: Int) async throws -> APIResult {
@@ -933,17 +948,21 @@ actor APIClient {
         try await send("/api/pending/failed")
     }
 
-    func importURL(_ url: String, visibility: String = "private") async throws -> APIResult {
-        try await send(
+    func importURL(_ url: String, visibility: String = "private", consent: AIProcessingConsent) async throws -> APIResult {
+        try await sendAI(
             "/api/pending/import-url",
             method: "POST",
-            body: ImportPayload(url: url, type: "recipe", visibility: visibility)
+            body: ImportPayload(url: url, type: "recipe", visibility: visibility),
+            consent: consent, action: .importLink
         )
     }
 
-    func importFile(data: Data, filename: String, mimeType: String, visibility: String = "private") async throws -> APIResult {
+    func importFile(data: Data, filename: String, mimeType: String, visibility: String = "private", consent: AIProcessingConsent) async throws -> APIResult {
+        let consentVersion = try consumeAIConsent(consent, for: .importFile)
         let boundary = "RezepteBoundary-\(UUID().uuidString)"
         var body = Data()
+        body.append("--\(boundary)\r\n")
+        body.append("Content-Disposition: form-data; name=\"ai_processing_consent\"\r\n\r\n\(consentVersion)\r\n")
         body.append("--\(boundary)\r\n")
         body.append("Content-Disposition: form-data; name=\"visibility\"\r\n\r\n\(visibility)\r\n")
         body.append("--\(boundary)\r\n")
@@ -967,14 +986,18 @@ actor APIClient {
         data: Data,
         filename: String,
         mimeType: String,
-        visibility: String? = nil
+        visibility: String? = nil,
+        consent: AIProcessingConsent
     ) async throws -> PendingAnalysisResult {
+        let consentVersion = try consumeAIConsent(consent, for: .scanPhoto)
         let boundary = "RezepteBoundary-\(UUID().uuidString)"
         let safeFilename = filename
             .replacingOccurrences(of: "\"", with: "_")
             .replacingOccurrences(of: "\r", with: "_")
             .replacingOccurrences(of: "\n", with: "_")
         var body = Data()
+        body.append("--\(boundary)\r\n")
+        body.append("Content-Disposition: form-data; name=\"ai_processing_consent\"\r\n\r\n\(consentVersion)\r\n")
         body.append("--\(boundary)\r\n")
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(safeFilename)\"\r\n")
         body.append("Content-Type: \(mimeType)\r\n\r\n")
@@ -1005,12 +1028,10 @@ actor APIClient {
         steps: [PendingStep]? = nil,
         servings: Int? = nil,
         verified: Bool = false,
-        visibility: String? = nil
+        visibility: String? = nil,
+        consent: AIProcessingConsent? = nil
     ) async throws -> APIResult {
-        try await send(
-            "/api/pending",
-            method: "POST",
-            body: ResolvePendingPayload(
+        let payload = ResolvePendingPayload(
                 url: url,
                 action: action,
                 name: name,
@@ -1022,15 +1043,21 @@ actor APIClient {
                 servings: servings,
                 verified: verified,
                 visibility: visibility
-            )
         )
+        if action == "save" {
+            guard let consent else { throw APIError.aiConsentRequired }
+            return try await sendAI("/api/pending", method: "POST", body: payload,
+                                    consent: consent, action: .saveRecipe)
+        }
+        return try await send("/api/pending", method: "POST", body: payload)
     }
 
-    func reanalyzePending(url: String, visibility: String? = nil) async throws -> PendingAnalysisResult {
-        try await send(
+    func reanalyzePending(url: String, visibility: String? = nil, consent: AIProcessingConsent) async throws -> PendingAnalysisResult {
+        try await sendAI(
             "/api/pending/reanalyze",
             method: "POST",
             body: PendingURLPayload(url: url, visibility: visibility),
+            consent: consent, action: .reanalyze,
             timeout: 120
         )
     }
@@ -1051,11 +1078,12 @@ actor APIClient {
         )
     }
 
-    func generateRecipeImage(id: Int) async throws -> ImageGenerationStart {
-        try await send(
+    func generateRecipeImage(id: Int, consent: AIProcessingConsent) async throws -> ImageGenerationStart {
+        try await sendAI(
             "/api/recipes/\(id)/generate-image",
             method: "POST",
-            body: EmptyBody()
+            body: EmptyBody(),
+            consent: consent, action: .generateImage
         )
     }
 
@@ -1074,11 +1102,12 @@ actor APIClient {
         )
     }
 
-    func startImageBackfill() async throws -> ImageBackfillStart {
-        try await send(
+    func startImageBackfill(consent: AIProcessingConsent) async throws -> ImageBackfillStart {
+        try await sendAI(
             "/api/recipes/images/backfill",
             method: "POST",
-            body: EmptyBody()
+            body: EmptyBody(),
+            consent: consent, action: .imageBackfill
         )
     }
 
@@ -1115,6 +1144,36 @@ actor APIClient {
         request.httpBody = data
         authorize(&request, includeBearer: true)
         return try await execute(request, authenticated: true)
+    }
+
+    private func consumeAIConsent(_ consent: AIProcessingConsent, for action: AIProcessingAction) throws -> String {
+        guard consent.action == action, consent.identity == configurationID,
+              consent.server == baseURL?.absoluteString, token?.isEmpty == false,
+              !consumedAIConsents.contains(consent.id), !Task.isCancelled else {
+            throw APIError.aiConsentRequired
+        }
+        consumedAIConsents.insert(consent.id)
+        return AIProcessingConsent.version
+    }
+
+    private struct AIConsentedBody<Value: Encodable>: Encodable {
+        let value: Value
+        let aiProcessingConsent: String
+        enum CodingKeys: String, CodingKey { case aiProcessingConsent }
+        func encode(to encoder: Encoder) throws {
+            try value.encode(to: encoder)
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(aiProcessingConsent, forKey: .aiProcessingConsent)
+        }
+    }
+
+    private func sendAI<Body: Encodable, Response: Decodable>(
+        _ path: String, method: String, query: [URLQueryItem] = [], body: Body,
+        consent: AIProcessingConsent, action: AIProcessingAction, timeout: TimeInterval = 60
+    ) async throws -> Response {
+        let version = try consumeAIConsent(consent, for: action)
+        return try await send(path, method: method, query: query,
+                              body: AIConsentedBody(value: body, aiProcessingConsent: version), timeout: timeout)
     }
 
     private func send<Response: Decodable>(
@@ -1301,7 +1360,20 @@ actor APIClient {
     }
 }
 
-private struct ErrorResponse: Codable { let detail: String }
+private struct ErrorResponse: Decodable {
+    let detail: String
+    private enum CodingKeys: String, CodingKey { case detail }
+    private struct StructuredDetail: Decodable { let message: String }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let message = try? container.decode(String.self, forKey: .detail) {
+            detail = message
+        } else {
+            detail = try container.decode(StructuredDetail.self, forKey: .detail).message
+        }
+    }
+}
 private struct EmptyBody: Codable {}
 private struct RecipeMetadataPayload: Codable {
     let name: String
