@@ -192,6 +192,12 @@ restore_on_error() {
         "$APP_DIR/venv/bin/python" "$SOURCE_DIR/tools/release_state.py" restore \
           --state "$STATE_DIR" || restored=0
       fi
+      if [[ "$restored" == "1" ]]; then
+        # Manche 1.10-Baselines enthalten die Ausnahme noch, aber keinen Timer.
+        # Nur diesen bekannten defekten Zustand bereinigen; alte Mail-Versionen
+        # mit wiederhergestellter Timerdatei behalten ihr ursprüngliches Drop-in.
+        "$APP_DIR/venv/bin/python" "$SOURCE_DIR/tools/retire_mail_import.py" --prepare-rollback || restored=0
+      fi
       systemctl daemon-reload || true
       ROLLBACK_HEALTH_FILE="$(mktemp /tmp/rezepte-rollback-health.XXXXXX)"
       chmod 0600 "$ROLLBACK_HEALTH_FILE"
@@ -282,6 +288,10 @@ find "$APP_DIR" -path "$APP_DIR/data" -prune -o -path "$APP_DIR/logs" -prune \
   -o -path "$APP_DIR/temp" -prune -o -path "$APP_DIR/files" -prune \
   -o -exec chown root:root {} +
 
+# Die alte Sandbox-Ausnahme verlangt einen inzwischen entfernten Mail-Timer.
+# Sie ist im State-Snapshot enthalten und muss vor dem ersten Neustart weg;
+# die vollständige Unit-Stilllegung folgt weiterhin erst nach allen Gates.
+"$APP_DIR/venv/bin/python" "$SOURCE_DIR/tools/retire_mail_import.py" --prepare-web-service
 systemctl daemon-reload
 if [[ "${ENABLE_HOUSEHOLD_AUTH:-0}" == "1" ]]; then
   # Die ursprüngliche Konfiguration ist bereits im Rollback-Snapshot.

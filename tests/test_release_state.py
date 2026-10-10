@@ -11,7 +11,7 @@ import subprocess
 import pytest
 import yaml
 
-from tools.release_state import UNITS, capture, enable_accounts, preflight, restore, verify_code
+from tools.release_state import UNIT_DROPINS, UNITS, capture, enable_accounts, preflight, restore, verify_code
 
 
 def test_code_gate_rejects_same_size_stale_files(tmp_path):
@@ -296,3 +296,93 @@ def test_success_and_rollback_timer_resume_accept_already_removed_mail_unit():
     ])
     result = subprocess.run([bash, "-c", harness], capture_output=True, text=True, check=True)
     assert result.stdout.splitlines() == ["start scrapper-db-backup.timer"] * 2
+
+
+@pytest.mark.parametrize("content", [
+    "[Service]\nReadWritePaths=/etc/systemd/system/scrapper-job.timer\n",
+    "[Service]\nReadWritePaths=/etc/systemd/system/scrapper-job.timer\nEnvironment=KEEP=yes\n",
+])
+def test_snapshot_restores_exact_web_dropin_and_missing_parent(tmp_path, content):
+    app, units, state = tmp_path / "app", tmp_path / "units", tmp_path / "snapshot"
+    _installation(app)
+    units.mkdir()
+    override = units / UNIT_DROPINS[0]
+    override.parent.mkdir()
+    override.write_text(content, encoding="utf-8")
+    before = override.read_bytes()
+    capture(app, state, unit_root=units)
+    manifest = json.loads((state / "manifest.json").read_text())
+    stored = next(item for item in manifest["files"] if item.get("unit_dropin"))
+    assert stored["path"] == str(override.resolve())
+    assert stored["existed"] is True
+    assert (state / stored["backup"]).read_bytes() == before
+    override.unlink()
+    override.parent.rmdir()
+    restore(state)
+    assert override.read_bytes() == before
+
+
+def test_snapshot_absent_dropin_does_not_delete_other_overrides_on_rollback(tmp_path):
+    app, units, state = tmp_path / "app", tmp_path / "units", tmp_path / "snapshot"
+    _installation(app)
+    units.mkdir()
+    capture(app, state, unit_root=units)
+    override = units / UNIT_DROPINS[0]
+    override.parent.mkdir()
+    override.write_text("new override")
+    sibling = override.with_name("local-settings.conf")
+    sibling.write_text("local settings")
+    restore(state)
+    assert not override.exists()
+    assert sibling.read_text() == "local settings"
+
+
+def test_snapshot_rejects_non_regular_dropin_before_creating_snapshot(tmp_path):
+    app, units, state = tmp_path / "app", tmp_path / "units", tmp_path / "snapshot"
+    database = _installation(app)
+    units.mkdir()
+    override = units / UNIT_DROPINS[0]
+    override.mkdir(parents=True)
+    before = database.read_bytes()
+    with pytest.raises(ValueError, match="Dateityp"):
+        capture(app, state, unit_root=units)
+    assert not state.exists()
+    assert database.read_bytes() == before
+
+
+@pytest.mark.parametrize("timer_present", [True, False])
+def test_full_snapshot_prepare_restore_cycle_keeps_rollback_web_startable(tmp_path, monkeypatch, timer_present):
+    from types import SimpleNamespace
+    from tools import retire_mail_import as retirement
+    app, units, state = tmp_path / "app", tmp_path / "units", tmp_path / "snapshot"
+    _installation(app)
+    units.mkdir()
+    override = units / UNIT_DROPINS[0]
+    override.parent.mkdir()
+    original = retirement.TIMER_WRITE_CONTENT
+    override.write_bytes(original)
+    timer = units / "scrapper-job.timer"
+    if timer_present:
+        timer.write_text("old mail-capable release timer")
+    monkeypatch.setattr(retirement, "ROOT_UID", override.stat().st_uid)
+    run = lambda *_args, **_kwargs: SimpleNamespace(returncode=0)
+    capture(app, state, unit_root=units)
+    retirement.prepare_web_service(unit_root=units, run=run)
+    timer.unlink(missing_ok=True)  # Represents post-gate retirement before a later failed step.
+    restore(state)
+    assert override.read_bytes() == original
+    retirement.prepare_web_service(unit_root=units, run=run, only_if_timer_missing=True)
+    assert override.exists() is timer_present
+    assert timer.exists() is timer_present
+    manifest = json.loads((state / "manifest.json").read_text())
+    archived = next(item for item in manifest["files"] if item.get("unit_dropin"))
+    assert (state / archived["backup"]).read_bytes() == original
+
+
+def test_updater_repairs_only_missing_timer_override_after_restore_before_rollback_restart():
+    script = Path("proxmox/update-local.sh").read_text(encoding="utf-8")
+    rollback = _shell_function(script, "restore_on_error")
+    assert rollback.index('release_state.py" restore') < rollback.index('retire_mail_import.py" --prepare-rollback')
+    assert rollback.index('retire_mail_import.py" --prepare-rollback') < rollback.index("systemctl daemon-reload")
+    assert rollback.index("systemctl daemon-reload") < rollback.index("systemctl restart scrapper-web.service")
+    assert '--prepare-rollback || restored=0' in rollback

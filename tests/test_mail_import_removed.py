@@ -13,7 +13,9 @@ from app.core.content_urls import is_content_url, normalize_content_url
 from app.jobs.scraper import ScraperJob
 from app.routes import api_config
 from tools import retire_mail_import as retirement
-from tools.retire_mail_import import RETIRED_UNITS, retire_mail_import
+from tools.retire_mail_import import (
+    RETIRED_UNITS, TIMER_WRITE_CONTENT, TIMER_WRITE_OVERRIDE, prepare_web_service, retire_mail_import,
+)
 
 
 @pytest.mark.parametrize("method,path", [
@@ -187,3 +189,112 @@ def test_mail_unit_retirement_refuses_other_owner_before_service_changes(tmp_pat
         retire_mail_import(unit_root=units, polkit_root=rules, run=_systemctl_mock(calls))
     assert calls == []
     assert all((units / name).is_file() for name in RETIRED_UNITS)
+
+
+def _timer_write_override(units, content=TIMER_WRITE_CONTENT):
+    path = units / TIMER_WRITE_OVERRIDE
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+@pytest.mark.parametrize("content", [TIMER_WRITE_CONTENT, TIMER_WRITE_CONTENT.rstrip(b"\n"), TIMER_WRITE_CONTENT.replace(b"\n", b"\r\n")])
+def test_prepare_web_service_only_removes_exact_legacy_override_and_is_idempotent(tmp_path, content):
+    units, rules = _retirement_tree(tmp_path)
+    target = _timer_write_override(units, content)
+    sibling = target.with_name("local-custom.conf")
+    sibling.write_text("[Service]\nEnvironment=KEEP=yes\n")
+    calls = []
+    assert prepare_web_service(unit_root=units, run=_systemctl_mock(calls)) == {"ok": True, "removed_files": 1}
+    assert not target.exists()
+    assert sibling.read_text() == "[Service]\nEnvironment=KEEP=yes\n"
+    assert calls == [["systemctl", "daemon-reload"]]
+    assert all((units / name).exists() for name in RETIRED_UNITS)
+    assert (rules / "49-scrapper-systemctl.rules").exists()
+    assert prepare_web_service(unit_root=units, run=_systemctl_mock(calls))["removed_files"] == 0
+    assert calls == [["systemctl", "daemon-reload"]]
+
+
+@pytest.mark.parametrize("content", [
+    TIMER_WRITE_CONTENT + b"Environment=LOCAL_SETTING=yes\n",
+    b"[Service]\nReadWritePaths=/etc/systemd/system/scrapper-job.timer /srv/local\n",
+    b"[Service]\nEnvironment=LOCAL_SETTING=yes\n",
+])
+def test_prepare_and_full_retirement_preserve_unknown_or_mixed_override_before_service_changes(tmp_path, content):
+    units, rules = _retirement_tree(tmp_path)
+    target = _timer_write_override(units, content)
+    calls = []
+    with pytest.raises(RuntimeError, match="contents"):
+        prepare_web_service(unit_root=units, run=_systemctl_mock(calls))
+    with pytest.raises(RuntimeError, match="contents"):
+        retire_mail_import(unit_root=units, polkit_root=rules, run=_systemctl_mock(calls))
+    assert target.read_bytes() == content
+    assert calls == []
+    assert all((units / name).exists() for name in RETIRED_UNITS)
+
+
+def test_prepare_web_service_rejects_other_owner_before_unlinking(tmp_path, monkeypatch):
+    units, _ = _retirement_tree(tmp_path)
+    target = _timer_write_override(units)
+    monkeypatch.setattr(retirement, "ROOT_UID", -1)
+    calls = []
+    with pytest.raises(RuntimeError, match="ownership"):
+        prepare_web_service(unit_root=units, run=_systemctl_mock(calls))
+    assert target.read_bytes() == TIMER_WRITE_CONTENT
+    assert calls == []
+
+
+def test_prepare_web_service_rejects_hardlinked_override(tmp_path):
+    import os
+    units, _ = _retirement_tree(tmp_path)
+    target = _timer_write_override(units)
+    other = tmp_path / "keep.conf"
+    os.link(target, other)
+    calls = []
+    with pytest.raises(RuntimeError, match="file type"):
+        prepare_web_service(unit_root=units, run=_systemctl_mock(calls))
+    assert target.read_bytes() == other.read_bytes() == TIMER_WRITE_CONTENT
+    assert calls == []
+
+
+def test_full_retirement_also_removes_known_override_for_other_installers(tmp_path):
+    units, rules = _retirement_tree(tmp_path)
+    target = _timer_write_override(units)
+    result = retire_mail_import(unit_root=units, polkit_root=rules, run=_systemctl_mock([]))
+    assert result["removed_files"] == 6
+    assert not target.exists()
+
+
+def test_updater_prepares_web_sandbox_after_snapshot_before_first_new_start():
+    script = Path("proxmox/update-local.sh").read_text(encoding="utf-8")
+    forward = script.split("trap restore_on_error ERR", 1)[1]
+    prepare = forward.index('retire_mail_import.py" --prepare-web-service')
+    assert forward.index('release_state.py" capture') < prepare
+    assert prepare < forward.index("systemctl daemon-reload") < forward.index("systemctl restart scrapper-web.service")
+    assert forward.index("required_methods =") < forward.index('retire_mail_import.py" --apply')
+
+
+@pytest.mark.parametrize("timer_present", [True, False])
+def test_rollback_preparation_only_removes_known_override_if_timer_is_missing(tmp_path, timer_present):
+    units, _ = _retirement_tree(tmp_path)
+    target = _timer_write_override(units)
+    if not timer_present:
+        (units / "scrapper-job.timer").unlink()
+    calls = []
+    result = prepare_web_service(unit_root=units, run=_systemctl_mock(calls), only_if_timer_missing=True)
+    assert result["removed_files"] == int(not timer_present)
+    assert target.exists() is timer_present
+    assert calls == ([] if timer_present else [["systemctl", "daemon-reload"]])
+
+
+def test_rollback_preparation_never_removes_mixed_override(tmp_path):
+    units, _ = _retirement_tree(tmp_path)
+    content = TIMER_WRITE_CONTENT + b"Environment=KEEP=yes\n"
+    target = _timer_write_override(units, content)
+    calls = []
+    assert prepare_web_service(unit_root=units, run=_systemctl_mock(calls), only_if_timer_missing=True)["removed_files"] == 0
+    (units / "scrapper-job.timer").unlink()
+    with pytest.raises(RuntimeError, match="contents"):
+        prepare_web_service(unit_root=units, run=_systemctl_mock(calls), only_if_timer_missing=True)
+    assert target.read_bytes() == content
+    assert calls == []

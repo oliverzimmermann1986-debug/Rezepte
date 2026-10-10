@@ -23,6 +23,7 @@ UNITS = (
     "scrapper-web.service", "scrapper-job.service", "scrapper-job.timer",
     "scrapper-db-backup.service", "scrapper-db-backup.timer", "scrapper-schedule-apply.service",
 )
+UNIT_DROPINS = ("scrapper-web.service.d/timer-write.conf",)
 
 
 def assignment(path: Path, name: str):
@@ -107,6 +108,14 @@ def _verified_copy(source: Path, target: Path) -> None:
 
 
 def capture(app: Path, state: Path, *, unit_root: Path = Path("/etc/systemd/system")) -> dict:
+    dropins = [unit_root / relative for relative in UNIT_DROPINS]
+    for dropin in dropins:
+        if dropin.parent.is_symlink() or dropin.parent.resolve() != dropin.parent:
+            raise ValueError("Unit-Drop-in-Verzeichnis benötigt manuelle Prüfung")
+        if dropin.exists() or dropin.is_symlink():
+            info = dropin.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("Unit-Drop-in-Dateityp benötigt manuelle Prüfung")
     path = db_path(app)
     with closing(read_database(path)) as connection:
         has_tasks = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='background_tasks'").fetchone()
@@ -115,8 +124,12 @@ def capture(app: Path, state: Path, *, unit_root: Path = Path("/etc/systemd/syst
     state.mkdir(mode=0o700, parents=True, exist_ok=False)
     _verified_copy(path, state / "database.db")
     files = []
-    for index, original in enumerate([app / "data/config.yaml", *(unit_root / unit for unit in UNITS)]):
+    for index, original in enumerate([app / "data/config.yaml", *(unit_root / unit for unit in UNITS), *dropins]):
         entry = {"path": str(original.resolve()), "existed": original.exists()}
+        if original in dropins:
+            entry["unit_dropin"] = True
+            if original.parent.is_dir():
+                entry["parent_metadata"] = _metadata(original.parent)
         if entry["existed"]:
             entry.update(_metadata(original))
             entry["backup"] = f"file-{index}"
@@ -156,6 +169,11 @@ def enable_accounts(app: Path) -> dict:
 
 def restore(state: Path) -> dict:
     manifest = json.loads((state / "manifest.json").read_text(encoding="utf-8"))
+    for item in manifest["files"]:
+        if item.get("unit_dropin"):
+            parent = Path(item["path"]).parent
+            if parent.is_symlink() or parent.resolve() != parent:
+                raise ValueError("Unit-Drop-in-Verzeichnis benötigt manuelle Prüfung")
     db = manifest["database"]
     path = Path(db["path"])
     temporary = path.with_name(f".release-restore-{uuid.uuid4().hex}.db")
@@ -172,6 +190,10 @@ def restore(state: Path) -> dict:
         if not item["existed"]:
             target.unlink(missing_ok=True)
             continue
+        if item.get("unit_dropin") and not target.parent.exists():
+            target.parent.mkdir(mode=0o755, parents=True)
+            if "parent_metadata" in item:
+                _permissions(target.parent, item["parent_metadata"])
         staged = target.with_name(f".release-restore-{uuid.uuid4().hex}")
         try:
             shutil.copyfile(state / item["backup"], staged)
