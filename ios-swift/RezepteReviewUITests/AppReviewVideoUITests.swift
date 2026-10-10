@@ -57,12 +57,23 @@ final class AppReviewVideoUITests: XCTestCase {
 
         app.navigationBars.buttons["Archiv"].tap()
         XCTAssertTrue(archiveTab.waitForExistence(timeout: 10))
+        app.buttons["Sammlung & Import"].tap()
+        app.buttons["Meine Kochbücher"].tap()
+        XCTAssertTrue(app.navigationBars["Kochbücher"].waitForExistence(timeout: 20))
+        pause(4)
+        capture("07-kochbuecher")
+        app.buttons["Fertig"].tap()
 
         let planTab = app.tabBars.buttons["Plan"]
         planTab.tap()
         XCTAssertTrue(app.navigationBars["Wochenplan"].waitForExistence(timeout: 20))
         pause(4)
         capture("04-wochenplan")
+        app.buttons["Wochenwünsche"].tap()
+        XCTAssertTrue(app.navigationBars["Wochenwünsche"].waitForExistence(timeout: 20))
+        pause(4)
+        capture("08-wochenwuensche")
+        app.buttons["Fertig"].tap()
 
         let todayTab = app.tabBars.buttons["Heute"]
         todayTab.tap()
