@@ -83,7 +83,26 @@ final class AccountManagementTests: XCTestCase {
         _ = try await client.deleteAccount(currentPassword: "")
         XCTAssertEqual(MockURLProtocol.lastMethod(), "DELETE")
         XCTAssertEqual(MockURLProtocol.lastPath(), "/rezepte/api/account/profile")
-        XCTAssertEqual(try body() as? [String: String], ["current_password": ""])
+        let deletion = try body()
+        XCTAssertEqual(Set(deletion.keys), Set(["current_password", "delete_household", "confirmation"]))
+        XCTAssertEqual(deletion["current_password"] as? String, "")
+        XCTAssertEqual(deletion["delete_household"] as? Bool, false)
+        XCTAssertEqual(deletion["confirmation"] as? String, "")
+    }
+
+    func testHouseholdDeletionSendsOnlyTheExplicitPasswordAndConfirmation() async throws {
+        let client = try await client()
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+        _ = try await client.deleteAccount(currentPassword: "confirmed-password", deleteHousehold: true,
+                                           confirmation: "HAUSHALT LÖSCHEN")
+        XCTAssertEqual(MockURLProtocol.lastMethod(), "DELETE")
+        XCTAssertEqual(MockURLProtocol.lastPath(), "/rezepte/api/account/profile")
+        XCTAssertEqual(MockURLProtocol.lastHeader("Authorization"), "Bearer account-token")
+        let deletion = try body()
+        XCTAssertEqual(Set(deletion.keys), Set(["current_password", "delete_household", "confirmation"]))
+        XCTAssertEqual(deletion["current_password"] as? String, "confirmed-password")
+        XCTAssertEqual(deletion["delete_household"] as? Bool, true)
+        XCTAssertEqual(deletion["confirmation"] as? String, "HAUSHALT LÖSCHEN")
     }
 
     func testSessionRevocationAndBothLogoutScopesUseProtectedEndpoints() async throws {
