@@ -25,7 +25,7 @@ import app.auth as _auth
 import app.recipes.indexer as _indexer
 REAL_SYNC_FILESYSTEM = _indexer.sync_filesystem
 _indexer.sync_filesystem = lambda db=None: {"added": 0, "updated": 0}
-_indexer.ensure_extraction_running = lambda: False
+_indexer.ensure_extraction_running = lambda **kwargs: False
 _indexer.is_extraction_running = lambda: False
 
 import pytest

@@ -175,9 +175,25 @@ final class SessionAccessTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.lastPath(), "/api/system/info")
     }
 
+    @MainActor
+    func testOldServerShowsAnUpdateExplanationBeforeConsentOrTransfer() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        MockURLProtocol.respond(json: response(role: "full_user").replacingOccurrences(of: "ai-action-consent-v1", with: "legacy-feature"))
+        await fixture.store.restore()
+        let coordinator = AIConsentCoordinator()
+        let before = MockURLProtocol.requestCount
+        let consent = await coordinator.request(.importLink, session: fixture.store)
+        XCTAssertNil(consent)
+        XCTAssertNil(coordinator.pending)
+        XCTAssertTrue(fixture.store.alertMessage?.contains("benötigt dieser Server ein Update") == true)
+        XCTAssertEqual(MockURLProtocol.requestCount, before)
+        XCTAssertTrue(fixture.store.canImport, "An older server must still permit login and normal account use")
+    }
+
     private func response(role: String) -> String {
         // Extra fields let one response serve the session and server-info requests.
-        #"{"id":12,"username":"test-account","role":"\#(role)","full_access":true,"read_only":false,"name":"Rezepte","version":"1.9.0","capabilities":["shopping-categories","recurring-shopping","weekly-meal-plan","ai-shopping-optimization"],"ok":true}"#
+        #"{"id":12,"username":"test-account","role":"\#(role)","full_access":true,"read_only":false,"name":"Rezepte","version":"1.9.0","capabilities":["ai-action-consent-v1","shopping-categories","recurring-shopping","weekly-meal-plan","ai-shopping-optimization"],"ok":true}"#
     }
 
     @MainActor

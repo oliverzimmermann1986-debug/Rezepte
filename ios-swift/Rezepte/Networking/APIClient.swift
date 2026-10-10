@@ -6,6 +6,7 @@ enum APIError: LocalizedError {
     case unauthenticated
     case sessionChanged
     case aiConsentRequired
+    case aiServerUpgradeRequired
     case server(Int, String)
     case invalidResponse(String)
 
@@ -17,6 +18,8 @@ enum APIError: LocalizedError {
             return "Bitte eine HTTPS-Adresse verwenden."
         case .unauthenticated:
             return "Die Sitzung ist abgelaufen. Bitte erneut anmelden."
+        case .aiServerUpgradeRequired:
+            return "Für KI-Funktionen benötigt dieser Server ein Update. Bitte den Server aktualisieren und erneut anmelden."
         case .aiConsentRequired:
             return "Bitte bestätige die KI-Verarbeitung für diese Aktion erneut."
         case .sessionChanged:
@@ -39,6 +42,7 @@ actor APIClient {
     private var hasAccount = false
     private var configurationID = UUID()
     private var consumedAIConsents: Set<UUID> = []
+    private var supportsAIActionConsent = false
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -75,6 +79,7 @@ actor APIClient {
         readOnly = token?.hasPrefix("guest.") == true
         hasAccount = false
         configurationID = sessionID ?? UUID()
+        supportsAIActionConsent = false
         URLCache.shared.removeAllCachedResponses()
     }
 
@@ -84,6 +89,7 @@ actor APIClient {
         readOnly = false
         hasAccount = false
         configurationID = UUID()
+        supportsAIActionConsent = false
         URLCache.shared.removeAllCachedResponses()
     }
 
@@ -303,7 +309,13 @@ actor APIClient {
     }
 
     func systemInfo() async throws -> SystemInfo {
-        try await send("/api/system/info", authenticated: false)
+        let expectedConfiguration = configurationID
+        let expectedServer = baseURL
+        supportsAIActionConsent = false
+        let result: SystemInfo = try await send("/api/system/info", authenticated: false)
+        guard configurationID == expectedConfiguration, baseURL == expectedServer else { throw APIError.sessionChanged }
+        supportsAIActionConsent = result.capabilities.contains("ai-action-consent-v1")
+        return result
     }
 
     /// Rezepte seitenweise. `manualOnly` filtert serverseitig
@@ -1152,6 +1164,7 @@ actor APIClient {
               !consumedAIConsents.contains(consent.id), !Task.isCancelled else {
             throw APIError.aiConsentRequired
         }
+        guard supportsAIActionConsent else { throw APIError.aiServerUpgradeRequired }
         consumedAIConsents.insert(consent.id)
         return AIProcessingConsent.version
     }

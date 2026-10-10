@@ -7,20 +7,17 @@ Zwei separate Aufgaben:
    description.txt eine `recipes`-Zeile an. Idempotent — bestehende Einträge
    werden upserted, keine neu-Extraktion. Source-of-Truth bleibt das Filesystem.
 
-   Aufruf: passiert bei jedem `/api/recipes` GET (lazy), und/oder explizit
-   per `/api/recipes/sync` Button im Frontend.
+   Aufruf: beim Dienststart oder explizit per `/api/recipes/sync`.
 
 2. **Background-Extraction** (`run_extraction_loop`):
    Pickt sich pro Schleifen-Iteration N Rezepte mit `ingredients_status='pending'`,
    schickt deren `description` durch den AI-Analyzer, schreibt Zutaten in
    `recipe_ingredients`, setzt Status auf 'ok' (oder 'error' bei Fehler).
 
-   Läuft als Thread, gestartet beim ersten `/api/recipes` mit pending-Bestand
-   (siehe ensure_extraction_running). Stoppt selbständig wenn keine pending
-   mehr da sind.
+   Läuft nach einer ausdrücklich bestätigten Aktion über deren erfasste
+   Rezept-IDs. Spätere Aktionen behalten jeweils ihren eigenen Kontext.
 
-Wir verwenden KEINEN systemd-Timer dafür — der Job ist UI-getrieben (User
-öffnet Browser → Job läuft an), und stoppt von selbst.
+Lesezugriffe starten keine KI-Arbeit. Bestätigte Aufträge enden selbständig.
 """
 from __future__ import annotations
 

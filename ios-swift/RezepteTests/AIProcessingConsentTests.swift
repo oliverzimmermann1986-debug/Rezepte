@@ -43,6 +43,8 @@ final class AIProcessingConsentTests: XCTestCase {
         let coordinator = AIConsentCoordinator()
         let client = APIClient(session: MockURLProtocol.makeSession())
         try await client.configure(server: "https://example.de", token: "synthetic", sessionID: identity)
+        MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["ai-action-consent-v1"]}"#)
+        _ = try await client.systemInfo()
         let before = MockURLProtocol.requestCount
         let operation = Task {
             guard let consent = await coordinator.request(.importLink, identity: identity, server: "https://example.de") else { return }
@@ -61,6 +63,8 @@ final class AIProcessingConsentTests: XCTestCase {
         let coordinator = AIConsentCoordinator()
         let client = APIClient(session: MockURLProtocol.makeSession())
         try await client.configure(server: "https://example.de", token: "synthetic", sessionID: identity)
+        MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["ai-action-consent-v1"]}"#)
+        _ = try await client.systemInfo()
         let decision = Task { await coordinator.request(.importLink, identity: identity, server: "https://example.de") }
         await waitForPrompt(coordinator)
         coordinator.approve(identity: identity, server: "https://example.de")
@@ -149,6 +153,39 @@ final class AIProcessingConsentTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.requestCount, before + 1)
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any])
         XCTAssertNil(body["ai_processing_consent"])
+    }
+
+    func testAIRequestsRequireTheConsentCapabilityFromTheCurrentServer() async throws {
+        let identity = UUID()
+        let client = APIClient(session: MockURLProtocol.makeSession())
+        let consent = AIProcessingConsent(id: UUID(), action: .importLink, identity: identity, server: "https://example.de")
+        try await client.configure(server: "https://example.de", token: "synthetic", sessionID: identity)
+        for capabilities in ["", "legacy-feature"] {
+            if !capabilities.isEmpty {
+                MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.11.0","capabilities":["legacy-feature"]}"#)
+                _ = try await client.systemInfo()
+            }
+            let before = MockURLProtocol.requestCount
+            do {
+                _ = try await client.importURL("https://source.example/recipe", consent: consent)
+                XCTFail("An unverified or older server must not receive AI data")
+            } catch APIError.aiServerUpgradeRequired {}
+            XCTAssertEqual(MockURLProtocol.requestCount, before)
+        }
+        MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["ai-action-consent-v1"]}"#)
+        _ = try await client.systemInfo()
+        MockURLProtocol.respond(json: #"{"ok":true}"#)
+        _ = try await client.importURL("https://source.example/recipe", consent: consent)
+
+        let nextIdentity = UUID()
+        try await client.configure(server: "https://other.example", token: "next", sessionID: nextIdentity)
+        let nextConsent = AIProcessingConsent(id: UUID(), action: .importLink, identity: nextIdentity, server: "https://other.example")
+        let before = MockURLProtocol.requestCount
+        do {
+            _ = try await client.importURL("https://source.example/recipe", consent: nextConsent)
+            XCTFail("A new server must not inherit the previous server's capability")
+        } catch APIError.aiServerUpgradeRequired {}
+        XCTAssertEqual(MockURLProtocol.requestCount, before)
     }
 
     @MainActor

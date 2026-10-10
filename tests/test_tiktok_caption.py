@@ -522,7 +522,7 @@ def test_rescrape_prefers_expanded_caption_and_queues_extraction(
         "fetch_expanded_tiktok_caption",
         lambda scraped_url, **kwargs: browser_calls.append((scraped_url, kwargs)) or long_caption,
     )
-    monkeypatch.setattr(api_recipes, "ensure_extraction_running", lambda: True)
+    monkeypatch.setattr(api_recipes, "ensure_extraction_running", lambda **kwargs: kwargs.get("recipe_ids") == [recipe_id])
 
     response = client.post(f"/api/recipes/{recipe_id}/rescrape", json={"ai_processing_consent": "openai-recipe-v1"})
 
@@ -665,7 +665,7 @@ def test_rescrape_reanalyze_queues_unchanged_description(
         "fetch_expanded_tiktok_caption",
         lambda _url, **_kwargs: description,
     )
-    monkeypatch.setattr(api_recipes, "ensure_extraction_running", lambda: True)
+    monkeypatch.setattr(api_recipes, "ensure_extraction_running", lambda **kwargs: kwargs.get("recipe_ids") == [recipe_id])
 
     response = client.post(f"/api/recipes/{recipe_id}/rescrape?reanalyze=true", json={"ai_processing_consent": "openai-recipe-v1"})
 

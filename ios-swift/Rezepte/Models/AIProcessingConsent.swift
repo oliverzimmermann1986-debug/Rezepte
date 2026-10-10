@@ -85,6 +85,10 @@ final class AIConsentCoordinator: ObservableObject {
         let identity = session.identity
         let server = APIClient.normalizedServerURL(session.savedServer)?.absoluteString ?? ""
         guard case .signedIn = session.state, !server.isEmpty else { return nil }
+        guard session.supports("ai-action-consent-v1") else {
+            session.alertMessage = APIError.aiServerUpgradeRequired.localizedDescription
+            return nil
+        }
         let consent = await request(action, identity: identity, server: server)
         guard session.identity == identity,
               APIClient.normalizedServerURL(session.savedServer)?.absoluteString == server,

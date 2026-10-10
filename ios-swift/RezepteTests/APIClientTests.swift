@@ -52,6 +52,8 @@ final class APIClientTests: XCTestCase {
         let client = APIClient(session: MockURLProtocol.makeSession())
         let consentIdentity = UUID()
         try await client.configure(server: "https://example.de", token: "token", sessionID: consentIdentity)
+        MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["ai-action-consent-v1"]}"#)
+        _ = try await client.systemInfo()
         MockURLProtocol.respond(json: #"{"ok":true,"status":"linked_global","recipe_id":42}"#)
         let response = try await client.importURL("https://recipes.example/soup", consent: AIProcessingConsent(id: UUID(), action: .importLink, identity: consentIdentity, server: "https://example.de"))
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: String])
@@ -604,6 +606,8 @@ final class APIClientTests: XCTestCase {
         let client = APIClient(session: session)
         let consentIdentity = UUID()
         try await client.configure(server: "https://example.de", token: "api-token", sessionID: consentIdentity)
+        MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["ai-action-consent-v1"]}"#)
+        _ = try await client.systemInfo()
         MockURLProtocol.respond(json: """
         {"ok":true,"message":"Datei wurde importiert."}
         """)
@@ -657,6 +661,8 @@ final class APIClientTests: XCTestCase {
         let client = APIClient(session: session)
         let consentIdentity = UUID()
         try await client.configure(server: "https://example.de", token: "token", sessionID: consentIdentity)
+        MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["ai-action-consent-v1"]}"#)
+        _ = try await client.systemInfo()
         MockURLProtocol.respond(json: #"{"ok":true}"#)
 
         _ = try await client.resolvePending(
@@ -687,6 +693,8 @@ final class APIClientTests: XCTestCase {
         let client = APIClient(session: session)
         let consentIdentity = UUID()
         try await client.configure(server: "https://example.de", token: "token", sessionID: consentIdentity)
+        MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["ai-action-consent-v1"]}"#)
+        _ = try await client.systemInfo()
         MockURLProtocol.respond(json: """
         {"ok":true,"action":"still_pending","analysis":{"name":"Neu erkannt"}}
         """)
@@ -702,6 +710,8 @@ final class APIClientTests: XCTestCase {
         let client = APIClient(session: MockURLProtocol.makeSession())
         let consentIdentity = UUID()
         try await client.configure(server: "https://example.de", token: "full-user-token", sessionID: consentIdentity)
+        MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["ai-action-consent-v1"]}"#)
+        _ = try await client.systemInfo()
         MockURLProtocol.respond(json: #"{"ok":true}"#)
         _ = try await client.resolvePending(url: "https://example.de/rezept", action: "skip", visibility: "private")
         var body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any])
@@ -922,6 +932,8 @@ final class APIClientTests: XCTestCase {
         let client = APIClient(session: session)
         let consentIdentity = UUID()
         try await client.configure(server: "https://example.de", token: "token", sessionID: consentIdentity)
+        MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["ai-action-consent-v1"]}"#)
+        _ = try await client.systemInfo()
         MockURLProtocol.respond(json: """
         {"ok":true,"task_id":14,"run_id":8,"batch_id":"safe-batch"}
         """)
@@ -1037,6 +1049,8 @@ final class APIClientTests: XCTestCase {
         let client = APIClient(session: session)
         let consentIdentity = UUID()
         try await client.configure(server: "https://example.de", token: "api-token", sessionID: consentIdentity)
+        MockURLProtocol.respond(json: #"{"name":"Rezepte","version":"1.12.0","capabilities":["ai-action-consent-v1"]}"#)
+        _ = try await client.systemInfo()
         MockURLProtocol.respond(json: """
         {"preview_id":"abcdefghijklmnopqrstuvwxyz","items":[{"name":"Burrata","amount":1,"unit":"Stück","category":"Kühlregal"}],"summary":{"original_count":2,"optimized_count":1,"merged_count":1,"renamed_count":0,"categorized_count":1},"categories":["Kühlregal"],"expires_in_seconds":900}
         """)

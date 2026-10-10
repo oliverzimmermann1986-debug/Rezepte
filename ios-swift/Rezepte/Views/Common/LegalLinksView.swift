@@ -1,14 +1,25 @@
 import SwiftUI
 
-/// Native public links; the system browser receives no API request or bearer.
+/// Offline app imprint and public links; no API credentials are forwarded.
 struct LegalLinksView: View {
     let server: String
     let accessibilityPrefix: String
     @Environment(\.recipeTheme) private var theme
+    @State private var showsImprint = false
 
     var body: some View {
         Group {
-            legalLink("Impressum", symbol: "info.circle", destination: AppLegalLinks.imprint, identifier: "imprint")
+            Button { showsImprint = true } label: {
+                Label("Impressum", systemImage: "info.circle")
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(theme.accent)
+            .accessibilityHint("Zeigt die Anbieterangaben dieser App auch ohne Internetverbindung.")
+            .accessibilityIdentifier("\(accessibilityPrefix).imprint")
+            .sheet(isPresented: $showsImprint) { LegalInformationView() }
             legalLink("Datenschutz", symbol: "hand.raised", destination: AppLegalLinks.privacy, identifier: "privacy")
             legalLink("Hilfe & Kontakt", symbol: "questionmark.circle", destination: AppLegalLinks.support, identifier: "support")
 

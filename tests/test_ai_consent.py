@@ -390,3 +390,35 @@ def test_recipe_added_after_confirmation_is_not_absorbed_into_snapshot(household
     runtime._run_extraction_requests()
     assert seen == [accepted]
     assert db.recipe_get(later)["ingredients_status"] == "pending"
+
+
+def test_image_batch_uses_only_the_recipes_visible_when_request_was_accepted(admin, monkeypatch):
+    client, db, private_id = admin
+    global_id = _recipe(db, "ImageBatchGlobal", "https://recipes.example/image-batch-global")
+    submitted = []
+
+    def enqueue(kind, payload, **kwargs):
+        assert ai_consent.CURRENT_AI_CONSENT.get() == CONSENT
+        submitted.append((kind, dict(payload)))
+        return 902
+
+    monkeypatch.setattr(task_queue, "enqueue", enqueue)
+    monkeypatch.setattr(image_generation, "ensure_image_generation_configured", lambda: {})
+    response = client.post("/api/recipes/images/backfill", json={"ai_processing_consent": CONSENT})
+    assert response.status_code == 202, response.text
+    assert len(submitted) == 1 and submitted[0][0] == "recipe_image_backfill"
+    payload = submitted[0][1]
+    assert payload["recipe_ids"] == [private_id, global_id]
+
+    later = _recipe(db, "ImageBatchLater", "https://recipes.example/image-batch-later")
+    monkeypatch.setattr(image_generation, "get_db", lambda: db)
+    monkeypatch.setattr(db, "recipes_for_image_backfill", forbidden)
+    backed_up, generated = [], []
+    monkeypatch.setattr(image_generation, "backup_recipe_image",
+                        lambda recipe, batch_id: backed_up.append(recipe["id"]) or recipe["id"])
+    monkeypatch.setattr(image_generation, "generate_recipe_image",
+                        lambda recipe_id, **kwargs: generated.append(recipe_id) or {"ok": True})
+    result = image_generation.run_image_backfill(payload)
+    assert result["ok"]
+    assert backed_up == generated == [private_id, global_id]
+    assert later not in result["recipe_ids"]
