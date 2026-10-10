@@ -122,7 +122,7 @@ def test_exhausted_budget_does_not_call_synchronous_analyzer(households, limits,
         data = io.BytesIO()
         Image.new("RGB", (2, 2)).save(data, format="PNG")
         path = "/api/pending/import-file" if kind == "file" else "/api/pending/scan-photo?url=https%3A%2F%2Frecipes.example%2Fphoto"
-        response = client.post(path, data={"visibility": "private"}, files={"file": ("recipe.png", data.getvalue(), "image/png")})
+        response = client.post(path, data={"visibility": "private", "ai_processing_consent": "openai-recipe-v1"}, files={"file": ("recipe.png", data.getvalue(), "image/png")})
     assert response.status_code == 429, response.text
 
 
@@ -224,6 +224,7 @@ def test_finishing_a_replayed_task_cannot_open_a_free_new_job(households, limits
         login("operator")
         path, payload = "/api/share", {"url": "https://recipes.example/finished-replay", "token": secret}
         monkeypatch.setattr(api_share, "enqueue", finish_before_enqueue)
+    payload["ai_processing_consent"] = "openai-recipe-v1"
     first = client.post(path, json=payload)
     assert first.status_code in (200, 202), first.text
     first_task.append(first.json()["task_id"])

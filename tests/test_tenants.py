@@ -633,7 +633,7 @@ def test_current_server_catalog_and_bulk_allergen_work_stay_scoped(households):
 @pytest.mark.parametrize("legacy_version", [231, 232, 260])
 def test_upgrade_keeps_legacy_rows_ids_and_creates_backup(tmp_path, monkeypatch, legacy_version):
     import sqlite3
-    from app import tenancy
+    from app import account_deletion, tenancy
     from app.db import Database
     path = tmp_path / "legacy-household.db"
     current_migrate = Database._migrate
@@ -648,6 +648,7 @@ def test_upgrade_keeps_legacy_rows_ids_and_creates_backup(tmp_path, monkeypatch,
     with monkeypatch.context() as patch:
         patch.setattr(tenancy, "migrate_schema", lambda _connection: None)
         patch.setattr(tenancy, "migrate_share_ownership", lambda _connection: None)
+        patch.setattr(account_deletion, "migrate_schema", lambda _connection: None)
         patch.setattr(Database, "_migrate", staticmethod(build_legacy_fixture))
         legacy = Database(path)
     uid = legacy.user_create("AltAdmin", "unused", role="admin")

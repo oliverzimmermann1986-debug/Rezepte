@@ -248,7 +248,7 @@ def test_migration_from_real_270_preserves_rows_receipts_and_backup(tmp_path):
     migrated = Database(path)
     with migrated.conn() as c:
         assert c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == CURRENT_SCHEMA_VERSION
-    backup = next((tmp_path / "backups").glob("pre-migration-v270-to-v271-*.db"))
+    backup = next((tmp_path / "backups").glob(f"pre-migration-v270-to-v{CURRENT_SCHEMA_VERSION}-*.db"))
     with sqlite3.connect(backup) as c:
         assert c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 270
         assert "source_contributions" not in {row[1] for row in c.execute("PRAGMA table_info(shopping_cart)")}
