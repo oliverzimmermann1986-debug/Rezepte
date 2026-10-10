@@ -132,7 +132,9 @@ final class AppReviewVideoUITests: XCTestCase {
         reveal(input, maximumSwipes: 3)
         input.tap()
         input.typeText(name + "\n")
-        let item = app.staticTexts[name].firstMatch
+        // A recent-product suggestion may keep the same name after deletion.
+        // Only a real cart row contains its item-specific quantity editor.
+        let item = app.cells.containing(.button, identifier: "Menge von \(name) bearbeiten").firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: 15))
         reveal(item, maximumSwipes: 4)
         item.swipeLeft()
