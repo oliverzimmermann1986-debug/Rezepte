@@ -196,11 +196,132 @@ final class ShoppingSyncTests: XCTestCase {
         XCTAssertTrue(store.items.isEmpty)
         try await store.refresh()
         XCTAssertEqual(store.conflictCount, 2)
+        XCTAssertEqual(store.waitingCount, 0)
         XCTAssertEqual(store.items, [original])
         try store.discardConflicts()
         XCTAssertEqual(store.pendingCount, 0)
         XCTAssertEqual(store.items, [original])
         XCTAssertNil(store.undoLabel)
+    }
+
+    func testConflictsAcrossBatchBoundaryDoNotRetryDescendantsOrDiscardUnrelatedWork() async throws {
+        let memory = Memory()
+        let store = ShoppingSyncStore(storage: memory.storage)
+        let identity = UUID()
+        let original = row()
+        var calls = 0
+        var acceptedItems = [original]
+        var independentID: String?
+        await store.activate(context: context(identity: identity, items: [original], sync: { payload in
+            calls += 1
+            if calls == 1 {
+                XCTAssertEqual(payload.operations.count, 50)
+                let receipts = payload.operations.enumerated().map { index, operation -> ShoppingReceipt in
+                    if index == 0 {
+                        return ShoppingReceipt(operationId: operation.operationId, status: "conflict", reason: "revision_changed")
+                    }
+                    acceptedItems.append(CartItem(id: 100 + index, name: operation.name ?? "", amount: nil,
+                        unit: nil, checked: false, category: nil, icon: nil))
+                    return ShoppingReceipt(operationId: operation.operationId, status: "applied", itemId: 100 + index)
+                }
+                return ShoppingCartResponse(householdId: 7, items: acceptedItems, results: receipts)
+            }
+            // The delete and restore depend on the rejected check. Only the
+            // unrelated new item may be transmitted in the following batch.
+            XCTAssertEqual(payload.operations.count, 1)
+            let operation = try XCTUnwrap(payload.operations.first)
+            XCTAssertEqual(operation.name, "Unabhängiger Artikel")
+            if calls == 2 {
+                independentID = operation.operationId
+                throw URLError(.networkConnectionLost)
+            }
+            XCTAssertEqual(operation.operationId, independentID)
+            acceptedItems.append(CartItem(id: 999, name: operation.name ?? "", amount: nil,
+                unit: nil, checked: false, category: nil, icon: nil))
+            return ShoppingCartResponse(householdId: 7, items: acceptedItems,
+                results: [ShoppingReceipt(operationId: operation.operationId, status: "applied", itemId: 999)])
+        }))
+        try store.change(1, kind: "check")
+        try store.addMany((1...49).map { ShoppingAddItem(name: "Artikel \($0)") })
+        try store.change(1, kind: "delete")
+        try store.undoLatest()
+        try store.addMany([ShoppingAddItem(name: "Unabhängiger Artikel")])
+        XCTAssertEqual(store.waitingCount, 53)
+        do { try await store.refresh(); XCTFail("The unrelated item's lost response must stay pending") } catch {}
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(store.pendingCount, 4)
+        XCTAssertEqual(store.waitingCount, 1)
+        XCTAssertEqual(store.conflictCount, 3)
+        XCTAssertEqual(store.conflictOperationIDs.count, 3)
+        XCTAssertEqual(store.items.first, original)
+        XCTAssertThrowsError(try store.change(1, kind: "check"))
+
+        let captured = store.conflictOperationIDs
+        XCTAssertThrowsError(try store.discardConflicts(operationIDs: captured.union([UUID().uuidString])))
+        XCTAssertThrowsError(try store.discardConflicts(operationIDs: captured, expectedHouseholdID: 9))
+        XCTAssertThrowsError(try store.discardConflicts(operationIDs: captured, expectedIdentity: UUID()))
+        memory.failWrites = true
+        XCTAssertThrowsError(try store.discardConflicts(operationIDs: captured))
+        XCTAssertEqual(store.pendingCount, 4)
+        memory.failWrites = false
+        try store.discardConflicts(operationIDs: captured, expectedHouseholdID: 7, expectedIdentity: identity)
+        XCTAssertEqual(store.pendingCount, 1)
+        XCTAssertEqual(store.waitingCount, 1)
+        XCTAssertEqual(store.conflictCount, 0)
+        XCTAssertEqual(memory.documents.first?.operations.first?.wire.operationId, independentID)
+        try await store.refresh()
+        XCTAssertEqual(calls, 3)
+        XCTAssertEqual(store.pendingCount, 0)
+        XCTAssertEqual(store.items.count, 51)
+    }
+
+    func testUndoRequiresCapturedGroupHouseholdAndAccountWithoutLosingEarlierHistory() async throws {
+        let memory = Memory()
+        let store = ShoppingSyncStore(storage: memory.storage)
+        let identity = UUID()
+        await store.activate(context: context(identity: identity, items: [row(1), row(2)]))
+        try store.change(1, kind: "delete")
+        let firstGroup = try XCTUnwrap(store.undoID)
+        try store.change(2, kind: "delete")
+        let secondGroup = try XCTUnwrap(store.undoID)
+        try store.undoLatest(groupID: firstGroup, expectedHouseholdID: 7, expectedIdentity: identity)
+        XCTAssertTrue(store.items.isEmpty, "A stale button must not undo a different, newer deletion")
+        XCTAssertEqual(store.undoID, secondGroup)
+        XCTAssertThrowsError(try store.undoLatest(groupID: secondGroup, expectedHouseholdID: 9, expectedIdentity: identity))
+        XCTAssertThrowsError(try store.undoLatest(groupID: secondGroup, expectedHouseholdID: 7, expectedIdentity: UUID()))
+        try store.undoLatest(groupID: secondGroup, expectedHouseholdID: 7, expectedIdentity: identity)
+        XCTAssertEqual(store.items.map(\.name), ["Tomaten 2"])
+        XCTAssertEqual(store.undoID, firstGroup)
+        try store.undoLatest(groupID: firstGroup, expectedHouseholdID: 7, expectedIdentity: identity)
+        XCTAssertEqual(Set(store.items.map(\.name)), ["Tomaten 1", "Tomaten 2"])
+        XCTAssertNil(store.undoID)
+
+        store.deactivate()
+        XCTAssertNil(store.undoLabel)
+        XCTAssertEqual(store.waitingCount, 0)
+        XCTAssertTrue(store.conflictOperationIDs.isEmpty)
+        await store.activate(context: context(items: [row(9)]))
+        XCTAssertThrowsError(try store.undoLatest(groupID: firstGroup, expectedHouseholdID: 7, expectedIdentity: identity))
+        XCTAssertEqual(store.items.map(\.id), [9])
+        XCTAssertEqual(store.pendingCount, 0)
+    }
+
+    func testAmountEditingExplainsPendingWorkAndConflictsUntilResolved() async throws {
+        let original = row()
+        let store = ShoppingSyncStore(storage: Memory().storage)
+        await store.activate(context: context(items: [original], sync: { payload in
+            ShoppingCartResponse(householdId: 7, items: [original], results: payload.operations.map {
+                ShoppingReceipt(operationId: $0.operationId, status: "conflict", reason: "revision_changed")
+            })
+        }))
+        XCTAssertNil(store.amountEditingUnavailableReason(for: original))
+        try store.change(1, kind: "check")
+        XCTAssertEqual(store.amountEditingUnavailableReason(for: original), "Menge erst nach dem Abgleich bearbeitbar.")
+        try await store.refresh()
+        XCTAssertEqual(store.waitingCount, 0)
+        XCTAssertEqual(store.amountEditingUnavailableReason(for: original), "Menge erst nach Klärung der Konflikte bearbeitbar.")
+        try store.discardConflicts()
+        XCTAssertNil(store.amountEditingUnavailableReason(for: original))
     }
 
     func testFullOfflineClearReservesIndependentUndoCapacity() async throws {

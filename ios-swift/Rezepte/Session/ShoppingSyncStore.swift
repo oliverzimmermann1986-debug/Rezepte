@@ -41,8 +41,12 @@ final class ShoppingSyncStore: ObservableObject {
     @Published private(set) var items: [CartItem] = []
     @Published private(set) var isReady = false
     @Published private(set) var isSyncing = false
+    /// All unconfirmed operations, including conflicts. Keep write guards on
+    /// this total; only waitingCount can make progress through another sync.
     @Published private(set) var pendingCount = 0
+    @Published private(set) var waitingCount = 0
     @Published private(set) var conflictCount = 0
+    @Published private(set) var conflictOperationIDs: Set<String> = []
     @Published private(set) var conflictDetails: [String] = []
     @Published private(set) var errorMessage: String?
     @Published private(set) var householdID: Int?
@@ -117,7 +121,9 @@ final class ShoppingSyncStore: ObservableObject {
         isReady = false
         isSyncing = false
         pendingCount = 0
+        waitingCount = 0
         conflictCount = 0
+        conflictOperationIDs = []
         conflictDetails = []
         errorMessage = nil
         householdID = nil
@@ -187,9 +193,12 @@ final class ShoppingSyncStore: ObservableObject {
         items = document?.projectedItems ?? []
         isReady = document != nil
         householdID = document?.householdId
-        pendingCount = document?.operations.count ?? 0
-        let conflicts = document?.operations.filter { $0.conflict != nil } ?? []
+        let operations = document?.operations ?? []
+        pendingCount = operations.count
+        conflictOperationIDs = Self.conflictedOperationIDs(in: operations)
+        let conflicts = operations.filter { conflictOperationIDs.contains($0.wire.operationId) }
         conflictCount = conflicts.count
+        waitingCount = pendingCount - conflictCount
         conflictDetails = conflicts.map { operation in
             let reason: String
             switch operation.conflict {
@@ -198,6 +207,7 @@ final class ShoppingSyncStore: ObservableObject {
             case "delete_missing": reason = "Löschung nicht mehr verfügbar"
             case "already_restored": reason = "bereits wiederhergestellt"
             case "dependency_failed": reason = "vorherige Änderung abgelehnt"
+            case nil: reason = "hängt von einer abgelehnten Änderung ab"
             default: reason = "inzwischen geändert"
             }
             return "\(operation.label ?? operation.wire.name ?? "Artikel"): \(reason)"
@@ -206,8 +216,26 @@ final class ShoppingSyncStore: ObservableObject {
         undoID = document?.undo.last?.id
     }
 
-    private func mutate(expectedHouseholdID: Int? = nil, _ change: (inout ShoppingDocument) throws -> Void) throws {
+    /// Include unsent descendants as soon as a parent fails, even when the
+    /// chain crosses a 50-operation request boundary. These cannot be retried
+    /// successfully and must remain stored until the user discards them.
+    private static func conflictedOperationIDs(in operations: [ShoppingLocalOperation]) -> Set<String> {
+        var rejected = Set(operations.filter { $0.conflict != nil }.map { $0.wire.operationId })
+        var previousCount = -1
+        while previousCount != rejected.count {
+            previousCount = rejected.count
+            for operation in operations where operation.wire.targetOperationId.map(rejected.contains) == true
+                || operation.wire.afterOperationId.map(rejected.contains) == true {
+                rejected.insert(operation.wire.operationId)
+            }
+        }
+        return rejected
+    }
+
+    private func mutate(expectedHouseholdID: Int? = nil, expectedIdentity: UUID? = nil,
+                        _ change: (inout ShoppingDocument) throws -> Void) throws {
         let context = try requireContext()
+        if let expectedIdentity, context.identity != expectedIdentity { throw APIError.sessionChanged }
         guard !onlineEdit else { throw APIError.server(0, "Bitte die laufende Mengenänderung abwarten.") }
         guard var next = document else {
             throw APIError.server(0, "Bitte die Einkaufsliste einmal mit Verbindung öffnen, bevor du offline einkaufst.")
@@ -254,7 +282,10 @@ final class ShoppingSyncStore: ObservableObject {
         if itemID > 0, item.syncRevision == nil { throw APIError.server(0, "Bitte die Einkaufsliste zuerst aktualisieren.") }
         let create = document.operations.first { ["add", "restore"].contains($0.wire.kind) && $0.localId == itemID }
         let previous = document.operations.last { (document.bindings[String($0.localId)]?.itemId ?? $0.localId) == resolved }
-        guard previous?.conflict == nil else { throw APIError.server(0, "Bitte zuerst den Konflikt für diesen Artikel prüfen.") }
+        let rejected = Self.conflictedOperationIDs(in: document.operations)
+        guard previous.map({ !rejected.contains($0.wire.operationId) }) ?? true else {
+            throw APIError.server(0, "Bitte zuerst den Konflikt für diesen Artikel prüfen.")
+        }
         var wire = ShoppingWireOperation(kind: kind)
         if itemID < 0 {
             wire.targetOperationId = create?.wire.operationId ?? binding?.operationId
@@ -304,8 +335,8 @@ final class ShoppingSyncStore: ObservableObject {
         }
     }
 
-    func undoLatest(groupID: String? = nil) throws {
-        try mutate { next in
+    func undoLatest(groupID: String? = nil, expectedHouseholdID: Int? = nil, expectedIdentity: UUID? = nil) throws {
+        try mutate(expectedHouseholdID: expectedHouseholdID, expectedIdentity: expectedIdentity) { next in
             guard let latest = next.undo.last, groupID == nil || latest.id == groupID else { return }
             var localID = nextLocalID(next)
             for deletion in latest.deletions {
@@ -318,16 +349,12 @@ final class ShoppingSyncStore: ObservableObject {
         }
     }
 
-    func discardConflicts() throws {
-        try mutate { next in
-            var rejected = Set(next.operations.filter { $0.conflict != nil }.map { $0.wire.operationId })
-            var previousCount = -1
-            while previousCount != rejected.count {
-                previousCount = rejected.count
-                for operation in next.operations where operation.wire.targetOperationId.map(rejected.contains) == true
-                    || operation.wire.afterOperationId.map(rejected.contains) == true {
-                    rejected.insert(operation.wire.operationId)
-                }
+    func discardConflicts(operationIDs: Set<String>? = nil, expectedHouseholdID: Int? = nil,
+                          expectedIdentity: UUID? = nil) throws {
+        try mutate(expectedHouseholdID: expectedHouseholdID, expectedIdentity: expectedIdentity) { next in
+            let rejected = Self.conflictedOperationIDs(in: next.operations)
+            if let operationIDs, operationIDs != rejected {
+                throw APIError.server(0, "Die Konflikte haben sich inzwischen geändert. Bitte erneut prüfen.")
             }
             next.operations.removeAll { rejected.contains($0.wire.operationId) }
             next.undo = next.undo.compactMap { group in
@@ -361,7 +388,9 @@ final class ShoppingSyncStore: ObservableObject {
             for _ in 0..<10 {
                 try assertCurrent(context)
                 let household = document?.householdId
-                let sent = Array((document?.operations.filter { $0.conflict == nil } ?? []).prefix(50))
+                let operations = document?.operations ?? []
+                let rejected = Self.conflictedOperationIDs(in: operations)
+                let sent = Array(operations.filter { !rejected.contains($0.wire.operationId) }.prefix(50))
                 let result: ShoppingCartResponse
                 if let household, !sent.isEmpty {
                     result = try await context.synchronize(ShoppingSyncPayload(householdId: household, operations: sent.map(\.wire)))
@@ -398,14 +427,15 @@ final class ShoppingSyncStore: ObservableObject {
                     operation.conflict = receipt.reason ?? "conflict"
                     return operation
                 }
+                let conflictedIDs = Self.conflictedOperationIDs(in: next.operations)
                 next.undo = next.undo.compactMap { group in
                     var group = group
-                    group.deletions.removeAll { receipts[$0.operationId]?.status == "conflict" }
+                    group.deletions.removeAll { conflictedIDs.contains($0.operationId) }
                     return group.deletions.isEmpty ? nil : group
                 }
                 try save(next, context: context, setActive: true)
                 errorMessage = notice
-                if !next.operations.contains(where: { $0.conflict == nil }) { break }
+                if !next.operations.contains(where: { !conflictedIDs.contains($0.wire.operationId) }) { break }
             }
         } catch {
             try assertCurrent(context)
@@ -435,11 +465,19 @@ final class ShoppingSyncStore: ObservableObject {
 
     /// Existing amount editing remains online-only until prior operations are
     /// confirmed. This avoids replacing quantities underneath queued revisions.
+    func amountEditingUnavailableReason(for item: CartItem) -> String? {
+        if conflictCount > 0 { return "Menge erst nach Klärung der Konflikte bearbeitbar." }
+        if pendingCount > 0 || item.id <= 0 { return "Menge erst nach dem Abgleich bearbeitbar." }
+        if isSyncing { return "Menge nach dem laufenden Abgleich bearbeitbar." }
+        return nil
+    }
+
     func updateAmount(item: CartItem, amount: Double, session: SessionStore) async throws {
         let context = try requireContext()
-        guard pendingCount == 0, !isSyncing, !onlineEdit, item.id > 0 else {
-            throw APIError.server(0, "Bitte zuerst synchronisieren, bevor du die Menge bearbeitest.")
+        if let reason = amountEditingUnavailableReason(for: item) {
+            throw APIError.server(0, reason)
         }
+        guard !onlineEdit else { throw APIError.server(0, "Bitte die laufende Mengenänderung abwarten.") }
         let household = householdID
         onlineEdit = true
         defer { if isCurrent(context) { onlineEdit = false } }

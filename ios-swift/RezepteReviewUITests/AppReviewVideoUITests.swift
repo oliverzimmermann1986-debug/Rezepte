@@ -31,12 +31,24 @@ final class AppReviewVideoUITests: XCTestCase {
         let loginButton = app.buttons["Anmelden"]
         XCTAssertTrue(loginButton.waitForExistence(timeout: 10))
         XCTAssertTrue(loginButton.isEnabled, "The prefilled review login is incomplete.")
+        reveal(loginButton, maximumSwipes: 3)
         loginButton.tap()
         let archiveTab = app.tabBars.buttons["Archiv"]
         XCTAssertTrue(archiveTab.waitForExistence(timeout: 35), "Login to the isolated review server failed.")
         XCTAssertTrue(app.navigationBars["Heute"].waitForExistence(timeout: 20))
         pause(4)
         capture("01-heute")
+
+        // The home shortcut must open this week's wishes directly.
+        let wishesShortcut = app.buttons["today.wishes"]
+        reveal(wishesShortcut, maximumSwipes: 4)
+        wishesShortcut.tap()
+        XCTAssertTrue(app.navigationBars["Wochenwünsche"].waitForExistence(timeout: 20))
+        XCTAssertFalse(app.navigationBars["Wochenplan"].exists,
+                       "The home shortcut must not require an intermediate planner screen.")
+        pause(3)
+        app.buttons["Fertig"].tap()
+        XCTAssertTrue(app.navigationBars["Heute"].waitForExistence(timeout: 10))
         archiveTab.tap()
         XCTAssertTrue(app.navigationBars["Archiv"].waitForExistence(timeout: 20))
         pause(4)
@@ -85,6 +97,7 @@ final class AppReviewVideoUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Einkauf"].waitForExistence(timeout: 20))
         pause(3)
         capture("05-einkauf")
+        verifyShoppingUndo()
         let recurring = app.segmentedControls.buttons["Wiederkehrend"]
         XCTAssertTrue(recurring.waitForExistence(timeout: 10))
         recurring.tap()
@@ -111,6 +124,41 @@ final class AppReviewVideoUITests: XCTestCase {
         pause(5)
         app.swipeUp()
         pause(5)
+    }
+
+    private func verifyShoppingUndo() {
+        let name = "UX-Prüfung 14102"
+        let input = app.textFields["Was fehlt?"]
+        reveal(input, maximumSwipes: 3)
+        input.tap()
+        input.typeText(name + "\n")
+        let item = app.staticTexts[name].firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 15))
+        reveal(item, maximumSwipes: 4)
+        item.swipeLeft()
+        let delete = app.buttons["Löschen"].firstMatch
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        delete.tap()
+        XCTAssertTrue(waitForAbsence(item))
+
+        let undo = app.buttons["cart.undo"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 10))
+        XCTAssertTrue(undo.isHittable, "Undo must be visible without scrolling to the top.")
+        capture("09-einkauf-rueckgaengig")
+        undo.tap()
+        XCTAssertTrue(item.waitForExistence(timeout: 15), "Undo did not restore the deleted item.")
+
+        // Remove only the synthetic item created above; preserve existing demo purchases.
+        reveal(item, maximumSwipes: 4)
+        item.swipeLeft()
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        delete.tap()
+        XCTAssertTrue(waitForAbsence(item))
+    }
+
+    private func waitForAbsence(_ element: XCUIElement) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: 10) == .completed
     }
 
     private func reveal(_ element: XCUIElement, maximumSwipes: Int = 6) {

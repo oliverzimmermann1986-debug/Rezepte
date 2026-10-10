@@ -19,6 +19,20 @@ private struct TodayWish: Decodable, Identifiable {
 }
 private struct TodayWishes: Decodable { let items: [TodayWish] }
 
+struct TodayWishesRoute: Identifiable {
+    let id = UUID()
+    let identity: UUID
+    let day: String
+    let cachedWeek: MealWeek?
+
+    init(identity: UUID, day: String, cachedWeek: MealWeek?) {
+        self.identity = identity
+        self.day = day
+        // The date can change while Today still shows the previous week's snapshot.
+        self.cachedWeek = cachedWeek?.days.contains(where: { $0.date == day }) == true ? cachedWeek : nil
+    }
+}
+
 @MainActor
 struct TodayView: View {
     @EnvironmentObject private var session: SessionStore
@@ -35,6 +49,8 @@ struct TodayView: View {
     @State private var generation = UUID()
     @State private var active = false
     @State private var loadedIdentity: UUID?
+    @State private var selectedDay: MealDay?
+    @State private var wishesRoute: TodayWishesRoute?
 
     var body: some View {
         NavigationStack {
@@ -45,65 +61,35 @@ struct TodayView: View {
                     if session.readOnly {
                         Text("Was möchtest du heute kochen?").font(.title2.bold())
                         NavigationLink("Rezepte entdecken") { RecipesView() }
+                            .frame(minHeight: 44)
                         Text("Mit einem Konto planst du die Woche und teilst Einkäufe mit deinem Haushalt.")
                     } else if loadedIdentity == session.identity {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Heute auf dem Tisch").font(.title2.bold())
-                            if loadingMeals { ProgressView("Plan wird aktualisiert …") }
-                            if let mealError { retryMessage(mealError) }
-                            if let week {
-                                let entries = week.days.first { $0.date == day }?.items ?? []
-                                if entries.isEmpty { Text("Für heute ist noch kein Gericht geplant.") }
-                                ForEach(entries) { item in
-                                    NavigationLink { RecipeDetailView(recipeID: item.recipeId) } label: {
-                                        VStack(alignment: .leading) {
-                                            Text(item.recipeName).font(.headline)
-                                            Text("\(item.plannedServings) Portionen · Rezept öffnen & kochen").font(.caption)
-                                        }.frame(minHeight: 48, alignment: .leading)
-                                    }
-                                }
-                            }
-                            NavigationLink("Wochenplan öffnen") { MealPlanView() }.frame(minHeight: 44)
-                        }.cardSurface()
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Noch einkaufen").font(.title2.bold())
-                            if shopping.isReady {
-                                let open = shopping.items.filter { !$0.checked }
-                                Text("\(open.count) offene Artikel").font(.title.bold())
-                                ForEach(Array(open.prefix(4))) { item in Text(item.name) }
-                                if shopping.pendingCount > 0 { Text("\(shopping.pendingCount) Änderungen warten auf Abgleich.").font(.caption) }
-                                if shopping.conflictCount > 0 { Text("Bitte prüfe die Konflikte in der Einkaufsliste.").foregroundStyle(theme.warning) }
-                            } else { Text("Die Einkaufsliste ist noch nicht verfügbar.") }
-                            if let error = shopping.errorMessage { Text(error).font(.caption).foregroundStyle(theme.warning) }
-                            NavigationLink("Einkaufsliste öffnen") { CartView() }.frame(minHeight: 44)
-                        }.cardSurface()
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Wünsche für diese Woche").font(.title2.bold())
-                            if loadingWishes { ProgressView("Wünsche werden aktualisiert …") }
-                            if let wishError { retryMessage(wishError) }
-                            if let wishes {
-                                let open = wishes.filter { $0.plannedFor == nil }.sorted { $0.votes > $1.votes }
-                                if open.isEmpty { Text("Keine offenen Wünsche.") }
-                                ForEach(Array(open.prefix(3))) { wish in
-                                    NavigationLink { RecipeDetailView(recipeID: wish.recipeId) } label: {
-                                        HStack { Text(wish.recipeName); Spacer(); Text("\(wish.votes) Stimmen").font(.caption) }
-                                            .frame(minHeight: 48)
-                                    }
-                                }
-                            }
-                            NavigationLink("Im Wochenplan abstimmen") { MealPlanView() }.frame(minHeight: 44)
-                        }.cardSurface()
+                        mealsCard
+                        shoppingCard
+                        wishesCard
                         NavigationLink("Mit vorhandenen Zutaten kochen") { IngredientDiscoveryView() }
                             .frame(minHeight: 48)
                     }
-                }.padding()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
             }
             .background(theme.background).navigationTitle("Heute")
+            .foregroundStyle(theme.ink)
             .refreshable { await refresh() }
+            .sheet(item: $selectedDay, onDismiss: { Task { await refresh() } }) { selected in
+                RecipePickerView(day: selected) { await refresh() }
+                    .id(session.identity)
+            }
+            .sheet(item: $wishesRoute, onDismiss: { Task { await refresh() } }) { route in
+                TodayWishesSheet(route: route) { await refresh() }
+                    .id(session.identity)
+            }
             .task(id: session.identity) {
                 active = true
                 if loadedIdentity != session.identity {
                     week = nil; wishes = nil; mealError = nil; wishError = nil
+                    selectedDay = nil; wishesRoute = nil
                     loadedIdentity = session.identity
                 }
                 await refresh()
@@ -118,6 +104,126 @@ struct TodayView: View {
             .onChange(of: scenePhase) { _, phase in if phase == .active && active { Task { await refresh() } } }
         }
     }
+
+    private var mealsCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Heute auf dem Tisch")
+                .font(.headline).foregroundStyle(theme.muted)
+                .accessibilityAddTraits(.isHeader)
+            if loadingMeals { ProgressView("Plan wird aktualisiert …") }
+            if let mealError { retryMessage(mealError) }
+            if let today = week?.days.first(where: { $0.date == day }) {
+                if today.items.isEmpty {
+                    Text("Was möchtest du heute kochen?").font(.title2.bold())
+                    Text("Wähle ein Gericht und die passenden Portionen für heute.")
+                        .foregroundStyle(theme.muted)
+                    Button { selectedDay = today } label: {
+                        Label("Gericht für heute planen", systemImage: "plus")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(theme.accentSoft).foregroundStyle(theme.ink)
+                    .accessibilityIdentifier("today.add-meal")
+                }
+                ForEach(today.items) { item in
+                    if item.id != today.items.first?.id { Divider() }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(item.recipeName).font(.title2.bold())
+                        Text("\(item.plannedServings) \(item.plannedServings == 1 ? "Portion" : "Portionen")")
+                            .font(.subheadline).foregroundStyle(theme.muted)
+                    }
+                    .accessibilityElement(children: .combine)
+                    NavigationLink { RecipeDetailView(recipeID: item.recipeId) } label: {
+                        Label("Rezept öffnen", systemImage: "book")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(theme.accentSoft).foregroundStyle(theme.ink)
+                    .accessibilityLabel("\(item.recipeName), Rezept öffnen")
+                    .accessibilityHint("Öffnet Zutaten und Zubereitung.")
+                    .accessibilityIdentifier("today.recipe.\(item.recipeId)")
+                }
+            }
+            NavigationLink("Wochenplan öffnen") { MealPlanView() }.frame(minHeight: 44)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
+    }
+
+    private var shoppingCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Noch einkaufen").font(.headline).accessibilityAddTraits(.isHeader)
+            if shopping.isReady {
+                let open = shopping.items.filter { !$0.checked }
+                if open.isEmpty {
+                    Text(shopping.items.isEmpty ? "Deine Einkaufsliste ist leer." : "Alles auf deiner Liste ist eingekauft.")
+                    Text("Öffne die Liste, um weitere Artikel hinzuzufügen.")
+                        .font(.subheadline).foregroundStyle(theme.muted)
+                } else {
+                    Text("\(open.count) \(open.count == 1 ? "offener Artikel" : "offene Artikel")")
+                        .font(.subheadline.weight(.semibold))
+                    Text(open.prefix(3).map(\.name).joined(separator: ", ") + (open.count > 3 ? " …" : ""))
+                        .font(.subheadline).foregroundStyle(theme.muted)
+                }
+                if shopping.waitingCount > 0 {
+                    Text("\(shopping.waitingCount) \(shopping.waitingCount == 1 ? "Änderung wartet" : "Änderungen warten") auf Übertragung.")
+                        .font(.caption).foregroundStyle(theme.muted)
+                }
+                if shopping.conflictCount > 0 {
+                    Text("\(shopping.conflictCount) \(shopping.conflictCount == 1 ? "Änderung braucht" : "Änderungen brauchen") deine Entscheidung in der Einkaufsliste.")
+                        .font(.subheadline).foregroundStyle(theme.warning)
+                }
+            } else {
+                Text("Die Einkaufsliste ist noch nicht verfügbar. Öffne sie, um den Abgleich zu prüfen.")
+                    .foregroundStyle(theme.muted)
+            }
+            if let error = shopping.errorMessage { Text(error).font(.caption).foregroundStyle(theme.warning) }
+            NavigationLink("Einkaufsliste öffnen") { CartView() }.frame(minHeight: 44)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
+    }
+
+    private var wishesCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Wünsche für diese Woche").font(.headline).accessibilityAddTraits(.isHeader)
+            if loadingWishes { ProgressView("Wünsche werden aktualisiert …") }
+            if let wishError { retryMessage(wishError) }
+            if let wishes {
+                let open = wishes.filter { $0.plannedFor == nil }.sorted {
+                    $0.votes == $1.votes ? $0.id < $1.id : $0.votes > $1.votes
+                }
+                if open.isEmpty {
+                    Text(wishes.isEmpty ? "Was soll diese Woche auf den Tisch?" : "Alle Wünsche sind bereits eingeplant.")
+                    Text("Öffne die Wochenwünsche und schlage deinem Haushalt ein Gericht vor.")
+                        .font(.subheadline).foregroundStyle(theme.muted)
+                }
+                ForEach(Array(open.prefix(3))) { wish in
+                    NavigationLink { RecipeDetailView(recipeID: wish.recipeId) } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(wish.recipeName).font(.subheadline.weight(.semibold))
+                            Text("\(wish.votes) \(wish.votes == 1 ? "Stimme" : "Stimmen")")
+                                .font(.caption).foregroundStyle(theme.muted)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityHint("Öffnet das Rezept. Zum Abstimmen nutze den Knopf unter den Wünschen.")
+                }
+            }
+            Button {
+                wishesRoute = TodayWishesRoute(identity: session.identity, day: KitchenDay.string(), cachedWeek: week)
+            } label: {
+                Label(wishes?.contains(where: { $0.plannedFor == nil }) == true ? "Jetzt abstimmen" : "Wochenwünsche öffnen", systemImage: "hand.thumbsup")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("today.wishes")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
+    }
+
     private func retryMessage(_ value: String) -> some View {
         VStack(alignment: .leading) {
             Text(value).font(.caption).foregroundStyle(theme.warning)
@@ -164,5 +270,64 @@ struct TodayView: View {
             wishError = wishes == nil ? "Die Haushaltswünsche sind gerade nicht erreichbar." : "Zuletzt geladene Wünsche; Aktualisierung fehlgeschlagen."
         }
         loadingWishes = false
+    }
+}
+
+@MainActor
+private struct TodayWishesSheet: View {
+    let route: TodayWishesRoute
+    let onApplied: () async -> Void
+    @EnvironmentObject private var session: SessionStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var week: MealWeek?
+    @State private var errorMessage: String?
+    @State private var loading = false
+    @State private var requestID = UUID()
+
+    init(route: TodayWishesRoute, onApplied: @escaping () async -> Void) {
+        self.route = route
+        self.onApplied = onApplied
+        _week = State(initialValue: route.cachedWeek)
+    }
+
+    var body: some View {
+        Group {
+            if route.identity != session.identity {
+                EmptyView()
+            } else if let week {
+                MealWishesView(week: week, onApplied: onApplied)
+            } else {
+                NavigationStack {
+                    Group {
+                        if let errorMessage {
+                            ErrorState(message: errorMessage) { Task { await loadWeek() } }
+                        } else {
+                            ProgressView("Wochenwünsche werden geöffnet …")
+                        }
+                    }
+                    .navigationTitle("Wochenwünsche")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Schließen") { dismiss() } } }
+                }
+            }
+        }
+        .task { if week == nil { await loadWeek() } }
+        .onDisappear { requestID = UUID() }
+    }
+
+    private func loadWeek() async {
+        guard route.identity == session.identity, !loading, !session.readOnly, session.role != .guest else { return }
+        let identity = session.identity, request = UUID()
+        requestID = request; loading = true; errorMessage = nil
+        defer { if requestID == request { loading = false } }
+        do {
+            let result = try await session.api.mealWeek(start: route.day)
+            guard session.identity == identity, requestID == request, !Task.isCancelled else { return }
+            week = result
+        } catch {
+            guard session.identity == identity, requestID == request, !Task.isCancelled else { return }
+            session.handle(error)
+            errorMessage = "Die Woche ist gerade nicht erreichbar. Bitte versuche es erneut."
+        }
     }
 }

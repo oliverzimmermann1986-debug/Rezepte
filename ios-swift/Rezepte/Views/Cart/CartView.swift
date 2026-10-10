@@ -8,6 +8,12 @@ struct CartView: View {
         var id: String { rawValue }
     }
 
+    private struct ConflictDiscardRequest {
+        let operationIDs: Set<String>
+        let householdID: Int
+        let identity: UUID
+    }
+
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var shopping: ShoppingSyncStore
     @Environment(\.recipeTheme) private var theme
@@ -32,6 +38,7 @@ struct CartView: View {
     @State private var recurringToDelete: RecurringCartItem?
     @State private var showShoppingTools = false
     @State private var showBulkAdd = false
+    @State private var conflictDiscardRequest: ConflictDiscardRequest?
 
     private var items: [CartItem] { shopping.items }
     private var canWrite: Bool { !session.readOnly && session.role != .guest }
@@ -66,6 +73,13 @@ struct CartView: View {
                 }
             }
             .background(theme.background)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if mode == .current, canWrite, shopping.isReady,
+                   let label = shopping.undoLabel, let groupID = shopping.undoID,
+                   let householdID = shopping.householdID {
+                    undoBar(label: label, groupID: groupID, householdID: householdID, identity: session.identity)
+                }
+            }
             .navigationTitle("Einkauf")
             .toolbar {
                 if mode == .current, canWrite {
@@ -143,6 +157,29 @@ struct CartView: View {
             } message: {
                 Text("Der Artikel wird künftig nicht mehr automatisch eingetragen.")
             }
+            .confirmationDialog(
+                "Lokale Konfliktänderungen verwerfen?",
+                isPresented: Binding(
+                    get: { conflictDiscardRequest != nil },
+                    set: { if !$0 { conflictDiscardRequest = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let request = conflictDiscardRequest {
+                    Button("Lokale Änderungen verwerfen", role: .destructive) {
+                        discardConflicts(request)
+                    }
+                }
+                Button("Abbrechen", role: .cancel) { conflictDiscardRequest = nil }
+            } message: {
+                if let request = conflictDiscardRequest {
+                    Text(request.operationIDs.count == 1
+                        ? "Die lokale Änderung wird dauerhaft verworfen. Der zuletzt geladene Serverstand bleibt erhalten. Andere wartende Änderungen bleiben gespeichert."
+                        : "\(request.operationIDs.count) lokale Änderungen einschließlich abhängiger Schritte werden dauerhaft verworfen. Der zuletzt geladene Serverstand bleibt erhalten. Andere wartende Änderungen bleiben gespeichert.")
+                }
+            }
+            .onChange(of: session.identity) { _, _ in conflictDiscardRequest = nil }
+            .onChange(of: shopping.householdID) { _, _ in conflictDiscardRequest = nil }
             .task(id: session.identity) {
                 await load()
                 await loadRecurring()
@@ -157,7 +194,7 @@ struct CartView: View {
             .task {
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(30)) } catch { break }
-                    if scenePhase == .active, canWrite, shopping.pendingCount > 0 { try? await shopping.refresh() }
+                    if scenePhase == .active, canWrite, shopping.waitingCount > 0 { try? await shopping.refresh() }
                 }
             }
         }
@@ -403,7 +440,8 @@ struct CartView: View {
     }
 
     private func cartRow(_ item: CartItem) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let amountUnavailableReason = shopping.amountEditingUnavailableReason(for: item)
+        return VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 4) {
             Button {
                 Task { await toggle(item) }
@@ -430,14 +468,22 @@ struct CartView: View {
             } label: {
                 Image(systemName: "pencil")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(theme.accent)
+                    .foregroundStyle(amountUnavailableReason == nil ? theme.accent : theme.muted)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Menge von \(item.name) bearbeiten")
+            .accessibilityHint(amountUnavailableReason ?? "Benötigt eine Verbindung zum Server.")
             .accessibilityIdentifier("cart.edit-amount.\(item.id)")
-            .disabled(item.id < 0 || shopping.pendingCount > 0 || shopping.isSyncing)
+            .disabled(amountUnavailableReason != nil)
+        }
+        if let amountUnavailableReason {
+            Text(amountUnavailableReason)
+                .font(.caption)
+                .foregroundStyle(theme.muted)
+                .padding(.leading, 42)
+                .accessibilityIdentifier("cart.amount-unavailable.\(item.id)")
         }
         if let contributions = item.sourceContributions, !contributions.isEmpty {
             DisclosureGroup("Herkunft & Mengen") {
@@ -462,37 +508,94 @@ struct CartView: View {
 
     private var syncSection: some View {
         Section {
-            if let message = shopping.errorMessage ?? errorMessage {
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.circle").font(.footnote)
+            } else if let message = shopping.errorMessage {
                 Label(message, systemImage: "wifi.exclamationmark").font(.footnote)
             }
-            if shopping.pendingCount > 0 || shopping.isSyncing {
-                HStack {
-                    Label(shopping.isSyncing ? "Wird synchronisiert …" : "\(shopping.pendingCount) Änderungen auf diesem Gerät gespeichert",
-                          systemImage: "arrow.triangle.2.circlepath")
-                    Spacer()
-                    if !shopping.isSyncing {
-                        Button("Erneut") { Task { try? await shopping.refresh() } }
-                    }
-                }.font(.footnote)
+            if shopping.isSyncing {
+                Label("Wird synchronisiert …", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.footnote)
+            }
+            if shopping.waitingCount > 0 {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(shopping.waitingCount == 1
+                        ? "1 Änderung wartet auf Übertragung"
+                        : "\(shopping.waitingCount) Änderungen warten auf Übertragung",
+                        systemImage: "arrow.up.circle")
+                    Text("Auf diesem Gerät gespeichert. Beim nächsten Abgleich mit Verbindung werden sie übertragen.")
+                        .font(.footnote)
+                        .foregroundStyle(theme.muted)
+                    Button("Jetzt synchronisieren") { Task { try? await shopping.refresh() } }
+                        .frame(minHeight: 44)
+                        .disabled(shopping.isSyncing)
+                }
+                .accessibilityIdentifier("cart.sync.waiting")
             }
             if shopping.conflictCount > 0 {
-                DisclosureGroup("\(shopping.conflictCount) Änderungen prüfen") {
+                DisclosureGroup(shopping.conflictCount == 1
+                    ? "1 Änderung braucht deine Entscheidung"
+                    : "\(shopping.conflictCount) Änderungen brauchen deine Entscheidung") {
+                    Text("Diese Änderungen widersprechen dem Serverstand oder hängen von einer abgelehnten Änderung ab. Erneutes Synchronisieren löst sie nicht.")
+                        .font(.footnote)
+                        .foregroundStyle(theme.muted)
                     ForEach(Array(shopping.conflictDetails.enumerated()), id: \.offset) { _, detail in Text(detail).font(.footnote) }
-                    Button("Serverstand übernehmen") {
-                        do { try shopping.discardConflicts() } catch { errorMessage = error.localizedDescription }
+                    Button("Lokale Konfliktänderungen verwerfen", role: .destructive) {
+                        guard let householdID = shopping.householdID else { return }
+                        conflictDiscardRequest = ConflictDiscardRequest(operationIDs: shopping.conflictOperationIDs,
+                            householdID: householdID, identity: session.identity)
                     }
+                    .frame(minHeight: 44)
                 }
-            }
-            if let label = shopping.undoLabel {
-                Button("Rückgängig: \(label)", systemImage: "arrow.uturn.backward") {
-                    do {
-                        try shopping.undoLatest(groupID: shopping.undoID)
-                        Task { try? await shopping.refresh() }
-                    } catch { errorMessage = error.localizedDescription }
-                }
-                .frame(minHeight: 44)
+                .accessibilityIdentifier("cart.sync.conflicts")
             }
         }
+    }
+
+    private func discardConflicts(_ request: ConflictDiscardRequest) {
+        guard session.identity == request.identity else { return }
+        do {
+            try shopping.discardConflicts(operationIDs: request.operationIDs,
+                expectedHouseholdID: request.householdID, expectedIdentity: request.identity)
+            conflictDiscardRequest = nil
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func undoBar(label: String, groupID: String, householdID: Int, identity: UUID) -> some View {
+        let caption = Text("Zuletzt gelöscht: \(label)")
+            .font(.subheadline)
+            .foregroundStyle(theme.ink)
+        let undoButton = Button("Rückgängig", systemImage: "arrow.uturn.backward") {
+            guard session.identity == identity else { return }
+            do {
+                try shopping.undoLatest(groupID: groupID, expectedHouseholdID: householdID, expectedIdentity: identity)
+                Task { try? await shopping.refresh() }
+            } catch { errorMessage = error.localizedDescription }
+        }
+        .buttonStyle(.bordered)
+        .tint(theme.ink)
+        .frame(minHeight: 44)
+        .accessibilityLabel("Löschung rückgängig machen: \(label)")
+        .accessibilityIdentifier("cart.undo")
+
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                caption.fixedSize()
+                Spacer(minLength: 0)
+                undoButton.fixedSize()
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                caption
+                undoButton
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(theme.surface)
+        .overlay(alignment: .top) { Divider() }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("cart.undo-bar")
     }
 
     private func recurringRow(_ item: RecurringCartItem) -> some View {
@@ -816,6 +919,15 @@ private struct CartAmountEditorView: View {
                     }
                 } header: {
                     Text(item.name)
+                } footer: {
+                    Text("Zum Speichern ist eine Verbindung zum Server nötig. Mengenänderungen werden nicht offline vorgemerkt.")
+                }
+
+                if item.sourceContributions?.contains(where: { $0.amount != nil }) == true {
+                    Section("Herkunft nach der Mengenänderung") {
+                        Text("Wenn du die Gesamtmenge manuell änderst, bleiben die Rezeptnamen erhalten. Die bisherigen Mengenanteile je Rezept sind anschließend nicht mehr verfügbar.")
+                            .font(.footnote)
+                    }
                 }
 
                 if let errorMessage {

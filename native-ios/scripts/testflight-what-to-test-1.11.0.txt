@@ -1,4 +1,7 @@
 Bitte Rezeptregal 1.4.0 mit Backend 1.11.0 prüfen:
+• Ab Build 14102: Erster Start mit sichtbarem Standarddienst, eigenem Server und Einladungslink; gespeicherte Server und Zugangsdaten dürfen nicht unbemerkt gewechselt werden.
+• Heute: klare Rezeptaktion, gleich breite Bereiche und direkter Weg zu den Wochenwünschen. Auch einen leeren Tagesplan und den Wechsel in eine neue Woche prüfen.
+• Einkauf: wartende Änderungen und Konflikte getrennt prüfen; Rückgängig nach Löschen unten erreichen. Mengenbearbeitung muss ihren Sperrgrund und die Onlinevoraussetzung verständlich zeigen.
 • Heute zeigt Gerichte des lokalen Tages, offene Einkäufe und Wünsche des eigenen Haushalts.
 • Im Archiv unter Sammlung & Import: vorhandene Zutaten eingeben, Treffer öffnen und fehlende Zutaten übernehmen; Kochbücher erstellen und Rezepte mehrfach zuordnen.
 • Im Wochenplan Wünsche abstimmen und Vorschläge vor der Übernahme bearbeiten.
