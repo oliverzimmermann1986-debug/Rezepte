@@ -181,16 +181,29 @@ final class AppReviewVideoUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Montag"].waitForExistence(timeout: 10))
         let schedule = app.switches["Gericht für diesen Tag einplanen"]
         XCTAssertTrue(schedule.waitForExistence(timeout: 10))
-        schedule.tap()
+        enableSwitch(schedule)
         let vegetarian = app.switches["Vegetarisch"]
-        XCTAssertTrue(vegetarian.waitForExistence(timeout: 10))
-        vegetarian.tap()
+        XCTAssertTrue(vegetarian.waitForExistence(timeout: 10),
+                      "The enabled weekday must expose its rules.\n\(app.debugDescription)")
+        enableSwitch(vegetarian)
         pause(4)
         app.navigationBars["Montag"].buttons.firstMatch.tap()
         XCTAssertTrue(app.navigationBars["Woche vorschlagen"].waitForExistence(timeout: 10))
         // These are unsaved draft preferences: preserve the household's existing plan.
         app.buttons["Fertig"].tap()
         XCTAssertTrue(app.navigationBars["Wochenplan"].waitForExistence(timeout: 10))
+    }
+
+    private func enableSwitch(_ toggle: XCUIElement) {
+        XCTAssertTrue(toggle.isEnabled && toggle.isHittable, toggle.debugDescription)
+        XCTAssertEqual(toggle.value as? String, "0", "The unsaved weekday option must start off.\n\(toggle.debugDescription)")
+        print("Review toggle before tap: label=\(toggle.label), value=\(String(describing: toggle.value)), frame=\(toggle.frame)")
+        // SwiftUI can expose the entire Form row as the switch. Target its trailing control.
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: toggle)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed,
+                       "The switch did not turn on.\n\(toggle.debugDescription)\n\(app.debugDescription)")
+        print("Review toggle after tap: label=\(toggle.label), value=\(String(describing: toggle.value))")
     }
 
     private func verifyAutomaticLinkImportDisclosure() {
