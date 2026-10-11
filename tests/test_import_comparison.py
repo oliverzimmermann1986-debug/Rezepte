@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from app import auth
-from app.recipes import manage
+from app.recipes import import_comparison, manage
 from app.routes import api_import_comparison
 from app.tenant_db import HouseholdDatabase
 from app.tenancy import HouseholdScope
@@ -59,6 +59,29 @@ def resolution(client, payload, **values):
             "ingredients_from": "import", "steps_from": "existing", **values}
 
 
+def assert_history_prevents_reimport(comparison, recipe_id, monkeypatch):
+    client, db, users, login, scoped, original, foreign, payload = comparison
+    history = scoped.history_get(payload["url"])
+    assert history["source_url"] == payload["url"]
+    assert history["owner_account_id"] == users["anna"][1]
+    assert history["target_dir"] == scoped.recipe_get(recipe_id)["folder_path"]
+    other = HouseholdDatabase(db, HouseholdScope(users["bert"][1]))
+    assert not other.history_has(payload["url"])
+    with monkeypatch.context() as patch:
+        patch.setattr(HouseholdDatabase, "pending_add",
+                      lambda *args, **kwargs: pytest.fail("Resolved URL must not be enqueued again"))
+        response = client.post("/api/pending/import-url", json={
+            "url": payload["url"], "visibility": "private", "ai_processing_consent": "openai-recipe-v1",
+        })
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "duplicate"
+    assert scoped.pending_get(payload["url"])["status"] == "resolved"
+    assert scoped.history_get(payload["url"]) == history
+    with db.conn() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM history WHERE source_url=?",
+                                  (payload["url"],)).fetchone()[0] == 1
+
+
 def test_cross_source_preview_is_household_scoped_and_explains_differences(comparison):
     client, db, users, login, scoped, original, foreign, payload = comparison
     response = client.post("/api/import-comparison/preview", json=payload)
@@ -89,21 +112,26 @@ def test_authentication_guest_and_guessed_private_id_are_rejected(comparison):
     assert client.post("/api/import-comparison/resolve", json=body).status_code == 403
 
 
-def test_keep_saves_existing_recipe_resolves_import_and_replays(comparison):
+def test_keep_saves_existing_recipe_resolves_import_and_replays(comparison, monkeypatch):
     client, db, users, login, scoped, original, foreign, payload = comparison
     body = resolution(client, payload, action="keep")
     for attempt in range(2):
         response = client.post("/api/import-comparison/resolve", json=body)
         assert response.status_code == 200, response.text
         assert response.json()["recipe_id"] == original
+        if attempt == 0:
+            history = scoped.history_get(payload["url"])
+        else:
+            assert scoped.history_get(payload["url"]) == history
     assert scoped.pending_get(payload["url"])["status"] == "resolved"
     assert scoped.recipe_get(original)["in_library"]
     assert db.recipe_count() == 2
     assert client.post("/api/import-comparison/resolve", json={**body, "action": "variant"}).status_code == 409
+    assert_history_prevents_reimport(comparison, original, monkeypatch)
 
 
 @pytest.mark.parametrize("action", ["merge", "variant"])
-def test_private_variant_preserves_source_and_uses_selected_complete_lists(comparison, action):
+def test_private_variant_preserves_source_and_uses_selected_complete_lists(comparison, action, monkeypatch):
     client, db, users, login, scoped, original, foreign, payload = comparison
     before = db.recipe_get(original)
     original_ingredients = db.recipe_ingredients_get(original)
@@ -138,6 +166,7 @@ def test_private_variant_preserves_source_and_uses_selected_complete_lists(compa
     assert info["variant_provenance"]["import_url"] == payload["url"]
     assert info["variant_provenance"]["import_draft"]["ingredients"][0]["amount"] == 250
     assert client.post("/api/import-comparison/resolve", json=body).json()["recipe_id"] == rid
+    assert_history_prevents_reimport(comparison, rid, monkeypatch)
     login("bert")
     assert client.get(f"/api/recipes/{rid}").status_code == 404
 
@@ -153,10 +182,18 @@ def test_existing_ingredients_keep_their_own_servings(comparison):
     assert db.recipe_steps_get(rid)[0]["instruction"] == "Hafer mit Apfel kochen."
 
 
-def test_parallel_changes_require_a_fresh_comparison(comparison):
+@pytest.mark.parametrize("changed", ["steps", "ingredients", "draft", "analysis"])
+def test_parallel_changes_require_a_fresh_comparison(comparison, changed):
     client, db, users, login, scoped, original, foreign, payload = comparison
     body = resolution(client, payload)
-    db.recipe_steps_set(original, [{"instruction": "Inzwischen geändert"}])
+    if changed == "steps":
+        db.recipe_steps_set(original, [{"instruction": "Inzwischen geändert"}])
+    elif changed == "ingredients":
+        db.recipe_set_extraction_result(original, "ok", [{"name": "Hafer", "amount": 300, "unit": "g"}])
+    elif changed == "draft":
+        body = {**body, "draft": {**body["draft"], "servings": 5}}
+    else:
+        scoped.pending_update_suggestion(payload["url"], {"name": "Inzwischen neu analysiert"})
     response = client.post("/api/import-comparison/resolve", json=body)
     assert response.status_code == 409
     assert db.recipe_count() == 2
@@ -177,6 +214,7 @@ def test_finalized_variant_recovers_if_pending_ack_failed(comparison, monkeypatc
     assert response.status_code == 200, response.text
     assert db.recipe_count() == 3
     assert scoped.pending_get(payload["url"])["status"] == "resolved"
+    assert_history_prevents_reimport(comparison, response.json()["recipe_id"], monkeypatch)
 
 
 @pytest.mark.parametrize("failure_point", ["steps", "finalize"])
@@ -194,6 +232,7 @@ def test_incomplete_variant_is_never_acknowledged_and_retry_completes_it(compari
         assert response.status_code == 409
     entry = scoped.pending_get(payload["url"])
     assert entry["status"] == "pending"
+    assert not scoped.history_has(payload["url"])
     pending_id = entry["ai_suggestion"]["comparison_pending"]["recipe_id"]
     assert db.recipe_get(pending_id) is None
     assert db.recipe_get(pending_id, include_pending=True)["ingredients_status"] == "variant_pending"
@@ -203,6 +242,40 @@ def test_incomplete_variant_is_never_acknowledged_and_retry_completes_it(compari
     assert db.recipe_steps_get(rid)[0]["instruction"] == "Hafer mit Apfel kochen."
     assert scoped.pending_get(payload["url"])["status"] == "resolved"
     assert db.recipe_count() == 3
+    assert_history_prevents_reimport(comparison, rid, monkeypatch)
+
+
+def test_comparison_loads_ingredient_matches_beyond_bulk_helper_limit():
+    ingredients = [{"name": name} for name in ("Hafer", "Apfel", "Milch")]
+
+    class Recipes:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def conn(self):
+            return self
+
+        def execute(self, *args):
+            return self
+
+        def fetchall(self):
+            return [{"id": rid, "name": "Anderes Essen"} for rid in range(1, 502)]
+
+        def recipe_ingredients_for_ids(self, ids):
+            assert len(ids) <= 500
+            return {rid: ingredients if rid == 501 else [] for rid in ids}
+
+        def recipe_steps_get(self, rid):
+            return []
+
+        def recipe_get(self, rid):
+            return {"id": rid, "name": "Anderes Essen"}
+
+    result = import_comparison.candidates(Recipes(), {}, {"name": "Frühstück", "ingredients": ingredients})
+    assert [item["id"] for item in result["items"]] == [501]
 
 
 @pytest.mark.parametrize("change", [
