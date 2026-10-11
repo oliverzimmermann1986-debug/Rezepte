@@ -1,8 +1,8 @@
 """Exact weekly quotas, overlap feasibility, exclusions and household history."""
 import pytest
 
-from app.recipes.meal_constraints import ingredient_categories, quota_selection
-from tests.test_discovery import _recipe, discovery_accounts
+from app.recipes.meal_constraints import excluded_ingredient_match, ingredient_categories, quota_selection
+from tests.test_discovery import _recipe, discovery_accounts as discovery_accounts
 
 
 def test_two_pasta_four_potato_and_one_unrestricted_dish(client, test_db):
@@ -67,6 +67,41 @@ def test_legume_and_rice_families_use_whole_ingredient_words():
     assert ingredient_categories({"kartoffelstärke", "reisessig", "sojasauce", "mandelmilch"}) == []
 
 
+def test_curated_exclusions_cover_mushrooms_and_qualified_milk_without_substrings():
+    assert excluded_ingredient_match({"champignon", "nudeln"}, {"pilz"})
+    assert excluded_ingredient_match({"getrocknete shiitake"}, {"pilze"})
+    assert excluded_ingredient_match({"milch (laktosefrei)"}, {"milch"})
+    assert not excluded_ingredient_match({"kokosmilch", "reisessig", "kartoffelstärke"}, {"milch", "reis", "kartoffel"})
+
+
+def test_exclusion_groups_are_enforced_in_actual_suggestions(client, test_db):
+    _recipe(test_db, "Pilzpasta", ("Champignons", "Nudeln"))
+    _recipe(test_db, "Milchnudeln", ("Milch (laktosefrei)", "Nudeln"))
+    valid = _recipe(test_db, "ReinePasta", ("Nudeln",))
+    result = client.post("/api/discovery/meal-plan", json={"count": 3, "excluded_ingredients": ["Pilze", "Milch"]}).json()
+    assert [item["recipe_id"] for item in result["items"]] == [valid]
+
+
+def test_planner_scan_limit_counts_incomplete_rows_before_python_filtering():
+    from app.recipes.discovery import meal_plan_suggestions
+
+    class IncompleteCollection:
+        calls = 0
+
+        def recipe_list(self, *, limit, offset, **kwargs):
+            self.calls += 1
+            return [{"id": index} for index in range(offset, min(offset + limit, 20_000))]
+
+        def recipe_ingredients_for_ids(self, ids):
+            return {rid: [{"name": "   "}] for rid in ids}
+
+    collection = IncompleteCollection()
+    result = meal_plan_suggestions(collection, count=2)
+    assert result["items"] == []
+    assert not result["search_complete"]
+    assert collection.calls == 26
+
+
 def test_exclusions_match_known_synonyms_and_time_limit_stays_strict(client, test_db):
     _recipe(test_db, "KarottenPasta", ("Möhren", "Nudeln"))
     _recipe(test_db, "LangsamePasta", ("Nudeln",), description="Gesamtzeit: 90 Minuten")
@@ -98,7 +133,7 @@ def test_plan_history_uses_requested_week_and_only_the_current_household(client,
     {"count": 1, "category_quotas": [{"category": "pasta", "count": 2}]},
     {"category_quotas": [{"category": "pasta", "count": -1}]},
     {"category_quotas": [{"category": "pasta", "count": 1}] * 2},
-    {"excluded_ingredients": [" "]}, {"excluded_ingredients": ["Tomate"] * 101},
+    {"excluded_ingredients": [" "]}, {"excluded_ingredients": ["!!!"]}, {"excluded_ingredients": ["Tomate"] * 101},
     {"avoid_recent_days": 365}, {"week_start": "yesterday"}, {"week_start": 1234567890},
     {"week_start": "0001-01-01", "avoid_recent_days": 28},
 ])

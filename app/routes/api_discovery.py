@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, StringConstraints, field_validator, model
 
 from ..auth import require_auth
 from ..db import get_db
+from ..recipes.canonical import canonical_name
 from ..recipes.discovery import add_missing_to_cart, ingredient_matches, meal_plan_suggestions
 
 router = APIRouter(prefix="/api/discovery", tags=["discovery"], dependencies=[Depends(require_auth)])
@@ -53,6 +54,8 @@ class MealPlanRequest(BaseModel):
             raise ValueError("Eine Kategoriequote darf die Gesamtzahl nicht überschreiten")
         if len({quota.category for quota in self.category_quotas}) != len(self.category_quotas):
             raise ValueError("Jede Kategorie darf nur einmal vorkommen")
+        if any(not canonical_name(name) for name in self.excluded_ingredients):
+            raise ValueError("Zutatenausschlüsse müssen einen erkennbaren Namen enthalten")
         if self.week_start is not None:
             try:
                 self.week_start - timedelta(days=self.avoid_recent_days)

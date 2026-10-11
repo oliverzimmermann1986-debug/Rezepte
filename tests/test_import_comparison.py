@@ -5,16 +5,19 @@ from uuid import uuid4
 
 import pytest
 
+from app import auth
 from app.recipes import manage
 from app.routes import api_import_comparison
 from app.tenant_db import HouseholdDatabase
 from app.tenancy import HouseholdScope
-from tests.test_tenants import households
+from tests.test_tenants import households as households
 
 
 @pytest.fixture
 def comparison(households, tmp_path, monkeypatch):
     client, db, users, login = households
+    for username in ("anna", "bert"):
+        db.user_set_role(users[username][0], auth.ROLE_FULL_USER)
     root = tmp_path / "recipe-files"
     monkeypatch.setattr(manage, "_recipe_root", lambda: root.resolve())
 
@@ -80,6 +83,10 @@ def test_authentication_guest_and_guessed_private_id_are_rejected(comparison):
         assert client.post(f"/api/import-comparison/{endpoint}", json=request).status_code == 403
         client.headers.pop("Authorization")
         assert client.post(f"/api/import-comparison/{endpoint}", json=request).status_code == 401
+    db.user_set_role(users["anna"][0], auth.ROLE_USER)
+    login("anna")
+    assert client.post("/api/import-comparison/preview", json=payload).status_code == 403
+    assert client.post("/api/import-comparison/resolve", json=body).status_code == 403
 
 
 def test_keep_saves_existing_recipe_resolves_import_and_replays(comparison):

@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 from .canonical import canonical_name
 from .cart_logic import prepare_for_cart
-from .meal_constraints import CATEGORY_NAMES, ingredient_categories, quota_selection
+from .meal_constraints import CATEGORY_NAMES, excluded_ingredient_match, ingredient_categories, quota_selection
 
 
 AVAILABILITY_NOTE = "Es werden vorhandene Zutaten verglichen, keine Vorratsmengen. Mengen bitte vor dem Kochen prüfen."
@@ -58,20 +58,25 @@ def _complete_ingredients(ingredients: list[dict]) -> bool:
     return bool(ingredients) and all(str(item.get("name") or "").strip() and _key(item) for item in ingredients)
 
 
-def _candidates(db):
+def _candidates(db, *, max_examined: int | None = None, scan_status: dict | None = None):
     """Use the existing visibility/deletion filters, including library selection."""
     offset = 0
     while True:
-        recipes = db.recipe_list(ingredients_status="ok", needs_manual_care=False, limit=400, offset=offset)
+        limit = min(400, max_examined - offset + 1) if max_examined is not None else 400
+        recipes = db.recipe_list(ingredients_status="ok", needs_manual_care=False, limit=limit, offset=offset)
         if not recipes:
             break
         ingredients_by_id = db.recipe_ingredients_for_ids([int(recipe["id"]) for recipe in recipes])
-        for recipe in recipes:
+        for index, recipe in enumerate(recipes):
+            if max_examined is not None and offset + index >= max_examined:
+                if scan_status is not None:
+                    scan_status["complete"] = False
+                return
             ingredients = ingredients_by_id.get(int(recipe["id"]), [])
             if _complete_ingredients(ingredients):
                 yield recipe, ingredients
         offset += len(recipes)
-        if len(recipes) < 400:
+        if len(recipes) < limit:
             break
 
 
@@ -120,14 +125,15 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
     candidates = []
     unknown_times = 0
     search_complete = True
-    for scanned, (recipe, ingredients) in enumerate(_candidates(db)):
-        if scanned >= 10_000:
-            search_complete = False
-            break
-        if int(recipe["id"]) in excluded:
+    scan_status = {"complete": True}
+    seen_recipe_ids = set()
+    for recipe, ingredients in _candidates(db, max_examined=10_000, scan_status=scan_status):
+        recipe_id = int(recipe["id"])
+        if recipe_id in seen_recipe_ids or recipe_id in excluded:
             continue
+        seen_recipe_ids.add(recipe_id)
         keys = {_key(item) for item in ingredients}
-        if keys & excluded_keys:
+        if excluded_ingredient_match(keys, excluded_keys):
             continue
         total = explicit_total_minutes(recipe)
         if max_minutes is not None and total is None:
@@ -146,6 +152,7 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
             "_keys": keys, "_category": str(recipe.get("category") or "").casefold(),
             "_coverage": len(keys & available) / len(keys) if available else 0,
         })
+    search_complete = scan_status["complete"]
     selected = []
 
     def choose(vegetarian_only=False):

@@ -18,6 +18,29 @@ _FAMILIES = {
     "legume": {"bohnen", "bohne", "linsen", "linse", "kichererbse", "kichererbsen",
                "erbsen", "erbse", "kidneybohne", "kidneybohnen", "sojabohnen", "edamame"},
 }
+_EXCLUSION_FAMILIES = {
+    "pilz": {"pilz", "pilze", "champignon", "champignons", "pfifferling", "pfifferlinge",
+             "steinpilz", "steinpilze", "shiitake", "shii", "austernpilz", "austernpilze",
+             "kräuterseitling", "kräuterseitlinge", "portobello", "morchel", "morcheln"},
+    "pilze": {"pilz", "pilze", "champignon", "champignons", "pfifferling", "pfifferlinge",
+              "steinpilz", "steinpilze", "shiitake", "austernpilz", "austernpilze",
+              "kräuterseitling", "kräuterseitlinge", "portobello", "morchel", "morcheln"},
+}
+
+
+def excluded_ingredient_match(keys: set[str], excluded: set[str]) -> bool:
+    if keys & excluded:
+        return True
+    tokens = set().union(*(set(re.findall(r"[^\W\d_]+", key.casefold())) for key in keys)) if keys else set()
+    for name in excluded:
+        if name in _EXCLUSION_FAMILIES and tokens & _EXCLUSION_FAMILIES[name]:
+            return True
+        # A qualified ingredient such as Milch (laktosefrei) still contains Milch.
+        # Whole words avoid matching Reisessig, Kokosmilch or Kartoffelstärke.
+        words = set(re.findall(r"[^\W\d_]+", name.casefold()))
+        if words and any(words <= set(re.findall(r"[^\W\d_]+", key.casefold())) for key in keys):
+            return True
+    return False
 
 
 def ingredient_categories(keys: set[str]) -> list[str]:

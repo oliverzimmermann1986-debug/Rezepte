@@ -204,7 +204,7 @@ final class OfflineRecipeStore: ObservableObject {
     private func loadContext(_ next: OfflineRecipeContext) async {
         do {
             try assertCurrent(next)
-            let household: Int
+            var household: Int
             do {
                 household = try await next.household()
                 try assertCurrent(next)
