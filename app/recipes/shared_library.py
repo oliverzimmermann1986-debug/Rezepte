@@ -11,11 +11,13 @@ import time
 def migrate_schema(c):
     if c.execute("SELECT 1 FROM schema_migrations WHERE version=273").fetchone():
         return
-    c.execute("ALTER TABLE recipes ADD COLUMN is_global INTEGER NOT NULL DEFAULT 0 CHECK(is_global IN (0,1))")
-    c.execute("ALTER TABLE account_recipe_state ADD COLUMN is_saved INTEGER NOT NULL DEFAULT 1 CHECK(is_saved IN (0,1))")
+    if "is_global" not in {row[1] for row in c.execute("PRAGMA table_info(recipes)")}:
+        c.execute("ALTER TABLE recipes ADD COLUMN is_global INTEGER NOT NULL DEFAULT 0 CHECK(is_global IN (0,1))")
+    if "is_saved" not in {row[1] for row in c.execute("PRAGMA table_info(account_recipe_state)")}:
+        c.execute("ALTER TABLE account_recipe_state ADD COLUMN is_saved INTEGER NOT NULL DEFAULT 1 CHECK(is_saved IN (0,1))")
     # Preserve IDs, files, source keys, authorship and all personal values.
     c.execute("INSERT OR IGNORE INTO account_recipe_state(account_id,recipe_id,saved_at) "
               "SELECT owner_account_id,id,? FROM recipes WHERE owner_account_id IS NOT NULL", (time.time(),))
     c.execute("UPDATE recipes SET is_global=1 WHERE COALESCE(ingredients_status,'')<>'variant_pending'")
-    c.execute("CREATE INDEX idx_household_saved_recipes ON account_recipe_state(account_id,is_saved,recipe_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_household_saved_recipes ON account_recipe_state(account_id,is_saved,recipe_id)")
     c.execute("INSERT INTO schema_migrations(version,name,applied_at) VALUES(273,'shared_recipes_and_independent_household_flag',?)", (time.time(),))

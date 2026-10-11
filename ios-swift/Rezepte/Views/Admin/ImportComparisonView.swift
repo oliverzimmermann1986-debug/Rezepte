@@ -127,7 +127,7 @@ private struct ImportComparisonChoiceView: View {
                     }
                     .pickerStyle(.menu)
                     if action != "keep" {
-                        TextField("Name der privaten Variante", text: $name)
+                        TextField("Name der eigenen Variante", text: $name)
                         if action == "merge" {
                             Picker("Zutaten und Portionen", selection: $ingredientsFrom) {
                                 Text("Aus dem Import").tag("import")
@@ -138,7 +138,7 @@ private struct ImportComparisonChoiceView: View {
                                 Text("Aus dem vorhandenen Rezept").tag("existing")
                             }
                         }
-                        Text("Es entsteht ein neues privates Rezept mit dem Bild des vorhandenen Rezepts. Zutaten und Schritte werden als vollständige Listen übernommen. Bitte prüfe, ob sie zusammenpassen.")
+                        Text("Es entsteht ein neues Rezept mit dem Bild des vorhandenen Rezepts. Zutaten und Schritte werden als vollständige Listen übernommen. Bitte prüfe, ob sie zusammenpassen.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Text(action == "keep"
@@ -161,7 +161,7 @@ private struct ImportComparisonChoiceView: View {
                 Button("Abbrechen", role: .cancel) {}
             } message: {
                 Text(action == "keep" ? "Deine Änderungen am Import werden verworfen. Das vorhandene Rezept bleibt erhalten."
-                     : "Eine neue private Variante wird angelegt. Bitte Zutaten, Portionen und Zubereitung danach zusammen prüfen.")
+                     : "Eine eigene Variante wird angelegt. Bitte Zutaten, Portionen und Zubereitung danach zusammen prüfen.")
             }
         }
     }

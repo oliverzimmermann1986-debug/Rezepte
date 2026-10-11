@@ -92,7 +92,7 @@ struct MealPlanSuggestionsView: View {
                                 Text("7 Gerichte: genau 2 × Pasta, 2 × Kartoffeln, 1 × Salat, 1 × Suppe. Weitere Gerichte frei nach deinen übrigen Vorgaben.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
-                            ForEach(MealIngredientCategory.available(dishTypes: session.supports("meal-plan-dish-types-v1"), householdFilter: session.supports("shared-recipes-household-filter-v1"))) { category in
+                            ForEach(MealIngredientCategory.available(dishTypes: session.supports("meal-plan-dish-types-v1"))) { category in
                                 Picker(category.title, selection: Binding(
                                     get: { constraints.counts[category] ?? -1 },
                                     set: { if $0 < 0 { constraints.counts.removeValue(forKey: category) } else { constraints.counts[category] = $0 } }
