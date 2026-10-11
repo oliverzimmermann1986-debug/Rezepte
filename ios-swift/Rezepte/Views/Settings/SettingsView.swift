@@ -5,6 +5,8 @@ struct SettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.recipeTheme) private var theme
     @State private var showAdministration = false
+    @StateObject private var aiConsent = AIConsentCoordinator()
+    @State private var isEnablingLinkImports = false
     @AppStorage("content-language-v1") private var contentLanguage = ContentLanguage.de.rawValue
 
     var body: some View {
@@ -44,6 +46,10 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                }
+
+                if session.canImport || session.automaticLinkImportsEnabled {
+                    automaticLinkImportSettings
                 }
 
                 if session.fullAccess {
@@ -121,6 +127,7 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             .background(theme.background)
             .navigationTitle("Einstellungen")
+            .aiConsentPrompt(aiConsent, allowsOneTime: false)
             .fullScreenCover(isPresented: Binding(
                 get: { showAdministration && session.fullAccess },
                 set: { showAdministration = $0 }
@@ -133,6 +140,45 @@ struct SettingsView: View {
                     .preferredColorScheme(themeStore.appearance.colorScheme)
             }
         }
+    }
+
+    private var automaticLinkImportSettings: some View {
+        Section("Automatischer Linkimport") {
+            LabeledContent("Freigabe für OpenAI", value: session.automaticLinkImportsEnabled ? "Aktiviert" : "Ausgeschaltet")
+            Text("Gilt auf diesem Gerät für dein Konto und diesen Server. Geteilte Links werden beim Öffnen der App automatisch verarbeitet. Andere KI-Aktionen sowie Foto- und PDF-Uploads fragen weiterhin nach. Abmelden oder ein Haushaltswechsel löscht diese Freigabe.")
+                .font(.caption)
+                .foregroundStyle(theme.muted)
+            if session.automaticLinkImportsEnabled {
+                Button("Freigabe widerrufen", role: .destructive) { session.revokeLinkImportConsent() }
+                    .accessibilityIdentifier("settings.link-imports.revoke")
+                Text("Bereits vom Server angenommene Importe können noch fertiggestellt werden. Wartende Links bleiben auf diesem Gerät.")
+                    .font(.caption)
+                    .foregroundStyle(theme.muted)
+            } else {
+                Button("Automatischen Linkimport aktivieren") {
+                    Task { await enableAutomaticLinkImports() }
+                }
+                .disabled(!session.canEnableAutomaticLinkImports || isEnablingLinkImports || session.isProcessingSharedImports)
+                .accessibilityIdentifier("settings.link-imports.enable")
+                if !session.canEnableAutomaticLinkImports {
+                    Text("Zum Aktivieren muss die Verbindung mit deinem Konto und Server bestätigt sein.")
+                        .font(.caption).foregroundStyle(theme.muted)
+                }
+            }
+            if session.isProcessingSharedImports {
+                ProgressView("Geteilte Links werden übergeben …")
+            }
+        }
+    }
+
+    private func enableAutomaticLinkImports() async {
+        guard session.canEnableAutomaticLinkImports, !isEnablingLinkImports,
+              !session.isProcessingSharedImports else { return }
+        isEnablingLinkImports = true
+        defer { isEnablingLinkImports = false }
+        guard let _ = await aiConsent.request(.importLink, session: session),
+              session.automaticLinkImportsEnabled else { return }
+        await session.drainSharedImports()
     }
 
     private func themeButton(_ choice: ThemeChoice) -> some View {

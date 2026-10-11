@@ -76,10 +76,11 @@ struct AIConsentRequest: Identifiable, Sendable {
     let action: AIProcessingAction
     let identity: UUID
     let server: String
+    var canRememberLinkImports = false
     var host: String { URL(string: server)?.host ?? "ausgewählter Server" }
 }
 
-/// One decision for one action. Nothing is written to defaults or the keychain.
+/// Each request receives a fresh one-use ticket; only link imports may use a saved permission.
 @MainActor
 final class AIConsentCoordinator: ObservableObject {
     @Published private(set) var pending: AIConsentRequest?
@@ -93,16 +94,21 @@ final class AIConsentCoordinator: ObservableObject {
             session.alertMessage = APIError.aiServerUpgradeRequired.localizedDescription
             return nil
         }
-        let consent = await request(action, identity: identity, server: server)
+        if action == .importLink, !Task.isCancelled,
+           let consent = session.automaticLinkImportConsent() { return consent }
+        let consent = await request(action, identity: identity, server: server,
+                                    canRememberLinkImports: action == .importLink && session.canEnableAutomaticLinkImports)
         guard session.identity == identity,
               APIClient.normalizedServerURL(session.savedServer)?.absoluteString == server,
               case .signedIn = session.state else { return nil }
         return consent
     }
 
-    func request(_ action: AIProcessingAction, identity: UUID, server: String) async -> AIProcessingConsent? {
+    func request(_ action: AIProcessingAction, identity: UUID, server: String,
+                 canRememberLinkImports: Bool = false) async -> AIProcessingConsent? {
         guard pending == nil, !Task.isCancelled else { return nil }
-        let request = AIConsentRequest(action: action, identity: identity, server: server)
+        let request = AIConsentRequest(action: action, identity: identity, server: server,
+                                       canRememberLinkImports: action == .importLink && canRememberLinkImports)
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 self.continuation = continuation
@@ -114,6 +120,20 @@ final class AIConsentCoordinator: ObservableObject {
                 if self?.pending?.id == request.id { self?.cancel() }
             }
         }
+    }
+
+    func approve(session: SessionStore, rememberLinkImports: Bool) {
+        guard let request = pending, request.identity == session.identity,
+              request.server == APIClient.normalizedServerURL(session.savedServer)?.absoluteString,
+              case .signedIn = session.state, !session.isOfflineSession,
+              session.supports("ai-action-consent-v1") else { cancel(); return }
+        guard request.action != .importLink || session.canImport else { cancel(); return }
+        if rememberLinkImports {
+            guard request.action == .importLink, request.canRememberLinkImports,
+                  session.canEnableAutomaticLinkImports,
+                  session.rememberLinkImportConsent() else { cancel(); return }
+        }
+        approve(identity: session.identity, server: session.savedServer)
     }
 
     func approve(identity: UUID, server: String) {

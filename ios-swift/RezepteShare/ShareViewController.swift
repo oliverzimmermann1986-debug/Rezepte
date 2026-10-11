@@ -7,7 +7,7 @@ final class ShareViewController: SLComposeServiceViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Zu Quellenküche"
-        placeholder = "Link auf diesem Gerät speichern. Öffne anschließend den Eingang in Quellenküche und bestätige dort die KI-Verarbeitung durch OpenAI. Jetzt wird nichts hochgeladen."
+        placeholder = "Link auf diesem Gerät speichern. Mit deiner Freigabe für den automatischen Linkimport verarbeitet Quellenküche ihn beim nächsten Öffnen über OpenAI. Sonst kannst du im Eingang einmal oder dauerhaft zustimmen. Hier wird nichts hochgeladen."
         loadSharedURL()
     }
 
@@ -22,7 +22,14 @@ final class ShareViewController: SLComposeServiceViewController {
 
     override func didSelectPost() {
         if let sharedURL, isContentValid() {
-            SharedImportQueue.enqueue(sharedURL)
+            guard SharedImportQueue.enqueue(sharedURL) else {
+                let alert = UIAlertController(title: "Link nicht gespeichert",
+                    message: "Der Link konnte auf diesem Gerät nicht gespeichert werden. Bitte versuche es erneut oder füge ihn direkt in Quellenküche ein.",
+                    preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                present(alert, animated: true)
+                return
+            }
         }
         extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
     }

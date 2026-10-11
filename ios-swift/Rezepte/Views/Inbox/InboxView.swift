@@ -17,6 +17,8 @@ struct InboxView: View {
     @State private var resultMessage: String?
     @State private var importVisibility = "private"
 
+    private var importIsBusy: Bool { isWorking || session.isProcessingSharedImports }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -44,6 +46,9 @@ struct InboxView: View {
             .navigationTitle("Eingang")
             .refreshable { await loadPending() }
             .task { await loadPending() }
+            .onChange(of: session.isProcessingSharedImports) { _, processing in
+                if !processing { Task { await loadPending() } }
+            }
             .onChange(of: selectedPhoto) { _, item in
                 guard let item else { return }
                 Task { await uploadPhoto(item) }
@@ -74,8 +79,22 @@ struct InboxView: View {
         if !session.queuedSharedImports.isEmpty {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Auf diesem Gerät geteilte Links").font(.headline)
-                Text("Noch nicht hochgeladen. Starte den Import für jeden Link einzeln.")
+                Text(session.automaticLinkImportsEnabled
+                     ? "Freigegebene Links werden automatisch beim nächsten Öffnen der App verarbeitet. Links aus einem anderen Konto oder nach einem Fehler kannst du hier einzeln importieren."
+                     : "Noch nicht hochgeladen. Stimme einmal für den automatischen Linkimport zu oder importiere einen Link einzeln.")
                     .font(.callout).foregroundStyle(theme.muted)
+                if session.isProcessingSharedImports {
+                    ProgressView("Links werden zur Verarbeitung übergeben …")
+                } else if !session.automaticLinkImportsEnabled, session.canEnableAutomaticLinkImports {
+                    Button("Automatisch verarbeiten", systemImage: "sparkles") {
+                        Task { await processSharedLinks() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(importIsBusy)
+                    .accessibilityIdentifier("inbox.shared-links.automatic")
+                    Text("Bei einmaliger Zustimmung wird nur der erste Link unten importiert.")
+                        .font(.caption).foregroundStyle(theme.muted)
+                }
                 ForEach(session.queuedSharedImports, id: \.self) { link in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(URL(string: link)?.host ?? "Rezeptlink").font(.headline)
@@ -86,10 +105,10 @@ struct InboxView: View {
                         Button("Prüfen und importieren", systemImage: "sparkles") {
                             Task { await importSharedLink(link) }
                         }
-                        .disabled(isWorking)
+                        .disabled(importIsBusy)
                         .accessibilityIdentifier("inbox.shared-link.import")
                         Button("Vom Gerät entfernen", role: .destructive) { session.discardSharedURL(link) }
-                            .disabled(isWorking)
+                            .disabled(importIsBusy)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -99,11 +118,26 @@ struct InboxView: View {
     }
 
     private func importSharedLink(_ link: String) async {
-        guard session.canImport, !isWorking else { return }
+        guard session.canImport, !importIsBusy else { return }
         isWorking = true
         defer { isWorking = false }
         guard let consent = await aiConsent.request(.importLink, session: session) else { return }
         await session.importSharedURL(link, consent: consent)
+        if !session.queuedSharedImports.contains(link) { await session.drainSharedImports() }
+        await loadPending()
+    }
+
+    private func processSharedLinks() async {
+        guard session.canEnableAutomaticLinkImports, !importIsBusy,
+              let firstLink = session.queuedSharedImports.first else { return }
+        isWorking = true
+        defer { isWorking = false }
+        guard let consent = await aiConsent.request(.importLink, session: session) else { return }
+        if session.automaticLinkImportsEnabled {
+            await session.drainSharedImports()
+        } else {
+            await session.importSharedURL(firstLink, consent: consent)
+        }
         await loadPending()
     }
 
@@ -155,6 +189,7 @@ struct InboxView: View {
                     Text("Privat im Haushalt").tag("private")
                     Text("Global für alle").tag("global")
                 }
+                .disabled(importIsBusy)
             }
             Text(importVisibility == "global"
                  ? "Dieses Rezept wird für alle Konten lesbar."
@@ -175,12 +210,12 @@ struct InboxView: View {
                 Button {
                     Task { await importURL() }
                 } label: {
-                    Image(systemName: isWorking ? "hourglass" : "arrow.down")
+                    Image(systemName: importIsBusy ? "hourglass" : "arrow.down")
                         .font(.headline)
                         .frame(width: 36, height: 36)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(importLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isWorking)
+                .disabled(importLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || importIsBusy)
                 .accessibilityLabel("Link importieren")
             }
             .padding(10)
@@ -193,12 +228,12 @@ struct InboxView: View {
                 PhotosPicker(selection: $selectedPhoto, matching: .images) {
                     sourceButton("Foto", symbol: "camera.viewfinder")
                 }
-                .disabled(isWorking)
+                .disabled(importIsBusy)
 
                 Button { showFileImporter = true } label: {
                     sourceButton("PDF", symbol: "doc.text.viewfinder")
                 }
-                .disabled(isWorking)
+                .disabled(importIsBusy)
             }
 
             if let resultMessage {
@@ -271,6 +306,7 @@ struct InboxView: View {
                         .cardSurface()
                     }
                     .buttonStyle(.plain)
+                    .disabled(importIsBusy)
                 }
             }
         }
@@ -308,7 +344,7 @@ struct InboxView: View {
     }
 
     private func importURL() async {
-        guard session.canImport, !isWorking else { return }
+        guard session.canImport, !importIsBusy else { return }
         let link = importLink.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased()) else {
             resultMessage = "Bitte einen gültigen Weblink eingeben."
@@ -320,10 +356,15 @@ struct InboxView: View {
         guard let consent = await aiConsent.request(.importLink, session: session) else { return }
         do {
             let result = try await session.api.importURL(link, visibility: session.fullAccess ? importVisibility : "private", consent: consent)
+            guard result.ok != false else {
+                resultMessage = result.message ?? "Der Link konnte noch nicht importiert werden."
+                return
+            }
             importLink = ""
             resultMessage = result.status == "linked_global"
                 ? "Globales Rezept im Haushalt gespeichert. Kein erneuter Download."
                 : result.message ?? "Der Link wurde in den Eingang gelegt."
+            await session.drainSharedImports()
             await loadPending()
         } catch {
             resultMessage = error.localizedDescription
@@ -331,7 +372,7 @@ struct InboxView: View {
     }
 
     private func uploadPhoto(_ item: PhotosPickerItem) async {
-        guard session.canImport, !isWorking else { return }
+        guard session.canImport, !importIsBusy else { return }
         let expectedIdentity = session.identity
         isWorking = true
         resultMessage = nil
@@ -362,7 +403,7 @@ struct InboxView: View {
     }
 
     private func uploadFile(_ url: URL) async {
-        guard session.canImport, !isWorking else { return }
+        guard session.canImport, !importIsBusy else { return }
         isWorking = true
         resultMessage = nil
         defer { isWorking = false }

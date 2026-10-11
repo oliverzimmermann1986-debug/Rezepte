@@ -219,7 +219,14 @@ final class SessionAccessTests: XCTestCase {
 private final class Fixture {
     let suite = "SessionAccessTests.\(UUID().uuidString)"
     let defaults: UserDefaults
-    var links: [String] = []
+    let queue: SharedImportQueueStore
+    var links: [String] {
+        get { queue.all() }
+        set {
+            for url in queue.all() { queue.remove(url) }
+            for url in newValue { queue.enqueue(url) }
+        }
+    }
     private var token: String? = "test-token"
     lazy var store: SessionStore = {
         let persistence = LocalSessionPersistence(
@@ -228,15 +235,14 @@ private final class Fixture {
         )
         return SessionStore(
             api: APIClient(session: MockURLProtocol.makeSession()), defaults: defaults,
-            persistence: persistence,
-            sharedImportURLs: { [weak self] in self?.links ?? [] },
-            removeSharedImport: { [weak self] url in self?.links.removeAll { $0 == url } }
+            persistence: persistence, sharedImportQueue: queue
         )
     }()
 
     init() throws {
         defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.set("https://example.de", forKey: "server-url")
+        queue = SharedImportQueueStore(defaults: defaults)
     }
 
     func consent() -> AIProcessingConsent {

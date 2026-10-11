@@ -33,21 +33,28 @@ final class SessionStore: ObservableObject {
     private let webAuthentication: any NativeAuthenticating
     private let sharedImportURLs: () -> [String]
     private let removeSharedImport: (String) -> Void
+    private let sharedImportQueue: SharedImportQueueStore
+    private let linkImportConsent: LinkImportConsentStore
     @Published private(set) var queuedSharedImports: [String] = []
+    @Published private(set) var isProcessingSharedImports = false
+    private var importSessionVerified = false
     private let serverKey = "server-url"
     private let offlineSessionKey = "offline-session-v1"
     private var verifiedSession: SessionResponse?
 
     init(api: APIClient = APIClient(), defaults: UserDefaults = .standard,
          persistence: LocalSessionPersistence? = nil, webAuthentication: (any NativeAuthenticating)? = nil,
-         sharedImportURLs: @escaping () -> [String] = SharedImportQueue.all,
-         removeSharedImport: @escaping (String) -> Void = SharedImportQueue.remove) {
+         sharedImportURLs: (() -> [String])? = nil,
+         removeSharedImport: ((String) -> Void)? = nil,
+         sharedImportQueue: SharedImportQueueStore = .shared) {
         self.api = api
         self.defaults = defaults
         self.persistence = persistence ?? LocalSessionPersistence(defaults: defaults)
         self.webAuthentication = webAuthentication ?? NativeWebAuthentication()
-        self.sharedImportURLs = sharedImportURLs
-        self.removeSharedImport = removeSharedImport
+        self.sharedImportQueue = sharedImportQueue
+        self.linkImportConsent = LinkImportConsentStore(defaults: defaults)
+        self.sharedImportURLs = sharedImportURLs ?? { sharedImportQueue.all() }
+        self.removeSharedImport = removeSharedImport ?? { sharedImportQueue.remove($0) }
     }
 
     var canManageOwnAccount: Bool {
@@ -62,10 +69,12 @@ final class SessionStore: ObservableObject {
     }
 
     func restore() async {
+        importSessionVerified = false
         removeLegacyAccessCredentials()
         let expectedIdentity = identity
         guard !savedServer.isEmpty,
               let token = persistence.restoredToken() else {
+            sharedImportQueue.setActiveScope(nil)
             state = .signedOut
             return
         }
@@ -90,6 +99,7 @@ final class SessionStore: ObservableObject {
                cached.matches(server: savedServer, token: token), cached.session.id != nil {
                 apply(cached.session, persist: false)
                 isOfflineSession = true
+                updateSharedImportScope()
                 serverVersion = cached.version
                 serverCapabilities = Set(cached.capabilities)
                 compatibilityWarning = "Offline: zuletzt bestätigte Sitzung. Gespeicherte Einkäufe und heruntergeladene Rezepte bleiben verfügbar; Einkaufsänderungen warten auf Serverbestätigung."
@@ -102,6 +112,7 @@ final class SessionStore: ObservableObject {
         username: String,
         password: String
     ) async throws {
+        suspendAutomaticLinkImports()
         identity = UUID()
         let expectedIdentity = identity
         try await api.configure(
@@ -118,6 +129,7 @@ final class SessionStore: ObservableObject {
     }
 
     func signInAsGuest(server: String) async throws {
+        suspendAutomaticLinkImports()
         identity = UUID()
         let expectedIdentity = identity
         try await api.configure(
@@ -136,6 +148,7 @@ final class SessionStore: ObservableObject {
     func register(
         server: String, username: String, password: String, invitationToken: String
     ) async throws {
+        suspendAutomaticLinkImports()
         identity = UUID()
         let expectedIdentity = identity
         try await api.configure(server: server, token: nil, sessionID: expectedIdentity)
@@ -144,6 +157,8 @@ final class SessionStore: ObservableObject {
     }
 
     func signOut() {
+        revokeLinkImportConsent()
+        importSessionVerified = false
         KitchenTimerStore.shared.clear()
         webAuthentication.cancel()
         let previousIdentity = identity
@@ -184,6 +199,7 @@ final class SessionStore: ObservableObject {
         guard case .signedIn = state, !isEndingSession else { return }
         let expectedIdentity = identity
         isEndingSession = true
+        sharedImportQueue.setActiveScope(nil)
         defer { isEndingSession = false }
         _ = try? await api.logout()
         if identity == expectedIdentity { signOut() }
@@ -193,6 +209,7 @@ final class SessionStore: ObservableObject {
         guard case .signedIn = state, !isEndingSession else { return }
         let expectedIdentity = identity
         isEndingSession = true
+        sharedImportQueue.setActiveScope(nil)
         defer { isEndingSession = false }
         _ = try await api.logoutAll()
         guard identity == expectedIdentity else { throw APIError.sessionChanged }
@@ -200,6 +217,7 @@ final class SessionStore: ObservableObject {
     }
 
     func signInWithProvider(_ provider: IdentityProvider, server: String, invitationToken: String = "") async throws {
+        suspendAutomaticLinkImports()
         identity = UUID()
         let expectedIdentity = identity
         try await api.configure(server: server, token: nil, sessionID: expectedIdentity)
@@ -244,6 +262,8 @@ final class SessionStore: ObservableObject {
     }
 
     func householdDidChange() async throws {
+        revokeLinkImportConsent()
+        importSessionVerified = false
         let retiredIdentity = identity
         defaults.removeObject(forKey: offlineSessionKey)
         verifiedSession = nil
@@ -275,6 +295,7 @@ final class SessionStore: ObservableObject {
         // foreground entry without discarding a genuine account session.
         removeLegacyAccessCredentials()
         guard case .signedIn = state else { return }
+        importSessionVerified = false
         let expectedIdentity = identity
         do {
             let session = try await api.sessionInfo()
@@ -326,6 +347,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func apply(_ session: SessionResponse, persist: Bool = true) {
+        importSessionVerified = persist
         if persist { isOfflineSession = false }
         username = session.username
         userID = session.id
@@ -384,35 +406,127 @@ final class SessionStore: ObservableObject {
         alertMessage = error.localizedDescription
     }
 
-    /// Sharing only stages a link locally. Foregrounding or login never starts AI work.
+    var canEnableAutomaticLinkImports: Bool {
+        guard case .signedIn = state, let userID, userID > 0 else { return false }
+        return canImport && importSessionVerified && !isOfflineSession && !isEndingSession
+            && supports("ai-action-consent-v1")
+    }
+
+    var automaticLinkImportsEnabled: Bool {
+        guard case .signedIn = state, let userID else { return false }
+        return linkImportConsent.grant(server: savedServer, userID: userID) != nil
+    }
+
+    /// Called only by the explicit, disclosed persistent approval button.
+    @discardableResult
+    func rememberLinkImportConsent() -> Bool {
+        guard canEnableAutomaticLinkImports, let userID else { return false }
+        objectWillChange.send()
+        let grant = linkImportConsent.grant(server: savedServer, userID: userID)
+            ?? linkImportConsent.approve(server: savedServer, userID: userID)
+        guard automaticLinkImportsEnabled else { return false }
+        let scope = grant.id.uuidString
+        sharedImportQueue.claimUnassigned(scope: scope)
+        sharedImportQueue.setActiveScope(scope)
+        return true
+    }
+
+    func revokeLinkImportConsent() {
+        objectWillChange.send()
+        linkImportConsent.revoke()
+        sharedImportQueue.setActiveScope(nil)
+    }
+
+    private func suspendAutomaticLinkImports() {
+        importSessionVerified = false
+        sharedImportQueue.setActiveScope(nil)
+    }
+
+    private func updateSharedImportScope() {
+        // Offline sharing can still belong to the last verified account. This
+        // only labels local URLs; dispatch always requires online verification.
+        guard case .signedIn = state, canImport, !isEndingSession, let userID,
+              let grant = linkImportConsent.grant(server: savedServer, userID: userID) else {
+            sharedImportQueue.setActiveScope(nil)
+            return
+        }
+        sharedImportQueue.setActiveScope(grant.id.uuidString)
+    }
+
+    func automaticLinkImportConsent() -> AIProcessingConsent? {
+        guard canEnableAutomaticLinkImports, !Task.isCancelled, let userID,
+              let grant = linkImportConsent.grant(server: savedServer, userID: userID) else { return nil }
+        return AIProcessingConsent(id: UUID(), action: .importLink, identity: identity, server: grant.server)
+    }
+
+    /// The extension stages URLs locally; only a verified session and a matching
+    /// remembered grant may dispatch them. Attempts survive restarts to avoid
+    /// resubmitting a potentially accepted request after a lost response.
     func drainSharedImports() async {
+        updateSharedImportScope()
         guard case .signedIn = state else { return }
         let previous = queuedSharedImports
         queuedSharedImports = sharedImportURLs()
-        guard !queuedSharedImports.isEmpty, queuedSharedImports != previous else { return }
-        alertMessage = canImport
-            ? "Geteilte Links warten im Eingang. Prüfe jeden Link und bestätige die KI-Verarbeitung, bevor etwas hochgeladen wird."
-            : "Geteilte Rezeptlinks können nur Vollbenutzer und Admins importieren. Deine Links bleiben auf diesem Gerät gespeichert und wurden nicht verarbeitet."
+        guard canEnableAutomaticLinkImports, let userID,
+              let grant = linkImportConsent.grant(server: savedServer, userID: userID) else {
+            if !queuedSharedImports.isEmpty, queuedSharedImports != previous {
+                alertMessage = canImport
+                    ? "Geteilte Links warten im Eingang. Dort kannst du einmal der automatischen Linkverarbeitung zustimmen oder einen Link einzeln importieren."
+                    : "Geteilte Rezeptlinks können nur Vollbenutzer und Admins importieren. Deine Links bleiben auf diesem Gerät gespeichert und wurden nicht verarbeitet."
+            }
+            return
+        }
+        let scope = grant.id.uuidString
+        sharedImportQueue.setActiveScope(scope)
+        guard !isProcessingSharedImports else { return }
+        isProcessingSharedImports = true
+        defer { isProcessingSharedImports = false }
+        let expectedIdentity = identity
+        while identity == expectedIdentity, !Task.isCancelled,
+              linkImportConsent.grant(server: savedServer, userID: userID)?.id == grant.id,
+              let consent = automaticLinkImportConsent(),
+              let url = sharedImportURLs().first(where: {
+                  sharedImportQueue.scope(for: $0) == scope && !sharedImportQueue.wasAttempted($0)
+              }) {
+            guard await performSharedImport(url, consent: consent, showSuccess: false) else { break }
+        }
     }
 
     func importSharedURL(_ url: String, consent: AIProcessingConsent) async {
-        guard case .signedIn = state, canImport, sharedImportURLs().contains(url) else { return }
+        guard !isProcessingSharedImports else { return }
+        isProcessingSharedImports = true
+        defer { isProcessingSharedImports = false }
+        _ = await performSharedImport(url, consent: consent, showSuccess: !automaticLinkImportsEnabled)
+    }
+
+    private func performSharedImport(_ url: String, consent: AIProcessingConsent, showSuccess: Bool = true) async -> Bool {
+        guard case .signedIn = state, canImport, !isOfflineSession, !isEndingSession,
+              !Task.isCancelled, sharedImportURLs().contains(url) else { return false }
         let expectedIdentity = identity
+        guard sharedImportQueue.markAttempted(url) else {
+            alertMessage = "Der Import konnte auf diesem Gerät nicht sicher vorgemerkt werden. Der Link wurde nicht übertragen. Bitte versuche es erneut."
+            return false
+        }
         do {
             let result = try await api.importURL(url, consent: consent)
-            guard identity == expectedIdentity, canImport else { return }
-            guard result.ok != false else {
+            guard identity == expectedIdentity, canImport else { return false }
+            guard result.ok == true else {
                 alertMessage = result.message ?? "Der Link konnte noch nicht importiert werden."
-                return
+                return false
             }
             removeSharedImport(url)
             queuedSharedImports = sharedImportURLs()
-            alertMessage = result.status == "linked_global"
-                ? "Das globale Rezept wurde in deinem Haushalt gespeichert. Kein erneuter Download."
-                : "Der geteilte Rezeptlink wurde importiert."
+            if showSuccess {
+                alertMessage = result.status == "linked_global"
+                    ? "Das globale Rezept wurde in deinem Haushalt gespeichert. Kein erneuter Download."
+                    : "Der geteilte Rezeptlink wurde zur Verarbeitung übergeben."
+            }
+            return true
         } catch {
-            guard identity == expectedIdentity else { return }
+            guard identity == expectedIdentity else { return false }
+            if let apiError = error as? APIError, case .unauthenticated = apiError { signOut() }
             alertMessage = "Ein geteilter Link konnte noch nicht importiert werden: \(error.localizedDescription)"
+            return false
         }
     }
 
