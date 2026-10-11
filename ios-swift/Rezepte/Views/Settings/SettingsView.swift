@@ -85,6 +85,12 @@ struct SettingsView: View {
                     }
                 }
 
+                if !session.readOnly {
+                    Section("Schneller erreichen") {
+                        NavigationLink("Siri & Kurzbefehle") { KitchenShortcutsView() }
+                    }
+                }
+
                 Section("Konto") {
                     if session.canManageOwnAccount, session.supports("account-management-v1") {
                         NavigationLink("Mein Konto") { AccountProfileView() }

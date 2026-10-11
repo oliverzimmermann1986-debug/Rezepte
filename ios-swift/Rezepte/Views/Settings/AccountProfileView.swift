@@ -144,6 +144,8 @@ struct AccountDeletionView: View {
     let passwordEnabled: Bool
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var shopping: ShoppingSyncStore
+    @EnvironmentObject private var offline: OfflineRecipeStore
+    @EnvironmentObject private var searches: SavedRecipeSearchStore
     @Environment(\.recipeTheme) private var theme
     @State private var password = ""
     @State private var confirmDeletion = false
@@ -229,11 +231,14 @@ struct AccountDeletionView: View {
             var localCleanupFailed = false
             do { try shopping.eraseAccountData(session: session) }
             catch { localCleanupFailed = true }
+            do { try offline.eraseAccountData(session: session) }
+            catch { localCleanupFailed = true }
+            searches.eraseAccountData(session: session)
             password = ""
             for url in SharedImportQueue.all() { SharedImportQueue.remove(url) }
             session.signOut()
             session.alertMessage = localCleanupFailed
-                ? "Dein Konto wurde auf dem Server gelöscht. Die lokalen Einkaufsdaten konnten aber nicht vollständig entfernt werden. Entferne die App von diesem Gerät, um sie zu löschen."
+                ? "Dein Konto wurde auf dem Server gelöscht. Lokale Einkaufs- oder Rezeptdaten konnten aber nicht vollständig entfernt werden. Entferne die App von diesem Gerät, um sie zu löschen."
                 : result.message ?? "Dein Konto wurde gelöscht."
         } catch { errorMessage = accountErrorMessage(error, session: session, identity: identity) }
     }

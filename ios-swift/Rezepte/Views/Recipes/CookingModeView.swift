@@ -4,8 +4,10 @@ import UIKit
 @MainActor
 struct CookingModeView: View {
     let recipe: Recipe
+    let preferOffline: Bool
 
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var offline: OfflineRecipeStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.recipeTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -29,9 +31,11 @@ struct CookingModeView: View {
     @State private var active = false
     @State private var finished = false
     @State private var pendingCompletion: CookingCompletionIntent?
+    @State private var offlineCooking = false
 
-    init(recipe: Recipe) {
+    init(recipe: Recipe, preferOffline: Bool = false) {
         self.recipe = recipe
+        self.preferOffline = preferOffline
         _servings = State(initialValue: recipe.servings ?? 1)
     }
 
@@ -89,13 +93,15 @@ struct CookingModeView: View {
             Text("Abgehakte Schritte werden gelöscht. Die Kochhistorie bleibt erhalten.")
         }
         .alert("Guten Appetit!", isPresented: $showCompletion) {
-            if session.supports("cooking-notes-photos") {
+            if !offlineCooking, session.supports("cooking-notes-photos") {
                 Button("Notiz oder Foto ergänzen") { showCompletionNotes = true }
             }
             Button("Fertig") { dismiss() }
         } message: {
             Text(
-                canScale
+                offlineCooking
+                    ? "Alle Schritte sind erledigt. Dein Fortschritt liegt auf diesem Gerät; die Kochhistorie wurde nicht auf dem Server geändert."
+                    : canScale
                     ? "\(recipe.name) wurde für \(servings) Portionen als gekocht gespeichert."
                     : "\(recipe.name) wurde als gekocht gespeichert."
             )
@@ -176,7 +182,7 @@ struct CookingModeView: View {
             LazyVStack(alignment: .leading, spacing: 18) {
                 progressHeader
                 voiceControls
-                if session.supports("cooking-notes-photos") { CookingNotesView(recipeID: recipe.id, compact: true) }
+                if !offlineCooking, session.supports("cooking-notes-photos") { CookingNotesView(recipeID: recipe.id, compact: true) }
 
                 if let warningMessage {
                     Label(warningMessage, systemImage: "exclamationmark.triangle")
@@ -411,14 +417,16 @@ struct CookingModeView: View {
     @ViewBuilder
     private var finishSection: some View {
         if finished {
-            Label("Kochen wurde gespeichert", systemImage: "checkmark.seal.fill")
+            Label(offlineCooking ? "Fortschritt auf diesem Gerät gespeichert" : "Kochen wurde gespeichert", systemImage: "checkmark.seal.fill")
                 .foregroundStyle(theme.success).cardSurface()
         } else if allDone {
             VStack(alignment: .leading, spacing: 10) {
                 Label("Alles erledigt", systemImage: "checkmark.seal.fill")
                     .font(.title3.bold())
                     .foregroundStyle(theme.success)
-                Text("Der Abschluss trägt dieses Kochen in die Historie ein und setzt den Fortschritt zurück.")
+                Text(offlineCooking
+                     ? "Der Abschluss bleibt auf diesem Gerät. Es wird kein Eintrag in der Kochhistorie angelegt."
+                     : "Der Abschluss trägt dieses Kochen in die Historie ein und setzt den Fortschritt zurück.")
                     .font(.callout)
                     .foregroundStyle(theme.muted)
                 Button {
@@ -433,7 +441,8 @@ struct CookingModeView: View {
             }
             .cardSurface()
         } else {
-            Text("Hake alle Schritte ab, um das Kochen in der Historie zu speichern.")
+            Text(offlineCooking ? "Hake die Schritte ab. Dein Fortschritt bleibt auf diesem Gerät."
+                 : "Hake alle Schritte ab, um das Kochen in der Historie zu speichern.")
                 .font(.callout)
                 .foregroundStyle(theme.muted)
                 .frame(maxWidth: .infinity)
@@ -444,7 +453,7 @@ struct CookingModeView: View {
         switch saveState {
         case .idle: "\(completedSteps.count) erledigt"
         case .saving: "\(completedSteps.count) erledigt · wird gespeichert …"
-        case .saved: "\(completedSteps.count) erledigt · gespeichert"
+        case .saved: "\(completedSteps.count) erledigt · \(offlineCooking ? "auf diesem Gerät gespeichert" : "gespeichert")"
         case .error: "\(completedSteps.count) erledigt · nicht gespeichert"
         }
     }
@@ -458,6 +467,13 @@ struct CookingModeView: View {
         }
         defer { if session.identity == identity { isLoading = false } }
         guard !recipe.steps.isEmpty else { return }
+        await offline.activate(session: session)
+        guard session.identity == identity, active, !Task.isCancelled else { return }
+        if (preferOffline || session.isOfflineSession || offline.cookingProgress(id: recipe.id, session: session) != nil),
+           pendingCompletion == nil, offline.cachedRecipe(id: recipe.id, session: session) != nil {
+            useLocalProgress()
+            return
+        }
         do {
             let progress = try await session.api.cookingProgress(id: recipe.id)
             guard session.identity == identity, active, !Task.isCancelled else { return }
@@ -466,8 +482,34 @@ struct CookingModeView: View {
             if let pendingCompletion { servings = pendingCompletion.servings }
         } catch {
             guard session.identity == identity, active, !Task.isCancelled else { return }
+            if OfflineRecipeStore.isConnectivityFailure(error), pendingCompletion == nil,
+               offline.cachedRecipe(id: recipe.id, session: session) != nil {
+                useLocalProgress()
+                return
+            }
             warningMessage = "Der bisherige Fortschritt ist gerade nicht erreichbar. Du kannst neu beginnen."
         }
+    }
+
+    private func useLocalProgress() {
+        offlineCooking = true
+        warningMessage = "Offline kochen: Dein Fortschritt wird nur auf diesem Gerät gespeichert. Die Kochhistorie bleibt unverändert."
+        if let local = offline.cookingProgress(id: recipe.id, session: session) {
+            completedSteps = Set(local.completedSteps.filter { recipe.steps.indices.contains($0) })
+            activeStep = min(max(0, local.activeStep), max(0, recipe.steps.count - 1))
+            servings = min(50, max(1, local.servings))
+            hasStartedCooking = true
+        }
+    }
+
+    private func persistLocally(completed: Set<Int>, active: Int, servings: Int) throws {
+        try offline.saveCookingProgress(id: recipe.id,
+            value: OfflineCookingProgress(completedSteps: completed.sorted(), activeStep: active, servings: servings),
+            session: session)
+        offlineCooking = true
+        warningMessage = "Offline kochen: Dein Fortschritt wird nur auf diesem Gerät gespeichert. Die Kochhistorie bleibt unverändert."
+        animate { completedSteps = completed; activeStep = active; self.servings = servings }
+        saveState = .saved
     }
 
     private func startCooking() async {
@@ -511,6 +553,10 @@ struct CookingModeView: View {
         errorMessage = nil
         defer { if identity == session.identity { isSaving = false } }
         do {
+            if offlineCooking {
+                try persistLocally(completed: completed, active: active, servings: servings)
+                return true
+            }
             let progress = try await session.api.updateCookingProgress(
                 id: recipe.id,
                 completedSteps: completed.sorted(),
@@ -523,6 +569,12 @@ struct CookingModeView: View {
             return true
         } catch {
             guard identity == session.identity, self.active, !Task.isCancelled else { return false }
+            if OfflineRecipeStore.isConnectivityFailure(error), offline.cachedRecipe(id: recipe.id, session: session) != nil {
+                do {
+                    try persistLocally(completed: completed, active: active, servings: servings)
+                    return true
+                } catch { errorMessage = error.localizedDescription; saveState = .error; return false }
+            }
             saveState = .error
             errorMessage = error.localizedDescription
             session.handle(error)
@@ -538,6 +590,15 @@ struct CookingModeView: View {
         errorMessage = nil
         defer { if identity == session.identity { isSaving = false } }
         do {
+            if offlineCooking {
+                try offline.saveCookingProgress(id: recipe.id, value: nil, session: session)
+                animate {
+                    completedSteps = []; activeStep = 0; servings = originalServings
+                    hasStartedCooking = false; finished = false
+                }
+                saveState = .saved
+                return
+            }
             _ = try await session.api.clearCookingProgress(id: recipe.id)
             guard identity == session.identity, active, !Task.isCancelled else { return }
             animate {
@@ -561,6 +622,13 @@ struct CookingModeView: View {
 
     private func finishCooking() async {
         guard allDone || pendingCompletion != nil, !isSaving && !isFinishing, !finished, active, !session.readOnly else { return }
+        if offlineCooking, pendingCompletion == nil {
+            do {
+                try persistLocally(completed: completedSteps, active: activeStep, servings: servings)
+                finished = true; voice.stop(); showCompletion = true
+            } catch { errorMessage = error.localizedDescription }
+            return
+        }
         let identity = session.identity
         let storageKey = completionStorageKey
         let legacyStorageKey = legacyCompletionStorageKey

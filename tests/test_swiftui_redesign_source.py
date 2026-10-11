@@ -307,7 +307,7 @@ def test_swiftui_cooking_mode_persists_progress_scales_and_completes_idempotentl
     detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
     api = _read(SWIFT / "Networking" / "APIClient.swift")
 
-    assert "CookingModeView(recipe: recipe)" in detail
+    assert "CookingModeView(recipe: recipe, preferOffline: usingOfflineRecipe)" in detail
     assert "updateCookingProgress" in cooking
     assert "completedSteps" in cooking
     assert "multiplier" in cooking

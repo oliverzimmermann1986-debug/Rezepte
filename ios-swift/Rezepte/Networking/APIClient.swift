@@ -1153,6 +1153,10 @@ actor APIClient {
         try await download(path, accept: "image/jpeg")
     }
 
+    func kitchenDownload(_ path: String, query: [URLQueryItem] = [], accept: String) async throws -> Data {
+        try await download(path, query: query, accept: accept)
+    }
+
     func kitchenUpload<Response: Decodable>(_ path: String, jpeg: Data) async throws -> Response {
         let boundary = "Kitchen-\(UUID().uuidString)"
         var request = URLRequest(url: try endpoint(path))

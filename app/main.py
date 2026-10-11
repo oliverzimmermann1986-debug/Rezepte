@@ -28,7 +28,7 @@ from .config_store import get_config, migrate_pdf_quality_defaults
 from .db import get_db
 from . import legal
 from .routes import (api_account, api_admin, api_audit, api_auth, api_oidc, api_browse, api_config, api_discovery, api_einkauf, api_events, api_hdd,
-                     api_history, api_household_features, api_jobs, api_master, api_metrics, api_pending, api_recipes,
+                     api_history, api_household_features, api_import_comparison, api_jobs, api_master, api_metrics, api_pending, api_recipes,
                      api_meal_plan, api_share, api_shopping, api_stats, api_test,
                      api_users, sharing)
 from .security import (SameOriginMiddleware, SecurityHeadersMiddleware,
@@ -434,6 +434,9 @@ APP_CAPABILITIES = [
     "shopping-quantity-provenance",
     "shopping-delete-undo",
     "household-cookbooks",
+    "cookbook-pdf-v1",
+    "import-comparison-v1",
+    "meal-plan-constraints-v1",
     "cooking-notes-photos",
     "household-meal-wishes",
     "recipe-pdf-export",
@@ -536,6 +539,7 @@ app.include_router(api_shopping.router)
 app.include_router(api_meal_plan.router)
 app.include_router(api_discovery.router)
 app.include_router(api_household_features.router)
+app.include_router(api_import_comparison.router)
 app.include_router(api_audit.router)
 app.include_router(api_master.router)
 app.include_router(api_users.router)

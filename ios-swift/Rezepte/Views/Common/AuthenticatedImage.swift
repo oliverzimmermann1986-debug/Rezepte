@@ -9,6 +9,7 @@ struct AuthenticatedImage: View {
     let cacheVersion: String?
 
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var offline: OfflineRecipeStore
     @Environment(\.recipeTheme) private var theme
     @State private var image: UIImage?
     @State private var failed = false
@@ -54,7 +55,11 @@ struct AuthenticatedImage: View {
         let expectedIdentity = session.identity
         let expectedLoad = loadIdentity
         failed = false
-        image = nil
+        image = offline.cachedImage(id: recipeID, session: session).flatMap { UIImage(data: $0) }
+        if session.isOfflineSession {
+            failed = image == nil
+            return
+        }
         do {
             let request = try await session.api.imageRequest(
                 recipeID: recipeID,
@@ -66,13 +71,15 @@ struct AuthenticatedImage: View {
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode),
                   let loaded = UIImage(data: data) else {
+                image = nil
                 failed = true
                 return
             }
             image = loaded
         } catch {
             guard !Task.isCancelled, session.identity == expectedIdentity, loadIdentity == expectedLoad else { return }
-            failed = true
+            if !OfflineRecipeStore.isConnectivityFailure(error) { image = nil }
+            failed = image == nil
         }
     }
 }

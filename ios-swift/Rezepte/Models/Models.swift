@@ -157,7 +157,7 @@ extension KeyedDecodingContainer {
     }
 }
 
-struct RecipeFilters: Equatable, Sendable {
+struct RecipeFilters: Codable, Equatable, Sendable {
     var library = RecipeLibrary.all
     var type = ""
     var category = ""

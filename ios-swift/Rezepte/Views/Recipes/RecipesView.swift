@@ -17,6 +17,8 @@ struct RecipesView: View {
     @State private var showCookbooks = false
     @State private var showDiscovery = false
     @State private var showInbox = false
+    @State private var showSavedSearches = false
+    @State private var showOfflineLibrary = false
 
     private var hasMore: Bool { recipes.count < total }
 
@@ -92,6 +94,8 @@ struct RecipesView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
                         if !session.readOnly {
+                            Button("Gespeicherte Suchen", systemImage: "bookmark") { showSavedSearches = true }
+                            Button("Offline-Rezepte", systemImage: "arrow.down.circle") { showOfflineLibrary = true }
                             Button("Was kann ich kochen?", systemImage: "carrot") { showDiscovery = true }
                             Button("Meine Kochbücher", systemImage: "books.vertical") { showCookbooks = true }
                         }
@@ -117,6 +121,14 @@ struct RecipesView: View {
                 }
             }
             .sheet(isPresented: $showCookbooks) { CookbooksView() }
+            .sheet(isPresented: $showOfflineLibrary) { OfflineLibraryView() }
+            .sheet(isPresented: $showSavedSearches) {
+                SavedRecipeSearchesView(query: search, filters: filters) { saved in
+                    search = saved.query
+                    filters = saved.filters
+                    Task { await load(); await loadFacets() }
+                }
+            }
             .sheet(isPresented: $showDiscovery) { IngredientDiscoveryView() }
             .sheet(isPresented: $showInbox) {
                 InboxView().safeAreaInset(edge: .top) {

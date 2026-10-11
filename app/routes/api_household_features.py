@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from typing import Annotated
+from pathlib import Path
+import re
+import threading
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -11,6 +14,7 @@ from ..db import get_db
 from ..recipes import household_features as features
 
 router = APIRouter(prefix="/api", tags=["household-features"], dependencies=[Depends(require_auth)])
+_pdf_slots = threading.BoundedSemaphore(2)
 
 
 def actor_for(request, db):
@@ -78,6 +82,28 @@ def delete_cookbook(book_id: int, request: Request):
 @router.get("/cookbooks/{book_id}/recipes")
 def cookbook_recipes(book_id: int):
     return features.cookbook_recipes(get_db(), book_id)
+
+
+@router.get("/cookbooks/{book_id}/pdf")
+def cookbook_pdf(book_id: int):
+    from ..config_store import get_config
+    from ..recipes.cookbook_pdf import build_cookbook_pdf, cookbook_snapshot
+    # Bound rendering work per worker; no files or public links are persisted.
+    if not _pdf_slots.acquire(blocking=False):
+        raise HTTPException(429, "Andere Kochbücher werden gerade erstellt. Bitte kurz warten und erneut versuchen.",
+                            headers={"Retry-After": "5"})
+    try:
+        book, recipes = cookbook_snapshot(get_db(), book_id)
+        root = Path(get_config().get("paths", "recipe_dir", default="/mnt/rezepte"))
+        pdf = build_cookbook_pdf(book, recipes, root)
+        slug = re.sub(r"[^a-z0-9]+", "-", book["name"].lower()).strip("-")[:60] or "kochbuch"
+        return Response(pdf, media_type="application/pdf", headers={
+            "Content-Disposition": f'attachment; filename="{slug}.pdf"',
+            "Cache-Control": "private, no-store", "Vary": "Authorization, Cookie",
+            "X-Content-Type-Options": "nosniff",
+        })
+    finally:
+        _pdf_slots.release()
 
 
 @router.put("/cookbooks/{book_id}/recipes/{recipe_id}")

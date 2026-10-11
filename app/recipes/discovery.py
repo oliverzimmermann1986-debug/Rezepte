@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import date, timedelta
 
 from .canonical import canonical_name
 from .cart_logic import prepare_for_cart
+from .meal_constraints import CATEGORY_NAMES, ingredient_categories, quota_selection
 
 
 AVAILABILITY_NOTE = "Es werden vorhandene Zutaten verglichen, keine Vorratsmengen. Mengen bitte vor dem Kochen prüfen."
@@ -102,14 +104,30 @@ def ingredient_matches(db, ingredients: list[str], limit: int = 20) -> dict:
 
 def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
                           max_minutes: int | None = None, exclude_recipe_ids: list[int] | None = None,
-                          available_ingredients: list[str] | None = None) -> dict:
+                          available_ingredients: list[str] | None = None,
+                          category_quotas: list[dict] | None = None, excluded_ingredients: list[str] | None = None,
+                          avoid_recent_days: int = 0, week_start: date | None = None) -> dict:
     """Reserve vegetarian slots, then fill open slots, without relaxing constraints."""
     available = available_keys(available_ingredients or [])
     excluded = set(exclude_recipe_ids or [])
+    excluded_keys = available_keys(excluded_ingredients or [])
+    quotas = category_quotas or []
+    if avoid_recent_days:
+        anchor = week_start or date.today()
+        recent = db.meal_plan_entries((anchor - timedelta(days=avoid_recent_days)).isoformat(),
+                                     (anchor - timedelta(days=1)).isoformat())
+        excluded.update(int(item["recipe_id"]) for item in recent)
     candidates = []
     unknown_times = 0
-    for recipe, ingredients in _candidates(db):
+    search_complete = True
+    for scanned, (recipe, ingredients) in enumerate(_candidates(db)):
+        if scanned >= 10_000:
+            search_complete = False
+            break
         if int(recipe["id"]) in excluded:
+            continue
+        keys = {_key(item) for item in ingredients}
+        if keys & excluded_keys:
             continue
         total = explicit_total_minutes(recipe)
         if max_minutes is not None and total is None:
@@ -118,12 +136,12 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         if max_minutes is not None and total > max_minutes:
             continue
         tags = {str(tag["name"]).strip().casefold() for tag in db.recipe_tags_get(recipe["id"])}
-        keys = {_key(item) for item in ingredients}
         servings = _amount(recipe.get("servings"))
         candidates.append({
             "recipe_id": int(recipe["id"]), "name": recipe["name"],
             "thumb_url": f"/api/recipes/{recipe['id']}/thumb", "total_minutes": total,
             "vegetarian": bool(tags & {"vegetarisch", "vegan"}),
+            "categories": ingredient_categories(keys),
             "servings": max(1, min(24, int(servings))) if servings and servings.is_integer() else 2,
             "_keys": keys, "_category": str(recipe.get("category") or "").casefold(),
             "_coverage": len(keys & available) / len(keys) if available else 0,
@@ -146,14 +164,19 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         selected.append(choice)
         return True
 
-    for _ in range(vegetarian_count):
-        if not choose(vegetarian_only=True):
-            break
-    vegetarian_found = len(selected)
-    # Missing vegetarian slots stay empty; never replace them with other meals.
-    for _ in range(count - vegetarian_count):
-        if not choose():
-            break
+    if quotas:
+        selected, solver_complete = quota_selection(candidates, count, vegetarian_count, quotas)
+        search_complete = search_complete and solver_complete
+        vegetarian_found = sum(item["vegetarian"] for item in selected)
+    else:
+        for _ in range(vegetarian_count):
+            if not choose(vegetarian_only=True):
+                break
+        vegetarian_found = len(selected)
+        # Missing vegetarian slots stay empty; never replace them with other meals.
+        for _ in range(count - vegetarian_count):
+            if not choose():
+                break
     warnings = []
     if vegetarian_found < vegetarian_count:
         warnings.append(f"Nur {vegetarian_found} von {vegetarian_count} benötigten vegetarisch oder vegan markierten Rezepten gefunden.")
@@ -163,7 +186,27 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         warnings.append(f"{unknown_times} Rezepte ohne eindeutige Gesamtzeit wurden wegen der Zeitgrenze ausgelassen.")
     if vegetarian_count:
         warnings.append("Vegetarisch richtet sich nach den gespeicherten Rezept-Tags; bitte Zutaten bei Bedarf prüfen.")
-    return {"items": [{key: value for key, value in item.items() if not key.startswith("_")} for item in selected], "warnings": warnings}
+    missing_quotas = []
+    for quota in quotas:
+        category = quota["category"]
+        fulfilled = sum(category in item["categories"] for item in selected)
+        missing = max(0, quota["count"] - fulfilled)
+        missing_quotas.append({"category": category, "requested": quota["count"], "fulfilled": fulfilled, "missing": missing})
+        if missing:
+            warnings.append(f"{CATEGORY_NAMES[category]}: {fulfilled} von exakt {quota['count']} passenden Gerichten gefunden.")
+    if quotas:
+        warnings.append("Kategorien werden aus gespeicherten Zutaten erkannt. Ein Gericht mit mehreren Kategorien zählt in jeder davon; Mengen spielen dabei keine Rolle.")
+    if excluded_keys:
+        warnings.append("Zutatenausschlüsse vergleichen gespeicherte Zutatennamen und bekannte Synonyme; sie ersetzen keine Allergenprüfung.")
+    if avoid_recent_days:
+        warnings.append(f"Bereits geplante Gerichte aus den {avoid_recent_days} Tagen vor {anchor.isoformat()} wurden ausgelassen.")
+    if not search_complete:
+        warnings.append("Das Suchlimit wurde erreicht. Weitere passende Kombinationen können vorhanden sein; die Vorgaben wurden nicht gelockert.")
+    return {"items": [{key: value for key, value in item.items() if not key.startswith("_")} for item in selected],
+            "warnings": warnings, "missing_quotas": missing_quotas,
+            "constraints_satisfied": len(selected) == count and vegetarian_found >= vegetarian_count
+                                     and all(item["missing"] == 0 for item in missing_quotas),
+            "search_complete": search_complete}
 
 
 def add_missing_to_cart(db, recipe_id: int, available: list[str], servings: int | None = None,

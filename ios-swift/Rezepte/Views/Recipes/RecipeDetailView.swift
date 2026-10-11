@@ -5,6 +5,7 @@ struct RecipeDetailView: View {
     let recipeID: Int
 
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var offline: OfflineRecipeStore
     @StateObject private var aiConsent = AIConsentCoordinator()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -42,6 +43,9 @@ struct RecipeDetailView: View {
     @State private var isManaging = false
     @State private var translatedDescription: String?
     @State private var sourceCopied = false
+    @State private var usingOfflineRecipe = false
+    @State private var offlineMessage: String?
+    @State private var showRemoveDownload = false
     @AppStorage("content-language-v1") private var contentLanguage = ContentLanguage.de.rawValue
 
     var body: some View {
@@ -80,6 +84,7 @@ struct RecipeDetailView: View {
                         }
 
                         librarySection(recipe)
+                        offlineSection(recipe)
                         actionBar(recipe)
                         householdActions(recipe)
                         recipePassportSection(recipe)
@@ -313,7 +318,7 @@ struct RecipeDetailView: View {
         }
         .navigationDestination(isPresented: $showCookingMode) {
             if let recipe {
-                CookingModeView(recipe: recipe)
+                CookingModeView(recipe: recipe, preferOffline: usingOfflineRecipe)
             }
         }
         .navigationDestination(item: $createdVariantID) { id in
@@ -778,15 +783,86 @@ struct RecipeDetailView: View {
     }
 
     private func load() async {
+        let identity = session.identity
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer { if session.identity == identity { isLoading = false } }
+        await offline.activate(session: session)
+        guard session.identity == identity, !Task.isCancelled else { return }
+        if session.isOfflineSession, let cached = offline.cachedRecipe(id: recipeID, session: session) {
+            recipe = cached; usingOfflineRecipe = true
+            return
+        }
         do {
-            recipe = try await session.api.recipe(id: recipeID)
+            let loaded = try await session.api.recipe(id: recipeID)
+            guard session.identity == identity, !Task.isCancelled else { return }
+            recipe = loaded
+            usingOfflineRecipe = false
             translatedDescription = nil
             showOriginalText = false
         } catch {
+            guard session.identity == identity, !Task.isCancelled else { return }
+            if OfflineRecipeStore.isConnectivityFailure(error),
+               let cached = offline.cachedRecipe(id: recipeID, session: session) {
+                recipe = cached; usingOfflineRecipe = true
+                return
+            }
+            recipe = nil
             errorMessage = error.localizedDescription
+            session.handle(error)
+        }
+    }
+
+    @ViewBuilder
+    private func offlineSection(_ recipe: Recipe) -> some View {
+        if session.userID != nil, session.role != .guest {
+            VStack(alignment: .leading, spacing: 10) {
+                if let savedAt = offline.savedAt(id: recipe.id, session: session) {
+                    Label(usingOfflineRecipe ? "Du liest deinen Offline-Download" : "Auf diesem Gerät gespeichert",
+                          systemImage: "checkmark.circle.fill")
+                        .font(.subheadline.bold())
+                    Text("Stand: \(savedAt.formatted(date: .abbreviated, time: .shortened)). Zutaten, Schritte und verfügbare Bilder sind ohne Verbindung erreichbar.")
+                        .font(.caption).foregroundStyle(theme.muted)
+                    HStack {
+                        Button("Download aktualisieren", systemImage: "arrow.clockwise") {
+                            Task { await saveOffline() }
+                        }.disabled(offline.isDownloading || session.isOfflineSession)
+                        Button("Entfernen", systemImage: "trash", role: .destructive) { showRemoveDownload = true }
+                            .disabled(offline.isDownloading)
+                    }.buttonStyle(.bordered)
+                } else {
+                    Button("Offline speichern", systemImage: "arrow.down.circle") { Task { await saveOffline() } }
+                        .buttonStyle(.bordered)
+                        .disabled(offline.isDownloading || session.isOfflineSession)
+                }
+                if let progress = offline.progress { ProgressView(progress) }
+                if let offlineMessage { Text(offlineMessage).font(.caption).foregroundStyle(theme.muted) }
+            }
+            .cardSurface()
+            .confirmationDialog("Rezeptdownload entfernen?", isPresented: $showRemoveDownload, titleVisibility: .visible) {
+                Button("Vom Gerät entfernen", role: .destructive) {
+                    do {
+                        try offline.removeRecipe(id: recipe.id, session: session)
+                        offlineMessage = "Download entfernt."
+                        if usingOfflineRecipe { dismiss() }
+                    } catch { offlineMessage = error.localizedDescription }
+                }
+            } message: {
+                Text("Enthaltene Kochbuchdownloads werden ebenfalls entfernt, damit kein unvollständiges Kochbuch als gespeichert erscheint. Die Rezepte auf dem Server bleiben erhalten.")
+            }
+        }
+    }
+
+    private func saveOffline() async {
+        let identity = session.identity
+        offlineMessage = nil
+        do {
+            try await offline.saveRecipe(id: recipeID, session: session)
+            guard session.identity == identity, !Task.isCancelled else { return }
+            offlineMessage = "Rezept vollständig offline gespeichert."
+        } catch {
+            guard session.identity == identity, !Task.isCancelled else { return }
+            offlineMessage = error.localizedDescription
             session.handle(error)
         }
     }

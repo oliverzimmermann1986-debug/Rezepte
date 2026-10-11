@@ -92,7 +92,7 @@ final class SessionStore: ObservableObject {
                 isOfflineSession = true
                 serverVersion = cached.version
                 serverCapabilities = Set(cached.capabilities)
-                compatibilityWarning = "Offline: zuletzt bestätigte Sitzung. Gespeicherte Einkäufe bleiben verfügbar; Änderungen warten auf Serverbestätigung."
+                compatibilityWarning = "Offline: zuletzt bestätigte Sitzung. Gespeicherte Einkäufe und heruntergeladene Rezepte bleiben verfügbar; Einkaufsänderungen warten auf Serverbestätigung."
             } else { signOut() }
         }
     }

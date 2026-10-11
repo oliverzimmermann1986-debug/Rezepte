@@ -26,6 +26,8 @@ struct PendingEditorView: View {
     @State private var statusMessage: String?
     @State private var errorMessage: String?
     @State private var showDiscardConfirmation = false
+    @State private var comparisonDraft: ImportComparisonDraft?
+    @State private var showComparison = false
 
     init(item: PendingItem, onChanged: @escaping () async -> Void) {
         self.item = item
@@ -156,6 +158,18 @@ struct PendingEditorView: View {
                 }
 
                 Section("Quelle") {
+                    if session.canImport && session.supports("import-comparison-v1") {
+                        Button("Mit vorhandenen Rezepten vergleichen", systemImage: "doc.on.doc") {
+                            do {
+                                comparisonDraft = ImportComparisonDraft(
+                                    name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                                    description: description, servings: try parsedServings(),
+                                    ingredients: try parsedIngredients(), steps: try parsedSteps())
+                                showComparison = true
+                            } catch { errorMessage = error.localizedDescription }
+                        }
+                        .disabled(isBusy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
                     Text(item.sourceUrl ?? item.url)
                         .font(.caption)
                         .textSelection(.enabled)
@@ -199,6 +213,15 @@ struct PendingEditorView: View {
                 }
             }
             .aiConsentPrompt(aiConsent)
+            .sheet(isPresented: $showComparison) {
+                if let comparisonDraft {
+                    ImportComparisonView(request: ImportComparisonRequest(
+                        url: item.url, visibility: visibility, draft: comparisonDraft)) {
+                        await onChanged()
+                        dismiss()
+                    }
+                }
+            }
             .navigationTitle("Import prüfen")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
