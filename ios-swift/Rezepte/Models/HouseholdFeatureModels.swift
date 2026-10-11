@@ -45,6 +45,7 @@ struct MealSuggestion: Decodable, Identifiable {
     let servings: Int?
     let totalMinutes: Double?
     let vegetarian: Bool
+    var preferenceReasons: [String]? = nil
     var id: Int { recipeId }
 }
 

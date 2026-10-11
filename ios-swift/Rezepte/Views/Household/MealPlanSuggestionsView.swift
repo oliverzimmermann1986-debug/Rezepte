@@ -63,6 +63,14 @@ struct MealPlanSuggestionsView: View {
                         Text("Vegetarisch laut Rezeptkennzeichnung. Mit Zeitgrenze werden nur Rezepte mit bekannter Gesamtzeit berücksichtigt.")
                             .font(.caption).foregroundStyle(.secondary)
                     }.disabled(state.busy || started)
+                    if session.supports("meal-plan-preferences-v1") {
+                        Section("Vorlieben im Haushalt") {
+                            Text("Favoriten und hoch bewertete Rezepte werden bevorzugt, niedrig bewertete nachrangig berücksichtigt. Unbewertete Rezepte bleiben neutral. Deine festen Vorgaben und die gewählte Vorwochen-Regel gelten weiterhin.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text("Pflege eure Vorlieben mit dem Herz und den Sternen im Rezept.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     if advanced {
                         Section("So soll deine Woche aussehen") {
                             Button("7 Gerichte: 2 × Pasta, 4 × Kartoffeln") {
@@ -138,6 +146,10 @@ struct MealPlanSuggestionsView: View {
                             Text([row.suggestion.vegetarian ? "Vegetarisch" : nil,
                                   row.suggestion.totalMinutes.map { "\(Int($0)) Min." } ?? "Zeit nicht hinterlegt"].compactMap { $0 }.joined(separator: " · "))
                                 .font(.caption).foregroundStyle(.secondary)
+                            if let reasons = row.suggestion.preferenceReasons, !reasons.isEmpty {
+                                Text(reasons.joined(separator: " · "))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                             Picker("Tag", selection: $rows[index].date) {
                                 ForEach(availableDays(for: row)) { day in Text("\(day.label), \(day.date)").tag(day.date) }
                             }.disabled(state.busy || started || rule(for: row) != nil)

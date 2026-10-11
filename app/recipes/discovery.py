@@ -14,6 +14,7 @@ from .meal_constraints import (
 
 
 AVAILABILITY_NOTE = "Es werden vorhandene Zutaten verglichen, keine Vorratsmengen. Mengen bitte vor dem Kochen prüfen."
+PREFERENCE_NOTE = "Favoriten und Bewertungen aus eurem Haushalt beeinflussen die Auswahl. Wochenvorgaben, Tagesregeln und der Rückblick bleiben verbindlich."
 _TIME_LINE = re.compile(
     r"^\s*(?:gesamtzeit|gesamtdauer|total\s+(?:time|duration))\s*:\s*(.*?)\s*$",
     re.IGNORECASE | re.MULTILINE,
@@ -59,6 +60,22 @@ def explicit_total_minutes(recipe: dict) -> int | None:
 
 def _complete_ingredients(ingredients: list[dict]) -> bool:
     return bool(ingredients) and all(str(item.get("name") or "").strip() and _key(item) for item in ingredients)
+
+
+def _meal_preference(recipe: dict) -> tuple[int, list[str]]:
+    """Read only the caller-scoped personal fields supplied by recipe_list.
+
+    An unrated recipe stays neutral; even a favorite with one or two stars
+    ranks below it. Preferences never remove an otherwise eligible recipe.
+    """
+    rating = recipe.get("rating")
+    rating = rating if type(rating) is int and 1 <= rating <= 5 else 0
+    favorite = bool(recipe.get("is_favorite"))
+    score = (2 if favorite else 0) + {1: -5, 2: -3, 4: 1, 5: 2}.get(rating, 0)
+    reasons = ["Favorit im Haushalt"] if favorite else []
+    if rating:
+        reasons.append(f"{rating} von 5 Sternen im Haushalt")
+    return score, reasons
 
 
 def _candidates(db, *, max_examined: int | None = None, scan_status: dict | None = None):
@@ -148,16 +165,19 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
             continue
         tags = {str(tag["name"]).strip().casefold() for tag in db.recipe_tags_get(recipe["id"])}
         servings = _amount(recipe.get("servings"))
+        preference_score, preference_reasons = _meal_preference(recipe)
         candidates.append({
             "recipe_id": int(recipe["id"]), "name": recipe["name"],
             "thumb_url": f"/api/recipes/{recipe['id']}/thumb", "total_minutes": total,
             "vegetarian": bool(tags & {"vegetarisch", "vegan"}),
             "categories": ingredient_categories(keys),
             "servings": max(1, min(24, int(servings))) if servings and servings.is_integer() else 2,
+            "preference_reasons": preference_reasons, "_preference_score": preference_score,
             "_keys": keys, "_category": str(recipe.get("category") or "").casefold(),
             "_coverage": len(keys & available) / len(keys) if available else 0,
         })
     search_complete = scan_status["complete"]
+    has_preferences = any(item["preference_reasons"] for item in candidates)
     selected = []
 
     def choose(vegetarian_only=False):
@@ -167,7 +187,7 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         categories = {item["_category"] for item in selected if item["_category"]}
         used_keys = set().union(*(item["_keys"] for item in selected)) if selected else set()
         eligible.sort(key=lambda item: (
-            -item["_coverage"], item["_category"] in categories,
+            -item.get("_preference_score", 0), -item["_coverage"], item["_category"] in categories,
             len(item["_keys"] & used_keys) / len(item["_keys"]),
             item["name"].casefold(), item["recipe_id"],
         ))
@@ -194,6 +214,8 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
             if not choose():
                 break
     warnings = []
+    if has_preferences:
+        warnings.append(PREFERENCE_NOTE)
     if vegetarian_found < vegetarian_count:
         warnings.append(f"Nur {vegetarian_found} von {vegetarian_count} benötigten vegetarisch oder vegan markierten Rezepten gefunden.")
     if len(selected) < count:

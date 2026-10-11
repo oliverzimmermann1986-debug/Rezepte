@@ -438,6 +438,7 @@ APP_CAPABILITIES = [
     "import-comparison-v1",
     "meal-plan-constraints-v1",
     "meal-plan-weekday-rules-v1",
+    "meal-plan-preferences-v1",
     "meal-plan-pdf-v1",
     "servings-estimate-v1",
     "cooking-notes-photos",
