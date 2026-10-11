@@ -6,6 +6,7 @@ struct RezepteApp: App {
     @StateObject private var themeStore = ThemeStore()
     @StateObject private var offline = OfflineRecipeStore()
     @StateObject private var searches = SavedRecipeSearchStore()
+    @StateObject private var planningProfiles = MealPlanningProfileStore()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -15,6 +16,7 @@ struct RezepteApp: App {
                 .environmentObject(themeStore)
                 .environmentObject(offline)
                 .environmentObject(searches)
+                .environmentObject(planningProfiles)
                 .environment(\.recipeTheme, themeStore.theme)
                 .tint(themeStore.theme.accent)
                 .preferredColorScheme(themeStore.appearance.colorScheme)
@@ -25,6 +27,7 @@ struct RezepteApp: App {
                 .onChange(of: session.identity) { _, _ in
                     offline.deactivate()
                     searches.deactivate()
+                    planningProfiles.deactivate()
                     KitchenShortcutCoordinator.shared.clear()
                 }
                 .alert(
@@ -45,6 +48,7 @@ struct RezepteApp: App {
                     await session.refreshAccess()
                     await offline.refreshContext(session: session)
                     await searches.activate(session: session)
+                    await planningProfiles.activate(session: session)
                     await session.drainSharedImports()
                 }
             }

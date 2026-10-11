@@ -1157,6 +1157,42 @@ actor APIClient {
         try await download(path, query: query, accept: accept)
     }
 
+    func kitchenAIRequest<Body: Encodable, Response: Decodable>(
+        _ path: String, method: String = "POST", body: Body,
+        consent: AIProcessingConsent, action: AIProcessingAction, timeout: TimeInterval = 60
+    ) async throws -> Response {
+        try await sendAI(path, method: method, body: body, consent: consent, action: action, timeout: timeout)
+    }
+
+    /// JSON snapshot exports use the same authentication and session isolation as downloads.
+    func kitchenDownload<Body: Encodable>(
+        _ path: String, method: String, body: Body, accept: String
+    ) async throws -> Data {
+        if readOnly, !["GET", "HEAD", "OPTIONS"].contains(method) {
+            throw APIError.server(403, "Im Gastzugang kannst du ansehen, aber nichts verändern oder erstellen.")
+        }
+        var request = URLRequest(url: try endpoint(path))
+        request.httpMethod = method
+        request.timeoutInterval = 60
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(body)
+        authorize(&request, includeBearer: true)
+        let requestConfiguration = configurationID
+        let (data, response) = try await session.data(for: request)
+        guard configurationID == requestConfiguration else { throw APIError.sessionChanged }
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse(path) }
+        if http.statusCode == 401 { throw APIError.unauthenticated }
+        guard (200..<300).contains(http.statusCode) else {
+            let detail = (try? decoder.decode(ErrorResponse.self, from: data).detail)
+                ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+            throw APIError.server(http.statusCode, detail)
+        }
+        guard !Self.isHTMLResponse(http, body: data) else { throw APIError.invalidResponse(path) }
+        return data
+    }
+
     func kitchenUpload<Response: Decodable>(_ path: String, jpeg: Data) async throws -> Response {
         let boundary = "Kitchen-\(UUID().uuidString)"
         var request = URLRequest(url: try endpoint(path))

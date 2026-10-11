@@ -31,6 +31,7 @@ struct RecipeDetailView: View {
     @State private var deleteTarget: RecipeDeletionTarget?
     @State private var imageRefreshToken = UUID()
     @State private var showMetadataEditor = false
+    @State private var servingsEstimateTarget: RecipeServingsEstimateTarget?
     @State private var showShareLinks = false
     @State private var showPDF = false
     @State private var showDuplicatePrompt = false
@@ -150,6 +151,12 @@ struct RecipeDetailView: View {
                                 Button("Rezeptdaten bearbeiten", systemImage: "pencil") {
                                     showMetadataEditor = true
                                 }
+                                if session.supports("servings-estimate-v1"), !usingOfflineRecipe, !session.isOfflineSession {
+                                    Button("Portionsanzahl mit KI prüfen", systemImage: "person.2.fill") {
+                                        servingsEstimateTarget = RecipeServingsEstimateTarget(id: recipe.id, name: recipe.name,
+                                            currentServings: recipe.servings, identity: session.identity)
+                                    }.disabled(isManaging || deletion.isDeleting)
+                                }
                                 Button(
                                     recipe.userVerified == true ? "Prüfung zurücknehmen" : "Zutaten als geprüft markieren",
                                     systemImage: recipe.userVerified == true ? "checkmark.seal" : "checkmark.seal.fill"
@@ -236,6 +243,9 @@ struct RecipeDetailView: View {
                     .environmentObject(session)
             }
         }
+        .sheet(item: $servingsEstimateTarget) { target in
+            RecipeServingsEstimateView(target: target)
+        }
         .sheet(isPresented: $showShareLinks) {
             if let recipe {
                 RecipeShareLinksView(recipeID: recipe.id, recipeName: recipe.name)
@@ -314,7 +324,7 @@ struct RecipeDetailView: View {
         } message: {
             if let target = deleteTarget { Text(target.confirmationMessage) }
         }
-        .onChange(of: session.identity) { _, _ in deleteTarget = nil }
+        .onChange(of: session.identity) { _, _ in deleteTarget = nil; servingsEstimateTarget = nil }
         .confirmationDialog(
             "Wie möchtest du fortfahren?",
             isPresented: $showCookActions,

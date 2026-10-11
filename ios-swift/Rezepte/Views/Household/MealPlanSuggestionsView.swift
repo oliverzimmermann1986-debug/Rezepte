@@ -14,21 +14,37 @@ struct MealPlanSuggestionsView: View {
     @State private var warnings: [String] = []
     @State private var constraints = MealPlanConstraints()
     @State private var categories: [Int: Set<MealIngredientCategory>] = [:]
+    @State private var showingProfiles = false
+    @State private var pdfSnapshot: MealPlanPDFSnapshot?
     private var started: Bool { rows.contains { $0.status != .pending } }
     private var complete: Bool { !rows.isEmpty && rows.allSatisfy { $0.status == .saved } }
     private var excluded: [Int] { week.days.flatMap(\.items).map(\.recipeId) + rows.map(\.id) }
     private var advanced: Bool { session.supports("meal-plan-constraints-v1") }
+    private var supportsWeekdays: Bool { advanced && session.supports("meal-plan-weekday-rules-v1") }
+    private var planningPreferences: MealPlanningPreferences {
+        MealPlanningPreferences(count: count, vegetarian: vegetarian, maxMinutes: minutes, constraints: constraints)
+    }
+    private var validationMessage: String? {
+        planningPreferences.availabilityMessage(advanced: advanced, weekdayRules: supportsWeekdays)
+    }
+    private var unmetRules: [MealWeekdayRule] {
+        MealWeekdayDates.unmetRules(constraints.weekdayRules, rows: rows, categories: categories, weekStart: week.weekStart)
+    }
     private var quotasSatisfied: Bool {
         !advanced || constraints.quotas.allSatisfy { quota in
             constraints.fulfilled(quota.category, recipeIDs: rows.map(\.id), categories: categories) == quota.count
         }
     }
-    private var partial: Bool { rows.count < count || rows.filter { $0.suggestion.vegetarian }.count < vegetarian || !quotasSatisfied }
+    private var partial: Bool { rows.count < count || rows.filter { $0.suggestion.vegetarian }.count < vegetarian || !quotasSatisfied || !unmetRules.isEmpty }
 
     var body: some View {
         NavigationStack {
             Form {
                 if !session.readOnly, session.role != .guest, state.identity == session.identity {
+                    Section {
+                        Button("Wochenprofile", systemImage: "bookmark") { showingProfiles = true }
+                            .disabled(state.busy || started)
+                    }
                     Section("Vorschläge aus deiner Sammlung") {
                         Text("Woche ab \(week.weekStart). Prüfe Gerichte, Tage und Portionen vor dem Übernehmen.")
                             .font(.subheadline).foregroundStyle(.secondary)
@@ -42,7 +58,7 @@ struct MealPlanSuggestionsView: View {
                             .onChange(of: vegetarian) { _, _ in clearPreview() }
                         Picker("Zeit pro Gericht", selection: $minutes) {
                             Text("Egal").tag(0)
-                            ForEach([15, 30, 45, 60], id: \.self) { Text("\($0) Min.").tag($0) }
+                            ForEach(Array(Set([15, 20, 30, 45, 60, minutes]).subtracting([0])).sorted(), id: \.self) { Text("\($0) Min.").tag($0) }
                         }.onChange(of: minutes) { _, _ in clearPreview() }
                         Text("Vegetarisch laut Rezeptkennzeichnung. Mit Zeitgrenze werden nur Rezepte mit bekannter Gesamtzeit berücksichtigt.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -80,11 +96,26 @@ struct MealPlanSuggestionsView: View {
                             if let message = constraints.validationMessage { Text(message).font(.caption).foregroundStyle(.red) }
                         }.disabled(state.busy || started)
                     }
+                    if supportsWeekdays {
+                        MealWeekdayRulesView(rules: $constraints.weekdayRules, count: count)
+                            .disabled(state.busy || started)
+                    }
                     Section {
                         Button(rows.isEmpty ? "Vorschläge suchen" : "Andere Vorschläge suchen") { Task { await generate() } }
-                            .disabled(state.busy || (started && !complete) || (advanced && constraints.validationMessage != nil))
+                            .disabled(state.busy || (started && !complete) || validationMessage != nil)
+                        if let validationMessage { Text(validationMessage).font(.caption).foregroundStyle(.red) }
                         HouseholdFeedback(state: state)
                         ForEach(Array(warnings.enumerated()), id: \.offset) { _, warning in Text(warning).font(.subheadline).foregroundStyle(.secondary) }
+                    }
+                    if !rows.isEmpty, !constraints.weekdayRules.isEmpty {
+                        Section("Feste Tage im Ergebnis") {
+                            ForEach(constraints.weekdayRules) { rule in
+                                let fulfilled = !unmetRules.contains { $0.weekday == rule.weekday }
+                                Label("\(MealWeekdayRule.title(rule.weekday)): \(rule.summary)", systemImage: fulfilled ? "checkmark.circle" : "exclamationmark.circle")
+                                    .foregroundStyle(fulfilled ? Color.primary : Color.orange)
+                            }
+                            if !unmetRules.isEmpty { Text("Nicht alle festen Tage sind erfüllt. Suche erneut oder übernimm die unvollständige Auswahl ausdrücklich.").font(.caption).foregroundStyle(.secondary) }
+                        }
                     }
                     if advanced, !rows.isEmpty, !constraints.quotas.isEmpty {
                         Section("Deine Vorgaben im Ergebnis") {
@@ -104,8 +135,9 @@ struct MealPlanSuggestionsView: View {
                                   row.suggestion.totalMinutes.map { "\(Int($0)) Min." } ?? "Zeit nicht hinterlegt"].compactMap { $0 }.joined(separator: " · "))
                                 .font(.caption).foregroundStyle(.secondary)
                             Picker("Tag", selection: $rows[index].date) {
-                                ForEach(week.days) { day in Text("\(day.label), \(day.date)").tag(day.date) }
-                            }.disabled(state.busy || started)
+                                ForEach(availableDays(for: row)) { day in Text("\(day.label), \(day.date)").tag(day.date) }
+                            }.disabled(state.busy || started || rule(for: row) != nil)
+                            if rule(for: row) != nil { Text("Der Tag bleibt wegen deiner Wochentagsregel fest.").font(.caption).foregroundStyle(.secondary) }
                             Stepper("\(row.servings) Portionen", value: $rows[index].servings, in: 1...24)
                                 .disabled(state.busy || started)
                             if !started {
@@ -132,8 +164,28 @@ struct MealPlanSuggestionsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() }.disabled(state.busy) } }
             .interactiveDismissDisabled(state.busy)
+            .sheet(isPresented: $showingProfiles) {
+                MealPlanningProfilesView(preferences: planningPreferences) { selected in
+                    guard !state.busy, !started, state.identity == session.identity else { return }
+                    count = selected.count; vegetarian = selected.vegetarian; minutes = selected.maxMinutes
+                    constraints = selected.constraints
+                    clearPreview()
+                }
+            }
+            .sheet(item: $pdfSnapshot) { snapshot in MealPlanPDFExportSheet(snapshot: snapshot) }
+            .toolbar {
+                if session.supports("meal-plan-pdf-v1"), !rows.isEmpty {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("PDF", systemImage: "square.and.arrow.up") {
+                            pdfSnapshot = MealPlanPDFSnapshot(preferences: planningPreferences, weekStart: week.weekStart,
+                                rows: rows, excluding: week.days.flatMap(\.items).map(\.recipeId))
+                        }.disabled(state.busy)
+                    }
+                }
+            }
             .task(id: "\(session.identity)-\(week.weekStart)") {
                 state.reset(session); rows = []; warnings = []; categories = [:]; constraints = MealPlanConstraints()
+                count = 4; vegetarian = 2; minutes = 0; showingProfiles = false; pdfSnapshot = nil
             }
             .onChange(of: constraints) { _, _ in clearPreview() }
         }
@@ -145,7 +197,7 @@ struct MealPlanSuggestionsView: View {
     }
 
     private func generate() async {
-        if advanced, let message = constraints.validationMessage { state.error = message; return }
+        if let message = validationMessage { state.error = message; return }
         guard !started || complete, let token = state.begin(session) else { return }
         defer { state.finish(token, session) }
         do {
@@ -153,9 +205,10 @@ struct MealPlanSuggestionsView: View {
                 let result = try await session.api.constrainedMealSuggestions(count: count, vegetarian: vegetarian,
                     maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded,
                     quotas: constraints.quotas, excludedIngredients: constraints.excludedIngredients,
-                    avoidRecentDays: constraints.avoidRecentDays, weekStart: week.weekStart)
+                    avoidRecentDays: constraints.avoidRecentDays, weekStart: week.weekStart,
+                    weekdayRules: supportsWeekdays ? constraints.weekdayRules : [])
                 guard state.current(token, session) else { return }
-                rows = MealSuggestionDraft.make(result.items.map(\.recipe), days: week.days)
+                rows = try MealWeekdayDates.drafts(result.items, week: week, requireWeekdays: !constraints.weekdayRules.isEmpty)
                 categories = Dictionary(result.items.map { ($0.recipe.id, $0.categories) }, uniquingKeysWith: { first, _ in first })
                 warnings = result.warnings
                 if !result.searchComplete { state.notice = "Die Suche wurde begrenzt. Weitere passende Kombinationen können noch vorhanden sein." }
@@ -182,9 +235,11 @@ struct MealPlanSuggestionsView: View {
                     vegetarian: min(1, max(0, vegetarian - otherRows.filter { $0.suggestion.vegetarian }.count)),
                     maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded,
                     quotas: quotas, excludedIngredients: constraints.excludedIngredients,
-                    avoidRecentDays: constraints.avoidRecentDays, weekStart: week.weekStart)
+                    avoidRecentDays: constraints.avoidRecentDays, weekStart: week.weekStart,
+                    weekdayRules: rule(for: rows[index]).map { [$0] } ?? [])
                 guard state.current(token, session), rows.indices.contains(index) else { return }
-                if result.constraintsSatisfied, let replacement = result.items.first {
+                if result.constraintsSatisfied, let replacement = result.items.first,
+                   rule(for: rows[index]).map({ replacement.weekday == $0.weekday && $0.matches(replacement.recipe, categories: replacement.categories) }) ?? true {
                     categories.removeValue(forKey: rows[index].id)
                     rows[index].suggestion = replacement.recipe
                     categories[replacement.recipe.id] = replacement.categories
@@ -199,6 +254,17 @@ struct MealPlanSuggestionsView: View {
                 warnings = result.warnings
             }
         } catch { state.failed(error, token: token, session: session) }
+    }
+
+    private func rule(for row: MealSuggestionDraft) -> MealWeekdayRule? {
+        guard let weekday = MealWeekdayDates.weekday(date: row.date, weekStart: week.weekStart) else { return nil }
+        return constraints.weekdayRules.first { $0.weekday == weekday }
+    }
+
+    private func availableDays(for row: MealSuggestionDraft) -> [MealDay] {
+        if rule(for: row) != nil { return week.days.filter { $0.date == row.date } }
+        let fixed = Set(constraints.weekdayRules.compactMap { MealWeekdayDates.date(weekday: $0.weekday, weekStart: week.weekStart) })
+        return week.days.filter { !fixed.contains($0.date) }
     }
 
     private func apply() async {

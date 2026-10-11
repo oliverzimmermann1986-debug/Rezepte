@@ -3,7 +3,7 @@ import Foundation
 
 enum AIProcessingAction: String, Sendable {
     case importLink, importFile, scanPhoto, reanalyze, extractSource, translation, saveRecipe
-    case nutrition, generateImage, imageBackfill, libraryAudit, shoppingOptimization, connectionTest, retryImport
+    case nutrition, servingsEstimate, generateImage, imageBackfill, libraryAudit, shoppingOptimization, connectionTest, retryImport
 
     var title: String {
         switch self {
@@ -12,6 +12,7 @@ enum AIProcessingAction: String, Sendable {
         case .reanalyze, .extractSource: "Rezept erneut mit KI prüfen"
         case .translation: "Quelltext mit KI übersetzen"
         case .nutrition: "Nährwerte mit KI schätzen"
+        case .servingsEstimate: "Portionsanzahl mit KI prüfen"
         case .generateImage: "Rezeptbild mit KI erstellen"
         case .imageBackfill: "Rezeptbilder der Bibliothek erstellen"
         case .libraryAudit: "Bibliothek mit KI prüfen"
@@ -32,6 +33,8 @@ enum AIProcessingAction: String, Sendable {
             "Der angezeigte Rezept- oder Quelltext und die gewählte Zielsprache."
         case .nutrition:
             "Zutaten, Mengen und Portionsangaben dieses Rezepts."
+        case .servingsEstimate:
+            "Rezeptname, Art und Kategorie, Beschreibung, aktuelle Portionsangabe, Zutaten mit Mengen und Einheiten sowie Zubereitungsschritte dieses Rezepts."
         case .generateImage:
             "Rezeptname, Zutaten, Beschreibung und gegebenenfalls das vorhandene Rezeptbild."
         case .imageBackfill:
@@ -51,6 +54,7 @@ enum AIProcessingAction: String, Sendable {
             "Rezept, Zutaten und Zubereitung erkennen oder ergänzen; je nach Import die Beschreibung übersetzen und ein passendes Rezeptbild erstellen."
         case .translation: "Den Quelltext in die gewählte Sprache übersetzen."
         case .nutrition: "Nährwerte aus den Zutaten schätzen."
+        case .servingsEstimate: "Aus den Zutatenmengen eine plausible Portionsanzahl mit Begründung und Unsicherheit vorschlagen. Die Angabe wird erst nach deiner Prüfung geändert."
         case .generateImage, .imageBackfill: "Passende Rezeptbilder generieren."
         case .libraryAudit: "Unstimmigkeiten bei Namen, Kategorien und Beschreibungen finden."
         case .shoppingOptimization: "Artikelnamen vereinheitlichen und Kategorien vorschlagen."

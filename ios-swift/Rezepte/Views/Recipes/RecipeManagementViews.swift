@@ -184,13 +184,16 @@ struct PDFPreviewSheet: View {
     let loader: () async throws -> Data
 
     @Environment(\.dismiss) private var dismiss
-    @State private var data: Data?
+    @EnvironmentObject private var session: SessionStore
+    @State private var document: PDFExportDocument?
+    @State private var documentIdentity: UUID?
+    @State private var operation = UUID()
     @State private var errorMessage: String?
 
     var body: some View {
         NavigationStack {
             Group {
-                if let data { PDFKitView(data: data) }
+                if let document, documentIdentity == session.identity { PDFKitView(data: document.data) }
                 else if let errorMessage { ErrorState(message: errorMessage) { Task { await load() } } }
                 else { ProgressView("PDF wird geladen …") }
             }
@@ -198,15 +201,40 @@ struct PDFPreviewSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Schließen") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) {
+                    if let document, documentIdentity == session.identity {
+                        ShareLink(item: document, preview: SharePreview(title)) {
+                            Label("Teilen", systemImage: "square.and.arrow.up")
+                        }.accessibilityHint("PDF teilen oder in Dateien sichern")
+                    }
+                }
             }
             .task { await load() }
+            .onChange(of: session.identity) { _, _ in
+                operation = UUID(); document = nil; documentIdentity = nil; dismiss()
+            }
+            .onDisappear { operation = UUID(); document = nil; documentIdentity = nil }
         }
     }
 
     private func load() async {
+        let token = UUID(), identity = session.identity
+        operation = token
+        document = nil
+        documentIdentity = nil
         errorMessage = nil
-        do { data = try await loader() }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            let data = try await loader()
+            guard operation == token, identity == session.identity, !Task.isCancelled else { return }
+            let exported = try PDFExportDocument(data: data, title: title)
+            guard PDFDocument(data: data) != nil else { throw APIError.invalidResponse("PDF-Export") }
+            document = exported
+            documentIdentity = identity
+        } catch {
+            guard operation == token, identity == session.identity, !Task.isCancelled else { return }
+            errorMessage = error.localizedDescription
+            session.handle(error)
+        }
     }
 }
 

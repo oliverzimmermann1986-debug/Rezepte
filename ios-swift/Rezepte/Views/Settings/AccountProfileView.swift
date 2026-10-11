@@ -146,6 +146,7 @@ struct AccountDeletionView: View {
     @EnvironmentObject private var shopping: ShoppingSyncStore
     @EnvironmentObject private var offline: OfflineRecipeStore
     @EnvironmentObject private var searches: SavedRecipeSearchStore
+    @EnvironmentObject private var planningProfiles: MealPlanningProfileStore
     @Environment(\.recipeTheme) private var theme
     @State private var password = ""
     @State private var confirmDeletion = false
@@ -234,6 +235,7 @@ struct AccountDeletionView: View {
             do { try offline.eraseAccountData(session: session) }
             catch { localCleanupFailed = true }
             searches.eraseAccountData(session: session)
+            planningProfiles.eraseAccountData(session: session)
             password = ""
             for url in SharedImportQueue.all() { SharedImportQueue.remove(url) }
             session.signOut()

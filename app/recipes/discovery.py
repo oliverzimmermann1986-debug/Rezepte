@@ -7,7 +7,10 @@ from datetime import date, timedelta
 
 from .canonical import canonical_name
 from .cart_logic import prepare_for_cart
-from .meal_constraints import CATEGORY_NAMES, excluded_ingredient_match, ingredient_categories, quota_selection
+from .meal_constraints import (
+    CATEGORY_NAMES, WEEKDAY_NAMES, excluded_ingredient_match, ingredient_categories,
+    planned_weekdays, quota_selection, weekday_selection,
+)
 
 
 AVAILABILITY_NOTE = "Es werden vorhandene Zutaten verglichen, keine Vorratsmengen. Mengen bitte vor dem Kochen prüfen."
@@ -111,12 +114,14 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
                           max_minutes: int | None = None, exclude_recipe_ids: list[int] | None = None,
                           available_ingredients: list[str] | None = None,
                           category_quotas: list[dict] | None = None, excluded_ingredients: list[str] | None = None,
-                          avoid_recent_days: int = 0, week_start: date | None = None) -> dict:
-    """Reserve vegetarian slots, then fill open slots, without relaxing constraints."""
+                          avoid_recent_days: int = 0, week_start: date | None = None,
+                          weekday_rules: list[dict] | None = None) -> dict:
+    """Select distinct recipes, jointly assigning rule days without relaxing constraints."""
     available = available_keys(available_ingredients or [])
     excluded = set(exclude_recipe_ids or [])
     excluded_keys = available_keys(excluded_ingredients or [])
     quotas = category_quotas or []
+    rules = weekday_rules or []
     if avoid_recent_days:
         anchor = week_start or date.today()
         recent = db.meal_plan_entries((anchor - timedelta(days=avoid_recent_days)).isoformat(),
@@ -171,7 +176,11 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         selected.append(choice)
         return True
 
-    if quotas:
+    if rules:
+        selected, solver_complete = weekday_selection(candidates, count, vegetarian_count, quotas, rules)
+        search_complete = search_complete and solver_complete
+        vegetarian_found = sum(item["vegetarian"] for item in selected)
+    elif quotas:
         selected, solver_complete = quota_selection(candidates, count, vegetarian_count, quotas)
         search_complete = search_complete and solver_complete
         vegetarian_found = sum(item["vegetarian"] for item in selected)
@@ -191,7 +200,7 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         warnings.append(f"Nur {len(selected)} von {count} passenden unterschiedlichen Rezepten gefunden. Die Vorgaben wurden beibehalten.")
     if unknown_times:
         warnings.append(f"{unknown_times} Rezepte ohne eindeutige Gesamtzeit wurden wegen der Zeitgrenze ausgelassen.")
-    if vegetarian_count:
+    if vegetarian_count or any(rule.get("vegetarian") for rule in rules):
         warnings.append("Vegetarisch richtet sich nach den gespeicherten Rezept-Tags; bitte Zutaten bei Bedarf prüfen.")
     missing_quotas = []
     for quota in quotas:
@@ -201,7 +210,7 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         missing_quotas.append({"category": category, "requested": quota["count"], "fulfilled": fulfilled, "missing": missing})
         if missing:
             warnings.append(f"{CATEGORY_NAMES[category]}: {fulfilled} von exakt {quota['count']} passenden Gerichten gefunden.")
-    if quotas:
+    if quotas or any(rule.get("category") for rule in rules):
         warnings.append("Kategorien werden aus gespeicherten Zutaten erkannt. Ein Gericht mit mehreren Kategorien zählt in jeder davon; Mengen spielen dabei keine Rolle.")
     if excluded_keys:
         warnings.append("Zutatenausschlüsse vergleichen gespeicherte Zutatennamen und bekannte Synonyme; sie ersetzen keine Allergenprüfung.")
@@ -209,10 +218,17 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         warnings.append(f"Bereits geplante Gerichte aus den {avoid_recent_days} Tagen vor {anchor.isoformat()} wurden ausgelassen.")
     if not search_complete:
         warnings.append("Das Suchlimit wurde erreicht. Weitere passende Kombinationen können vorhanden sein; die Vorgaben wurden nicht gelockert.")
+    assigned_weekdays = {item["weekday"] for item in selected} if rules else set()
+    missing_weekdays = [day for day in planned_weekdays(count, rules) if day not in assigned_weekdays] if rules else []
+    for day in missing_weekdays:
+        warnings.append(f"{WEEKDAY_NAMES[day]}: Kein passendes Gericht zugewiesen. Die Tagesregel und Wochenvorgaben wurden beibehalten.")
+    if any(rule.get("min_minutes") is not None or rule.get("max_minutes") is not None for rule in rules):
+        warnings.append("Für Tagesregeln mit Zeitvorgaben werden nur Rezepte mit eindeutiger Gesamtzeit zugewiesen.")
     return {"items": [{key: value for key, value in item.items() if not key.startswith("_")} for item in selected],
             "warnings": warnings, "missing_quotas": missing_quotas,
+            "missing_weekdays": missing_weekdays,
             "constraints_satisfied": len(selected) == count and vegetarian_found >= vegetarian_count
-                                     and all(item["missing"] == 0 for item in missing_quotas),
+                                     and all(item["missing"] == 0 for item in missing_quotas) and not missing_weekdays,
             "search_complete": search_complete}
 
 

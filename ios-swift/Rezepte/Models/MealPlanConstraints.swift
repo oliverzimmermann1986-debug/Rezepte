@@ -18,10 +18,11 @@ struct MealCategoryQuota: Codable, Equatable {
     let count: Int
 }
 
-struct MealPlanConstraints: Equatable {
+struct MealPlanConstraints: Codable, Equatable {
     var counts: [MealIngredientCategory: Int] = [:]
     var excludedIngredientsText = ""
     var avoidRecentDays = 0
+    var weekdayRules: [MealWeekdayRule] = []
 
     var quotas: [MealCategoryQuota] {
         MealIngredientCategory.allCases.compactMap { category in
@@ -37,6 +38,10 @@ struct MealPlanConstraints: Equatable {
     }
 
     var validationMessage: String? {
+        if ![0, 7, 14, 28].contains(avoidRecentDays) { return "Bitte einen gültigen Zeitraum für die Abwechslung wählen." }
+        if counts.values.contains(where: { !(0...7).contains($0) }) { return "Die Zutatenanzahl muss zwischen 0 und 7 liegen." }
+        if weekdayRules.count > 7 || Set(weekdayRules.map(\.weekday)).count != weekdayRules.count { return "Bitte jeden Wochentag nur einmal festlegen." }
+        if let message = weekdayRules.compactMap(\.validationMessage).first { return message }
         if excludedIngredients.count > 100 { return "Bitte höchstens 100 Zutaten ausschließen." }
         if excludedIngredients.contains(where: { $0.count > 200 }) { return "Eine ausgeschlossene Zutat darf höchstens 200 Zeichen enthalten." }
         return nil
@@ -61,12 +66,14 @@ struct MealPlanConstraints: Equatable {
 struct ConstrainedMealSuggestion: Decodable {
     let recipe: MealSuggestion
     let categories: Set<MealIngredientCategory>
-    private enum CodingKeys: String, CodingKey { case categories }
+    let weekday: Int?
+    private enum CodingKeys: String, CodingKey { case categories, weekday }
 
     init(from decoder: Decoder) throws {
         recipe = try MealSuggestion(from: decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
         categories = Set(try container.decode([String].self, forKey: .categories).compactMap(MealIngredientCategory.init(rawValue:)))
+        weekday = try container.decodeIfPresent(Int.self, forKey: .weekday)
     }
 }
 
@@ -83,4 +90,17 @@ struct ConstrainedMealSuggestionResponse: Decodable {
     let missingQuotas: [MealQuotaShortfall]
     let constraintsSatisfied: Bool
     let searchComplete: Bool
+    let missingWeekdays: [Int]
+
+    private enum CodingKeys: String, CodingKey { case items, warnings, missingQuotas, constraintsSatisfied, searchComplete, missingWeekdays }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        items = try values.decode([ConstrainedMealSuggestion].self, forKey: .items)
+        warnings = try values.decode([String].self, forKey: .warnings)
+        missingQuotas = try values.decode([MealQuotaShortfall].self, forKey: .missingQuotas)
+        constraintsSatisfied = try values.decode(Bool.self, forKey: .constraintsSatisfied)
+        searchComplete = try values.decode(Bool.self, forKey: .searchComplete)
+        missingWeekdays = try values.decodeIfPresent([Int].self, forKey: .missingWeekdays) ?? []
+    }
 }

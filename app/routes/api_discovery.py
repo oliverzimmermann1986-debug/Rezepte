@@ -28,6 +28,20 @@ class CategoryQuota(BaseModel):
     count: int = Field(ge=0, le=7)
 
 
+class WeekdayRule(BaseModel):
+    weekday: int = Field(ge=1, le=7)
+    category: Literal["pasta", "potato", "rice", "legume"] | None = None
+    min_minutes: int | None = Field(default=None, ge=1, le=1440)
+    max_minutes: int | None = Field(default=None, ge=1, le=1440)
+    vegetarian: bool = False
+
+    @model_validator(mode="after")
+    def validate_time_range(self):
+        if self.min_minutes is not None and self.max_minutes is not None and self.min_minutes > self.max_minutes:
+            raise ValueError("Die Mindestzeit darf die Höchstzeit nicht überschreiten")
+        return self
+
+
 class MealPlanRequest(BaseModel):
     count: int = Field(default=4, ge=1, le=7)
     vegetarian_count: int = Field(default=0, ge=0, le=7)
@@ -38,6 +52,7 @@ class MealPlanRequest(BaseModel):
     excluded_ingredients: list[IngredientName] = Field(default_factory=list, max_length=100)
     avoid_recent_days: Literal[0, 7, 14, 28] = 0
     week_start: date | None = None
+    weekday_rules: list[WeekdayRule] = Field(default_factory=list, max_length=7)
 
     @field_validator("week_start", mode="before")
     @classmethod
@@ -56,11 +71,19 @@ class MealPlanRequest(BaseModel):
             raise ValueError("Jede Kategorie darf nur einmal vorkommen")
         if any(not canonical_name(name) for name in self.excluded_ingredients):
             raise ValueError("Zutatenausschlüsse müssen einen erkennbaren Namen enthalten")
+        if len(self.weekday_rules) > self.count:
+            raise ValueError("Es dürfen nicht mehr Tagesregeln als Gerichte gewählt werden")
+        if len({rule.weekday for rule in self.weekday_rules}) != len(self.weekday_rules):
+            raise ValueError("Jeder Wochentag darf nur einmal vorkommen")
+        if self.weekday_rules and (self.week_start is None or self.week_start.isoweekday() != 1):
+            raise ValueError("Für Tagesregeln muss week_start der Montag der gewählten Woche sein")
         if self.week_start is not None:
             try:
                 self.week_start - timedelta(days=self.avoid_recent_days)
+                if self.weekday_rules:
+                    self.week_start + timedelta(days=6)
             except OverflowError as exc:
-                raise ValueError("Der Rückblick liegt außerhalb des gültigen Datumsbereichs") from exc
+                raise ValueError("Die Woche oder der Rückblick liegt außerhalb des gültigen Datumsbereichs") from exc
         return self
 
 

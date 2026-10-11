@@ -4,6 +4,7 @@ struct MainTabView: View {
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var offline: OfflineRecipeStore
     @EnvironmentObject private var searches: SavedRecipeSearchStore
+    @EnvironmentObject private var planningProfiles: MealPlanningProfileStore
     @StateObject private var shopping = ShoppingSyncStore()
     @ObservedObject private var shortcuts = KitchenShortcutCoordinator.shared
     @State private var selection = 0
@@ -46,6 +47,7 @@ struct MainTabView: View {
         }
         .task(id: session.identity) { await offline.activate(session: session) }
         .task(id: session.identity) { await searches.activate(session: session) }
+        .task(id: session.identity) { await planningProfiles.activate(session: session) }
         .onChange(of: shortcuts.route?.id) { _, _ in applyShortcutRoute() }
         .onAppear { applyShortcutRoute() }
         .sheet(item: $shortcutRecipe) { route in
@@ -68,6 +70,7 @@ struct MainTabView: View {
             do { try offline.invalidateHousehold() }
             catch { session.alertMessage = error.localizedDescription }
             searches.invalidateHousehold()
+            planningProfiles.invalidateHousehold()
             shortcuts.clear()
         }
     }
