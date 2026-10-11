@@ -139,7 +139,7 @@ final class OfflineRecipeStore: ObservableObject {
                 .internationalRoamingOff, .dataNotAllowed].contains(error.code)
     }
 
-    private static func namespace(_ session: SessionStore) -> String? {
+    static func namespace(_ session: SessionStore) -> String? {
         guard case .signedIn = session.state, let id = session.userID, session.role != .guest,
               let server = APIClient.normalizedServerURL(session.savedServer)?.absoluteString else { return nil }
         return "\(server)\u{0}\(id)"
@@ -238,16 +238,8 @@ final class OfflineRecipeStore: ObservableObject {
             }
             let key = indexKey(next.namespace, household)
             if let data = try storage.read(key) {
-                let decoded = try JSONDecoder().decode(OfflineRecipeIndex.self, from: data)
-                guard decoded.version == 1, decoded.householdID == household,
-                      decoded.recipes.count <= Self.maximumRecipes,
-                      decoded.recipes.allSatisfy({ key, record in
-                          key == String(record.id) && record.id > 0 && record.imageBytes >= 0 && record.imageBytes <= OfflineImageDownload.maximumBytes &&
-                          (record.imageKey == nil || record.imageKey!.hasPrefix(prefix(next.namespace, household) + "image-"))
-                      }), decoded.cookbooks.allSatisfy({ key, book in
-                          key == String(book.id) && book.recipeIDs.allSatisfy { decoded.recipes[String($0)] != nil }
-                      }) else { throw CocoaError(.fileReadCorruptFile) }
-                index = decoded
+                let decoded = try validatedIndex(data, namespace: next.namespace, household: household)
+                index = applyingDeletionMarkers(to: decoded, namespace: next.namespace)
             } else { index = OfflineRecipeIndex(version: 1, householdID: household) }
             try assertCurrent(next)
             isReady = true; revision += 1
@@ -290,41 +282,52 @@ final class OfflineRecipeStore: ObservableObject {
     }
 
     func cachedRecipes(session: SessionStore) -> [OfflineRecipeRecord] {
-        guard matches(session) else { return [] }
-        return (index?.recipes.values.map { $0 } ?? []).sorted { $0.recipe.name.localizedStandardCompare($1.recipe.name) == .orderedAscending }
+        guard matches(session), let context else { return [] }
+        return (index?.recipes.values.filter { !isRecipeDeleted($0.id, namespace: context.namespace) } ?? [])
+            .sorted { $0.recipe.name.localizedStandardCompare($1.recipe.name) == .orderedAscending }
     }
 
     func cachedRecipe(id: Int, session: SessionStore) -> Recipe? {
-        guard matches(session) else { return nil }
+        guard matches(session), let context else { return nil }
+        return cachedRecipe(id: id, context: context)
+    }
+
+    /// Uses the same namespace checks as the session boundary; also permits
+    /// deterministic storage/late-response tests without copying auth tokens.
+    func cachedRecipe(id: Int, context expected: OfflineRecipeContext) -> Recipe? {
+        guard isReady, isCurrent(expected), !isRecipeDeleted(id, namespace: expected.namespace) else { return nil }
         return index?.recipes[String(id)]?.recipe
     }
 
     func savedAt(id: Int, session: SessionStore) -> Date? {
-        guard matches(session) else { return nil }
+        guard cachedRecipe(id: id, session: session) != nil else { return nil }
         return index?.recipes[String(id)]?.savedAt
     }
 
     func cachedImage(id: Int, session: SessionStore) -> Data? {
-        guard matches(session), let key = index?.recipes[String(id)]?.imageKey else { return nil }
+        guard cachedRecipe(id: id, session: session) != nil, let key = index?.recipes[String(id)]?.imageKey else { return nil }
         return try? storage.read(key)
     }
 
     func cachedCookbooks(session: SessionStore) -> [HouseholdCookbook] {
-        guard matches(session) else { return [] }
-        return (index?.cookbooks.values.map {
+        guard matches(session), let context else { return [] }
+        return (index?.cookbooks.values.filter { book in
+            !book.recipeIDs.contains { isRecipeDeleted($0, namespace: context.namespace) }
+        }.map {
             HouseholdCookbook(id: $0.id, name: $0.name, recipeCount: $0.recipeIDs.count, containsRecipe: false)
         } ?? []).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     func cachedCookbookRecipes(id: Int, session: SessionStore) -> [HouseholdRecipe] {
-        guard matches(session), let index, let book = index.cookbooks[String(id)] else { return [] }
+        guard isCookbookSaved(id: id, session: session), let index, let book = index.cookbooks[String(id)] else { return [] }
         return book.recipeIDs.compactMap { id in
             index.recipes[String(id)].map { HouseholdRecipe(id: id, name: $0.recipe.name) }
         }
     }
 
     func isCookbookSaved(id: Int, session: SessionStore) -> Bool {
-        matches(session) && index?.cookbooks[String(id)] != nil
+        guard matches(session), let context, let book = index?.cookbooks[String(id)] else { return false }
+        return !book.recipeIDs.contains { isRecipeDeleted($0, namespace: context.namespace) }
     }
 
     func saveRecipe(id: Int, session: SessionStore) async throws {
@@ -380,9 +383,11 @@ final class OfflineRecipeStore: ObservableObject {
                 progress = "Rezept \(offset + 1) von \(ids.count) wird geladen …"
                 let recipe = try await expected.recipe(id)
                 try assertCurrent(expected)
+                guard operation == token else { throw APIError.sessionChanged }
                 guard recipe.id == id else { throw APIError.invalidResponse("Rezeptdownload") }
                 let image = try await expected.image(id)
                 try assertCurrent(expected)
+                guard operation == token else { throw APIError.sessionChanged }
                 let key = image.map { _ in prefix(expected.namespace, next.householdID) + "image-\(id)-\(UUID().uuidString.lowercased()).jpg" }
                 if let image, let key {
                     guard image.count <= OfflineImageDownload.maximumBytes else { throw OfflineImageDownload.tooLarge }
@@ -400,12 +405,98 @@ final class OfflineRecipeStore: ObservableObject {
                     name: cookbook.name, recipeIDs: ids, savedAt: Date())
                 pruneUnreferenced(&next)
             }
+            guard operation == token else { throw APIError.sessionChanged }
             try commit(next, expected: expected)
+            // Only a new, completely committed online download can restore a
+            // recipe that was deleted and later explicitly restored on the server.
+            for id in ids { defaults.removeObject(forKey: deletedRecipeKey(id, namespace: expected.namespace)) }
             committed = true
         } catch {
             if operation == token, isCurrent(expected) { errorMessage = error.localizedDescription }
             throw error
         }
+    }
+
+    /// Call only after DELETE was acknowledged by the server. The marker is
+    /// written before cleanup, so disk errors cannot resurrect a deleted recipe.
+    func recordDeletedRecipe(id: Int, session: SessionStore) throws {
+        guard let namespace = Self.namespace(session) else { throw deletionCleanupError }
+        try recordDeletedRecipe(id: id, namespace: namespace)
+    }
+
+    func recordDeletedRecipe(id: Int, context expected: OfflineRecipeContext) throws {
+        try assertCurrent(expected)
+        try recordDeletedRecipe(id: id, namespace: expected.namespace)
+    }
+
+    /// Capture this namespace before sending DELETE. A positive response after
+    /// an account switch still retires the origin's cache, never the new account.
+    func recordDeletedRecipe(id: Int, namespace: String) throws {
+        guard id > 0, !namespace.isEmpty else { throw deletionCleanupError }
+        defaults.set(true, forKey: deletedRecipeKey(id, namespace: namespace))
+        if let context, context.namespace == namespace, isCurrent(context), isReady {
+            try recordDeletedRecipeInCurrentIndex(id: id, expected: context)
+            return
+        }
+        // A different active account's flight, index, and feedback stay intact.
+        if context?.namespace == namespace { deactivate() }
+        do {
+            guard let household = defaults.object(forKey: pointerKey(namespace)) as? Int, household > 0 else {
+                throw deletionCleanupError
+            }
+            let key = indexKey(namespace, household)
+            guard let data = try storage.read(key) else { return }
+            let original = try validatedIndex(data, namespace: namespace, household: household)
+            let next = applyingDeletionMarkers(to: original, namespace: namespace)
+            let encoded = try JSONEncoder().encode(next)
+            guard encoded.count <= 12 * 1_024 * 1_024 else { throw deletionCleanupError }
+            try storage.write(key, encoded)
+            let retained = Set(next.recipes.values.compactMap(\.imageKey))
+            for image in original.recipes.values.compactMap(\.imageKey) where !retained.contains(image) {
+                try storage.remove(image)
+            }
+        } catch { throw deletionCleanupError }
+    }
+
+    private func recordDeletedRecipeInCurrentIndex(id: Int, expected: OfflineRecipeContext) throws {
+        // Old transactions hold an index snapshot that may still contain the
+        // deleted recipe. Retire all such snapshots before publishing the change.
+        operation = UUID()
+        flight?.cancel(); flight = nil
+        isDownloading = false; progress = nil; errorMessage = nil
+        guard let existing = index else { errorMessage = deletionCleanupError.localizedDescription; throw deletionCleanupError }
+        let next = applyingDeletionMarkers(to: existing, namespace: expected.namespace)
+        do {
+            try commit(next, expected: expected, strictCleanup: true)
+        } catch {
+            // Even an atomic-index write failure must hide the old content now.
+            // The persistent marker repeats this filtering on the next launch.
+            index = next; revision += 1
+            if let key = existing.recipes[String(id)]?.imageKey { try? storage.remove(key) }
+            errorMessage = deletionCleanupError.localizedDescription
+            throw deletionCleanupError
+        }
+    }
+
+    private func applyingDeletionMarkers(to original: OfflineRecipeIndex, namespace: String) -> OfflineRecipeIndex {
+        var next = original
+        let deleted = Set(next.recipes.values.filter { isRecipeDeleted($0.id, namespace: namespace) }.map(\.id))
+        guard !deleted.isEmpty else { return next }
+        let affectedBooks = next.cookbooks.values.filter { !deleted.isDisjoint(with: $0.recipeIDs) }
+        let preservedIDs = Set(affectedBooks.flatMap(\.recipeIDs)).subtracting(deleted)
+        next.cookbooks = next.cookbooks.filter { deleted.isDisjoint(with: $0.value.recipeIDs) }
+        for id in deleted {
+            next.recipes.removeValue(forKey: String(id))
+            next.cooking.removeValue(forKey: String(id))
+        }
+        // A cookbook is no longer complete, but its other downloaded recipes
+        // should remain individually available instead of being silently erased.
+        for id in preservedIDs {
+            guard var recipe = next.recipes[String(id)] else { continue }
+            recipe.pinned = true
+            next.recipes[String(id)] = recipe
+        }
+        return next
     }
 
     /// Removing a recipe also removes its books, so no partial book claims to be complete.
@@ -426,12 +517,23 @@ final class OfflineRecipeStore: ObservableObject {
     }
 
     func cookingProgress(id: Int, session: SessionStore) -> OfflineCookingProgress? {
-        guard matches(session) else { return nil }
+        guard matches(session), let context else { return nil }
+        return cookingProgress(id: id, context: context)
+    }
+
+    func cookingProgress(id: Int, context expected: OfflineRecipeContext) -> OfflineCookingProgress? {
+        guard isCurrent(expected), !isRecipeDeleted(id, namespace: expected.namespace) else { return nil }
         return index?.cooking[String(id)]
     }
 
     func saveCookingProgress(id: Int, value: OfflineCookingProgress?, session: SessionStore) throws {
         let context = try requireContext(session)
+        try saveCookingProgress(id: id, value: value, context: context)
+    }
+
+    func saveCookingProgress(id: Int, value: OfflineCookingProgress?, context: OfflineRecipeContext) throws {
+        try assertCurrent(context)
+        guard !isRecipeDeleted(id, namespace: context.namespace) else { throw APIError.sessionChanged }
         guard !isDownloading, var next = index, let recipe = next.recipes[String(id)]?.recipe else {
             throw APIError.server(0, "Speichere dieses Rezept zuerst vollständig offline.")
         }
@@ -451,7 +553,20 @@ final class OfflineRecipeStore: ObservableObject {
         next.cooking = next.cooking.filter { next.recipes[$0.key] != nil }
     }
 
-    private func commit(_ next: OfflineRecipeIndex, expected: OfflineRecipeContext) throws {
+    private func validatedIndex(_ data: Data, namespace: String, household: Int) throws -> OfflineRecipeIndex {
+        let decoded = try JSONDecoder().decode(OfflineRecipeIndex.self, from: data)
+        guard decoded.version == 1, decoded.householdID == household,
+              decoded.recipes.count <= Self.maximumRecipes,
+              decoded.recipes.allSatisfy({ key, record in
+                  key == String(record.id) && record.id > 0 && record.imageBytes >= 0 && record.imageBytes <= OfflineImageDownload.maximumBytes &&
+                  (record.imageKey == nil || record.imageKey!.hasPrefix(prefix(namespace, household) + "image-"))
+              }), decoded.cookbooks.allSatisfy({ key, book in
+                  key == String(book.id) && book.recipeIDs.allSatisfy { decoded.recipes[String($0)] != nil }
+              }) else { throw CocoaError(.fileReadCorruptFile) }
+        return decoded
+    }
+
+    private func commit(_ next: OfflineRecipeIndex, expected: OfflineRecipeContext, strictCleanup: Bool = false) throws {
         try assertCurrent(expected)
         let data = try JSONEncoder().encode(next)
         guard data.count <= 12 * 1_024 * 1_024 else { throw APIError.server(0, "Der Offline-Speicher für Rezepttexte ist voll.") }
@@ -459,10 +574,15 @@ final class OfflineRecipeStore: ObservableObject {
         let retained = Set(next.recipes.values.compactMap(\.imageKey))
         let obsolete = (index?.recipes.values.compactMap(\.imageKey) ?? []).filter { !retained.contains($0) }
         index = next; revision += 1
+        var cleanupFailure: Error?
         for key in obsolete {
             do { try storage.remove(key) }
-            catch { errorMessage = "Die Downloadliste wurde aktualisiert. Eine alte Bilddatei konnte noch nicht vom Gerät entfernt werden." }
+            catch {
+                cleanupFailure = cleanupFailure ?? error
+                errorMessage = "Die Downloadliste wurde aktualisiert. Eine alte Bilddatei konnte noch nicht vom Gerät entfernt werden."
+            }
         }
+        if strictCleanup, let cleanupFailure { throw cleanupFailure }
     }
 
     private func matches(_ session: SessionStore) -> Bool {
@@ -484,6 +604,13 @@ final class OfflineRecipeStore: ObservableObject {
         guard isCurrent(expected) else { throw APIError.sessionChanged }
     }
     private var busyError: APIError { .server(0, "Ein Download läuft bereits. Bitte warte kurz.") }
+    private var deletionCleanupError: APIError {
+        .server(0, "Das Rezept wurde auf dem Server gelöscht. Die lokale Bereinigung ist unvollständig; der gelöschte Download bleibt auf diesem Gerät gesperrt.")
+    }
+    private func isRecipeDeleted(_ id: Int, namespace: String) -> Bool {
+        defaults.bool(forKey: deletedRecipeKey(id, namespace: namespace))
+    }
+    private func deletedRecipeKey(_ id: Int, namespace: String) -> String { "offline-recipes-\(digest(namespace))-deleted-recipe-\(id)" }
     private func digest(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }
     private func prefix(_ namespace: String, _ household: Int) -> String { "\(digest(namespace))-household-\(household)-" }
     private func indexKey(_ namespace: String, _ household: Int) -> String { prefix(namespace, household) + "index.json" }

@@ -113,6 +113,15 @@ struct CookbooksView: View {
                 await load()
             }
             .onDisappear { pdf = nil }
+            .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { _ in
+                let identity = session.identity, selectedID = selected?.id
+                Task {
+                    guard session.identity == identity else { return }
+                    await load()
+                    guard session.identity == identity else { return }
+                    if let book = books.first(where: { $0.id == selectedID }) { await open(book) }
+                }
+            }
             .confirmationDialog("Kochbuch löschen?", isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {
                 if let target = deleteTarget {
                     Button("„\(target.name)“ löschen", role: .destructive) { Task { await remove(target) } }

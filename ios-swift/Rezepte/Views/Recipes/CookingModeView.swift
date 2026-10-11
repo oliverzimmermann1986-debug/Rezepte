@@ -68,6 +68,13 @@ struct CookingModeView: View {
         .task(id: session.identity) { active = true; await loadProgress() }
         .onAppear { voice.onCommand = handleVoiceCommand }
         .onDisappear { active = false; voice.stop(); voice.onCommand = nil }
+        .onReceive(NotificationCenter.default.publisher(for: .recipeDeleted)) { notification in
+            guard notification.object as? Int == recipe.id else { return }
+            active = false
+            voice.stop()
+            showCompletionNotes = false
+            dismiss()
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { voice.stop() }
             else { KitchenTimerStore.shared.refresh() }

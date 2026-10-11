@@ -82,6 +82,13 @@ struct MealPlanView: View {
                 }
             }
             .task(id: session.identity) { week = nil; await load() }
+            .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { _ in
+                let identity = session.identity, start = week?.weekStart
+                Task {
+                    guard session.identity == identity else { return }
+                    await load(start: start)
+                }
+            }
             .sheet(isPresented: $showWishes) {
                 if let week {
                     MealWishesView(week: week) { await load(start: week.weekStart) }

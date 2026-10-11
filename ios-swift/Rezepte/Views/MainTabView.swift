@@ -54,6 +54,14 @@ struct MainTabView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Schließen") { shortcutRecipe = nil } } }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { _ in
+            guard !session.readOnly, !session.isOfflineSession else { return }
+            let identity = session.identity
+            Task {
+                guard session.identity == identity else { return }
+                try? await shopping.refresh()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("KitchenHouseholdChanged"))) { _ in
             do { try shopping.invalidateHousehold() }
             catch { session.alertMessage = error.localizedDescription }

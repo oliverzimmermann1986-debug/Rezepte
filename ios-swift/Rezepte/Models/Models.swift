@@ -989,6 +989,10 @@ struct TrashRecipe: Codable, Identifiable {
     let deletedAt: Double?
     let daysInTrash: Double?
     let daysUntilPurge: Double?
+    var canEdit: Bool? = nil
+    var visibility: String? = nil
+
+    func canRestore(isAdmin: Bool) -> Bool { canEdit ?? isAdmin }
 }
 
 struct RecipeVersionsResponse: Codable { let items: [RecipeVersion] }

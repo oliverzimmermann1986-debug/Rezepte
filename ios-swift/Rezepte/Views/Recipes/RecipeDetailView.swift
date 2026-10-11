@@ -7,6 +7,7 @@ struct RecipeDetailView: View {
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var offline: OfflineRecipeStore
     @StateObject private var aiConsent = AIConsentCoordinator()
+    @StateObject private var deletion = RecipeDeletionCoordinator()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.recipeTheme) private var theme
@@ -27,8 +28,7 @@ struct RecipeDetailView: View {
     @State private var isAddingToCart = false
     @State private var cartConfirmation = false
     @State private var showOriginalText = false
-    @State private var showDeleteConfirmation = false
-    @State private var isDeleting = false
+    @State private var deleteTarget: RecipeDeletionTarget?
     @State private var imageRefreshToken = UUID()
     @State private var showMetadataEditor = false
     @State private var showShareLinks = false
@@ -98,19 +98,19 @@ struct RecipeDetailView: View {
 
                         originalTextSection(recipe)
 
-                        if !session.readOnly, canEdit(recipe) {
+                        if !usingOfflineRecipe, deletion.canDelete(RecipeDeletionTarget(recipe), session: session) {
                             Button(role: .destructive) {
-                                showDeleteConfirmation = true
+                                deleteTarget = RecipeDeletionTarget(recipe)
                             } label: {
                                 Label(
-                                    isDeleting ? "Rezept wird gelöscht …" : "Rezept löschen",
+                                    deletion.isDeleting ? "Rezept wird gelöscht …" : "Rezept löschen",
                                     systemImage: "trash"
                                 )
                                 .frame(maxWidth: .infinity, minHeight: 44)
                             }
                             .buttonStyle(.bordered)
                             .tint(.red)
-                            .disabled(isDeleting)
+                            .disabled(deletion.isDeleting)
                         }
                     }
                     .padding()
@@ -173,15 +173,31 @@ struct RecipeDetailView: View {
                                     showPDF = true
                                 }
                             }
+                            if !usingOfflineRecipe, deletion.canDelete(RecipeDeletionTarget(recipe), session: session) {
+                                Divider()
+                                Button(role: .destructive) {
+                                    deleteTarget = RecipeDeletionTarget(recipe)
+                                } label: {
+                                    Label("Rezept löschen", systemImage: "trash")
+                                }
+                                .disabled(deletion.isDeleting)
+                            }
                         } label: {
                             Image(systemName: "ellipsis.circle")
                         }
+                        .accessibilityLabel("Weitere Rezeptaktionen")
                     }
                 }
             }
         }
         .overlay(alignment: .bottom) {
-            if let mealPlanConfirmation {
+            if deletion.isDeleting {
+                ProgressView("Rezept wird gelöscht …")
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(.thinMaterial, in: Capsule())
+                    .padding(.bottom, 12)
+            } else if let mealPlanConfirmation {
                 Label(mealPlanConfirmation, systemImage: "calendar.badge.checkmark")
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
@@ -283,17 +299,22 @@ struct RecipeDetailView: View {
             }
         }
         .confirmationDialog(
-            "Rezept löschen?",
-            isPresented: $showDeleteConfirmation,
+            deleteTarget.map { "„\($0.name)“ löschen?" } ?? "Rezept löschen?",
+            isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
             titleVisibility: .visible
         ) {
-            Button("In Papierkorb verschieben", role: .destructive) {
-                Task { await deleteRecipe() }
+            if let target = deleteTarget {
+                Button("„\(target.name)“ löschen", role: .destructive) {
+                    deleteTarget = nil
+                    Task { await deleteRecipe(target) }
+                }
+                .disabled(deletion.isDeleting || usingOfflineRecipe || !deletion.canDelete(target, session: session))
             }
-            Button("Abbrechen", role: .cancel) {}
+            Button("Abbrechen", role: .cancel) { deleteTarget = nil }
         } message: {
-            Text("Das Rezept kann 30 Tage lang im Admin-Bereich wiederhergestellt werden.")
+            if let target = deleteTarget { Text(target.confirmationMessage) }
         }
+        .onChange(of: session.identity) { _, _ in deleteTarget = nil }
         .confirmationDialog(
             "Wie möchtest du fortfahren?",
             isPresented: $showCookActions,
@@ -336,7 +357,7 @@ struct RecipeDetailView: View {
         }
         .task { await load() }
         .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { notification in
-            guard notification.object as? Int == recipeID else { return }
+            guard !deletion.isDeleting, notification.object as? Int == recipeID else { return }
             imageRefreshToken = UUID()
             Task { await load() }
         }
@@ -1035,16 +1056,10 @@ struct RecipeDetailView: View {
         } catch { session.handle(error) }
     }
 
-    private func deleteRecipe() async {
-        guard recipe != nil, !isDeleting else { return }
-        isDeleting = true
-        defer { isDeleting = false }
-        do {
-            _ = try await session.api.deleteRecipe(id: recipeID)
-            NotificationCenter.default.post(name: .recipesChanged, object: recipeID)
+    private func deleteRecipe(_ target: RecipeDeletionTarget) async {
+        guard !usingOfflineRecipe else { return }
+        if await deletion.delete(target, session: session, offline: offline) {
             dismiss()
-        } catch {
-            session.handle(error)
         }
     }
 

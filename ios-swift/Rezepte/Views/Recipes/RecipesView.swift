@@ -3,7 +3,10 @@ import SwiftUI
 
 struct RecipesView: View {
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var offline: OfflineRecipeStore
     @Environment(\.recipeTheme) private var theme
+    @StateObject private var deletion = RecipeDeletionCoordinator()
+    @State private var deleteTarget: RecipeDeletionTarget?
     @State private var recipes: [RecipeSummary] = []
     @State private var total = 0
     @State private var search = ""
@@ -19,6 +22,7 @@ struct RecipesView: View {
     @State private var showInbox = false
     @State private var showSavedSearches = false
     @State private var showOfflineLibrary = false
+    @State private var showTrash = false
 
     private var hasMore: Bool { recipes.count < total }
 
@@ -35,6 +39,11 @@ struct RecipesView: View {
                     .onChange(of: filters.library) { _, _ in
                         Task { await load(); await loadFacets() }
                     }
+                }
+                if deletion.isDeleting {
+                    ProgressView("Rezept wird gelöscht …")
+                        .font(.subheadline)
+                        .padding(.vertical, 8)
                 }
                 Group {
                     if isLoading && recipes.isEmpty {
@@ -58,11 +67,31 @@ struct RecipesView: View {
                     } else {
                         List {
                             ForEach(recipes) { recipe in
+                                let target = RecipeDeletionTarget(recipe)
                                 NavigationLink(value: recipe.id) {
                                     RecipeRow(recipe: recipe)
                                 }
                                 .listRowBackground(Color.clear)
                                 .listRowSeparator(.hidden)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    if deletion.canDelete(target, session: session) {
+                                        // Tint instead of a destructive role: the row must stay
+                                        // visible until the user confirms and the server replies.
+                                        Button { deleteTarget = target } label: {
+                                            Label("Löschen", systemImage: "trash")
+                                        }
+                                        .tint(.red)
+                                        .accessibilityLabel("„\(recipe.name)“ löschen")
+                                    }
+                                }
+                                .contextMenu {
+                                    if deletion.canDelete(target, session: session) {
+                                        Button(role: .destructive) { deleteTarget = target } label: {
+                                            Label("Rezept löschen", systemImage: "trash")
+                                        }
+                                    }
+                                }
+                                .disabled(deletion.isDeleting)
                             }
 
                             if hasMore {
@@ -98,6 +127,10 @@ struct RecipesView: View {
                             Button("Offline-Rezepte", systemImage: "arrow.down.circle") { showOfflineLibrary = true }
                             Button("Was kann ich kochen?", systemImage: "carrot") { showDiscovery = true }
                             Button("Meine Kochbücher", systemImage: "books.vertical") { showCookbooks = true }
+                            if session.role != .guest {
+                                Button("Papierkorb", systemImage: "trash") { showTrash = true }
+                                    .disabled(session.isOfflineSession)
+                            }
                         }
                         if session.canImport {
                             Button("Eingang & Import", systemImage: "tray.and.arrow.down") { showInbox = true }
@@ -122,6 +155,7 @@ struct RecipesView: View {
             }
             .sheet(isPresented: $showCookbooks) { CookbooksView() }
             .sheet(isPresented: $showOfflineLibrary) { OfflineLibraryView() }
+            .sheet(isPresented: $showTrash) { RecipeTrashView().id(session.identity) }
             .sheet(isPresented: $showSavedSearches) {
                 SavedRecipeSearchesView(query: search, filters: filters) { saved in
                     search = saved.query
@@ -156,6 +190,23 @@ struct RecipesView: View {
                     }
                 }
             }
+            .confirmationDialog(
+                deleteTarget.map { "„\($0.name)“ löschen?" } ?? "Rezept löschen?",
+                isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
+                titleVisibility: .visible
+            ) {
+                if let target = deleteTarget {
+                    Button("„\(target.name)“ löschen", role: .destructive) {
+                        deleteTarget = nil
+                        Task { _ = await deletion.delete(target, session: session, offline: offline) }
+                    }
+                    .disabled(deletion.isDeleting || !deletion.canDelete(target, session: session))
+                }
+                Button("Abbrechen", role: .cancel) { deleteTarget = nil }
+            } message: {
+                if let target = deleteTarget { Text(target.confirmationMessage) }
+            }
+            .onChange(of: session.identity) { _, _ in deleteTarget = nil; showTrash = false }
             .task {
                 await load()
                 await loadFacets()

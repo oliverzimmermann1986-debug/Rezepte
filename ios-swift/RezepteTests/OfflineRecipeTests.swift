@@ -24,11 +24,15 @@ final class OfflineRecipeTests: XCTestCase {
         var files: [String: Data] = [:]
         var failIndex = false
         var failErase = false
+        var failRemove = false
         var storage: OfflineRecipeStorage {
             OfflineRecipeStorage(read: { self.files[$0] }, write: { key, data in
                 if self.failIndex && key.hasSuffix("index.json") { throw CocoaError(.fileWriteOutOfSpace) }
                 self.files[key] = data
-            }, remove: { self.files.removeValue(forKey: $0) }, eraseAccount: { digest in
+            }, remove: {
+                if self.failRemove { throw CocoaError(.fileWriteNoPermission) }
+                self.files.removeValue(forKey: $0)
+            }, eraseAccount: { digest in
                 if self.failErase { throw CocoaError(.fileWriteNoPermission) }
                 self.files = self.files.filter { !$0.key.hasPrefix(digest + "-") }
             })
@@ -252,6 +256,149 @@ final class OfflineRecipeTests: XCTestCase {
         XCTAssertFalse(OfflineRecipeStore.isConnectivityFailure(APIError.unauthenticated))
         XCTAssertFalse(OfflineRecipeStore.isConnectivityFailure(APIError.server(403, "Forbidden")))
         XCTAssertFalse(OfflineRecipeStore.isConnectivityFailure(APIError.server(500, "Broken")))
+    }
+
+    func testConfirmedRecipeDeletionRemovesItsProgressAndBooksButPreservesOtherDownloads() async throws {
+        let disk = Disk()
+        let store = OfflineRecipeStore(storage: disk.storage, defaults: defaults())
+        let current = context()
+        await store.activate(context: current)
+        try await store.download(ids: [11, 12], cookbook: HouseholdCookbook(id: 3, name: "Familie", recipeCount: 2, containsRecipe: false), context: current)
+        try await store.download(ids: [13], cookbook: HouseholdCookbook(id: 4, name: "Weitere", recipeCount: 1, containsRecipe: false), context: current)
+        try store.saveCookingProgress(id: 11, value: OfflineCookingProgress(completedSteps: [0], activeStep: 0, servings: 2), context: current)
+        try store.recordDeletedRecipe(id: 11, context: current)
+        XCTAssertNil(store.cachedRecipe(id: 11, context: current))
+        XCTAssertNil(store.cookingProgress(id: 11, context: current))
+        XCTAssertNotNil(store.cachedRecipe(id: 12, context: current))
+        XCTAssertNotNil(store.cachedRecipe(id: 13, context: current))
+        let books = try XCTUnwrap(disk.index()["cookbooks"] as? [String: Any])
+        XCTAssertNil(books["3"], "A partial cookbook cannot remain marked as fully downloaded")
+        XCTAssertNotNil(books["4"])
+        XCTAssertEqual(disk.images.count, 2)
+        // A later cookbook transaction must not prune the retained sibling.
+        try await store.download(ids: [14], cookbook: HouseholdCookbook(id: 5, name: "Neu", recipeCount: 1, containsRecipe: false), context: current)
+        XCTAssertNotNil(store.cachedRecipe(id: 12, context: current))
+    }
+
+    func testRecipeDeletionRejectsAlreadyRunningDownloadResponse() async throws {
+        let disk = Disk()
+        let store = OfflineRecipeStore(storage: disk.storage, defaults: defaults())
+        let current = context()
+        await store.activate(context: current)
+        try await store.download(ids: [11, 12], cookbook: nil, context: current)
+        let gate = HouseholdGate()
+        defer { gate.resume(31) }
+        let started = expectation(description: "Old recipe download is waiting for the server")
+        let delayed = OfflineRecipeContext(identity: current.identity, namespace: current.namespace, isCurrent: current.isCurrent,
+            household: current.household, recipe: { id in
+                _ = await gate.wait(started: started)
+                return try await current.recipe(id)
+            }, image: current.image, cookbookRecipes: current.cookbookRecipes)
+        let flight = Task { try await store.download(ids: [11], cookbook: nil, context: delayed) }
+        await fulfillment(of: [started], timeout: 2)
+        try store.recordDeletedRecipe(id: 11, context: current)
+        gate.resume(31)
+        do { try await flight.value; XCTFail("A response that predates deletion must not restore the recipe") }
+        catch { guard case APIError.sessionChanged = error else { return XCTFail("Wrong late-response error: \(error)") } }
+        XCTAssertNil(store.cachedRecipe(id: 11, context: current))
+        XCTAssertNotNil(store.cachedRecipe(id: 12, context: current))
+        XCTAssertEqual(disk.images.count, 1)
+        XCTAssertFalse(store.isDownloading)
+    }
+
+    func testRecipeDeletionWriteFailureStaysHiddenAfterRestartUntilNewSuccessfulDownload() async throws {
+        let disk = Disk(), preferences = defaults()
+        let store = OfflineRecipeStore(storage: disk.storage, defaults: preferences)
+        let current = context()
+        await store.activate(context: current)
+        try await store.download(ids: [11, 12], cookbook: HouseholdCookbook(id: 3, name: "Familie", recipeCount: 2, containsRecipe: false), context: current)
+        try store.saveCookingProgress(id: 11, value: OfflineCookingProgress(completedSteps: [0], activeStep: 0, servings: 2), context: current)
+        disk.failIndex = true
+        XCTAssertThrowsError(try store.recordDeletedRecipe(id: 11, context: current)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("auf dem Server gelöscht"))
+            XCTAssertTrue(error.localizedDescription.contains("Bereinigung ist unvollständig"))
+        }
+        XCTAssertNil(store.cachedRecipe(id: 11, context: current))
+        XCTAssertNil(store.cookingProgress(id: 11, context: current))
+        let oldRecords = try XCTUnwrap(disk.index()["recipes"] as? [String: Any])
+        XCTAssertNotNil(oldRecords["11"], "The disk failure deliberately leaves the stale index bytes")
+        let restarted = OfflineRecipeStore(storage: disk.storage, defaults: preferences)
+        let restoredContext = context(householdError: URLError(.notConnectedToInternet))
+        await restarted.activate(context: restoredContext)
+        XCTAssertTrue(restarted.isReady)
+        XCTAssertNil(restarted.cachedRecipe(id: 11, context: restoredContext))
+        XCTAssertNil(restarted.cookingProgress(id: 11, context: restoredContext))
+        XCTAssertNotNil(restarted.cachedRecipe(id: 12, context: restoredContext))
+        do { try await restarted.download(ids: [11], cookbook: nil, context: restoredContext); XCTFail("A failed replacement must not lift the marker") }
+        catch { XCTAssertEqual((error as? CocoaError)?.code, .fileWriteOutOfSpace) }
+        XCTAssertNil(restarted.cachedRecipe(id: 11, context: restoredContext))
+        disk.failIndex = false
+        try await restarted.download(ids: [11], cookbook: nil, context: restoredContext)
+        XCTAssertNotNil(restarted.cachedRecipe(id: 11, context: restoredContext))
+        let afterRestore = OfflineRecipeStore(storage: disk.storage, defaults: preferences)
+        let finalContext = context(householdError: URLError(.notConnectedToInternet))
+        await afterRestore.activate(context: finalContext)
+        XCTAssertNotNil(afterRestore.cachedRecipe(id: 11, context: finalContext))
+        XCTAssertNotNil(afterRestore.cachedRecipe(id: 12, context: finalContext))
+        let books = try XCTUnwrap(disk.index()["cookbooks"] as? [String: Any])
+        XCTAssertTrue(books.isEmpty, "Restoring one recipe does not restore the former cookbook download")
+    }
+
+    func testDeletedRecipeImageCleanupFailureReportsPartialCleanupButHidesRecipe() async throws {
+        let disk = Disk(), preferences = defaults()
+        let store = OfflineRecipeStore(storage: disk.storage, defaults: preferences)
+        let current = context()
+        await store.activate(context: current)
+        try await store.download(ids: [11], cookbook: nil, context: current)
+        disk.failRemove = true
+        XCTAssertThrowsError(try store.recordDeletedRecipe(id: 11, context: current))
+        XCTAssertNil(store.cachedRecipe(id: 11, context: current))
+        XCTAssertEqual(disk.images.count, 1, "Report failure truthfully while preventing the remaining image from being referenced")
+        let restored = OfflineRecipeStore(storage: disk.storage, defaults: preferences)
+        let restoredContext = context(householdError: URLError(.notConnectedToInternet))
+        await restored.activate(context: restoredContext)
+        XCTAssertNil(restored.cachedRecipe(id: 11, context: restoredContext))
+        XCTAssertTrue(restored.isReady)
+    }
+
+    func testLateDeleteAcknowledgementOnlyCleansCapturedOriginNamespace() async throws {
+        let disk = Disk(), preferences = defaults()
+        let store = OfflineRecipeStore(storage: disk.storage, defaults: preferences)
+        let origin = context()
+        await store.activate(context: origin)
+        try await store.download(ids: [11, 12], cookbook: nil, context: origin)
+        let other = context(namespace: "https://two.example\u{0}8", household: 99)
+        await store.activate(context: other)
+        try await store.download(ids: [11], cookbook: nil, context: other)
+        let otherFiles = disk.files.filter { $0.key.contains("-household-99-") }
+        try store.recordDeletedRecipe(id: 11, namespace: origin.namespace)
+        XCTAssertTrue(store.isReady)
+        XCTAssertNotNil(store.cachedRecipe(id: 11, context: other))
+        XCTAssertNil(store.errorMessage)
+        XCTAssertEqual(disk.files.filter { $0.key.contains("-household-99-") }, otherFiles)
+        let originRestore = context(householdError: URLError(.notConnectedToInternet))
+        await store.activate(context: originRestore)
+        XCTAssertNil(store.cachedRecipe(id: 11, context: originRestore))
+        XCTAssertNotNil(store.cachedRecipe(id: 12, context: originRestore))
+    }
+
+    func testLateDeleteDiskFailureDoesNotTouchActiveOtherAccount() async throws {
+        let disk = Disk(), preferences = defaults()
+        let store = OfflineRecipeStore(storage: disk.storage, defaults: preferences)
+        let origin = context()
+        await store.activate(context: origin)
+        try await store.download(ids: [11], cookbook: nil, context: origin)
+        let other = context(namespace: "https://two.example\u{0}8", household: 99)
+        await store.activate(context: other)
+        try await store.download(ids: [11], cookbook: nil, context: other)
+        disk.failIndex = true
+        XCTAssertThrowsError(try store.recordDeletedRecipe(id: 11, namespace: origin.namespace))
+        XCTAssertNotNil(store.cachedRecipe(id: 11, context: other))
+        XCTAssertTrue(store.isReady)
+        XCTAssertNil(store.errorMessage, "An old account's cleanup must not overwrite the current account's feedback")
+        let restoredOrigin = context(householdError: URLError(.notConnectedToInternet))
+        await store.activate(context: restoredOrigin)
+        XCTAssertNil(store.cachedRecipe(id: 11, context: restoredOrigin))
     }
 
     func testImageValidationRejectsNonImagePayloadAndOversizedBytes() {

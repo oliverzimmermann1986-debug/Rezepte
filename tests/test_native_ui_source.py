@@ -322,11 +322,14 @@ def test_swift_recipe_detail_can_move_recipe_to_trash_and_refresh_the_list():
     detail = (SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift").read_text(encoding="utf-8")
     recipes = (SWIFT / "Views" / "Recipes" / "RecipesView.swift").read_text(encoding="utf-8")
     api = (SWIFT / "Networking" / "APIClient.swift").read_text(encoding="utf-8")
+    deletion = (SWIFT / "Session" / "RecipeDeletionCoordinator.swift").read_text(encoding="utf-8")
 
     assert "Rezept löschen?" in detail
-    assert "In Papierkorb verschieben" in detail
-    assert "30 Tage" in detail
-    assert "session.api.deleteRecipe" in detail
+    assert "Papierkorb" in deletion
+    assert "confirmationMessage" in detail
+    assert "30 Tagen" in deletion
+    assert "session.api.deleteRecipe" in deletion
+    assert "deletion.delete" in detail
     assert "dismiss()" in detail
     assert 'method: "DELETE"' in api
     assert 'URLQueryItem(name: "delete_files", value: "true")' in api
