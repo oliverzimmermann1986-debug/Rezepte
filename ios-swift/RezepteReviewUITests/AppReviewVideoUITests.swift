@@ -133,7 +133,7 @@ final class AppReviewVideoUITests: XCTestCase {
         let actions = app.buttons["Weitere Rezeptaktionen"]
         XCTAssertTrue(actions.waitForExistence(timeout: 10))
         actions.tap()
-        XCTAssertTrue(app.buttons["Rezept löschen"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Rezept löschen"].firstMatch.waitForExistence(timeout: 5))
         let portions = app.buttons["Portionsanzahl mit KI prüfen"]
         XCTAssertTrue(portions.waitForExistence(timeout: 5))
         portions.tap()
@@ -183,7 +183,7 @@ final class AppReviewVideoUITests: XCTestCase {
         XCTAssertTrue(vegetarian.waitForExistence(timeout: 10))
         vegetarian.tap()
         pause(4)
-        app.navigationBars["Montag"].buttons["Woche vorschlagen"].tap()
+        app.navigationBars["Montag"].buttons.firstMatch.tap()
         XCTAssertTrue(app.navigationBars["Woche vorschlagen"].waitForExistence(timeout: 10))
         // These are unsaved draft preferences: preserve the household's existing plan.
         app.buttons["Fertig"].tap()
