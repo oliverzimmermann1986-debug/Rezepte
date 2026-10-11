@@ -415,4 +415,6 @@ def plan_wish(db, actor, wish_id, planned_for, planned_servings):
                   (account_id(db), planned_for, row["recipe_id"], planned_servings, order, now, now))
         c.execute("UPDATE household_meal_wishes SET planned_for=?,planned_servings=? WHERE id=? AND account_id=?",
                   (planned_for, planned_servings, wish_id, account_id(db)))
+        from .meal_plan_shopping import sync_dates
+        sync_dates(c, db, account_id(db), planned_for)
         return {"item": _wish_item(c, actor, _wish(c, db, wish_id))}

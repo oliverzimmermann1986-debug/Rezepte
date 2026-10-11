@@ -131,7 +131,7 @@ def test_household_merge_combines_history_without_recalculating(test_db):
     add_recipe_to_cart(second, rid, 2)
     with test_db.conn() as c:
         c.execute("BEGIN IMMEDIATE")
-        merge_households(c, 101, 202)
+        merge_households(c, 101, 202, db=test_db)
     assert not first.cart_list()
     assert cart_for_display(second)[0]["source_contributions"][0]["amount"] == 600
 

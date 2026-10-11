@@ -238,7 +238,7 @@ def migrate_cooking_identity(c) -> None:
                   (time.time(),))
 
 
-def merge_households(c, source: int, target: int) -> None:
+def merge_households(c, source: int, target: int, *, db) -> None:
     """Invitation acceptance moves the joining person's data, never deletes it."""
     import json
     from pathlib import Path
@@ -320,6 +320,9 @@ def merge_households(c, source: int, target: int) -> None:
                 # destination record. Its source_url stays searchable.
                 key = row["url"]
             c.execute(f"UPDATE {table} SET owner_account_id=?,url=? WHERE url=?", (target, key, row["url"]))
+
+    from .recipes.meal_plan_shopping import merge_links
+    merge_links(c, db, source, target)
 
 
 def scope_for_request(request: Request) -> HouseholdScope | None:

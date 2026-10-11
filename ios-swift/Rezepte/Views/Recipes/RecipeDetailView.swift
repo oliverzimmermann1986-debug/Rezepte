@@ -987,15 +987,17 @@ struct RecipeDetailView: View {
 
     private func planMeal(_ recipe: Recipe, date: Date) async {
         guard !isPlanningMeal else { return }
+        let identity = session.identity
         isPlanningMeal = true
         defer { isPlanningMeal = false }
         do {
             let servings = plannedServings
             _ = try await session.api.addMeal(
-                date: Self.mealPlanDateFormatter.string(from: date),
+                date: MealWeekdayDates.localDate(date),
                 recipeID: recipe.id,
                 servings: max(1, servings)
             )
+            guard session.identity == identity else { return }
             showMealPlanSheet = false
             let isToday = Calendar.current.isDateInToday(date)
             withAnimation(.snappy) {
@@ -1006,17 +1008,11 @@ struct RecipeDetailView: View {
             try? await Task.sleep(for: .seconds(2))
             withAnimation(.snappy) { mealPlanConfirmation = nil }
         } catch {
+            guard session.identity == identity else { return }
+            errorMessage = error.localizedDescription
             session.handle(error)
         }
     }
-
-    private static let mealPlanDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .iso8601)
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
 
     private func toggleFavorite() async {
         do {

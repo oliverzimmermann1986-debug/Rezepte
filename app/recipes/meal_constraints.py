@@ -139,7 +139,7 @@ def weekday_selection(candidates: list[dict], count: int, vegetarian_count: int,
         if eligible:
             groups[(membership, bool(item["vegetarian"]), eligible)].append(item)
     for items in groups.values():
-        items.sort(key=lambda item: (-item.get("_preference_score", 0), -item["_coverage"],
+        items.sort(key=lambda item: (-item.get("_selection_score", item.get("_preference_score", 0)), -item["_coverage"],
                                      item["name"].casefold(), item["recipe_id"]))
         del items[count:]
     ordered = sorted(groups.items(), key=lambda group: (
@@ -215,7 +215,7 @@ def quota_selection(candidates: list[dict], count: int, vegetarian_count: int,
             continue
         groups[(membership, bool(item["vegetarian"]))].append(item)
     for items in groups.values():
-        items.sort(key=lambda item: (-item.get("_preference_score", 0), -item["_coverage"],
+        items.sort(key=lambda item: (-item.get("_selection_score", item.get("_preference_score", 0)), -item["_coverage"],
                                      item["name"].casefold(), item["recipe_id"]))
         del items[count:]
     # Important/rare signatures first produce useful partial results even at the hard budget.
@@ -268,7 +268,7 @@ def quota_selection(candidates: list[dict], count: int, vegetarian_count: int,
 
 
 def _quality(items):
-    return (sum(item.get("_preference_score", 0) for item in items),
+    return (sum(item.get("_selection_score", item.get("_preference_score", 0)) for item in items),
             sum(item["_coverage"] for item in items),
             len({item["_category"] for item in items}),
             tuple(-item["recipe_id"] for item in items))

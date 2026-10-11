@@ -13,6 +13,9 @@ struct MealPlanView: View {
     @State private var showWishes = false
     @State private var showSuggestions = false
     @State private var loadID = UUID()
+    @State private var loadedIdentity: UUID?
+    @State private var replacement: MealReplacementTarget?
+    @State private var isMutating = false
 
     var body: some View {
         NavigationStack {
@@ -27,6 +30,9 @@ struct MealPlanView: View {
                     ScrollView {
                         LazyVStack(spacing: 14) {
                             weekHeader(week)
+                            if let errorMessage {
+                                Text(errorMessage).font(.subheadline).foregroundStyle(theme.danger)
+                            }
                             if !session.readOnly, session.role != .guest {
                                 HStack {
                                     if session.supports("household-meal-wishes") {
@@ -63,8 +69,14 @@ struct MealPlanView: View {
                 }
             }
             .sheet(item: $selectedDay) { day in
-                RecipePickerView(day: day) {
+                RecipePickerView(day: day, weekStart: week?.weekStart, excluding: week?.days.flatMap(\.items).map(\.recipeId) ?? []) {
                     await load(start: week?.weekStart)
+                }
+            }
+            .sheet(item: $replacement) { target in
+                RecipePickerView(day: target.day, replacing: target.entry, weekStart: week?.weekStart,
+                    excluding: week?.days.flatMap(\.items).map(\.recipeId) ?? []) {
+                    await load(start: target.day.date)
                 }
             }
             .sheet(item: $conductorDay) { day in
@@ -81,7 +93,15 @@ struct MealPlanView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .task(id: session.identity) { week = nil; await load() }
+            .task(id: session.identity) {
+                if loadedIdentity != session.identity { week = nil; loadedIdentity = session.identity; replacement = nil }
+                await load(start: week?.weekStart)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .mealPlanChanged)) { notification in
+                loadedIdentity = session.identity
+                let start = notification.object as? String ?? week?.weekStart
+                Task { await load(start: start) }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { _ in
                 let identity = session.identity, start = week?.weekStart
                 Task {
@@ -211,11 +231,21 @@ struct MealPlanView: View {
                             in: 1...24
                         )
                         .labelsHidden()
+                        .disabled(isMutating || session.readOnly)
+                        if !session.readOnly, session.supports("meal-plan-replace-v1") {
+                            Button {
+                                replacement = MealReplacementTarget(day: day, entry: entry)
+                            } label: { Image(systemName: "arrow.triangle.2.circlepath") }
+                            .frame(minWidth: 44, minHeight: 44)
+                            .accessibilityLabel("\(entry.recipeName) austauschen")
+                            .disabled(isMutating)
+                        }
                         Button(role: .destructive) {
                             Task { await delete(entry) }
                         } label: {
                             Image(systemName: "trash")
                         }
+                        .disabled(isMutating || session.readOnly)
                         .accessibilityLabel("\(entry.recipeName) entfernen")
                     }
                 }
@@ -233,10 +263,15 @@ struct MealPlanView: View {
                 Button {
                     Task { await createCart(week) }
                 } label: {
-                    Label("Erstellen", systemImage: "cart.badge.plus")
+                    Label(week.shoppingLinked == true ? "Aktualisieren" : "Erstellen", systemImage: "cart.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(week.shoppingPreview.isEmpty)
+                .disabled(week.shoppingPreview.isEmpty || isMutating || session.readOnly)
+            }
+            if week.shoppingLinked == true {
+                Label("Mit Einkaufsliste verknüpft", systemImage: "link").font(.subheadline)
+                Text("Gericht- und Portionsänderungen werden automatisch nachgezogen. Manuelle Artikel, Mengenänderungen und gelöschte Zutaten bleiben erhalten.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             if week.shoppingPreview.isEmpty {
@@ -277,30 +312,48 @@ struct MealPlanView: View {
     }
 
     private func update(_ entry: MealEntry, servings: Int) async {
+        guard !isMutating, !session.readOnly else { return }
+        let identity = session.identity
+        isMutating = true; defer { isMutating = false }
         do {
             _ = try await session.api.updateMeal(id: entry.id, servings: servings)
+            guard session.identity == identity else { return }
             await load(start: week?.weekStart)
         } catch {
+            guard session.identity == identity else { return }
+            errorMessage = error.localizedDescription
             session.handle(error)
         }
     }
 
     private func delete(_ entry: MealEntry) async {
+        guard !isMutating, !session.readOnly else { return }
+        let identity = session.identity
+        isMutating = true; defer { isMutating = false }
         do {
             _ = try await session.api.deleteMeal(id: entry.id)
+            guard session.identity == identity else { return }
             await load(start: week?.weekStart)
         } catch {
+            guard session.identity == identity else { return }
+            errorMessage = error.localizedDescription
             session.handle(error)
         }
     }
 
     private func createCart(_ week: MealWeek) async {
+        guard !isMutating, !session.readOnly else { return }
+        let identity = session.identity
+        isMutating = true; defer { isMutating = false }
         do {
             _ = try await session.api.createWeekCart(start: week.weekStart)
+            guard session.identity == identity else { return }
             withAnimation(.snappy) { cartConfirmation = true }
             try? await Task.sleep(for: .seconds(2))
             withAnimation(.snappy) { cartConfirmation = false }
         } catch {
+            guard session.identity == identity else { return }
+            errorMessage = error.localizedDescription
             session.handle(error)
         }
     }
@@ -316,6 +369,12 @@ struct MealPlanView: View {
         }
         return [amount, item.unit, item.name].compactMap { $0 }.joined(separator: " ")
     }
+}
+
+private struct MealReplacementTarget: Identifiable {
+    let day: MealDay
+    let entry: MealEntry
+    var id: Int { entry.id }
 }
 
 private enum MealFormatters {

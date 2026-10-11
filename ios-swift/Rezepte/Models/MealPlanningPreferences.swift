@@ -45,10 +45,28 @@ struct MealPlanningPreferences: Codable, Equatable {
     var count = 4
     var vegetarian = 2
     var maxMinutes = 0
+    var servings = 2
     var constraints = MealPlanConstraints()
+
+    private enum CodingKeys: String, CodingKey { case count, vegetarian, maxMinutes, servings, constraints }
+
+    init(count: Int = 4, vegetarian: Int = 2, maxMinutes: Int = 0, servings: Int = 2, constraints: MealPlanConstraints = MealPlanConstraints()) {
+        self.count = count; self.vegetarian = vegetarian; self.maxMinutes = maxMinutes
+        self.servings = servings; self.constraints = constraints
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        count = try values.decodeIfPresent(Int.self, forKey: .count) ?? 4
+        vegetarian = try values.decodeIfPresent(Int.self, forKey: .vegetarian) ?? 2
+        maxMinutes = try values.decodeIfPresent(Int.self, forKey: .maxMinutes) ?? 0
+        servings = try values.decodeIfPresent(Int.self, forKey: .servings) ?? 2
+        constraints = try values.decodeIfPresent(MealPlanConstraints.self, forKey: .constraints) ?? MealPlanConstraints()
+    }
 
     var validationMessage: String? {
         if !(1...7).contains(count) { return "Bitte zwischen 1 und 7 Gerichte wählen." }
+        if !(1...24).contains(servings) { return "Bitte zwischen 1 und 24 Portionen wählen." }
         if !(0...count).contains(vegetarian) { return "Die vegetarische Mindestanzahl darf die Gerichtanzahl nicht überschreiten." }
         if !(0...1440).contains(maxMinutes) { return "Bitte eine gültige Zeitgrenze wählen." }
         if let message = constraints.validationMessage { return message }
@@ -84,6 +102,14 @@ struct MealPlanningPreferences: Codable, Equatable {
 }
 
 enum MealWeekdayDates {
+    static func localDate(_ date: Date, timeZone: TimeZone = .autoupdatingCurrent) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
     private static func formatter() -> DateFormatter {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)

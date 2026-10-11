@@ -103,6 +103,9 @@ struct TodayView: View {
             .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { _ in
                 Task { await refresh() }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .mealPlanChanged)) { _ in
+                Task { await refresh() }
+            }
             .onDisappear { active = false; generation = UUID() }
             .onChange(of: scenePhase) { _, phase in if phase == .active && active { Task { await refresh() } } }
         }

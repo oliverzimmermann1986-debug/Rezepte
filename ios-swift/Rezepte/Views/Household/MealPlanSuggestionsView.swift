@@ -10,6 +10,8 @@ struct MealPlanSuggestionsView: View {
     @State private var count = 4
     @State private var vegetarian = 2
     @State private var minutes = 0
+    @State private var servings = 2
+    @State private var initializedWeekStart: String?
     @State private var rows: [MealSuggestionDraft] = []
     @State private var warnings: [String] = []
     @State private var constraints = MealPlanConstraints()
@@ -23,7 +25,7 @@ struct MealPlanSuggestionsView: View {
     private var advanced: Bool { session.supports("meal-plan-constraints-v1") }
     private var supportsWeekdays: Bool { advanced && session.supports("meal-plan-weekday-rules-v1") }
     private var planningPreferences: MealPlanningPreferences {
-        MealPlanningPreferences(count: count, vegetarian: vegetarian, maxMinutes: minutes, constraints: constraints)
+        MealPlanningPreferences(count: count, vegetarian: vegetarian, maxMinutes: minutes, servings: servings, constraints: constraints)
     }
     private var validationMessage: String? {
         if !constraints.extraCourseSlots.isEmpty, !session.supports("meal-plan-extra-courses-v1") {
@@ -74,6 +76,13 @@ struct MealPlanSuggestionsView: View {
                                 constraints.counts = constraints.counts.mapValues { min($0, value) }
                                 clearPreview()
                             }
+                        Stepper("\(servings) Portionen pro Gericht", value: $servings, in: 1...24)
+                            .onChange(of: servings) { _, value in
+                                guard !state.busy, !started else { return }
+                                for index in rows.indices { rows[index].servings = value }
+                            }
+                        Text("Gilt auch für Frühstück, Vorspeise und Nachspeise. Einzelne Vorschläge kannst du danach separat anpassen.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Stepper("Davon mindestens \(vegetarian) vegetarisch", value: $vegetarian, in: 0...count)
                             .onChange(of: vegetarian) { _, _ in clearPreview() }
                         Picker("Zeit pro Gericht", selection: $minutes) {
@@ -225,6 +234,7 @@ struct MealPlanSuggestionsView: View {
                 MealPlanningProfilesView(preferences: planningPreferences) { selected in
                     guard !state.busy, !started, state.identity == session.identity else { return }
                     count = selected.count; vegetarian = selected.vegetarian; minutes = selected.maxMinutes
+                    servings = selected.servings
                     constraints = selected.constraints
                     clearPreview()
                 }
@@ -241,9 +251,11 @@ struct MealPlanSuggestionsView: View {
                 }
             }
             .task(id: "\(session.identity)-\(week.weekStart)") {
+                guard state.identity != session.identity || initializedWeekStart != week.weekStart else { return }
+                initializedWeekStart = week.weekStart
                 state.reset(session); rows = []; warnings = []; categories = [:]
                 constraints = MealPlanConstraints(avoidRecentDays: advanced ? 14 : 0)
-                count = 4; vegetarian = 2; minutes = 0; showingProfiles = false; pdfSnapshot = nil
+                count = 4; vegetarian = 2; minutes = 0; servings = 2; showingProfiles = false; pdfSnapshot = nil
             }
             .onChange(of: constraints) { _, _ in clearPreview() }
         }
@@ -265,9 +277,11 @@ struct MealPlanSuggestionsView: View {
                     quotas: constraints.quotas, excludedIngredients: constraints.excludedIngredients,
                     avoidRecentDays: constraints.avoidRecentDays, weekStart: week.weekStart,
                     weekdayRules: supportsWeekdays ? constraints.weekdayRules : [], householdOnly: constraints.householdOnly,
-                    mealCourse: session.supports("meal-plan-extra-courses-v1") ? "main" : nil)
+                    mealCourse: session.supports("meal-plan-extra-courses-v1") ? "main" : nil,
+                    randomSeed: session.supports("meal-plan-variety-v1") ? UUID() : nil)
                 guard state.current(token, session) else { return }
                 rows = try MealWeekdayDates.drafts(result.items, week: week, requireWeekdays: !constraints.weekdayRules.isEmpty)
+                for index in rows.indices { rows[index].servings = servings }
                 categories = Dictionary(result.items.map { ($0.recipe.id, $0.categories) }, uniquingKeysWith: { first, _ in first })
                 warnings = result.warnings
                 if !result.searchComplete { state.notice = "Die Suche wurde begrenzt. Weitere passende Kombinationen können noch vorhanden sein." }
@@ -277,11 +291,12 @@ struct MealPlanSuggestionsView: View {
                     let extra = try await session.api.constrainedMealSuggestions(count: 1, vegetarian: 0,
                         maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded, quotas: [],
                         excludedIngredients: constraints.excludedIngredients, avoidRecentDays: constraints.avoidRecentDays,
-                        weekStart: week.weekStart, householdOnly: constraints.householdOnly, mealCourse: slot.course.rawValue)
+                        weekStart: week.weekStart, householdOnly: constraints.householdOnly, mealCourse: slot.course.rawValue,
+                        randomSeed: session.supports("meal-plan-variety-v1") ? UUID() : nil)
                     guard state.current(token, session) else { return }
                     if let item = extra.items.first {
                         rows.append(MealSuggestionDraft(suggestion: item.recipe, date: date,
-                            servings: min(24, max(1, item.recipe.servings ?? 2)), mealCourse: slot.course))
+                            servings: servings, mealCourse: slot.course))
                         categories[item.recipe.id] = item.categories
                     } else {
                         warnings.append("\(MealWeekdayRule.title(slot.weekday)): Keine passende \(slot.course.title) gefunden. Die Vorgaben bleiben erhalten.")
@@ -292,6 +307,7 @@ struct MealPlanSuggestionsView: View {
                 let result = try await session.api.mealSuggestions(count: count, vegetarian: vegetarian, maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded)
                 guard state.current(token, session) else { return }
                 rows = MealSuggestionDraft.make(result.items, days: week.days); warnings = result.warnings
+                for index in rows.indices { rows[index].servings = servings }
             }
             if rows.isEmpty { state.notice = "Keine passenden Rezepte gefunden. Passe die Vorgaben an und suche erneut." }
         } catch { state.failed(error, token: token, session: session) }
@@ -306,7 +322,8 @@ struct MealPlanSuggestionsView: View {
                     let result = try await session.api.constrainedMealSuggestions(count: 1, vegetarian: 0,
                         maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded, quotas: [],
                         excludedIngredients: constraints.excludedIngredients, avoidRecentDays: constraints.avoidRecentDays,
-                        weekStart: week.weekStart, householdOnly: constraints.householdOnly, mealCourse: course.rawValue)
+                        weekStart: week.weekStart, householdOnly: constraints.householdOnly, mealCourse: course.rawValue,
+                        randomSeed: session.supports("meal-plan-variety-v1") ? UUID() : nil)
                     guard state.current(token, session), rows.indices.contains(index) else { return }
                     if let replacement = result.items.first {
                         categories.removeValue(forKey: rows[index].id)
@@ -326,7 +343,8 @@ struct MealPlanSuggestionsView: View {
                     quotas: quotas, excludedIngredients: constraints.excludedIngredients,
                     avoidRecentDays: constraints.avoidRecentDays, weekStart: week.weekStart,
                     weekdayRules: rule(for: rows[index]).map { [$0] } ?? [], householdOnly: constraints.householdOnly,
-                    mealCourse: session.supports("meal-plan-extra-courses-v1") ? "main" : nil)
+                    mealCourse: session.supports("meal-plan-extra-courses-v1") ? "main" : nil,
+                    randomSeed: session.supports("meal-plan-variety-v1") ? UUID() : nil)
                 guard state.current(token, session), rows.indices.contains(index) else { return }
                 if result.constraintsSatisfied, let replacement = result.items.first,
                    rule(for: rows[index]).map({ replacement.weekday == $0.weekday && $0.matches(replacement.recipe, categories: replacement.categories) }) ?? true {

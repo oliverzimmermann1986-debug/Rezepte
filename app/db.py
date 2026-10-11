@@ -3700,82 +3700,25 @@ class Database:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def meal_plan_add(
-        self,
-        *,
-        planned_for: str,
-        recipe_id: int,
-        planned_servings: int,
-    ) -> Dict[str, Any]:
-        now = time.time()
-        with self.conn() as c:
-            recipe = c.execute(
-                "SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL "
-                "AND COALESCE(ingredients_status, '')<>?",
-                (recipe_id, RECIPE_VARIANT_PENDING_STATUS),
-            ).fetchone()
-            if not recipe:
-                raise ValueError("Rezept nicht gefunden")
-            next_order = int(c.execute(
-                "SELECT COALESCE(MAX(sort_order), -1) + 1 "
-                "FROM meal_plan_entries WHERE planned_for=?",
-                (planned_for,),
-            ).fetchone()[0])
-            c.execute(
-                """
-                INSERT INTO meal_plan_entries
-                    (planned_for, recipe_id, planned_servings, sort_order, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(account_id, planned_for, recipe_id) DO UPDATE SET
-                    planned_servings=excluded.planned_servings,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    planned_for,
-                    recipe_id,
-                    planned_servings,
-                    next_order,
-                    now,
-                    now,
-                ),
-            )
-            row = c.execute(
-                "SELECT id, planned_for, recipe_id, planned_servings, sort_order "
-                "FROM meal_plan_entries WHERE planned_for=? AND recipe_id=?",
-                (planned_for, recipe_id),
-            ).fetchone()
-            return dict(row)
+    def meal_plan_add(self, *, planned_for: str, recipe_id: int, planned_servings: int):
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        return HouseholdDatabase(self, HouseholdScope(0)).meal_plan_add(planned_for=planned_for, recipe_id=recipe_id, planned_servings=planned_servings)
 
-    def meal_plan_update(
-        self,
-        item_id: int,
-        *,
-        planned_for: Optional[str] = None,
-        planned_servings: Optional[int] = None,
-    ) -> bool:
-        sets = ["updated_at=?"]
-        params: List[Any] = [time.time()]
-        if planned_for is not None:
-            sets.append("planned_for=?")
-            params.append(planned_for)
-        if planned_servings is not None:
-            sets.append("planned_servings=?")
-            params.append(planned_servings)
-        params.append(item_id)
-        with self.conn() as c:
-            try:
-                cur = c.execute(
-                    f"UPDATE meal_plan_entries SET {', '.join(sets)} WHERE id=?",
-                    params,
-                )
-            except sqlite3.IntegrityError as exc:
-                raise ValueError("Rezept ist für diesen Tag bereits eingeplant") from exc
-            return cur.rowcount > 0
+    def meal_plan_update(self, item_id: int, *, planned_for=None, planned_servings=None) -> bool:
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        return HouseholdDatabase(self, HouseholdScope(0)).meal_plan_update(item_id, planned_for=planned_for, planned_servings=planned_servings)
 
     def meal_plan_delete(self, item_id: int) -> bool:
-        with self.conn() as c:
-            cur = c.execute("DELETE FROM meal_plan_entries WHERE id=?", (item_id,))
-            return cur.rowcount > 0
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        return HouseholdDatabase(self, HouseholdScope(0)).meal_plan_delete(item_id)
+
+    def meal_plan_replace(self, item_id, **kwargs):
+        from .tenant_db import HouseholdDatabase
+        from .tenancy import HouseholdScope
+        return HouseholdDatabase(self, HouseholdScope(0)).meal_plan_replace(item_id, **kwargs)
 
     # ─── Cooking progress + history ─────────────────────────────────────
 

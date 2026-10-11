@@ -148,6 +148,6 @@ def accept(db: Database, user_id: int, token: str) -> None:
         if current["owner_user_id"] != user_id or count > 1 or current["id"] == invitation["account_id"]:
             raise HTTPException(409, "Du gehörst bereits zu einem Konto mit mehreren Personen")
         from .tenancy import merge_households
-        merge_households(connection, int(current["id"]), int(invitation["account_id"]))
+        merge_households(connection, int(current["id"]), int(invitation["account_id"]), db=db)
         connection.execute("DELETE FROM user_accounts WHERE id=?", (current["id"],))
         _join(connection, invitation, user_id)

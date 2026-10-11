@@ -99,6 +99,7 @@ def _week_payload(week_start: date) -> dict:
 
     return {
         "week_start": week_start.isoformat(),
+        "shopping_linked": _shopping_linked(db, week_start.isoformat()),
         "week_end": week_end.isoformat(),
         "previous_week": (week_start - timedelta(days=7)).isoformat(),
         "next_week": (week_start + timedelta(days=7)).isoformat(),
@@ -111,6 +112,12 @@ def _week_payload(week_start: date) -> dict:
             "shopping_items": len(preview),
         },
     }
+
+
+def _shopping_linked(db, week):
+    from ..recipes.meal_plan_shopping import linked
+    with db.conn() as c:
+        return linked(c, int(getattr(db, 'account_id', 0)), week)
 
 
 @router.get("")
@@ -249,15 +256,14 @@ def create_week_cart(payload: MealPlanCartPayload):
     if not preview:
         raise HTTPException(400, "Für diese Woche sind keine einkaufbaren Zutaten geplant")
 
-    base_items = [
-        {
-            **item,
-            "amount": item.get("amount_base"),
-            "unit": item.get("unit_base"),
-        }
-        for item in preview
-    ]
-    result = get_db().cart_merge_many(base_items)
+    from ..recipes.meal_plan_shopping import sync_week
+    from ..tenant_db import HouseholdDatabase
+    from ..tenancy import HouseholdScope
+    db = get_db()
+    scoped = db if hasattr(db, 'scope') else HouseholdDatabase(db, HouseholdScope(0))
+    with scoped.conn() as c:
+        c.execute('BEGIN IMMEDIATE')
+        result = sync_week(c, scoped, scoped.account_id, week['week_start'], enable=True)
     return {
         "ok": True,
         "target": "local",
@@ -265,3 +271,20 @@ def create_week_cart(payload: MealPlanCartPayload):
         "replaced": False,
         "week_start": week["week_start"],
     }
+
+
+class MealPlanReplace(BaseModel):
+    recipe_id: int = Field(gt=0)
+    expected_recipe_id: int = Field(gt=0)
+    planned_servings: int = Field(ge=1, le=24)
+
+
+@router.post('/items/{item_id}/replace')
+def replace_item(item_id: int, payload: MealPlanReplace):
+    try:
+        item = get_db().meal_plan_replace(item_id, **payload.model_dump())
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {'ok': True, 'item': item}

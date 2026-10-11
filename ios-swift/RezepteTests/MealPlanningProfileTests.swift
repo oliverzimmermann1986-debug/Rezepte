@@ -7,6 +7,7 @@ final class MealPlanningProfileTests: XCTestCase {
     private func storage() -> UserDefaults { UserDefaults(suiteName: "meal-profile-tests-\(UUID().uuidString)")! }
     private func preferences() -> MealPlanningPreferences {
         var value = MealPlanningPreferences(count: 7, vegetarian: 3, maxMinutes: 90)
+        value.servings = 6
         value.constraints.counts = [.pasta: 2, .potato: 4, .rice: 0]
         value.constraints.excludedIngredientsText = "Pilze, Sellerie"
         value.constraints.avoidRecentDays = 14

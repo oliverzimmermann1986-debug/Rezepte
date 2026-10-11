@@ -79,6 +79,7 @@ struct MealPlanningProfilesView: View {
         var parts = ["\(value.count) Gerichte", "mind. \(value.vegetarian) vegetarisch"]
         if value.maxMinutes > 0 { parts.append("bis \(value.maxMinutes) Min.") }
         parts.append(contentsOf: value.constraints.quotas.map { $0.count == 0 ? "Keine \($0.category.title)" : "Mindestens \($0.count) × \($0.category.title)" })
+        parts.append("\(value.servings) Portionen pro Gericht")
         parts.append(value.constraints.avoidRecentDays == 0
                      ? "Vorwochen erlaubt" : "\(value.constraints.avoidRecentDays / 7) Wochen Rückblick")
         if !value.constraints.weekdayRules.isEmpty { parts.append("\(value.constraints.weekdayRules.count) feste Tage") }

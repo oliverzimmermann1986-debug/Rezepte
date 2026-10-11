@@ -185,6 +185,9 @@ struct CartView: View {
                 await loadRecurring()
             }
             .task(id: newItem) { await loadSuggestions() }
+            .onReceive(NotificationCenter.default.publisher(for: .shoppingChanged)) { _ in
+                if canWrite { Task { await load() } }
+            }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active, canWrite { Task { await load() } }
             }

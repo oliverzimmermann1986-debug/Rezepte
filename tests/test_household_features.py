@@ -308,7 +308,7 @@ def test_household_merge_unions_collections_votes_and_preserves_photos(household
         features.plan_wish(scoped, actor, wid, "2026-10-06" if scoped is source_db else "2026-10-07", 2)
     with db.conn() as c:
         c.execute("BEGIN IMMEDIATE")
-        merge_households(c, source, target)
+        merge_households(c, source, target, db=db)
     books = features.cookbooks(target_db)["items"]
     assert len(books) == 1 and books[0]["recipe_count"] == 2
     assert features.cookbooks(source_db)["items"] == []

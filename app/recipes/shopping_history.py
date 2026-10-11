@@ -25,10 +25,13 @@ def migrate_schema(c):
               (271, "shopping_contributions_and_durable_undo", time.time()))
 
 
-def contribution(recipe_id, amount, unit, *, kind=None):
+def contribution(recipe_id, amount, unit, *, kind=None, plan_week=None):
     base_unit, base_amount = to_base(normalize_unit(unit), amount)
-    return {"recipe_id": recipe_id, "amount": base_amount, "unit": base_unit,
-            "kind": kind or ("recipe" if recipe_id else "manual")}
+    value = {"recipe_id": recipe_id, "amount": base_amount, "unit": base_unit,
+             "kind": kind or ("recipe" if recipe_id else "manual")}
+    if plan_week is not None:
+        value['plan_week'] = plan_week
+    return value
 
 
 def contributions(item):
@@ -55,8 +58,8 @@ def combine_contributions(*groups):
     merged = {}
     for group in groups:
         for entry in group:
-            entry = contribution(entry.get("recipe_id"), entry.get("amount"), entry.get("unit"), kind=entry.get("kind"))
-            key = (entry["recipe_id"], entry["unit"], entry["kind"])
+            entry = contribution(entry.get("recipe_id"), entry.get("amount"), entry.get("unit"), kind=entry.get("kind"), plan_week=entry.get("plan_week"))
+            key = (entry["recipe_id"], entry["unit"], entry["kind"], entry.get('plan_week'))
             previous = merged.get(key)
             if previous is None:
                 merged[key] = entry

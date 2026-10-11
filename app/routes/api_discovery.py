@@ -59,6 +59,7 @@ class MealPlanRequest(BaseModel):
     household_only: bool = False
     quota_mode: Literal["exact", "minimum"] = "exact"
     meal_course: MealCourse | None = None
+    random_seed: UUID | None = None
 
     @field_validator("week_start", mode="before")
     @classmethod

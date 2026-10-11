@@ -753,9 +753,9 @@ def test_week_cart_merges_into_the_one_local_list(
         json={"week_start": "2026-07-27"},
     )
     assert repeated.json()["added"] == 0
-    assert repeated.json()["merged"] == 1
+    assert repeated.json()["merged"] == 0
     by_canonical = {item["canonical_name"]: item for item in test_db.cart_list()}
-    assert by_canonical["nudeln"]["amount"] == 1000
+    assert by_canonical["nudeln"]["amount"] == 500
 
 
 def test_meal_plan_rejects_invalid_input(client):

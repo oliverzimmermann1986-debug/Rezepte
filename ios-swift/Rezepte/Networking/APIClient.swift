@@ -764,31 +764,54 @@ actor APIClient {
     }
 
     func addMeal(date: String, recipeID: Int, servings: Int) async throws -> APIResult {
-        try await send(
+        let result: APIResult = try await send(
             "/api/meal-plan/items",
             method: "POST",
             body: AddMealPayload(plannedFor: date, recipeId: recipeID, plannedServings: servings)
         )
+        await notifyMealPlanChanged(date: date)
+        return result
     }
 
     func updateMeal(id: Int, servings: Int) async throws -> APIResult {
-        try await send(
+        let result: APIResult = try await send(
             "/api/meal-plan/items/\(id)",
             method: "PATCH",
             body: UpdateMealPayload(plannedServings: servings)
         )
+        await notifyMealPlanChanged()
+        return result
     }
 
     func deleteMeal(id: Int) async throws -> APIResult {
-        try await send("/api/meal-plan/items/\(id)", method: "DELETE")
+        let result: APIResult = try await send("/api/meal-plan/items/\(id)", method: "DELETE")
+        await notifyMealPlanChanged()
+        return result
+    }
+
+    func replaceMeal(id: Int, recipeID: Int, expectedRecipeID: Int, servings: Int) async throws -> APIResult {
+        struct Body: Encodable { let recipeId: Int; let expectedRecipeId: Int; let plannedServings: Int }
+        let result: APIResult = try await send("/api/meal-plan/items/\(id)/replace", method: "POST",
+            body: Body(recipeId: recipeID, expectedRecipeId: expectedRecipeID, plannedServings: servings))
+        await notifyMealPlanChanged()
+        return result
+    }
+
+    private func notifyMealPlanChanged(date: String? = nil) async {
+        await MainActor.run {
+            NotificationCenter.default.post(name: .mealPlanChanged, object: date)
+            NotificationCenter.default.post(name: .shoppingChanged, object: nil)
+        }
     }
 
     func createWeekCart(start: String) async throws -> APIResult {
-        try await send(
+        let result: APIResult = try await send(
             "/api/meal-plan/cart",
             method: "POST",
             body: WeekCartPayload(weekStart: start)
         )
+        await notifyMealPlanChanged()
+        return result
     }
 
     func mealPlanPDF(start: String) async throws -> Data {

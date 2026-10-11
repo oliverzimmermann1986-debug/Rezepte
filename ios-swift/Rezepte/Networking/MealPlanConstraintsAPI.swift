@@ -5,13 +5,13 @@ extension APIClient {
                                    quotas: [MealCategoryQuota], excludedIngredients: [String],
                                    avoidRecentDays: Int, weekStart: String,
                                    weekdayRules: [MealWeekdayRule] = [], householdOnly: Bool = false,
-                                   mealCourse: String? = nil) async throws -> ConstrainedMealSuggestionResponse {
+                                   mealCourse: String? = nil, randomSeed: UUID? = nil) async throws -> ConstrainedMealSuggestionResponse {
         try await kitchenRequest("/api/discovery/meal-plan", method: "POST", body: ConstrainedMealPlanBody(
             count: count, vegetarianCount: vegetarian, maxMinutes: maxMinutes,
             excludeRecipeIds: Array(Set(excluding)).sorted(), categoryQuotas: quotas,
             excludedIngredients: excludedIngredients, avoidRecentDays: avoidRecentDays, weekStart: weekStart,
             weekdayRules: weekdayRules.isEmpty ? nil : weekdayRules, householdOnly: householdOnly ? true : nil,
-            quotaMode: "minimum", mealCourse: mealCourse))
+            quotaMode: "minimum", mealCourse: mealCourse, randomSeed: randomSeed))
     }
 }
 
@@ -28,4 +28,5 @@ private struct ConstrainedMealPlanBody: Encodable {
     let householdOnly: Bool?
     let quotaMode: String
     let mealCourse: String?
+    let randomSeed: UUID?
 }

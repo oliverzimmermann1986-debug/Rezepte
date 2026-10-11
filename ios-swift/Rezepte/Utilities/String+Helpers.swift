@@ -6,4 +6,6 @@ extension String {
 
 extension Notification.Name {
     static let recipesChanged = Notification.Name("recipesChanged")
+    static let mealPlanChanged = Notification.Name("mealPlanChanged")
+    static let shoppingChanged = Notification.Name("shoppingChanged")
 }

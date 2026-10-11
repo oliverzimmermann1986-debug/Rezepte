@@ -1,7 +1,9 @@
-"""Deterministic suggestions from the caller's visible recipe collection."""
+"""Constraint-bound suggestions with optionally seeded, weighted variety."""
 from __future__ import annotations
 
 import math
+import hashlib
+import random
 import re
 from datetime import date, timedelta
 
@@ -145,7 +147,7 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
                           category_quotas: list[dict] | None = None, excluded_ingredients: list[str] | None = None,
                           avoid_recent_days: int = 0, week_start: date | None = None,
                           weekday_rules: list[dict] | None = None, household_only: bool = False,
-                          quota_mode: str = "exact", meal_course: str | None = None) -> dict:
+                          quota_mode: str = "exact", meal_course: str | None = None, random_seed=None) -> dict:
     """Select distinct recipes, jointly assigning rule days without relaxing constraints."""
     available = available_keys(available_ingredients or [])
     excluded = set(exclude_recipe_ids or [])
@@ -195,6 +197,13 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
             "_coverage": len(keys & available) / len(keys) if available else 0,
         })
     search_complete = scan_status["complete"]
+    if random_seed is not None:
+        for item in candidates:
+            digest = hashlib.sha256((str(random_seed) + ':' + str(item['recipe_id'])).encode()).digest()
+            rng = random.Random(int.from_bytes(digest, 'big'))
+            # Preferences increase likelihood, not a permanent monopoly.
+            # All feasibility filters and quotas remain hard rules.
+            item['_selection_score'] = item['_preference_score'] / 3 - math.log(-math.log(max(1e-12, rng.random())))
     has_preferences = any(item["preference_reasons"] for item in candidates)
     selected = []
 
@@ -205,7 +214,7 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         categories = {item["_category"] for item in selected if item["_category"]}
         used_keys = set().union(*(item["_keys"] for item in selected)) if selected else set()
         eligible.sort(key=lambda item: (
-            -item.get("_preference_score", 0), -item["_coverage"], item["_category"] in categories,
+            -item.get("_selection_score", item.get("_preference_score", 0)), -item["_coverage"], item["_category"] in categories,
             len(item["_keys"] & used_keys) / len(item["_keys"]),
             item["name"].casefold(), item["recipe_id"],
         ))

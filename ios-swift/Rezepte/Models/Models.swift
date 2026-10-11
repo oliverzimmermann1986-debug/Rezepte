@@ -851,6 +851,7 @@ struct MealWeek: Codable {
     let days: [MealDay]
     let shoppingPreview: [ShoppingPreview]
     let summary: MealSummary
+    var shoppingLinked: Bool? = nil
 }
 
 struct MealDay: Codable, Identifiable {

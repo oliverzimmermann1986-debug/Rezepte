@@ -568,17 +568,21 @@ class HouseholdDatabase(Database):
         return [dict(r) for r in rows]
 
     def meal_plan_add(self, *, planned_for, recipe_id, planned_servings):
-        if not self.recipe_get(recipe_id) or self.recipe_get(recipe_id).get("deleted_at"):
-            raise ValueError("Rezept nicht gefunden")
         now = time.time()
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
+            if not c.execute("SELECT 1 FROM recipes WHERE id=? AND deleted_at IS NULL AND (owner_account_id IS NULL OR is_global=1 OR owner_account_id=?) AND COALESCE(ingredients_status,'')<>?",
+                             (recipe_id, self.account_id, RECIPE_VARIANT_PENDING_STATUS)).fetchone():
+                raise ValueError("Rezept nicht gefunden")
             order = c.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM meal_plan_entries WHERE account_id=? AND planned_for=?",
                               (self.account_id, planned_for)).fetchone()[0]
             c.execute("INSERT INTO meal_plan_entries(account_id,planned_for,recipe_id,planned_servings,sort_order,created_at,updated_at) "
                       "VALUES(?,?,?,?,?,?,?) ON CONFLICT(account_id,planned_for,recipe_id) DO UPDATE SET "
-                      "planned_servings=excluded.planned_servings,updated_at=excluded.updated_at",
+                      "planned_servings=excluded.planned_servings,updated_at=excluded.updated_at "
+                      "WHERE meal_plan_entries.planned_servings<>excluded.planned_servings",
                       (self.account_id, planned_for, recipe_id, planned_servings, order, now, now))
+            from .recipes.meal_plan_shopping import sync_dates
+            sync_dates(c, self, self.account_id, planned_for)
             row = c.execute("SELECT * FROM meal_plan_entries WHERE account_id=? AND planned_for=? AND recipe_id=?",
                             (self.account_id, planned_for, recipe_id)).fetchone()
         return dict(row)
@@ -587,15 +591,51 @@ class HouseholdDatabase(Database):
         updates = {k: v for k, v in {"planned_for": planned_for, "planned_servings": planned_servings}.items() if v is not None}
         updates["updated_at"] = time.time()
         with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            previous = c.execute("SELECT planned_for FROM meal_plan_entries WHERE id=? AND account_id=?", (item_id, self.account_id)).fetchone()
+            if not previous:
+                return False
             try:
-                return c.execute("UPDATE meal_plan_entries SET " + ",".join(f"{k}=?" for k in updates) + " WHERE id=? AND account_id=?",
-                                 (*updates.values(), item_id, self.account_id)).rowcount > 0
+                c.execute("UPDATE meal_plan_entries SET " + ",".join(f"{k}=?" for k in updates) + " WHERE id=? AND account_id=?",
+                          (*updates.values(), item_id, self.account_id))
             except sqlite3.IntegrityError as exc:
                 raise ValueError("Rezept ist für diesen Tag bereits eingeplant") from exc
+            from .recipes.meal_plan_shopping import sync_dates
+            sync_dates(c, self, self.account_id, previous['planned_for'], planned_for)
+            return True
 
     def meal_plan_delete(self, item_id):
         with self.conn() as c:
-            return c.execute("DELETE FROM meal_plan_entries WHERE id=? AND account_id=?", (item_id, self.account_id)).rowcount > 0
+            c.execute("BEGIN IMMEDIATE")
+            previous = c.execute("SELECT planned_for FROM meal_plan_entries WHERE id=? AND account_id=?", (item_id, self.account_id)).fetchone()
+            if not previous:
+                return False
+            c.execute("DELETE FROM meal_plan_entries WHERE id=? AND account_id=?", (item_id, self.account_id))
+            from .recipes.meal_plan_shopping import sync_dates
+            sync_dates(c, self, self.account_id, previous['planned_for'])
+            return True
+
+    def meal_plan_replace(self, item_id, *, recipe_id, expected_recipe_id, planned_servings):
+        with self.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            previous = c.execute("SELECT * FROM meal_plan_entries WHERE id=? AND account_id=?", (item_id, self.account_id)).fetchone()
+            if not previous:
+                raise LookupError("Wochenplan-Eintrag nicht gefunden")
+            if previous['recipe_id'] == recipe_id and previous['planned_servings'] == planned_servings:
+                return dict(previous)
+            if previous['recipe_id'] != expected_recipe_id:
+                raise ValueError("Das Gericht wurde inzwischen geändert. Bitte den Wochenplan neu laden.")
+            if not c.execute("SELECT 1 FROM recipes WHERE id=? AND deleted_at IS NULL AND (owner_account_id IS NULL OR is_global=1 OR owner_account_id=?) AND COALESCE(ingredients_status,'')<>?",
+                             (recipe_id, self.account_id, RECIPE_VARIANT_PENDING_STATUS)).fetchone():
+                raise LookupError("Rezept nicht gefunden")
+            try:
+                c.execute("UPDATE meal_plan_entries SET recipe_id=?,planned_servings=?,updated_at=? WHERE id=? AND account_id=?",
+                          (recipe_id, planned_servings, time.time(), item_id, self.account_id))
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("Dieses Rezept ist an diesem Tag bereits eingeplant") from exc
+            from .recipes.meal_plan_shopping import sync_dates
+            sync_dates(c, self, self.account_id, previous['planned_for'])
+            return dict(c.execute("SELECT * FROM meal_plan_entries WHERE id=? AND account_id=?", (item_id, self.account_id)).fetchone())
 
     def recipe_cooking_complete(self, recipe_id, username, **values):
         # The legacy completion transaction already protects retry keys. Add
