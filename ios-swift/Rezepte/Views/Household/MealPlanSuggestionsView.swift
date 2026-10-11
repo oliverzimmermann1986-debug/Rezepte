@@ -25,7 +25,7 @@ struct MealPlanSuggestionsView: View {
         MealPlanningPreferences(count: count, vegetarian: vegetarian, maxMinutes: minutes, constraints: constraints)
     }
     private var validationMessage: String? {
-        planningPreferences.availabilityMessage(advanced: advanced, weekdayRules: supportsWeekdays)
+        planningPreferences.availabilityMessage(advanced: advanced, weekdayRules: supportsWeekdays, dishTypes: session.supports("meal-plan-dish-types-v1"))
     }
     private var unmetRules: [MealWeekdayRule] {
         MealWeekdayDates.unmetRules(constraints.weekdayRules, rows: rows, categories: categories, weekStart: week.weekStart)
@@ -77,7 +77,15 @@ struct MealPlanSuggestionsView: View {
                                 count = 7
                                 constraints.counts = [.pasta: 2, .potato: 4]
                             }
-                            ForEach(MealIngredientCategory.allCases) { category in
+                            if session.supports("meal-plan-dish-types-v1") {
+                                Button("Mit Salat und Suppe") {
+                                    count = 7
+                                    constraints.counts = [.pasta: 2, .potato: 2, .salad: 1, .soup: 1]
+                                }
+                                Text("7 Gerichte: genau 2 × Pasta, 2 × Kartoffeln, 1 × Salat, 1 × Suppe. Weitere Gerichte frei nach deinen übrigen Vorgaben.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            ForEach(MealIngredientCategory.available(dishTypes: session.supports("meal-plan-dish-types-v1"))) { category in
                                 Picker(category.title, selection: Binding(
                                     get: { constraints.counts[category] ?? -1 },
                                     set: { if $0 < 0 { constraints.counts.removeValue(forKey: category) } else { constraints.counts[category] = $0 } }
@@ -87,7 +95,7 @@ struct MealPlanSuggestionsView: View {
                                     ForEach(1...count, id: \.self) { Text("Genau \($0) Gerichte").tag($0) }
                                 }
                             }
-                            Text("Die Anzahl gilt für die neuen Vorschläge. Ein Gericht mit mehreren Zutatenarten zählt bei jeder passenden Vorgabe. Bereits geplante Gerichte bleiben erhalten.")
+                            Text("Die Anzahl gilt für die neuen Vorschläge. Ein Nudelsalat zählt zum Beispiel als Pasta und Salat. Gerichtstypen werden aus Rezeptart, Kategorie, Tags und Gerichtsname erkannt. Bereits geplante Gerichte bleiben erhalten.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }.disabled(state.busy || started)
                         Section("Zutaten und Abwechslung") {

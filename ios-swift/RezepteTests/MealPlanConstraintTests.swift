@@ -3,6 +3,31 @@ import XCTest
 @testable import Rezepte
 
 final class MealPlanConstraintTests: XCTestCase {
+    func testDishTypesRoundTripAndKeepOverlappingReplacementQuotas() throws {
+        var preferences = MealPlanningPreferences(count: 2, vegetarian: 0)
+        preferences.constraints.counts = [.salad: 1, .soup: 1, .pasta: 1]
+        preferences.constraints.weekdayRules = [MealWeekdayRule(weekday: 1, category: .salad)]
+        let restored = try JSONDecoder().decode(MealPlanningPreferences.self, from: JSONEncoder().encode(preferences))
+        XCTAssertEqual(restored, preferences)
+        XCTAssertEqual(MealIngredientCategory.available(dishTypes: false), [.pasta, .potato, .rice, .legume])
+        XCTAssertEqual(MealIngredientCategory.available(dishTypes: true).count, 10)
+        XCTAssertNotNil(restored.availabilityMessage(advanced: true, weekdayRules: true))
+        XCTAssertNil(restored.availabilityMessage(advanced: true, weekdayRules: true, dishTypes: true))
+        XCTAssertEqual(restored.constraints.replacementQuotas(remainingIDs: [42], categories: [42: [.pasta, .salad]]), [
+            MealCategoryQuota(category: .pasta, count: 0), MealCategoryQuota(category: .salad, count: 0),
+            MealCategoryQuota(category: .soup, count: 1),
+        ])
+    }
+
+    func testNewDishCategoriesAndShortfallsDecode() throws {
+        let data = Data(#"{"items":[{"recipe_id":1,"name":"Nudelsalat","vegetarian":true,"categories":["pasta","salad"]}],"warnings":[],"missing_quotas":[{"category":"soup","requested":2,"fulfilled":0,"missing":2}],"constraints_satisfied":false,"search_complete":true}"#.utf8)
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let response = try decoder.decode(ConstrainedMealSuggestionResponse.self, from: data)
+        XCTAssertEqual(response.items.first?.categories, [.pasta, .salad])
+        XCTAssertEqual(response.missingQuotas.first?.category, .soup)
+        XCTAssertEqual(response.missingQuotas.first?.missing, 2)
+    }
+
     func testExactQuotasAllowOverlapAndPreserveZeroInsteadOfTreatingItAsUnset() {
         var constraints = MealPlanConstraints()
         constraints.counts = [.pasta: 2, .potato: 2, .rice: 0]

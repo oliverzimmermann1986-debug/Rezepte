@@ -25,6 +25,7 @@ struct MealWeekdayRulesView: View {
 }
 
 private struct MealWeekdayRuleEditor: View {
+    @EnvironmentObject private var session: SessionStore
     let weekday: Int
     @Binding var rules: [MealWeekdayRule]
     @State private var enabled = false
@@ -45,9 +46,9 @@ private struct MealWeekdayRuleEditor: View {
             Section { Toggle("Gericht für diesen Tag einplanen", isOn: $enabled) }
             if enabled {
                 Section("Vorgaben") {
-                    Picker("Zutatenart", selection: $category) {
+                    Picker("Gericht oder Zutatenart", selection: $category) {
                         Text("Egal").tag("")
-                        ForEach(MealIngredientCategory.allCases) { Text($0.title).tag($0.rawValue) }
+                        ForEach(MealIngredientCategory.available(dishTypes: session.supports("meal-plan-dish-types-v1"))) { Text($0.title).tag($0.rawValue) }
                     }
                     Toggle("Vegetarisch", isOn: $vegetarian)
                     timePicker("Mindestens", value: $minimum)

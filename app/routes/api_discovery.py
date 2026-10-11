@@ -12,10 +12,12 @@ from ..auth import require_auth
 from ..db import get_db
 from ..recipes.canonical import canonical_name
 from ..recipes.discovery import add_missing_to_cart, ingredient_matches, meal_plan_suggestions
+from ..recipes.meal_constraints import CATEGORY_NAMES
 
 router = APIRouter(prefix="/api/discovery", tags=["discovery"], dependencies=[Depends(require_auth)])
 IngredientName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 RecipeId = Annotated[int, Field(gt=0)]
+MealCategory = Literal["pasta", "potato", "rice", "legume", "salad", "soup", "stew", "casserole", "pizza", "wrap"]
 
 
 class IngredientRequest(BaseModel):
@@ -24,13 +26,13 @@ class IngredientRequest(BaseModel):
 
 
 class CategoryQuota(BaseModel):
-    category: Literal["pasta", "potato", "rice", "legume"]
+    category: MealCategory
     count: int = Field(ge=0, le=7)
 
 
 class WeekdayRule(BaseModel):
     weekday: int = Field(ge=1, le=7)
-    category: Literal["pasta", "potato", "rice", "legume"] | None = None
+    category: MealCategory | None = None
     min_minutes: int | None = Field(default=None, ge=1, le=1440)
     max_minutes: int | None = Field(default=None, ge=1, le=1440)
     vegetarian: bool = False
@@ -48,7 +50,7 @@ class MealPlanRequest(BaseModel):
     max_minutes: int | None = Field(default=None, ge=1, le=1440)
     exclude_recipe_ids: list[RecipeId] = Field(default_factory=list, max_length=500)
     available_ingredients: list[IngredientName] = Field(default_factory=list, max_length=100)
-    category_quotas: list[CategoryQuota] = Field(default_factory=list, max_length=4)
+    category_quotas: list[CategoryQuota] = Field(default_factory=list, max_length=len(CATEGORY_NAMES))
     excluded_ingredients: list[IngredientName] = Field(default_factory=list, max_length=100)
     avoid_recent_days: Literal[0, 7, 14, 28] = 0
     week_start: date | None = None

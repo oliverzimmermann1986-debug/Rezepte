@@ -52,7 +52,7 @@ struct MealPlanningPreferences: Codable, Equatable {
         if !(0...count).contains(vegetarian) { return "Die vegetarische Mindestanzahl darf die Gerichtanzahl nicht überschreiten." }
         if !(0...1440).contains(maxMinutes) { return "Bitte eine gültige Zeitgrenze wählen." }
         if let message = constraints.validationMessage { return message }
-        if constraints.counts.values.contains(where: { $0 > count }) { return "Eine Zutatenvorgabe darf die Gerichtanzahl nicht überschreiten." }
+        if constraints.counts.values.contains(where: { $0 > count }) { return "Eine Wochenvorgabe darf die Gerichtanzahl nicht überschreiten." }
         if constraints.weekdayRules.count > count { return "Wähle mindestens so viele Gerichte wie festgelegte Wochentage." }
         for rule in constraints.weekdayRules {
             if maxMinutes > 0, let minimum = rule.minMinutes, minimum > maxMinutes {
@@ -62,12 +62,15 @@ struct MealPlanningPreferences: Codable, Equatable {
         return nil
     }
 
-    func availabilityMessage(advanced: Bool, weekdayRules: Bool) -> String? {
+    func availabilityMessage(advanced: Bool, weekdayRules: Bool, dishTypes: Bool = false) -> String? {
         if let validationMessage { return validationMessage }
         if !advanced && (!constraints.quotas.isEmpty || !constraints.excludedIngredients.isEmpty || constraints.avoidRecentDays > 0) {
             return "Dieser Server unterstützt die erweiterten Wochenvorgaben noch nicht."
         }
         if !weekdayRules && !constraints.weekdayRules.isEmpty { return "Dieser Server unterstützt Regeln pro Wochentag noch nicht." }
+        if !dishTypes && (constraints.counts.keys.contains(where: { $0.isDishType }) || constraints.weekdayRules.contains(where: { $0.category?.isDishType == true })) {
+            return "Dieser Server unterstützt Salat, Suppe und weitere Gerichtstypen noch nicht."
+        }
         return nil
     }
 }

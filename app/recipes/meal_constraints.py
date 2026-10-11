@@ -1,4 +1,4 @@
-"""Bounded deterministic selection for exact ingredient-family quotas."""
+"""Bounded deterministic selection for exact ingredient and dish-type quotas."""
 from __future__ import annotations
 
 import re
@@ -6,7 +6,9 @@ from collections import defaultdict
 
 
 CATEGORY_NAMES = {"pasta": "Nudelgerichte", "potato": "Kartoffelgerichte",
-                  "rice": "Reisgerichte", "legume": "Hülsenfruchtgerichte"}
+                  "rice": "Reisgerichte", "legume": "Hülsenfruchtgerichte",
+                  "salad": "Salate", "soup": "Suppen", "stew": "Eintöpfe",
+                  "casserole": "Aufläufe", "pizza": "Pizza", "wrap": "Wraps"}
 WEEKDAY_NAMES = {1: "Montag", 2: "Dienstag", 3: "Mittwoch", 4: "Donnerstag",
                  5: "Freitag", 6: "Samstag", 7: "Sonntag"}
 _FAMILIES = {
@@ -49,6 +51,34 @@ def ingredient_categories(keys: set[str]) -> list[str]:
     # Whole canonical ingredients / words, never substring matches like Reisessig.
     tokens = set().union(*(set(re.findall(r"[^\W\d_]+", key.casefold())) for key in keys)) if keys else set()
     return [name for name, ingredients in _FAMILIES.items() if tokens & ingredients]
+
+
+_DISH_MARKERS = {
+    "salad": {"salat", "salate", "salad", "salads"},
+    "soup": {"suppe", "suppen", "soup", "soups"},
+    "stew": {"eintopf", "eintöpfe", "stew", "stews"},
+    "casserole": {"auflauf", "aufläufe", "gratin", "gratins", "lasagne", "lasagna", "casserole"},
+    "pizza": {"pizza", "pizzen", "pizzas", "flammkuchen"},
+    "wrap": {"wrap", "wraps", "burrito", "burritos"},
+}
+
+
+def recipe_categories(recipe: dict, tags: set[str], keys: set[str]) -> list[str]:
+    """Dish types use recipe metadata, never an ingredient like salad or stock.
+
+    Name fallback uses the main dish before 'mit/dazu/auf/und', so a wrap
+    with a side salad does not count as a salad. German compound dish names
+    such as Kartoffelsuppe and Nudelsalat remain recognizable.
+    """
+    explicit = " ".join([str(recipe.get("type") or ""), str(recipe.get("category") or ""), *tags]).casefold()
+    metadata_words = set(re.findall(r"[^\W\d_]+", explicit))
+    title = re.split(r"\b(?:mit|dazu|auf|und|zu|with|and)\b", str(recipe.get("name") or "").casefold(), maxsplit=1)[0]
+    title_words = set(re.findall(r"[^\W\d_]+", title))
+    categories = ingredient_categories(keys)
+    for category, markers in _DISH_MARKERS.items():
+        if metadata_words & markers or any(word.endswith(marker) for word in title_words for marker in markers):
+            categories.append(category)
+    return categories
 
 
 def planned_weekdays(count: int, rules: list[dict]) -> list[int]:
@@ -154,7 +184,8 @@ def weekday_selection(candidates: list[dict], count: int, vegetarian_count: int,
 
 
 def quota_selection(candidates: list[dict], count: int, vegetarian_count: int,
-                    quotas: list[dict], *, transition_limit: int = 2_000_000) -> tuple[list[dict], bool]:
+                    quotas: list[dict], *, transition_limit: int = 2_000_000,
+                    state_limit: int = 50_000) -> tuple[list[dict], bool]:
     """Exact DP by constraint signature; keeping count recipes/group is lossless.
 
     A recipe containing several requested families counts toward all of them.
@@ -198,6 +229,9 @@ def quota_selection(candidates: list[dict], count: int, vegetarian_count: int,
                 key = (next_n, next_veg, *next_filled)
                 selection = chosen + tuple(items[:quantity])
                 existing = next_states.get(key)
+                if existing is None and len(next_states) >= state_limit:
+                    complete = False
+                    break
                 if existing is None or _quality(selection) > _quality(existing):
                     next_states[key] = selection
             if not complete:

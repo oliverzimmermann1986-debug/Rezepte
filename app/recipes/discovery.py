@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from .canonical import canonical_name
 from .cart_logic import prepare_for_cart
 from .meal_constraints import (
-    CATEGORY_NAMES, WEEKDAY_NAMES, excluded_ingredient_match, ingredient_categories,
+    CATEGORY_NAMES, WEEKDAY_NAMES, excluded_ingredient_match, recipe_categories,
     planned_weekdays, quota_selection, weekday_selection,
 )
 
@@ -170,7 +170,7 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
             "recipe_id": int(recipe["id"]), "name": recipe["name"],
             "thumb_url": f"/api/recipes/{recipe['id']}/thumb", "total_minutes": total,
             "vegetarian": bool(tags & {"vegetarisch", "vegan"}),
-            "categories": ingredient_categories(keys),
+            "categories": recipe_categories(recipe, tags, keys),
             "servings": max(1, min(24, int(servings))) if servings and servings.is_integer() else 2,
             "preference_reasons": preference_reasons, "_preference_score": preference_score,
             "_keys": keys, "_category": str(recipe.get("category") or "").casefold(),
@@ -233,7 +233,7 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         if missing:
             warnings.append(f"{CATEGORY_NAMES[category]}: {fulfilled} von exakt {quota['count']} passenden Gerichten gefunden.")
     if quotas or any(rule.get("category") for rule in rules):
-        warnings.append("Kategorien werden aus gespeicherten Zutaten erkannt. Ein Gericht mit mehreren Kategorien zählt in jeder davon; Mengen spielen dabei keine Rolle.")
+        warnings.append("Zutatenarten werden aus gespeicherten Zutaten erkannt; Gerichtstypen aus Rezeptart, Kategorie, Tags und Gerichtsname. Ein Gericht mit mehreren Kategorien zählt in jeder davon; Mengen spielen dabei keine Rolle.")
     if excluded_keys:
         warnings.append("Zutatenausschlüsse vergleichen gespeicherte Zutatennamen und bekannte Synonyme; sie ersetzen keine Allergenprüfung.")
     if avoid_recent_days:

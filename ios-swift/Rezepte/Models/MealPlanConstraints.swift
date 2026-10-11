@@ -1,7 +1,7 @@
 import Foundation
 
 enum MealIngredientCategory: String, Codable, CaseIterable, Identifiable {
-    case pasta, potato, rice, legume
+    case pasta, potato, rice, legume, salad, soup, stew, casserole, pizza, wrap
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -9,8 +9,18 @@ enum MealIngredientCategory: String, Codable, CaseIterable, Identifiable {
         case .potato: return "Kartoffeln"
         case .rice: return "Reis"
         case .legume: return "Hülsenfrüchte"
+        case .salad: return "Salat"
+        case .soup: return "Suppe"
+        case .stew: return "Eintopf"
+        case .casserole: return "Auflauf"
+        case .pizza: return "Pizza"
+        case .wrap: return "Wraps"
         }
     }
+    var isDishType: Bool { Self.dishTypes.contains(self) }
+    static var ingredientTypes: [Self] { [.pasta, .potato, .rice, .legume] }
+    static var dishTypes: [Self] { [.salad, .soup, .stew, .casserole, .pizza, .wrap] }
+    static func available(dishTypes: Bool) -> [Self] { dishTypes ? allCases : ingredientTypes }
 }
 
 struct MealCategoryQuota: Codable, Equatable {
@@ -39,7 +49,7 @@ struct MealPlanConstraints: Codable, Equatable {
 
     var validationMessage: String? {
         if ![0, 7, 14, 28].contains(avoidRecentDays) { return "Bitte einen gültigen Zeitraum für die Abwechslung wählen." }
-        if counts.values.contains(where: { !(0...7).contains($0) }) { return "Die Zutatenanzahl muss zwischen 0 und 7 liegen." }
+        if counts.values.contains(where: { !(0...7).contains($0) }) { return "Die Anzahl je Vorgabe muss zwischen 0 und 7 liegen." }
         if weekdayRules.count > 7 || Set(weekdayRules.map(\.weekday)).count != weekdayRules.count { return "Bitte jeden Wochentag nur einmal festlegen." }
         if let message = weekdayRules.compactMap(\.validationMessage).first { return message }
         if excludedIngredients.count > 100 { return "Bitte höchstens 100 Zutaten ausschließen." }
