@@ -60,6 +60,25 @@ def test_export_never_reruns_solver_or_writes_plan(household_api, monkeypatch):
         assert c.execute("SELECT COUNT(*) FROM meal_plan_entries").fetchone()[0] == 0
 
 
+def test_pdf_uses_the_same_dish_types_for_quota_and_weekday_evidence(household_api):
+    client, db, _, login = household_api
+    salad = recipe(db, "Sommergericht")
+    soup = recipe(db, "Wintergericht")
+    with db.conn() as c:
+        c.execute("UPDATE recipes SET category='Salat' WHERE id=?", (salad,))
+        c.execute("UPDATE recipes SET type='Suppe' WHERE id=?", (soup,))
+    login("anna")
+    body = payload([salad, soup], category_quotas=[{"category": "salad", "count": 1}, {"category": "soup", "count": 1}],
+                   weekday_rules=[{"weekday": 1, "category": "salad"}, {"weekday": 2, "category": "soup"}])
+    response = client.post("/api/discovery/meal-plan/pdf", json=body)
+    assert response.status_code == 200, response.text
+    text = pdf_text(response.content)
+    assert "Salate: exakt 1 gewünscht, 1 ausgewählt" in text
+    assert "Suppen: exakt 1 gewünscht, 1 ausgewählt" in text
+    assert "erfüllt die überprüfbaren Vorgaben" in text
+    assert "erfüllt die Tagesregel nicht" not in text
+
+
 def test_pdf_refuses_foreign_deleted_pending_and_unauthenticated_snapshots(household_api):
     client, db, users, login = household_api
     own = recipe(db, "Eigenes", users["anna"][1])

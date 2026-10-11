@@ -12,7 +12,7 @@ from ..db import RECIPE_VARIANT_PENDING_STATUS
 from .cookbook_pdf import _text
 from .discovery import _complete_ingredients, _key, available_keys, explicit_total_minutes
 from .household_features import account_id
-from .meal_constraints import CATEGORY_NAMES, excluded_ingredient_match, ingredient_categories, matches_weekday_rule
+from .meal_constraints import CATEGORY_NAMES, excluded_ingredient_match, recipe_categories, matches_weekday_rule
 
 MAX_TEXT_CHARACTERS = 40_000
 MAX_PDF_BYTES = 2 * 1024 * 1024
@@ -35,7 +35,7 @@ def meal_plan_snapshot(db, criteria: dict, selections: list[dict]) -> dict:
                  (anchor - timedelta(days=1)).isoformat()))}
         for item in selections:
             recipe = c.execute(
-                "SELECT id,name,description,ingredients_status, "
+                "SELECT id,name,type,category,description,ingredients_status, "
                 "EXISTS(SELECT 1 FROM recipe_steps s WHERE s.recipe_id=recipes.id) AS has_steps FROM recipes "
                 "WHERE id=? AND deleted_at IS NULL AND COALESCE(ingredients_status,'')<>? "
                 "AND (owner_account_id IS NULL OR owner_account_id=?)",
@@ -56,7 +56,7 @@ def meal_plan_snapshot(db, criteria: dict, selections: list[dict]) -> dict:
             if characters > MAX_TEXT_CHARACTERS or len(ingredients) > 500 or len(tags) > 100:
                 raise HTTPException(422, "Die ausgewählten Rezepte enthalten zu viel Text für einen Wochenexport.")
             keys = {_key(ingredient) for ingredient in ingredients if _key(ingredient)}
-            rows.append({**item, "name": recipe["name"] or "Unbenannt", "categories": ingredient_categories(keys),
+            rows.append({**item, "name": recipe["name"] or "Unbenannt", "categories": recipe_categories(recipe, set(tags), keys),
                          "total_minutes": explicit_total_minutes(recipe),
                          "vegetarian": bool({tag.strip().casefold() for tag in tags} & {"vegetarisch", "vegan"}),
                          "_keys": keys,
