@@ -703,11 +703,20 @@ Benachrichtigungen und eine Live Activity mit Rezepttitel und Restzeit auf dem
 Sperrbildschirm anzeigen. Diese Anzeigen lassen sich in den iOS-Einstellungen
 abschalten. Beim Abmelden werden laufende Timer entfernt.</p>
 <h2>KI-gestützte Verarbeitung</h2>
-<p>Vor jeder von dir gestarteten KI-Aktion fragt die App ausdrücklich nach deiner
-Zustimmung. Bei einem Abbruch startet diese Aktion keine Übermittlung an OpenAI.
-Die Freigabe gilt für die angezeigte Aktion einschließlich ihrer beschriebenen
-Folgeschritte, nicht dauerhaft für weitere Aktionen. Geteilte Links werden zunächst
-lokal vorgemerkt und erst nach deiner Bestätigung importiert.</p>
+<p>Vor einer KI-Verarbeitung erklärt die App den Empfänger OpenAI, die betroffenen
+Inhalte und den Zweck und fragt ausdrücklich nach deiner Zustimmung. Standardmäßig
+gilt die Freigabe für die angezeigte Aktion einschließlich ihrer beschriebenen
+Folgeschritte. Bei einem Abbruch startet diese Aktion keine Übermittlung an OpenAI.</p>
+<p>Für Linkimporte kannst du in der iPhone-App einmal ausdrücklich der automatischen
+Verarbeitung zustimmen. Diese Freigabe wird auf diesem Gerät für dein Konto, deinen
+Server und die angezeigte Freigabeversion gespeichert. Sie umfasst auch bereits lokal
+wartende, noch keinem Konto zugeordnete Links. Die Teilen-Erweiterung speichert Links
+zunächst nur lokal; bei vorhandener Freigabe werden sie beim Öffnen der App automatisch
+übergeben. Unter Einstellungen → Automatischer Linkimport kannst du die Freigabe
+widerrufen. Abmelden oder ein Haushaltswechsel löscht sie. Bereits vom Server
+angenommene Aufträge können nach dem Widerruf noch fertiggestellt werden. Andere
+KI-Aktionen sowie Foto- und PDF-Uploads benötigen weiterhin eine eigene Zustimmung.
+Die gespeicherte Linkfreigabe gilt nicht für Webimporte oder externe Kurzbefehle.</p>
 <p>Wenn eine KI-Funktion verwendet wird, kann der Rezepteserver die dafür
 erforderlichen Rezepttexte, Bilder, PDF-Inhalte, Videoframes und extrahierte
 Audiospuren an OpenAI übermitteln. Für die Bildgenerierung werden Rezepttitel,

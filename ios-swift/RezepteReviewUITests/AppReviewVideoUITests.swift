@@ -66,6 +66,7 @@ final class AppReviewVideoUITests: XCTestCase {
         pause(4)
         reveal(app.staticTexts["Originalquelle"])
         pause(5)
+        verifyRecipeReviewActions()
 
         app.navigationBars.buttons["Archiv"].tap()
         XCTAssertTrue(archiveTab.waitForExistence(timeout: 10))
@@ -86,6 +87,7 @@ final class AppReviewVideoUITests: XCTestCase {
         pause(4)
         capture("08-wochenwuensche")
         app.buttons["Fertig"].tap()
+        verifyWeeklyPlanningOptions()
 
         let todayTab = app.tabBars.buttons["Heute"]
         todayTab.tap()
@@ -109,6 +111,7 @@ final class AppReviewVideoUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Einstellungen"].waitForExistence(timeout: 20))
         pause(4)
         capture("06-einstellungen")
+        verifyAutomaticLinkImportDisclosure()
 
         let administration = app.buttons["Administration öffnen"]
         reveal(administration, maximumSwipes: 6)
@@ -124,6 +127,89 @@ final class AppReviewVideoUITests: XCTestCase {
         pause(5)
         app.swipeUp()
         pause(5)
+    }
+
+    private func verifyRecipeReviewActions() {
+        let actions = app.buttons["Weitere Rezeptaktionen"]
+        XCTAssertTrue(actions.waitForExistence(timeout: 10))
+        actions.tap()
+        XCTAssertTrue(app.buttons["Rezept löschen"].waitForExistence(timeout: 5))
+        let portions = app.buttons["Portionsanzahl mit KI prüfen"]
+        XCTAssertTrue(portions.waitForExistence(timeout: 5))
+        portions.tap()
+        XCTAssertTrue(app.navigationBars["Portionen prüfen"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Mit KI prüfen"].waitForExistence(timeout: 10))
+        pause(4)
+        // Opening the review explains the feature without submitting any paid AI work.
+        app.buttons["Schließen"].tap()
+        XCTAssertTrue(actions.waitForExistence(timeout: 10))
+    }
+
+    private func verifyWeeklyPlanningOptions() {
+        let suggestions = app.buttons["Vorschlagen"]
+        XCTAssertTrue(suggestions.waitForExistence(timeout: 10))
+        reveal(suggestions, maximumSwipes: 3)
+        suggestions.tap()
+        XCTAssertTrue(app.navigationBars["Woche vorschlagen"].waitForExistence(timeout: 10))
+
+        let profiles = app.buttons["Wochenprofile"]
+        XCTAssertTrue(profiles.waitForExistence(timeout: 10))
+        profiles.tap()
+        XCTAssertTrue(app.navigationBars["Wochenprofile"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textFields["Name, z. B. Schnelle Woche"].waitForExistence(timeout: 10))
+        pause(3)
+        app.buttons["Schließen"].tap()
+        XCTAssertTrue(app.navigationBars["Woche vorschlagen"].waitForExistence(timeout: 10))
+
+        let preferences = app.staticTexts["Pflege eure Vorlieben mit dem Herz und den Sternen im Rezept."]
+        reveal(preferences, maximumSwipes: 5)
+        pause(3)
+        let quotaPreset = app.buttons["7 Gerichte: 2 × Pasta, 4 × Kartoffeln"]
+        reveal(quotaPreset, maximumSwipes: 3)
+        quotaPreset.tap()
+        pause(4)
+
+        let history = app.staticTexts["Ausgewertet werden deine gespeicherten Wochenpläne vor der ausgewählten Woche. Das gilt auch beim Austauschen eines Gerichts. Reichen andere Rezepte nicht aus, bleiben Plätze offen."]
+        reveal(history, maximumSwipes: 6)
+        pause(4)
+        let monday = app.staticTexts["Montag"].firstMatch
+        reveal(monday, maximumSwipes: 3)
+        monday.tap()
+        XCTAssertTrue(app.navigationBars["Montag"].waitForExistence(timeout: 10))
+        let schedule = app.switches["Gericht für diesen Tag einplanen"]
+        XCTAssertTrue(schedule.waitForExistence(timeout: 10))
+        schedule.tap()
+        let vegetarian = app.switches["Vegetarisch"]
+        XCTAssertTrue(vegetarian.waitForExistence(timeout: 10))
+        vegetarian.tap()
+        pause(4)
+        app.navigationBars["Montag"].buttons["Woche vorschlagen"].tap()
+        XCTAssertTrue(app.navigationBars["Woche vorschlagen"].waitForExistence(timeout: 10))
+        // These are unsaved draft preferences: preserve the household's existing plan.
+        app.buttons["Fertig"].tap()
+        XCTAssertTrue(app.navigationBars["Wochenplan"].waitForExistence(timeout: 10))
+    }
+
+    private func verifyAutomaticLinkImportDisclosure() {
+        let enable = app.buttons["settings.link-imports.enable"]
+        reveal(enable, maximumSwipes: 5)
+        XCTAssertTrue(enable.isEnabled, "The review account must support automatic link imports.")
+        enable.tap()
+        XCTAssertTrue(app.navigationBars["KI-Verarbeitung"].waitForExistence(timeout: 10))
+        let explanation = app.staticTexts["Einmal zustimmen, Links automatisch importieren"]
+        reveal(explanation, maximumSwipes: 5)
+        pause(4)
+        let approve = app.buttons["ai-consent.approve"]
+        reveal(approve, maximumSwipes: 6)
+        XCTAssertEqual(approve.label, "Zustimmen und automatisch importieren")
+        XCTAssertFalse(app.buttons["ai-consent.approve-once"].exists,
+                       "Settings must explain the lasting link-import permission.")
+        pause(3)
+        // Show the scope and revocation instructions, but never grant AI permission in a media run.
+        app.navigationBars["KI-Verarbeitung"].buttons["Abbrechen"].tap()
+        XCTAssertTrue(app.navigationBars["Einstellungen"].waitForExistence(timeout: 10))
+        XCTAssertTrue(enable.waitForExistence(timeout: 10), "Cancelling must leave automatic imports disabled.")
+        XCTAssertFalse(app.buttons["settings.link-imports.revoke"].exists)
     }
 
     private func verifyShoppingUndo() {
