@@ -244,17 +244,30 @@ final class SessionStore: ObservableObject {
     }
 
     func householdDidChange() async throws {
-        guard let token = persistence.restoredToken() else { throw APIError.unauthenticated }
+        let retiredIdentity = identity
         defaults.removeObject(forKey: offlineSessionKey)
         verifiedSession = nil
         NotificationCenter.default.post(name: Notification.Name("KitchenHouseholdChanged"), object: nil)
         KitchenTimerStore.shared.clear()
         identity = UUID()
         let expectedIdentity = identity
-        try await api.configure(server: savedServer, token: token, sessionID: expectedIdentity)
-        let current = try await api.sessionInfo()
-        guard identity == expectedIdentity else { throw APIError.sessionChanged }
-        apply(current)
+        do {
+            // Retire every household-bound view before touching Keychain or
+            // making requests: either can fail after membership has changed.
+            guard let token = persistence.restoredToken() else {
+                // configure() has not adopted the new identity yet. Clear the
+                // old API configuration explicitly before signing out below.
+                await api.clearAuthentication(ifSessionID: retiredIdentity)
+                throw APIError.unauthenticated
+            }
+            try await api.configure(server: savedServer, token: token, sessionID: expectedIdentity)
+            let current = try await api.sessionInfo()
+            guard identity == expectedIdentity else { throw APIError.sessionChanged }
+            apply(current)
+        } catch {
+            if identity == expectedIdentity { handle(error) }
+            throw error
+        }
     }
 
     func refreshAccess() async {

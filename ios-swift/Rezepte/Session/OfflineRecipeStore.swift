@@ -175,7 +175,12 @@ final class OfflineRecipeStore: ObservableObject {
                 try invalidateHousehold()
                 // Remount all household-bound screens, including an already open
                 // private recipe, when membership changed on another device.
-                try await session.householdDidChange()
+                do { try await session.householdDidChange() }
+                catch {
+                    // SessionStore owns the transition identity and reports its
+                    // failure. The old cache context is deliberately invalid now.
+                    return
+                }
                 await activate(session: session)
             }
         } catch {
@@ -189,16 +194,24 @@ final class OfflineRecipeStore: ObservableObject {
 
     /// Injectable authentication and IO boundaries exercise late-response and disk-failure paths.
     func activate(context next: OfflineRecipeContext) async {
+        guard next.isCurrent(), !Task.isCancelled else { return }
         if context?.identity == next.identity, context?.namespace == next.namespace {
-            if let activation { await activation.value }
+            if let activation {
+                let waitingGeneration = operation
+                await activation.value
+                // A suspended caller belongs to the activation it joined. It
+                // must never cancel a newer household/account activation.
+                guard operation == waitingGeneration, next.isCurrent(), !Task.isCancelled else { return }
+            }
             if isReady { return }
         }
         deactivate()
         context = next
+        let activatingGeneration = operation
         let task = Task { await loadContext(next) }
         activation = task
         await task.value
-        if context?.identity == next.identity { activation = nil }
+        if operation == activatingGeneration { activation = nil }
     }
 
     private func loadContext(_ next: OfflineRecipeContext) async {

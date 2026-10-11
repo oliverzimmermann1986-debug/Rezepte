@@ -5,6 +5,21 @@ import XCTest
 
 @MainActor
 final class OfflineRecipeTests: XCTestCase {
+    @MainActor
+    private final class HouseholdGate {
+        var continuation: CheckedContinuation<Int, Never>?
+        func wait(started: XCTestExpectation) async -> Int {
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                started.fulfill()
+            }
+        }
+        func resume(_ household: Int) {
+            continuation?.resume(returning: household)
+            continuation = nil
+        }
+    }
+
     private final class Disk {
         var files: [String: Data] = [:]
         var failIndex = false
@@ -158,6 +173,76 @@ final class OfflineRecipeTests: XCTestCase {
         await restored.activate(context: context())
         XCTAssertFalse(restored.isReady)
         XCTAssertEqual(disk.indices.count, 1, "Failure must be truthful; tombstone hides the remaining bytes")
+    }
+
+    func testOldActivationWaiterCannotCancelNewHouseholdActivation() async throws {
+        let disk = Disk()
+        let store = OfflineRecipeStore(storage: disk.storage, defaults: defaults())
+        let firstGate = HouseholdGate(), secondGate = HouseholdGate()
+        defer { firstGate.resume(31); secondGate.resume(99) }
+        let firstStarted = expectation(description: "First household request started")
+        let waiterStarted = expectation(description: "Second caller joined first activation")
+        let secondStarted = expectation(description: "Replacement household request started")
+        let base = context()
+        var firstRequestCount = 0
+        let first = OfflineRecipeContext(identity: base.identity, namespace: base.namespace, isCurrent: { true },
+            household: {
+                firstRequestCount += 1
+                if firstRequestCount == 1 { return await firstGate.wait(started: firstStarted) }
+                return 31
+            }, recipe: base.recipe,
+            image: base.image, cookbookRecipes: base.cookbookRecipes)
+        let replacement = OfflineRecipeContext(identity: UUID(), namespace: base.namespace, isCurrent: { true },
+            household: { await secondGate.wait(started: secondStarted) }, recipe: base.recipe,
+            image: base.image, cookbookRecipes: base.cookbookRecipes)
+        let initial = Task { await store.activate(context: first) }
+        await fulfillment(of: [firstStarted], timeout: 2)
+        let waiter = Task {
+            waiterStarted.fulfill()
+            await store.activate(context: first)
+        }
+        await fulfillment(of: [waiterStarted], timeout: 2)
+        await Task.yield()
+        try store.invalidateHousehold()
+        let next = Task { await store.activate(context: replacement) }
+        await fulfillment(of: [secondStarted], timeout: 2)
+        // The old cancelled request completes while the new request is suspended.
+        // Its joined caller must neither clear nor replace the new activation.
+        firstGate.resume(31)
+        await initial.value
+        await waiter.value
+        secondGate.resume(99)
+        await next.value
+        XCTAssertTrue(store.isReady)
+        XCTAssertEqual(firstRequestCount, 1, "The stale waiter must not start the retired activation again")
+        try await store.download(ids: [11], cookbook: nil, context: replacement)
+        XCTAssertEqual(try disk.index()["householdID"] as? Int, 99)
+        XCTAssertEqual(disk.indices.count, 1)
+    }
+
+    func testHouseholdChangeRetiresVisibleSessionWhenKeychainTokenDisappears() async throws {
+        let preferences = defaults()
+        preferences.set("https://example.de", forKey: "server-url")
+        var token: String? = "household-transition-test-token"
+        let persistence = LocalSessionPersistence(defaults: preferences, read: { token }, save: { token = $0 }, delete: { token = nil; return true })
+        let session = SessionStore(api: APIClient(session: MockURLProtocol.makeSession()), defaults: preferences,
+            persistence: persistence, sharedImportURLs: { [] }, removeSharedImport: { _ in })
+        MockURLProtocol.respond(json: #"{"id":12,"username":"test","role":"user","name":"Rezepte","version":"1.12.0","capabilities":[],"ok":true}"#)
+        await session.restore()
+        guard case .signedIn = session.state else { return XCTFail("Fixture must start signed in") }
+        let oldIdentity = session.identity
+        let notified = expectation(forNotification: Notification.Name("KitchenHouseholdChanged"), object: nil)
+        token = nil
+        do { try await session.householdDidChange(); XCTFail("Missing token must fail the transition") }
+        catch { guard case APIError.unauthenticated = error else { return XCTFail("Wrong transition error: \(error)") } }
+        await fulfillment(of: [notified], timeout: 2)
+        XCTAssertNotEqual(session.identity, oldIdentity, "RootView must retire private views even when Keychain fails")
+        guard case .signedOut = session.state else { return XCTFail("A lost token must end the visible session") }
+        XCTAssertNil(session.userID)
+        XCTAssertNil(preferences.data(forKey: "offline-session-v1"))
+        XCTAssertNotNil(session.alertMessage, "Transition failure must be visible, not filtered through the invalidated old cache")
+        let request = try await session.api.imageRequest(recipeID: 11)
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"), "The pre-transition API token must also be cleared")
     }
 
     func testOnlyConnectivityErrorsQualifyForOfflineFallback() {
