@@ -31,6 +31,10 @@ def comparison(households, tmp_path, monkeypatch):
         db.recipe_set_extraction_result(rid, "ok", [{"name": "Hafer", "canonical_name": "hafer", "amount": 100, "unit": "g"}])
         db.recipe_steps_set(rid, [{"instruction": "Alles vermischen."}])
         db.recipe_set_servings(rid, 2)
+        if owner:
+            # Explicit unpublished fixture for the protected draft boundary.
+            with db.conn() as c:
+                c.execute("UPDATE recipes SET is_global=0 WHERE id=?", (rid,))
         return rid
 
     original = recipe("Haferbrei", "https://original.example/porridge")
@@ -168,7 +172,8 @@ def test_private_variant_preserves_source_and_uses_selected_complete_lists(compa
     assert client.post("/api/import-comparison/resolve", json=body).json()["recipe_id"] == rid
     assert_history_prevents_reimport(comparison, rid, monkeypatch)
     login("bert")
-    assert client.get(f"/api/recipes/{rid}").status_code == 404
+    assert client.get(f"/api/recipes/{rid}").status_code == 200
+    assert client.put(f"/api/recipes/{rid}/steps", json={"steps": [{"instruction": "Fremde Änderung"}]}).status_code == 403
 
 
 def test_existing_ingredients_keep_their_own_servings(comparison):

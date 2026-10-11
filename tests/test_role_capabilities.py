@@ -154,7 +154,8 @@ def test_named_guest_keeps_identity_security_and_global_read_only_scope(roles_ap
                                video_filename=None, source_added_at=time.time())
         db.recipe_set_extraction_result(rid, ingredients=[{"name": "Wasser"}], status="ok")
         with db.conn() as connection:
-            connection.execute("UPDATE recipes SET owner_account_id=? WHERE id=?", (owner, rid))
+            # Retain a protected unpublished fixture next to the shared recipe.
+            connection.execute("UPDATE recipes SET owner_account_id=?,is_global=? WHERE id=?", (owner, int(owner is None), rid))
         ids.append(rid)
     token = auth.create_session("role-guest")
     request = _request(token, "GET", "/api/recipes")

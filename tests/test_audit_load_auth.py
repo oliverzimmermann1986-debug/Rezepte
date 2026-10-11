@@ -133,7 +133,8 @@ def test_recipe_detail_uses_one_snapshot_and_rechecks_next_request(test_db, tmp_
     other_account = accounts.view(test_db, foreign)['id']
     recipe = _create_recipe(test_db, name='Snapshot', folder_path=str(tmp_path / 'recipe'))
     with test_db.conn() as connection:
-        connection.execute('UPDATE recipes SET owner_account_id=? WHERE id=?', (account, recipe['id']))
+        # An explicitly unpublished row checks the protected read boundary.
+        connection.execute('UPDATE recipes SET owner_account_id=?,is_global=0 WHERE id=?', (account, recipe['id']))
     scoped = HouseholdDatabase(test_db, HouseholdScope(account, user_id=owner))
     monkeypatch.setattr(api_recipes, 'get_db', lambda: scoped)
     original = sqlite3.connect
@@ -159,7 +160,7 @@ def test_parallel_detail_snapshots_do_not_cross_households(test_db, tmp_path):
         aid = accounts.view(test_db, uid)['id']
         row = _create_recipe(test_db, name=f'Privat {index}', folder_path=str(tmp_path / f'recipe-{index}'))
         with test_db.conn() as c:
-            c.execute('UPDATE recipes SET owner_account_id=? WHERE id=?', (aid, row['id']))
+            c.execute('UPDATE recipes SET owner_account_id=?,is_global=0 WHERE id=?', (aid, row['id']))
         selections.append((HouseholdDatabase(test_db, HouseholdScope(aid, user_id=uid)), row['id'], row['name']))
     def load(index):
         db, recipe_id, name = selections[index % 2]

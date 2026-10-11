@@ -106,7 +106,7 @@ def test_deleted_or_foreign_private_recipe_name_is_never_returned(test_db):
     db = scoped(test_db)
     add_recipe_to_cart(db, rid)
     with test_db.conn() as c:
-        c.execute("UPDATE recipes SET owner_account_id=202 WHERE id=?", (rid,))
+        c.execute("UPDATE recipes SET owner_account_id=202,is_global=0 WHERE id=?", (rid,))
     for view in (db, test_db):
         assert "Geheime Suppe" not in json.dumps(cart_for_display(view))
         assert cart_for_display(view)[0]["source_contributions"][0]["recipe_id"] is None

@@ -56,7 +56,7 @@ def make_recipe(db, name="Original", owner=None, status="ok"):
     return recipe_id, folder
 
 
-def test_global_copy_is_private_editable_and_preserves_original(variant_accounts):
+def test_global_copy_is_shared_with_own_edit_rights_and_preserves_original(variant_accounts):
     client, db, users, login = variant_accounts
     recipe_id, original_folder = make_recipe(db)
     original = db.recipe_snapshot(recipe_id)
@@ -80,8 +80,9 @@ def test_global_copy_is_private_editable_and_preserves_original(variant_accounts
     assert db.recipe_snapshot(recipe_id) == original
     assert {p.name: p.read_bytes() for p in original_folder.iterdir()} == original_files
     login("bob")
-    assert client.get(f"/api/recipes/{copied_id}").status_code == 404
-    assert client.post(f"/api/recipes/{copied_id}/duplicate", json={"new_name": "Gestohlen"}).status_code == 404
+    assert client.get(f"/api/recipes/{copied_id}").status_code == 200
+    assert client.put(f"/api/recipes/{copied_id}/steps", json={"steps": [{"instruction": "Verboten"}]}).status_code == 403
+    assert client.post(f"/api/recipes/{copied_id}/duplicate", json={"new_name": "Eigene Kopie"}).status_code == 200
 
 
 def test_same_variant_name_is_isolated_between_households(variant_accounts):

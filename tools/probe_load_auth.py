@@ -91,7 +91,8 @@ def main():
                                     type='Hauptgericht', category='Test', folder_path=str(folder), description=None,
                                     thumb_filename=None, video_filename=None, source_added_at=1)
         with database.conn() as c:
-            c.execute('UPDATE recipes SET owner_account_id=? WHERE id=?', (aid, rid))
+            # Explicit unpublished data exercises the protected snapshot boundary.
+            c.execute('UPDATE recipes SET owner_account_id=?,is_global=0 WHERE id=?', (aid, rid))
         original_connect = sqlite3.connect
         opened = []
         def count(*args, **kwargs):
