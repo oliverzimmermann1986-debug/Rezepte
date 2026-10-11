@@ -214,6 +214,17 @@ struct RecipesView: View {
             .onChange(of: search) { _, newValue in
                 if newValue.isEmpty { Task { await load() } }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .recipeDeleted)) { notification in
+                guard let id = notification.object as? Int else { return }
+                // DELETE is already acknowledged. Keep the row removed even
+                // if the follow-up list request fails or an older page arrives.
+                requestID = UUID()
+                isLoading = false; isLoadingMore = false
+                let previousCount = recipes.count
+                recipes.removeAll { $0.id == id }
+                total = max(0, total - (previousCount - recipes.count))
+                if deleteTarget?.id == id { deleteTarget = nil }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .recipesChanged)) { _ in
                 Task {
                     await load()
