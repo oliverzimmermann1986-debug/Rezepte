@@ -169,7 +169,10 @@ final class AppReviewVideoUITests: XCTestCase {
         quotaPreset.tap()
         pause(4)
 
-        let history = app.staticTexts["Ausgewertet werden deine gespeicherten Wochenpläne vor der ausgewählten Woche. Das gilt auch beim Austauschen eines Gerichts. Reichen andere Rezepte nicht aus, bleiben Plätze offen."]
+        let history = app.staticTexts.matching(NSPredicate(
+            format: "label == %@",
+            "Ausgewertet werden deine gespeicherten Wochenpläne vor der ausgewählten Woche. Das gilt auch beim Austauschen eines Gerichts. Reichen andere Rezepte nicht aus, bleiben Plätze offen."
+        )).firstMatch
         reveal(history, maximumSwipes: 6)
         pause(4)
         let monday = app.staticTexts["Montag"].firstMatch
