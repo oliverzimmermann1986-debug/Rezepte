@@ -200,3 +200,25 @@ def test_unknown_split_does_not_double_known_subtotal(client, test_db):
     assert pasta(test_db)["amount"] == 100
     assert client.patch(f"/api/meal-plan/items/{entry['id']}", json={"planned_servings": 4}).status_code == 200
     assert pasta(test_db)["amount"] == 200
+
+
+@pytest.mark.parametrize("unknown_split", [False, True])
+def test_undo_restores_old_owned_snapshot_then_next_change_uses_actual_quantity(client, test_db, unknown_split):
+    from app.recipes.cart_logic import cart_for_display
+    scoped = HouseholdDatabase(test_db, HouseholdScope(0))
+    rid = recipe(test_db, "UndoLinked")
+    if unknown_split:
+        test_db.recipe_set_extraction_result(rid, "ok", [
+            {"name": "Pasta", "amount": 100, "unit": "g"}, {"name": "Pasta", "amount": None, "unit": "g"},
+        ])
+    entry = add(client, rid); link(client)
+    row = next(row for row in cart_for_display(scoped) if row['canonical_name'] == 'nudeln')
+    deletion = {'operation_id': 'linked-delete-operation', 'kind': 'delete', 'item_id': row['id'],
+                'expected_checked': False, 'expected_revision': row['sync_revision']}
+    assert scoped.cart_sync([deletion])[0]['status'] == 'applied'
+    assert client.patch(f"/api/meal-plan/items/{entry['id']}", json={"planned_servings": 4}).status_code == 200
+    restoration = {'operation_id': 'linked-restore-operation', 'kind': 'restore', 'target_operation_id': deletion['operation_id']}
+    assert scoped.cart_sync([restoration])[0]['status'] == 'applied'
+    assert pasta(scoped)['amount'] == 100
+    assert client.patch(f"/api/meal-plan/items/{entry['id']}", json={"planned_servings": 6}).status_code == 200
+    assert pasta(scoped)['amount'] == 300

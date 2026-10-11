@@ -53,8 +53,17 @@ def _desired(c, account_id, week):
     for item in result:
         if item['amount'] is not None and (not math.isfinite(item['amount']) or item['amount'] < 0):
             raise ValueError('Die geplante Einkaufsmenge ist ungültig')
-        item['source_contributions'] = [{**entry, 'kind': 'meal_plan', 'plan_week': week}
-                                        for entry in item['source_contributions']]
+        # Keep the numerical subtotal with the owned cart snapshot as well as
+        # the journal. Undo can restore an older snapshot after the journal
+        # advanced; reconciliation must subtract what is actually present.
+        remainder = max(0.0, float(item['amount'] or 0) - sum(float(entry['amount'] or 0) for entry in item['source_contributions']))
+        history = []
+        for entry in item['source_contributions']:
+            known = entry['amount'] if entry['amount'] is not None else remainder
+            if entry['amount'] is None:
+                remainder = 0
+            history.append({**entry, 'kind': 'meal_plan', 'plan_week': week, 'known_amount': known})
+        item['source_contributions'] = history
     return result
 
 
@@ -98,7 +107,8 @@ def sync_week(c, db, account_id: int, week: str, *, enable=False):
         # A recipe may contain both a known and an unknown quantity of the
         # same ingredient. Its combined contribution is then unknown, while
         # the durable aggregate still records the known numerical subtotal.
-        old_amount = float(before['amount'] or 0) if before else sum(float(entry['amount']) for entry in owned if entry.get('amount') is not None)
+        old_amount = (sum(float(entry['known_amount']) for entry in owned) if all(entry.get('known_amount') is not None for entry in owned)
+                      else float(before['amount'] or 0) if before else sum(float(entry['amount']) for entry in owned if entry.get('amount') is not None))
         new_amount = float(after['amount'] or 0) if after else 0
         amount = max(0.0, float(row['amount'] or 0) - old_amount + new_amount)
         if not math.isfinite(amount):
