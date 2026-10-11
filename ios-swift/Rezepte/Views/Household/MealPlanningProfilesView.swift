@@ -27,12 +27,12 @@ struct MealPlanningProfilesView: View {
                 Section {
                     if profiles.items.isEmpty { Text("Noch keine gespeicherten Wochenprofile.").foregroundStyle(.secondary) }
                     ForEach(profiles.items) { item in
-                        let unavailable = item.preferences.availabilityMessage(advanced: session.supports("meal-plan-constraints-v1"), weekdayRules: session.supports("meal-plan-weekday-rules-v1"), dishTypes: session.supports("meal-plan-dish-types-v1"))
+                        let unavailable = item.preferences.availabilityMessage(advanced: session.supports("meal-plan-constraints-v1"), weekdayRules: session.supports("meal-plan-weekday-rules-v1"), dishTypes: session.supports("meal-plan-dish-types-v1"), householdFilter: session.supports("shared-recipes-household-filter-v1"))
                         VStack(alignment: .leading, spacing: 4) {
                             Button {
                                 perform {
                                     let selected = try profiles.preferences(id: item.id)
-                                    if let message = selected.availabilityMessage(advanced: session.supports("meal-plan-constraints-v1"), weekdayRules: session.supports("meal-plan-weekday-rules-v1"), dishTypes: session.supports("meal-plan-dish-types-v1")) {
+                                    if let message = selected.availabilityMessage(advanced: session.supports("meal-plan-constraints-v1"), weekdayRules: session.supports("meal-plan-weekday-rules-v1"), dishTypes: session.supports("meal-plan-dish-types-v1"), householdFilter: session.supports("shared-recipes-household-filter-v1")) {
                                         throw APIError.server(0, message)
                                     }
                                     onApply(selected); dismiss()

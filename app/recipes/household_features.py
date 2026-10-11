@@ -124,7 +124,7 @@ def writable(actor):
 
 def _visible(c, db, recipe_id):
     row = c.execute("SELECT * FROM recipes WHERE id=? AND deleted_at IS NULL "
-                    "AND COALESCE(ingredients_status,'')<>? AND (owner_account_id IS NULL OR owner_account_id=?)",
+                    "AND COALESCE(ingredients_status,'')<>? AND (owner_account_id IS NULL OR is_global=1 OR owner_account_id=?)",
                     (recipe_id, RECIPE_VARIANT_PENDING_STATUS, account_id(db))).fetchone()
     if not row:
         raise HTTPException(404, "Rezept nicht gefunden")
@@ -143,7 +143,7 @@ def _book_item(c, db, book, recipe_id=None):
     row = c.execute("SELECT COUNT(*) AS n,COALESCE(MAX(r.id=?),0) AS contains_recipe "
                     "FROM household_cookbook_recipes cr JOIN recipes r ON r.id=cr.recipe_id "
                     "WHERE cr.cookbook_id=? AND r.deleted_at IS NULL "
-                    "AND COALESCE(r.ingredients_status,'')<>? AND (r.owner_account_id IS NULL OR r.owner_account_id=?)",
+                    "AND COALESCE(r.ingredients_status,'')<>? AND (r.owner_account_id IS NULL OR r.is_global=1 OR r.owner_account_id=?)",
                     (recipe_id, book["id"], RECIPE_VARIANT_PENDING_STATUS, account_id(db))).fetchone()
     return {"id": book["id"], "name": book["name"], "recipe_count": row["n"],
             "contains_recipe": bool(row["contains_recipe"])}
@@ -209,7 +209,7 @@ def cookbook_recipes(db, book_id):
                          "(SELECT COUNT(*) FROM recipe_steps rs WHERE rs.recipe_id=r.id) AS steps_count "
                          "FROM household_cookbook_recipes cr JOIN recipes r ON r.id=cr.recipe_id "
                          "WHERE cr.cookbook_id=? AND r.deleted_at IS NULL "
-                         "AND COALESCE(r.ingredients_status,'')<>? AND (r.owner_account_id IS NULL OR r.owner_account_id=?) ORDER BY cr.added_at DESC,r.id DESC",
+                         "AND COALESCE(r.ingredients_status,'')<>? AND (r.owner_account_id IS NULL OR r.is_global=1 OR r.owner_account_id=?) ORDER BY cr.added_at DESC,r.id DESC",
                          (book_id, RECIPE_VARIANT_PENDING_STATUS, account_id(db))).fetchall()
     items = db._present_recipes(rows) if hasattr(db, "_present_recipes") else [dict(row) for row in rows]
     keys = ("id", "name", "type", "category", "url", "thumb_filename",
@@ -229,7 +229,7 @@ def _history(c, db, history_id):
                     "JOIN recipes r ON r.id=h.recipe_id LEFT JOIN recipe_cook_notes n "
                     "ON n.history_id=h.id AND n.account_id=h.account_id WHERE h.id=? AND h.account_id=? "
                     "AND r.deleted_at IS NULL AND COALESCE(r.ingredients_status,'')<>? "
-                    "AND (r.owner_account_id IS NULL OR r.owner_account_id=?)",
+                    "AND (r.owner_account_id IS NULL OR r.is_global=1 OR r.owner_account_id=?)",
                     (history_id, account_id(db), RECIPE_VARIANT_PENDING_STATUS, account_id(db))).fetchone()
     if not row:
         raise HTTPException(404, "Kocheintrag nicht gefunden")
@@ -324,7 +324,7 @@ def week_monday(value):
 def _wish(c, db, wish_id):
     row = c.execute("SELECT w.*,r.name AS recipe_name FROM household_meal_wishes w JOIN recipes r ON r.id=w.recipe_id "
                     "WHERE w.id=? AND w.account_id=? AND r.deleted_at IS NULL "
-                    "AND COALESCE(r.ingredients_status,'')<>? AND (r.owner_account_id IS NULL OR r.owner_account_id=?)",
+                    "AND COALESCE(r.ingredients_status,'')<>? AND (r.owner_account_id IS NULL OR r.is_global=1 OR r.owner_account_id=?)",
                     (wish_id, account_id(db), RECIPE_VARIANT_PENDING_STATUS, account_id(db))).fetchone()
     if not row:
         raise HTTPException(404, "Wunsch nicht gefunden")
@@ -344,7 +344,7 @@ def meal_wishes(db, actor, week_start):
     with db.conn() as c:
         ids = c.execute("SELECT w.id FROM household_meal_wishes w JOIN recipes r ON r.id=w.recipe_id "
                         "WHERE w.account_id=? AND w.week_start=? AND r.deleted_at IS NULL "
-                        "AND COALESCE(r.ingredients_status,'')<>? AND (r.owner_account_id IS NULL OR r.owner_account_id=?) ORDER BY w.created_at,w.id",
+                        "AND COALESCE(r.ingredients_status,'')<>? AND (r.owner_account_id IS NULL OR r.is_global=1 OR r.owner_account_id=?) ORDER BY w.created_at,w.id",
                         (account_id(db), week_start, RECIPE_VARIANT_PENDING_STATUS, account_id(db))).fetchall()
         items = [_wish_item(c, actor, _wish(c, db, row["id"])) for row in ids]
     items.sort(key=lambda item: (-item["votes"], item["id"]))

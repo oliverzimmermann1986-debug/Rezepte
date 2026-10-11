@@ -556,8 +556,8 @@ def _safe_duplicate_recipe_serialized(
     if scope is not None and not scope.is_admin:
         if scope.is_guest or scope.account_id <= 0:
             raise ValueError("Für eine eigene Variante bitte mit einem Konto anmelden")
-        # A visible global source may be copied, but never changed or published
-        # globally by a regular account. The destination is server-selected.
+        # The source remains unchanged; this household owns the new variant's
+        # editing rights. Publication happens only after variant finalization.
         target_owner = scope.account_id
     source_folder = _assert_inside_root(Path(str(recipe.get("folder_path") or "")))
     if not source_folder.is_dir():

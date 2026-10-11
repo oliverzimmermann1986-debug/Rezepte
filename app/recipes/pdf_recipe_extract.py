@@ -316,7 +316,7 @@ def existing_hints(db, recipe_id=None) -> tuple[List[str], List[str]]:
         if recipe_id is not None:
             recipe = db.recipe_get(recipe_id)
             owner = recipe.get("owner_account_id") if recipe else None
-        visible = "r.owner_account_id IS NULL"
+        visible = "(r.owner_account_id IS NULL OR r.is_global=1)"
         if owner is not None:
             visible = f"({visible} OR r.owner_account_id={int(owner)})"
         with db.conn() as conn:

@@ -127,12 +127,24 @@ def ingredient_matches(db, ingredients: list[str], limit: int = 20) -> dict:
     return {"items": items[:limit], "warnings": [AVAILABILITY_NOTE]}
 
 
+def _meal_candidates(db, household_only, scan_status):
+    from ..tenancy import RECIPE_LIBRARY
+    # The archive's current library filter must not alter a planning request.
+    token = RECIPE_LIBRARY.set("mine" if household_only else "all")
+    try:
+        if household_only and not getattr(db, "account_id", 0):
+            return
+        yield from _candidates(db, max_examined=10_000, scan_status=scan_status)
+    finally:
+        RECIPE_LIBRARY.reset(token)
+
+
 def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
                           max_minutes: int | None = None, exclude_recipe_ids: list[int] | None = None,
                           available_ingredients: list[str] | None = None,
                           category_quotas: list[dict] | None = None, excluded_ingredients: list[str] | None = None,
                           avoid_recent_days: int = 0, week_start: date | None = None,
-                          weekday_rules: list[dict] | None = None) -> dict:
+                          weekday_rules: list[dict] | None = None, household_only: bool = False) -> dict:
     """Select distinct recipes, jointly assigning rule days without relaxing constraints."""
     available = available_keys(available_ingredients or [])
     excluded = set(exclude_recipe_ids or [])
@@ -149,7 +161,7 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
     search_complete = True
     scan_status = {"complete": True}
     seen_recipe_ids = set()
-    for recipe, ingredients in _candidates(db, max_examined=10_000, scan_status=scan_status):
+    for recipe, ingredients in _meal_candidates(db, household_only, scan_status):
         recipe_id = int(recipe["id"])
         if recipe_id in seen_recipe_ids or recipe_id in excluded:
             continue

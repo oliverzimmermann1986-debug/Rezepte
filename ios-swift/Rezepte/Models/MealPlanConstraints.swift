@@ -33,6 +33,27 @@ struct MealPlanConstraints: Codable, Equatable {
     var excludedIngredientsText = ""
     var avoidRecentDays = 0
     var weekdayRules: [MealWeekdayRule] = []
+    var householdOnly = false
+
+    private enum CodingKeys: String, CodingKey { case counts, excludedIngredientsText, avoidRecentDays, weekdayRules, householdOnly }
+
+    init(counts: [MealIngredientCategory: Int] = [:], excludedIngredientsText: String = "",
+         avoidRecentDays: Int = 0, weekdayRules: [MealWeekdayRule] = [], householdOnly: Bool = false) {
+        self.counts = counts
+        self.excludedIngredientsText = excludedIngredientsText
+        self.avoidRecentDays = avoidRecentDays
+        self.weekdayRules = weekdayRules
+        self.householdOnly = householdOnly
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        counts = try values.decodeIfPresent([MealIngredientCategory: Int].self, forKey: .counts) ?? [:]
+        excludedIngredientsText = try values.decodeIfPresent(String.self, forKey: .excludedIngredientsText) ?? ""
+        avoidRecentDays = try values.decodeIfPresent(Int.self, forKey: .avoidRecentDays) ?? 0
+        weekdayRules = try values.decodeIfPresent([MealWeekdayRule].self, forKey: .weekdayRules) ?? []
+        householdOnly = try values.decodeIfPresent(Bool.self, forKey: .householdOnly) ?? false
+    }
 
     var quotas: [MealCategoryQuota] {
         MealIngredientCategory.allCases.compactMap { category in

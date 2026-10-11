@@ -184,14 +184,16 @@ struct InboxView: View {
                 .font(.title2.bold())
                 .foregroundStyle(theme.ink)
 
-            if session.fullAccess, session.supports("household-libraries-v1") {
+            if session.fullAccess, session.supports("household-libraries-v1"), !session.supports("shared-recipes-household-filter-v1") {
                 Picker("Sichtbarkeit", selection: $importVisibility) {
                     Text("Privat im Haushalt").tag("private")
                     Text("Global für alle").tag("global")
                 }
                 .disabled(importIsBusy)
             }
-            Text(importVisibility == "global"
+            Text(session.supports("shared-recipes-household-filter-v1")
+                 ? "Fertige Rezepte werden global gespeichert und deinem Haushalt hinzugefügt. Import-Entwürfe bleiben bis zum Abschluss in deinem Haushalt."
+                 : importVisibility == "global"
                  ? "Dieses Rezept wird für alle Konten lesbar."
                  : "Neue Rezepte bleiben im Haushalt. Bereits globale Links werden ohne erneuten Download in deiner Sammlung gespeichert.")
                 .font(.caption)

@@ -4,12 +4,12 @@ extension APIClient {
     func constrainedMealSuggestions(count: Int, vegetarian: Int, maxMinutes: Int?, excluding: [Int],
                                    quotas: [MealCategoryQuota], excludedIngredients: [String],
                                    avoidRecentDays: Int, weekStart: String,
-                                   weekdayRules: [MealWeekdayRule] = []) async throws -> ConstrainedMealSuggestionResponse {
+                                   weekdayRules: [MealWeekdayRule] = [], householdOnly: Bool = false) async throws -> ConstrainedMealSuggestionResponse {
         try await kitchenRequest("/api/discovery/meal-plan", method: "POST", body: ConstrainedMealPlanBody(
             count: count, vegetarianCount: vegetarian, maxMinutes: maxMinutes,
             excludeRecipeIds: Array(Set(excluding)).sorted(), categoryQuotas: quotas,
             excludedIngredients: excludedIngredients, avoidRecentDays: avoidRecentDays, weekStart: weekStart,
-            weekdayRules: weekdayRules.isEmpty ? nil : weekdayRules))
+            weekdayRules: weekdayRules.isEmpty ? nil : weekdayRules, householdOnly: householdOnly ? true : nil))
     }
 }
 
@@ -23,4 +23,5 @@ private struct ConstrainedMealPlanBody: Encodable {
     let avoidRecentDays: Int
     let weekStart: String
     let weekdayRules: [MealWeekdayRule]?
+    let householdOnly: Bool?
 }

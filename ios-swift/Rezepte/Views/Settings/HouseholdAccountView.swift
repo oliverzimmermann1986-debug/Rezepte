@@ -25,7 +25,7 @@ struct HouseholdAccountView: View {
                     ForEach(account.members) { member in
                         LabeledContent(member.username, value: member.disabled == true ? "Deaktiviert" : "Aktiv")
                     }
-                    Text("Private Rezepte, Favoriten, Bewertungen, Einkäufe und Wochenpläne gehören diesem Haushalt. Eine zweite Person nutzt ihn mit eigener Anmeldung.")
+                    Text("Rezepte sind global gespeichert. Der Haushalts-Haken, Favoriten, Bewertungen, Einkäufe und Wochenpläne gehören diesem Haushalt. Eine zweite Person nutzt ihn mit eigener Anmeldung.")
                         .font(.caption)
                         .foregroundStyle(theme.muted)
                 }

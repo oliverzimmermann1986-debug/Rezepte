@@ -10,6 +10,7 @@ final class MealPlanningProfileTests: XCTestCase {
         value.constraints.counts = [.pasta: 2, .potato: 4, .rice: 0]
         value.constraints.excludedIngredientsText = "Pilze, Sellerie"
         value.constraints.avoidRecentDays = 14
+        value.constraints.householdOnly = true
         value.constraints.weekdayRules = [MealWeekdayRule(weekday: 1, maxMinutes: 20),
             MealWeekdayRule(weekday: 5, category: .pasta, vegetarian: true),
             MealWeekdayRule(weekday: 7, minMinutes: 60, maxMinutes: 90)]
@@ -29,6 +30,17 @@ final class MealPlanningProfileTests: XCTestCase {
         XCTAssertEqual(try restored.preferences(id: profile.id), value)
         XCTAssertEqual(profile.preferences.constraints.counts[.rice], 0)
         XCTAssertEqual(profile.preferences.constraints.weekdayRules.last?.minMinutes, 60)
+    }
+
+    func testOldProfilesDefaultToGlobalAndHouseholdFilterRequiresServerCapability() throws {
+        let old = Data(#"{"counts":[],"excludedIngredientsText":"Pilze","avoidRecentDays":14,"weekdayRules":[]}"#.utf8)
+        let constraints = try JSONDecoder().decode(MealPlanConstraints.self, from: old)
+        XCTAssertFalse(constraints.householdOnly)
+        XCTAssertEqual(constraints.avoidRecentDays, 14)
+        var value = MealPlanningPreferences()
+        value.constraints.householdOnly = true
+        XCTAssertNotNil(value.availabilityMessage(advanced: true, weekdayRules: true, dishTypes: true))
+        XCTAssertNil(value.availabilityMessage(advanced: true, weekdayRules: true, dishTypes: true, householdFilter: true))
     }
 
     func testAccountsHouseholdsRenameAndDeleteRemainSeparate() throws {
@@ -123,7 +135,7 @@ final class MealPlanningProfileTests: XCTestCase {
         let value = preferences()
         XCTAssertNotNil(value.availabilityMessage(advanced: false, weekdayRules: false))
         XCTAssertNotNil(value.availabilityMessage(advanced: true, weekdayRules: false))
-        XCTAssertNil(value.availabilityMessage(advanced: true, weekdayRules: true))
+        XCTAssertNil(value.availabilityMessage(advanced: true, weekdayRules: true, householdFilter: true))
         XCTAssertNil(MealPlanningPreferences().availabilityMessage(advanced: false, weekdayRules: false))
     }
 }

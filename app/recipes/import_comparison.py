@@ -120,7 +120,7 @@ def finish_pending(db, entry, request_id, recipe_id, request_hash):
         )
         if getattr(db, "account_id", 0) > 0:
             connection.execute(
-                "INSERT OR IGNORE INTO account_recipe_state(account_id,recipe_id,saved_at) VALUES(?,?,?)",
+                "INSERT INTO account_recipe_state(account_id,recipe_id,saved_at) VALUES(?,?,?) ON CONFLICT(account_id,recipe_id) DO UPDATE SET is_saved=1",
                 (db.account_id, recipe_id, time.time()),
             )
         connection.execute("UPDATE pending SET status='resolved',ai_suggestion=? WHERE url=?",

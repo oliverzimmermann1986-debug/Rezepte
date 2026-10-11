@@ -16,6 +16,7 @@ struct MealPlanPDFSnapshot: Encodable, Identifiable {
         let avoidRecentDays: Int
         let weekStart: String
         let weekdayRules: [MealWeekdayRule]
+        let householdOnly: Bool?
     }
 
     struct Item: Encodable {
@@ -34,7 +35,7 @@ struct MealPlanPDFSnapshot: Encodable, Identifiable {
                             excludeRecipeIds: Array(Set(excluding).subtracting(selectedIDs)).sorted(), categoryQuotas: constraints.quotas,
                             excludedIngredients: constraints.excludedIngredients,
                             avoidRecentDays: constraints.avoidRecentDays, weekStart: weekStart,
-                            weekdayRules: constraints.weekdayRules)
+                            weekdayRules: constraints.weekdayRules, householdOnly: constraints.householdOnly ? true : nil)
         items = rows.map { Item(recipeId: $0.id, date: $0.date, servings: $0.servings) }
     }
 }

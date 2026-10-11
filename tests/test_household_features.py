@@ -50,6 +50,10 @@ def recipe(db, name="Pasta", owner=None):
                            video_filename=None, source_added_at=time.time(), owner_account_id=owner)
     db.recipe_set_extraction_result(rid, status="ok", ingredients=[{"name": "Nudeln", "amount": 100, "unit": "g"}])
     db.recipe_steps_set(rid, [{"instruction": "Kochen."}])
+    if owner:
+        # Explicit unpublished fixture; shared completed imports have separate tests.
+        with db.conn() as c:
+            c.execute("UPDATE recipes SET is_global=0 WHERE id=?", (rid,))
     return rid
 
 

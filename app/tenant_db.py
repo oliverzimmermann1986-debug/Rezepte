@@ -65,14 +65,14 @@ class HouseholdDatabase(Database):
         return result.rowcount > 0
 
     def recipe_visibility_sql(self, alias="r"):
-        visible = f"({alias}.owner_account_id IS NULL OR {alias}.owner_account_id={int(self.account_id)})"
+        visible = f"({alias}.owner_account_id IS NULL OR {alias}.is_global=1 OR {alias}.owner_account_id={int(self.account_id)})"
         library = RECIPE_LIBRARY.get()
         if library == "global":
-            return f"{alias}.owner_account_id IS NULL"
+            return f"({alias}.owner_account_id IS NULL OR {alias}.is_global=1)"
         if library == "mine":
-            return (f"({visible} AND ({alias}.owner_account_id={int(self.account_id)} OR EXISTS "
+            return (f"({visible} AND EXISTS "
                     f"(SELECT 1 FROM account_recipe_state ars WHERE ars.recipe_id={alias}.id "
-                    f"AND ars.account_id={int(self.account_id)})))")
+                    f"AND ars.account_id={int(self.account_id)} AND ars.is_saved=1))")
         return visible
 
     def recipe_personal_sql(self, field, alias="r"):
@@ -89,18 +89,18 @@ class HouseholdDatabase(Database):
         result = dict(row)
         if result.get("source_url"):
             result["url"] = result["source_url"] if result.get("deleted_at") is None else None
-        result["visibility"] = "global" if result.get("owner_account_id") is None else "private"
+        result["visibility"] = "global" if result.get("owner_account_id") is None or result.get("is_global") else "private"
         result["can_edit"] = not self.scope.is_guest and (
             self.scope.is_admin or result.get("owner_account_id") == self.account_id
         )
         if state is _DEFAULT_IMPORT:
             with self.conn() as c:
-                state = c.execute("SELECT is_favorite,rating FROM account_recipe_state WHERE account_id=? AND recipe_id=?",
+                state = c.execute("SELECT is_favorite,rating,is_saved FROM account_recipe_state WHERE account_id=? AND recipe_id=?",
                                   (self.account_id, result["id"])).fetchone()
         if self.account_id != 0:
             result["is_favorite"] = bool(state and state["is_favorite"])
             result["rating"] = int(state["rating"]) if state else 0
-        result["in_library"] = bool(state) or result.get("owner_account_id") == self.account_id
+        result["in_library"] = bool(state and state["is_saved"])
         return result
 
     def _present_recipes(self, rows):
@@ -115,7 +115,7 @@ class HouseholdDatabase(Database):
 
     def recipe_get(self, recipe_id, *, include_pending=False):
         with self.conn() as c:
-            sql = "SELECT * FROM recipes WHERE id=? AND (owner_account_id IS NULL OR owner_account_id=?)"
+            sql = "SELECT * FROM recipes WHERE id=? AND (owner_account_id IS NULL OR is_global=1 OR owner_account_id=?)"
             params = [recipe_id, self.account_id]
             if not include_pending:
                 sql += " AND COALESCE(ingredients_status,'')<>?"
@@ -125,7 +125,7 @@ class HouseholdDatabase(Database):
 
     def recipe_get_by_folder(self, folder_path, *, include_pending=False):
         with self.conn() as c:
-            sql = "SELECT * FROM recipes WHERE folder_path=? AND (owner_account_id IS NULL OR owner_account_id=?)"
+            sql = "SELECT * FROM recipes WHERE folder_path=? AND (owner_account_id IS NULL OR is_global=1 OR owner_account_id=?)"
             params = [folder_path, self.account_id]
             if not include_pending:
                 sql += " AND COALESCE(ingredients_status,'')<>?"
@@ -136,11 +136,11 @@ class HouseholdDatabase(Database):
     def global_recipe_for_url(self, url):
         normalized = canonical_source(url)
         with self.conn() as c:
-            row = c.execute("SELECT * FROM recipes WHERE owner_account_id IS NULL AND deleted_at IS NULL "
+            row = c.execute("SELECT * FROM recipes WHERE (owner_account_id IS NULL OR is_global=1) AND deleted_at IS NULL AND COALESCE(ingredients_status,'')<>'variant_pending' "
                             "AND (source_url=? OR url=?) ORDER BY id LIMIT 1", (normalized, normalized)).fetchone()
             if not row:
                 row = c.execute("SELECT r.* FROM history h JOIN recipes r ON r.folder_path=h.target_dir "
-                                "WHERE h.owner_account_id IS NULL AND r.owner_account_id IS NULL AND r.deleted_at IS NULL "
+                                "WHERE h.owner_account_id IS NULL AND (r.owner_account_id IS NULL OR r.is_global=1) AND r.deleted_at IS NULL AND COALESCE(r.ingredients_status,'')<>'variant_pending' "
                                 "AND (h.source_url=? OR h.url=?) ORDER BY r.id LIMIT 1", (normalized, normalized)).fetchone()
         return self._present_recipe(row)
 
@@ -165,7 +165,7 @@ class HouseholdDatabase(Database):
         owner = values.pop("owner_account_id", self.import_owner)
         if owner is not None:
             existing = self.global_recipe_for_url(source_url)
-            if existing:
+            if existing and existing["folder_path"] != values.get("folder_path"):
                 self.save_recipe(int(existing["id"]))
                 return int(existing["id"])
             values["url"] = private_source_key(owner, source_url)
@@ -180,11 +180,14 @@ class HouseholdDatabase(Database):
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
             recipe = c.execute("SELECT id FROM recipes WHERE id=? AND deleted_at IS NULL "
-                               "AND (owner_account_id IS NULL OR owner_account_id=?)", (recipe_id, self.account_id)).fetchone()
+                               "AND (owner_account_id IS NULL OR is_global=1 OR owner_account_id=?)", (recipe_id, self.account_id)).fetchone()
             if not recipe or self.account_id <= 0:
                 raise LookupError("Rezept nicht gefunden")
-            c.execute("INSERT OR IGNORE INTO account_recipe_state(account_id,recipe_id,saved_at) VALUES(?,?,?)",
+            c.execute("INSERT OR IGNORE INTO account_recipe_state(account_id,recipe_id,saved_at,is_saved) VALUES(?,?,?,0)",
                       (self.account_id, recipe_id, time.time()))
+            if field is None:
+                c.execute("UPDATE account_recipe_state SET is_saved=1 WHERE account_id=? AND recipe_id=?",
+                          (self.account_id, recipe_id))
             if field in {"is_favorite", "rating"}:
                 if value is None and field == "is_favorite":
                     c.execute("UPDATE account_recipe_state SET is_favorite=1-is_favorite WHERE account_id=? AND recipe_id=?",
@@ -198,7 +201,7 @@ class HouseholdDatabase(Database):
 
     def remove_saved_recipe(self, recipe_id):
         with self.conn() as c:
-            return c.execute("DELETE FROM account_recipe_state WHERE account_id=? AND recipe_id=?",
+            return c.execute("UPDATE account_recipe_state SET is_saved=0 WHERE account_id=? AND recipe_id=?",
                              (self.account_id, recipe_id)).rowcount > 0
 
     def cart_list(self):
@@ -560,7 +563,7 @@ class HouseholdDatabase(Database):
                              "(SELECT COUNT(*) FROM recipe_ingredients ri WHERE ri.recipe_id=r.id) AS ingredients_count "
                              "FROM meal_plan_entries mp JOIN recipes r ON r.id=mp.recipe_id "
                              "WHERE mp.account_id=? AND mp.planned_for BETWEEN ? AND ? AND r.deleted_at IS NULL "
-                             "AND (r.owner_account_id IS NULL OR r.owner_account_id=?) ORDER BY mp.planned_for,mp.sort_order,mp.id",
+                             "AND (r.owner_account_id IS NULL OR r.is_global=1 OR r.owner_account_id=?) ORDER BY mp.planned_for,mp.sort_order,mp.id",
                              (self.account_id, start_date, end_date, self.account_id)).fetchall()
         return [dict(r) for r in rows]
 

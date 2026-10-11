@@ -47,7 +47,6 @@
         const result = await this.api(recipe.in_library ? 'DELETE' : 'POST', `/api/recipes/${recipe.id}/save`, {});
         if (this._detailOwns(context)) {
           recipe.in_library = !!result.in_library;
-          if (!recipe.in_library) { recipe.is_favorite = false; recipe.rating = 0; }
         }
         await this.loadRecipes();
       } finally {
@@ -1162,10 +1161,9 @@
       const r = await this.api('POST', `/api/recipes/${recipeId}/favorite`);
       if (r?.ok) {
         const item = this.recipes.items.find(i => i.id === recipeId);
-        if (item) { item.is_favorite = r.is_favorite; item.in_library = true; }
+        if (item) { item.is_favorite = r.is_favorite; }
         if (this.recipeDetail?.data?.id === recipeId) {
           this.recipeDetail.data.is_favorite = r.is_favorite;
-          this.recipeDetail.data.in_library = true;
         }
         this.showToast(r.is_favorite ? '⭐ Favorit gesetzt' : 'Favorit entfernt');
       }
@@ -1174,10 +1172,9 @@
       const r = await this.api('POST', `/api/recipes/${recipeId}/rating?value=${value}`);
       if (r?.ok) {
         const item = this.recipes.items.find(i => i.id === recipeId);
-        if (item) { item.rating = r.rating; item.in_library = true; }
+        if (item) { item.rating = r.rating; }
         if (this.recipeDetail?.data?.id === recipeId) {
           this.recipeDetail.data.rating = r.rating;
-          this.recipeDetail.data.in_library = true;
         }
         this.showToast(value === 0 ? 'Bewertung entfernt' : `${'★'.repeat(value)} Bewertet`);
       }

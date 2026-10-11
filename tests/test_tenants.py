@@ -73,6 +73,11 @@ def _recipe(db, name, url, *, owner=None):
     db.recipe_set_extraction_result(rid, ingredients=[{"name": "Hafer", "canonical_name": "hafer", "amount": 100, "unit": "g"}], status="ok")
     db.recipe_steps_set(rid, [{"instruction": "Alles vermischen."}])
     db.recipe_set_servings(rid, 2)
+    if owner:
+        # Explicit unpublished fixture for the remaining draft/legacy guards.
+        # New completed imports are covered by test_shared_library.py.
+        with db.conn() as c:
+            c.execute("UPDATE recipes SET is_global=0 WHERE id=?", (rid,))
     return rid
 
 
@@ -429,9 +434,9 @@ def test_import_roles_can_approve_only_own_pending_and_keep_household_isolation(
     assert db.recipe_get(rid)["owner_account_id"] == users["anna"][1]
     assert db.recipe_count() == 1 and calls == [users["anna"][1]]
     login("bert")
-    assert client.get(f"/api/recipes/{rid}").status_code == 404
+    assert client.get(f"/api/recipes/{rid}").status_code == 200
     login("guest")
-    assert client.get(f"/api/recipes/{rid}").status_code == 404
+    assert client.get(f"/api/recipes/{rid}").status_code == 200
 
 
 def test_global_and_private_pending_for_same_url_resolve_in_correct_scope(households, monkeypatch):
@@ -634,6 +639,7 @@ def test_current_server_catalog_and_bulk_allergen_work_stay_scoped(households):
 def test_upgrade_keeps_legacy_rows_ids_and_creates_backup(tmp_path, monkeypatch, legacy_version):
     import sqlite3
     from app import account_deletion, tenancy
+    from app.recipes import shared_library
     from app.db import Database
     path = tmp_path / "legacy-household.db"
     current_migrate = Database._migrate
@@ -649,6 +655,7 @@ def test_upgrade_keeps_legacy_rows_ids_and_creates_backup(tmp_path, monkeypatch,
         patch.setattr(tenancy, "migrate_schema", lambda _connection: None)
         patch.setattr(tenancy, "migrate_share_ownership", lambda _connection: None)
         patch.setattr(account_deletion, "migrate_schema", lambda _connection: None)
+        patch.setattr(shared_library, "migrate_schema", lambda _connection: None)
         patch.setattr(Database, "_migrate", staticmethod(build_legacy_fixture))
         legacy = Database(path)
     uid = legacy.user_create("AltAdmin", "unused", role="admin")

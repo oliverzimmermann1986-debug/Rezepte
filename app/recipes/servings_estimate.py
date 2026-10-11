@@ -46,7 +46,7 @@ def _snapshot(connection, db, recipe_id):
     row = connection.execute(
         "SELECT id,name,type,category,description,servings,owner_account_id,ingredients_status FROM recipes "
         "WHERE id=? AND deleted_at IS NULL AND COALESCE(ingredients_status,'')<>? "
-        "AND (owner_account_id IS NULL OR owner_account_id=?)",
+        "AND (owner_account_id IS NULL OR is_global=1 OR owner_account_id=?)",
         (recipe_id, RECIPE_VARIANT_PENDING_STATUS, account_id),
     ).fetchone()
     if not row:

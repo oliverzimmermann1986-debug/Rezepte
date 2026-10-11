@@ -29,6 +29,10 @@ def _recipe(db, name, ingredients=("Tomaten", "Nudeln"), *, description="Gesamtz
         db.recipe_steps_set(rid, [{"instruction": "Zutaten zubereiten.", "timer_seconds": 300}])
     db.recipe_tags_set(rid, list(tags))
     db.recipe_set_servings(rid, servings)
+    if owner:
+        # Explicit unpublished data exercises the protected draft read boundary.
+        with db.conn() as c:
+            c.execute("UPDATE recipes SET is_global=0 WHERE id=?", (rid,))
     return rid
 
 

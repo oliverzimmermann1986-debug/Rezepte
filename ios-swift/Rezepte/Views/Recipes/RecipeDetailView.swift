@@ -913,8 +913,8 @@ struct RecipeDetailView: View {
                     Button {
                         Task { await saveToLibrary(recipe) }
                     } label: {
-                        Label(recipe.inLibrary == true ? "Aus meiner Sammlung entfernen" : "In meiner Sammlung speichern",
-                              systemImage: recipe.inLibrary == true ? "bookmark.slash" : "bookmark")
+                        Label(recipe.inLibrary == true ? "Im Haushalt ✓ · Entfernen" : "Zum Haushalt hinzufügen",
+                              systemImage: recipe.inLibrary == true ? "checkmark.square.fill" : "square")
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.bordered)

@@ -40,6 +40,25 @@ def erase(client, **overrides):
     })
 
 
+def test_household_deletion_preserves_its_published_recipes_and_media(deletion_api):
+    client, db, _, aid, _, roots = deletion_api
+    rid = _recipe(db, "Shared", "https://example.test/shared", owner=aid)
+    folder = Path(db.recipe_get(rid)["folder_path"])
+    media = folder / "recipe.pdf"
+    media.write_bytes(b"published recipe PDF")
+    with db.conn() as c:
+        c.execute("UPDATE recipes SET is_global=1 WHERE id=?", (rid,))
+    scoped = HouseholdDatabase(db, HouseholdScope(aid))
+    scoped.history_add("https://example.test/shared", content_type="recipe", target_dir=str(folder))
+    assert erase(client).status_code == 200
+    assert db.recipe_get(rid)["is_global"] == 1
+    assert db.recipe_get(rid)["owner_account_id"] is None
+    assert media.read_bytes() == b"published recipe PDF"
+    with db.conn() as c:
+        assert not c.execute("SELECT 1 FROM account_recipe_state WHERE account_id=?", (aid,)).fetchone()
+        assert not c.execute("PRAGMA foreign_key_check").fetchall()
+
+
 def test_complete_deletion_removes_private_rows_files_tokens_and_keeps_other_households(deletion_api):
     client, db, uid, aid, other, roots = deletion_api
     private = _recipe(db, "Private", "https://example.test/private", owner=aid)

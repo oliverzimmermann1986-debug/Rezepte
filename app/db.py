@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 272
+CURRENT_SCHEMA_VERSION = 273
 RECIPE_VARIANT_PENDING_STATUS = "variant_pending"
 _READ_CONNECTION = ContextVar('recipe_read_connection', default=None)
 
@@ -621,8 +621,10 @@ def _rebuild_shopping_catalog_from_recipes(c, *, account_id: int = 0) -> Dict[st
         "Kopf", "Schale",
     }
     scoped = "account_id" in {row[1] for row in c.execute("PRAGMA table_info(shopping_products)")}
-    has_owner = "owner_account_id" in {row[1] for row in c.execute("PRAGMA table_info(recipes)")}
-    recipe_scope = " AND (r.owner_account_id IS NULL OR r.owner_account_id=?)" if has_owner else ""
+    recipe_columns = {row[1] for row in c.execute("PRAGMA table_info(recipes)")}
+    has_owner = "owner_account_id" in recipe_columns
+    shared = " OR r.is_global=1" if "is_global" in recipe_columns else ""
+    recipe_scope = f" AND (r.owner_account_id IS NULL{shared} OR r.owner_account_id=?)" if has_owner else ""
     account_scope = " AND account_id=?" if scoped else ""
     account_params = (int(account_id),) if scoped else ()
     rows = c.execute(
@@ -1526,6 +1528,8 @@ class Database:
 
         from .account_deletion import migrate_schema as migrate_account_deletion
         migrate_account_deletion(c)
+        from .recipes.shared_library import migrate_schema as migrate_shared_library
+        migrate_shared_library(c)
 
     @contextmanager
     def read_snapshot(self):
@@ -2500,11 +2504,12 @@ class Database:
             cur = c.execute(
                 "INSERT INTO recipes (url, name, type, category, folder_path, "
                 "description, thumb_filename, video_filename, source_added_at, "
-                "indexed_at, ingredients_extracted_at, ingredients_status, owner_account_id, source_url) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+                "indexed_at, ingredients_extracted_at, ingredients_status, owner_account_id, source_url, is_global) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)",
                 (url, name, type, category, folder_path, description,
                  thumb_filename, video_filename, source_added_at, now,
-                 initial_ingredients_status, owner_account_id, source_url or url),
+                 initial_ingredients_status, owner_account_id, source_url or url,
+                 int(initial_ingredients_status != RECIPE_VARIANT_PENDING_STATUS)),
             )
             return int(cur.lastrowid)
 
@@ -2989,7 +2994,7 @@ class Database:
         with self.conn() as c:
             c.execute("BEGIN IMMEDIATE")
             updated = c.execute(
-                "UPDATE recipes SET ingredients_status=? "
+                "UPDATE recipes SET ingredients_status=?, is_global=1 "
                 "WHERE id=? AND ingredients_status=? AND deleted_at IS NULL",
                 (status, int(recipe_id), RECIPE_VARIANT_PENDING_STATUS),
             ).rowcount

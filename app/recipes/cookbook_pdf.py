@@ -33,7 +33,7 @@ def cookbook_snapshot(db, book_id: int) -> tuple[dict, list[dict]]:
             "SELECT r.* FROM household_cookbook_recipes cr JOIN recipes r ON r.id=cr.recipe_id "
             "WHERE cr.cookbook_id=? AND r.deleted_at IS NULL "
             "AND COALESCE(r.ingredients_status,'')<>? "
-            "AND (r.owner_account_id IS NULL OR r.owner_account_id=?) "
+            "AND (r.owner_account_id IS NULL OR r.is_global=1 OR r.owner_account_id=?) "
             "ORDER BY r.name COLLATE NOCASE,r.id LIMIT ?",
             (book_id, RECIPE_VARIANT_PENDING_STATUS, account_id(db), MAX_RECIPES + 1),
         ).fetchall()

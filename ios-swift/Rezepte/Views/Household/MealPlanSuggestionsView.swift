@@ -25,7 +25,7 @@ struct MealPlanSuggestionsView: View {
         MealPlanningPreferences(count: count, vegetarian: vegetarian, maxMinutes: minutes, constraints: constraints)
     }
     private var validationMessage: String? {
-        planningPreferences.availabilityMessage(advanced: advanced, weekdayRules: supportsWeekdays, dishTypes: session.supports("meal-plan-dish-types-v1"))
+        planningPreferences.availabilityMessage(advanced: advanced, weekdayRules: supportsWeekdays, dishTypes: session.supports("meal-plan-dish-types-v1"), householdFilter: session.supports("shared-recipes-household-filter-v1"))
     }
     private var unmetRules: [MealWeekdayRule] {
         MealWeekdayDates.unmetRules(constraints.weekdayRules, rows: rows, categories: categories, weekStart: week.weekStart)
@@ -45,7 +45,14 @@ struct MealPlanSuggestionsView: View {
                         Button("Wochenprofile", systemImage: "bookmark") { showingProfiles = true }
                             .disabled(state.busy || started)
                     }
-                    Section("Vorschläge aus deiner Sammlung") {
+                    Section("Wochenvorschläge") {
+                        if session.supports("shared-recipes-household-filter-v1") {
+                            Toggle("Nur aus Haushalt", isOn: $constraints.householdOnly)
+                            Text(constraints.householdOnly
+                                 ? "Es werden nur Rezepte mit dem Haushalts-Haken vorgeschlagen."
+                                 : "Die Suche berücksichtigt den globalen Rezeptbestand. Favoriten und Bewertungen aus eurem Haushalt beeinflussen die Auswahl.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         Text("Woche ab \(week.weekStart). Prüfe Gerichte, Tage und Portionen vor dem Übernehmen.")
                             .font(.subheadline).foregroundStyle(.secondary)
                         Stepper("\(count) Gerichte", value: $count, in: 1...7)
@@ -85,7 +92,7 @@ struct MealPlanSuggestionsView: View {
                                 Text("7 Gerichte: genau 2 × Pasta, 2 × Kartoffeln, 1 × Salat, 1 × Suppe. Weitere Gerichte frei nach deinen übrigen Vorgaben.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
-                            ForEach(MealIngredientCategory.available(dishTypes: session.supports("meal-plan-dish-types-v1"))) { category in
+                            ForEach(MealIngredientCategory.available(dishTypes: session.supports("meal-plan-dish-types-v1"), householdFilter: session.supports("shared-recipes-household-filter-v1"))) { category in
                                 Picker(category.title, selection: Binding(
                                     get: { constraints.counts[category] ?? -1 },
                                     set: { if $0 < 0 { constraints.counts.removeValue(forKey: category) } else { constraints.counts[category] = $0 } }
@@ -231,7 +238,7 @@ struct MealPlanSuggestionsView: View {
                     maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded,
                     quotas: constraints.quotas, excludedIngredients: constraints.excludedIngredients,
                     avoidRecentDays: constraints.avoidRecentDays, weekStart: week.weekStart,
-                    weekdayRules: supportsWeekdays ? constraints.weekdayRules : [])
+                    weekdayRules: supportsWeekdays ? constraints.weekdayRules : [], householdOnly: constraints.householdOnly)
                 guard state.current(token, session) else { return }
                 rows = try MealWeekdayDates.drafts(result.items, week: week, requireWeekdays: !constraints.weekdayRules.isEmpty)
                 categories = Dictionary(result.items.map { ($0.recipe.id, $0.categories) }, uniquingKeysWith: { first, _ in first })
@@ -261,7 +268,7 @@ struct MealPlanSuggestionsView: View {
                     maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded,
                     quotas: quotas, excludedIngredients: constraints.excludedIngredients,
                     avoidRecentDays: constraints.avoidRecentDays, weekStart: week.weekStart,
-                    weekdayRules: rule(for: rows[index]).map { [$0] } ?? [])
+                    weekdayRules: rule(for: rows[index]).map { [$0] } ?? [], householdOnly: constraints.householdOnly)
                 guard state.current(token, session), rows.indices.contains(index) else { return }
                 if result.constraintsSatisfied, let replacement = result.items.first,
                    rule(for: rows[index]).map({ replacement.weekday == $0.weekday && $0.matches(replacement.recipe, categories: replacement.categories) }) ?? true {

@@ -62,11 +62,12 @@ struct MealPlanningPreferences: Codable, Equatable {
         return nil
     }
 
-    func availabilityMessage(advanced: Bool, weekdayRules: Bool, dishTypes: Bool = false) -> String? {
+    func availabilityMessage(advanced: Bool, weekdayRules: Bool, dishTypes: Bool = false, householdFilter: Bool = false) -> String? {
         if let validationMessage { return validationMessage }
         if !advanced && (!constraints.quotas.isEmpty || !constraints.excludedIngredients.isEmpty || constraints.avoidRecentDays > 0) {
             return "Dieser Server unterstützt die erweiterten Wochenvorgaben noch nicht."
         }
+        if constraints.householdOnly && !householdFilter { return "Dieser Server unterstützt die Auswahl nur aus dem Haushalt noch nicht." }
         if !weekdayRules && !constraints.weekdayRules.isEmpty { return "Dieser Server unterstützt Regeln pro Wochentag noch nicht." }
         if !dishTypes && (constraints.counts.keys.contains(where: { $0.isDishType }) || constraints.weekdayRules.contains(where: { $0.category?.isDishType == true })) {
             return "Dieser Server unterstützt Salat, Suppe und weitere Gerichtstypen noch nicht."

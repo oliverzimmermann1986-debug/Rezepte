@@ -38,11 +38,16 @@ def meal_plan_snapshot(db, criteria: dict, selections: list[dict]) -> dict:
                 "SELECT id,name,type,category,description,ingredients_status, "
                 "EXISTS(SELECT 1 FROM recipe_steps s WHERE s.recipe_id=recipes.id) AS has_steps FROM recipes "
                 "WHERE id=? AND deleted_at IS NULL AND COALESCE(ingredients_status,'')<>? "
-                "AND (owner_account_id IS NULL OR owner_account_id=?)",
+                "AND (owner_account_id IS NULL OR is_global=1 OR owner_account_id=?)",
                 (item["recipe_id"], RECIPE_VARIANT_PENDING_STATUS, account_id(db)),
             ).fetchone()
             if not recipe:
                 raise HTTPException(404, "Ein vorgeschlagenes Rezept ist nicht mehr verfügbar. Bitte neu laden.")
+            if criteria.get("household_only") and not c.execute(
+                "SELECT 1 FROM account_recipe_state WHERE account_id=? AND recipe_id=? AND is_saved=1",
+                (account_id(db), item["recipe_id"]),
+            ).fetchone():
+                raise HTTPException(409, "Ein ausgewähltes Rezept gehört nicht mehr zum Haushalt. Bitte neu laden.")
             recipe = dict(recipe)
             ingredients = [dict(row) for row in c.execute(
                 "SELECT name,canonical_name FROM recipe_ingredients WHERE recipe_id=? ORDER BY id LIMIT 501",
@@ -169,6 +174,7 @@ def build_meal_plan_pdf(snapshot: dict) -> bytes:
             metadata.append("vegetarisch markiert")
         story.extend([Paragraph(_text(" · ".join(metadata)), small), Spacer(1, 2 * mm)])
     story.append(Paragraph("Deine Wochenvorgaben", heading))
+    story.append(Paragraph("Rezeptauswahl: " + ("nur aus dem Haushalt" if criteria.get("household_only") else "globaler Bestand und Haushalt"), body))
     general = [f"{criteria['count']} Gerichte", f"mindestens {criteria['vegetarian_count']} vegetarisch markiert",
                f"höchstens {criteria['max_minutes']} Min. pro Gericht" if criteria["max_minutes"] is not None else "keine allgemeine Zeitgrenze"]
     story.append(Paragraph(_text(" · ".join(general)), body))

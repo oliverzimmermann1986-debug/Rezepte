@@ -93,11 +93,18 @@ def _contained(path, root):
 def _manifest(c, db, account_id, recipes):
     roots = _roots(db)
     paths = set()
+    shared_paths = [Path(os.path.abspath(value)) for row in c.execute(
+        "SELECT folder_path,deleted_folder_path FROM recipes WHERE is_global=1") for value in row
+        if value and not str(value).startswith("__trash__/")]
+
 
     def add(path, kind, *, household_tree=False):
         if not path:
             return
         candidate = _contained(Path(path), roots[kind])
+        if kind == "recipes" and any(candidate == shared or candidate.is_relative_to(shared) or shared.is_relative_to(candidate)
+                                     for shared in shared_paths):
+            return
         if household_tree:
             parts = candidate.relative_to(roots[kind]).parts
             prefix = ".households" if kind == "recipes" else "households"
@@ -218,7 +225,7 @@ def delete_household(db, user_id, expected_version):
     receipt = uuid.uuid4().hex
     with user_household_guard(db, user_id) as locked_account, ExitStack() as locks:
         with db.conn() as c:
-            initial = c.execute("SELECT id,folder_path,deleted_at FROM recipes WHERE owner_account_id=? ORDER BY id", (locked_account,)).fetchall()
+            initial = c.execute("SELECT id,folder_path,deleted_at FROM recipes WHERE owner_account_id=? AND is_global=0 ORDER BY id", (locked_account,)).fetchall()
         ids = [row["id"] for row in initial]
         for recipe in initial:
             try:
@@ -240,12 +247,12 @@ def delete_household(db, user_id, expected_version):
             if c.execute("SELECT COUNT(*) FROM account_members WHERE account_id=?", (account_id,)).fetchone()[0] != 1:
                 raise HTTPException(409, "Der Haushalt hat weitere Mitglieder. Du kannst nur dein eigenes Konto löschen; gemeinsame Daten bleiben erhalten.")
             db._assert_admin_survives(c, user, role="user", disabled=True)
-            recipes = c.execute("SELECT * FROM recipes WHERE owner_account_id=? ORDER BY id", (account_id,)).fetchall()
+            recipes = c.execute("SELECT * FROM recipes WHERE owner_account_id=? AND is_global=0 ORDER BY id", (account_id,)).fetchall()
             if [row["id"] for row in recipes] != ids:
                 raise HTTPException(409, "Deine Rezepte haben sich geändert. Bitte erneut versuchen.")
             busy = c.execute("SELECT 1 FROM background_tasks WHERE status='running' AND json_valid(payload_json) AND "
                              "(json_extract(payload_json,'$.account_id')=? OR kind='recipe_image_backfill' OR "
-                             "json_extract(payload_json,'$.recipe_id') IN (SELECT id FROM recipes WHERE owner_account_id=?)) LIMIT 1",
+                             "json_extract(payload_json,'$.recipe_id') IN (SELECT id FROM recipes WHERE owner_account_id=? AND is_global=0)) LIMIT 1",
                              (account_id, account_id)).fetchone()
             shared_batch = c.execute("SELECT 1 FROM background_tasks WHERE kind='recipe_image_backfill' AND status='queued' "
                                      "AND json_valid(payload_json) AND json_extract(payload_json,'$.account_id') IS NULL LIMIT 1").fetchone()
@@ -263,7 +270,7 @@ def delete_household(db, user_id, expected_version):
                       "SELECT json_extract(payload_json,'$.run_id') FROM background_tasks WHERE json_valid(payload_json) "
                       "AND json_extract(payload_json,'$.account_id')=?)", (account_id,))
             c.execute("DELETE FROM background_tasks WHERE json_valid(payload_json) AND (json_extract(payload_json,'$.account_id')=? OR "
-                      "json_extract(payload_json,'$.recipe_id') IN (SELECT id FROM recipes WHERE owner_account_id=?))", (account_id, account_id))
+                      "json_extract(payload_json,'$.recipe_id') IN (SELECT id FROM recipes WHERE owner_account_id=? AND is_global=0))", (account_id, account_id))
             c.execute("DELETE FROM recipe_share_links WHERE owner_account_id=?", (account_id,))
             _scrub_maintenance_state(c, historical_recipe_ids)
             for recipe_id in historical_recipe_ids:
@@ -271,7 +278,8 @@ def delete_household(db, user_id, expected_version):
                     c.execute(f"DELETE FROM {table} WHERE recipe_id=?", (recipe_id,))
             for row in recipes:
                 c.execute("DELETE FROM sync_errors WHERE folder_path=?", (row["folder_path"],))
-            c.execute("DELETE FROM recipes WHERE owner_account_id=?", (account_id,))
+            c.execute("DELETE FROM recipes WHERE owner_account_id=? AND is_global=0 AND is_global=0", (account_id,))
+            c.execute("UPDATE recipes SET owner_account_id=NULL WHERE owner_account_id=? AND is_global=1", (account_id,))
             for table in ACCOUNT_TABLES:
                 c.execute(f"DELETE FROM {table} WHERE account_id=?", (account_id,))
             for table in ("history", "pending"):

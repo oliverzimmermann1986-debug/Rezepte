@@ -440,6 +440,7 @@ APP_CAPABILITIES = [
     "meal-plan-weekday-rules-v1",
     "meal-plan-preferences-v1",
     "meal-plan-dish-types-v1",
+    "shared-recipes-household-filter-v1",
     "meal-plan-pdf-v1",
     "servings-estimate-v1",
     "cooking-notes-photos",
@@ -666,6 +667,12 @@ innerhalb des eigenen Haushalts. Das Passwort
 wird zur Anmeldung oder Registrierung verschlüsselt an den Rezepteserver
 übertragen. Der Server speichert einen Passwort-Hash; die App speichert das
 Passwort nicht.</p>
+<p>Fertige Rezepte einschließlich ihrer Zutaten, Zubereitung, Quellen und Rezeptmedien
+werden im globalen Rezeptbestand für andere Nutzer dieses Servers sichtbar.
+Die Zuordnung zum Haushalt ist ein eigener Haken. Import-Entwürfe bleiben bis zum
+Abschluss im Haushalt. Favoriten, Bewertungen, Einkaufslisten, Wochenpläne,
+Kochnotizen und Abstimmungen bleiben Haushaltsdaten. Das Entfernen des
+Haushalts-Hakens oder Löschen des Kontos entfernt das globale Rezept nicht.</p>
 <p>Bei der optionalen Anmeldung mit Apple oder Google speichert der Server die
 Anbieterkennung und, falls freigegeben, die bestätigte E-Mail-Adresse. Ein
 Widerrufsschlüssel wird verschlüsselt gespeichert. Passwörter von Apple oder

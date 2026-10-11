@@ -249,9 +249,10 @@ def merge_households(c, source: int, target: int) -> None:
         raise HTTPException(409, "Bitte erst die laufenden Importe abschließen und danach die Einladung annehmen")
     c.execute("UPDATE recipe_share_links SET owner_account_id=? WHERE owner_account_id=?", (target, source))
     c.execute("UPDATE import_budget_usage SET account_id=? WHERE account_id=?", (target, source))
-    c.execute("""INSERT INTO account_recipe_state(account_id,recipe_id,saved_at,is_favorite,rating)
-        SELECT ?,recipe_id,saved_at,is_favorite,rating FROM account_recipe_state WHERE account_id=?
+    c.execute("""INSERT INTO account_recipe_state(account_id,recipe_id,saved_at,is_favorite,rating,is_saved)
+        SELECT ?,recipe_id,saved_at,is_favorite,rating,is_saved FROM account_recipe_state WHERE account_id=?
         ON CONFLICT(account_id,recipe_id) DO UPDATE SET
+          is_saved=MAX(account_recipe_state.is_saved,excluded.is_saved),
           is_favorite=MAX(account_recipe_state.is_favorite,excluded.is_favorite),
           rating=CASE WHEN account_recipe_state.rating=0 THEN excluded.rating ELSE account_recipe_state.rating END""", (target, source))
     for item in c.execute("SELECT * FROM shopping_cart WHERE account_id=?", (source,)).fetchall():
@@ -438,7 +439,7 @@ def require_recipe_editor(request: Request, authorization=Depends(require_auth))
     recipe = get_db().recipe_get(int(recipe_id)) if recipe_id is not None else None
     if not recipe:
         raise HTTPException(404, "Rezept nicht gefunden")
-    if identity.is_guest or (recipe.get("owner_account_id") is None and not identity.is_admin):
+    if identity.is_guest or (not identity.is_admin and recipe.get("owner_account_id") != identity.account_id):
         raise HTTPException(403, "Globale Rezepte können nur Administratoren bearbeiten")
 
 

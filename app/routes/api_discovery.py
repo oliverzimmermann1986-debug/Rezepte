@@ -55,6 +55,7 @@ class MealPlanRequest(BaseModel):
     avoid_recent_days: Literal[0, 7, 14, 28] = 0
     week_start: date | None = None
     weekday_rules: list[WeekdayRule] = Field(default_factory=list, max_length=7)
+    household_only: bool = False
 
     @field_validator("week_start", mode="before")
     @classmethod

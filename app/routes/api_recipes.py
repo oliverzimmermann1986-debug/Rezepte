@@ -2619,8 +2619,6 @@ def remove_from_household(recipe_id: int):
     recipe = db.recipe_get(recipe_id)
     if not recipe:
         raise HTTPException(404, "Rezept nicht gefunden")
-    if recipe.get("owner_account_id") is not None:
-        raise HTTPException(409, "Private Rezepte können über den Papierkorb gelöscht werden")
     db.remove_saved_recipe(recipe_id)
     _FACET_CACHE.clear()
     return {"ok": True, "recipe_id": recipe_id, "in_library": False}

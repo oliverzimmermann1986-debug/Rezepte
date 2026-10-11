@@ -117,15 +117,15 @@
 
     <section x-show="page==='account'" class="account-page">
       <div class="page-head"><div><h1>Mein Konto</h1><p class="muted" x-text="session.username"></p></div></div>
-      <p class="muted">Globale Rezepte sind für alle sichtbar. Private Rezepte, Favoriten, Bewertungen, Einkauf und Wochenplan gehören zu deinem Haushalt. Eine eingeladene Person nutzt diesen Haushalt mit eigener Anmeldung.</p>
+      <p class="muted">Fertige Rezepte sind global für alle sichtbar. Der Haushalts-Haken, Favoriten, Bewertungen, Einkauf und Wochenplan gehören zu deinem Haushalt. Eine eingeladene Person nutzt diesen Haushalt mit eigener Anmeldung.</p>
       <div class="card" x-show="canImport() && account.imports?.length">
-        <h2>Private Importe prüfen</h2>
+        <h2>Import-Entwürfe prüfen</h2>
         <button type="button" class="btn btn-secondary" @click="loadAccount()" :disabled="account.busy">Status aktualisieren</button>
         <template x-for="item in account.imports || []" :key="item.url">
           <div class="household-import">
             <p class="muted" x-text="['queued','running'].includes(item.suggestion?.analysis_state) ? 'Wird analysiert …' : 'Bitte prüfen und übernehmen'"></p>
             <p class="muted" x-show="item.suggestion?.analysis_error" x-text="item.suggestion?.analysis_error"></p>
-            <label>Name des privaten Rezepts <input x-model="item.name" :disabled="account.busy" maxlength="200"></label>
+            <label>Name des Rezepts <input x-model="item.name" :disabled="account.busy" maxlength="200"></label>
             <p class="muted" x-text="(item.suggestion?.ingredients || []).length + ' Zutaten · ' + (item.suggestion?.steps || []).length + ' Schritte'"></p>
             <a class="btn btn-secondary" x-show="item.has_file" :href="'/api/pending/file?visibility=private&amp;url=' + encodeURIComponent(item.url)" target="_blank" rel="noopener">Original öffnen</a>
             <details>
@@ -1277,11 +1277,11 @@
         <p>Zum Erkennen, Übersetzen und Erzeugen eines Rezeptbilds können Rezepttexte, Fotos, PDF-Inhalte sowie Video- und Audiodaten an OpenAI übertragen werden. Du bestätigst jede Verarbeitung vor dem Start. <a href="/privacy" target="_blank" rel="noopener noreferrer">Datenschutz zur KI-Verarbeitung</a></p>
         <label for="household-import-url">Rezeptlink</label>
         <input id="household-import-url" type="url" x-model="manualImportUrl" placeholder="https://…" required :disabled="manualImporting" autocomplete="off">
-        <label x-show="session.is_admin" for="household-import-visibility">Sichtbarkeit</label>
-        <select id="household-import-visibility" x-show="session.is_admin" x-model="manualImportVisibility" :disabled="manualImporting">
+        <label x-show="false" for="household-import-visibility">Sichtbarkeit</label>
+        <select id="household-import-visibility" x-show="false" x-model="manualImportVisibility" :disabled="manualImporting">
           <option value="private">Privat im Haushalt</option><option value="global">Global für alle</option>
         </select>
-        <p class="muted">„Privat im Haushalt“ bestimmt, wer das gespeicherte Rezept lesen kann; die bestätigte KI-Verarbeitung erfolgt trotzdem über OpenAI. Ist der Link bereits global vorhanden, speichert dein Haushalt einen Verweis ohne erneute Analyse.</p>
+        <p class="muted">Fertige Rezepte werden global gespeichert und deinem Haushalt hinzugefügt. Import-Entwürfe bleiben bis zum Abschluss im Haushalt. Bereits vorhandene Links werden ohne erneute Analyse zugeordnet. Die bestätigte KI-Verarbeitung erfolgt über OpenAI.</p>
         <button type="submit" class="btn btn-primary" :disabled="manualImporting || !manualImportUrl.trim()" x-text="manualImporting ? 'Wird übernommen …' : 'In Sammlung übernehmen'"></button>
         <p role="status" x-show="manualImportNotice" x-text="manualImportNotice"></p>
         <label for="household-import-file">Oder PDF / Foto importieren</label>
@@ -3295,7 +3295,8 @@
         <span class="pill" x-text="recipeDetail.data?.visibility === 'private' ? 'Privat im Haushalt' : 'Global für alle'"></span>
         <button type="button" class="btn btn-secondary btn-sm" x-show="canWrite() && recipeDetail.data?.visibility === 'global'"
                 @click="toggleHouseholdRecipe()" :disabled="recipeDetail.savingLibrary"
-                x-text="recipeDetail.data?.in_library ? 'Aus meiner Sammlung entfernen' : 'In meiner Sammlung speichern'"></button>
+                :aria-pressed="!!recipeDetail.data?.in_library"
+                x-text="recipeDetail.data?.in_library ? '✓ Im Haushalt · Entfernen' : 'Zum Haushalt hinzufügen'"></button>
         <span class="recipe-rating-label">Meine Bewertung:</span>
         <div class="recipe-rating-stars">
           <template x-for="n in [1,2,3,4,5]" :key="n">
