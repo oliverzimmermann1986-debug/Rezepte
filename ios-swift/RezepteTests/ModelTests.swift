@@ -7,9 +7,21 @@ final class ModelTests: XCTestCase {
             XCTAssertNotEqual(RecipeReadiness.classify(status: status, ingredients: 3, steps: 2, needsManualCare: false), .ready)
         }
         XCTAssertEqual(RecipeReadiness.classify(status: "ok", ingredients: 3, steps: 2, needsManualCare: false), .ready)
-        XCTAssertEqual(RecipeReadiness.classify(status: "ok", ingredients: 0, steps: 2, needsManualCare: false), .manual)
-        XCTAssertEqual(RecipeReadiness.classify(status: "ok", ingredients: 3, steps: 0, needsManualCare: false), .manual)
+        XCTAssertEqual(RecipeReadiness.classify(status: "ok", ingredients: 0, steps: 2, needsManualCare: false), .missingIngredients)
+        XCTAssertEqual(RecipeReadiness.classify(status: "ok", ingredients: 3, steps: 0, needsManualCare: false), .missingSteps)
         XCTAssertEqual(RecipeReadiness.classify(status: "ok", ingredients: 3, steps: 2, needsManualCare: true), .manual)
+    }
+
+    func testReadinessNamesMissingContentWithoutInventingFailureCause() {
+        for status in ["error", "ok", "skipped", "unknown"] {
+            XCTAssertEqual(RecipeReadiness.classify(status: status, ingredients: 0, steps: 0, needsManualCare: true), .missingContent)
+            XCTAssertEqual(RecipeReadiness.classify(status: status, ingredients: 0, steps: 2, needsManualCare: true), .missingIngredients)
+            XCTAssertEqual(RecipeReadiness.classify(status: status, ingredients: 3, steps: 0, needsManualCare: true), .missingSteps)
+        }
+        XCTAssertEqual(RecipeReadiness.classify(status: "running", ingredients: 0, steps: 0, needsManualCare: true), .pending)
+        XCTAssertEqual(RecipeReadiness.classify(status: "error", ingredients: 18, steps: 9, needsManualCare: false), .failed)
+        XCTAssertEqual(RecipeReadiness.failed.title, "Auswertung nicht bestätigt")
+        XCTAssertTrue(RecipeReadiness.failed.explanation.contains("nicht gespeichert"))
     }
 
     func testHouseholdMembersDecodeSQLiteFlags() throws {

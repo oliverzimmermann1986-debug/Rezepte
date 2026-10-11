@@ -144,7 +144,8 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
                           available_ingredients: list[str] | None = None,
                           category_quotas: list[dict] | None = None, excluded_ingredients: list[str] | None = None,
                           avoid_recent_days: int = 0, week_start: date | None = None,
-                          weekday_rules: list[dict] | None = None, household_only: bool = False) -> dict:
+                          weekday_rules: list[dict] | None = None, household_only: bool = False,
+                          quota_mode: str = "exact", meal_course: str | None = None) -> dict:
     """Select distinct recipes, jointly assigning rule days without relaxing constraints."""
     available = available_keys(available_ingredients or [])
     excluded = set(exclude_recipe_ids or [])
@@ -176,12 +177,17 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         if max_minutes is not None and total > max_minutes:
             continue
         tags = {str(tag["name"]).strip().casefold() for tag in db.recipe_tags_get(recipe["id"])}
+        from .meal_constraints import recipe_course
+        course = recipe_course(recipe, tags)
+        if meal_course is not None and course != meal_course:
+            continue
         servings = _amount(recipe.get("servings"))
         preference_score, preference_reasons = _meal_preference(recipe)
         candidates.append({
             "recipe_id": int(recipe["id"]), "name": recipe["name"],
             "thumb_url": f"/api/recipes/{recipe['id']}/thumb", "total_minutes": total,
             "vegetarian": bool(tags & {"vegetarisch", "vegan"}),
+            "meal_course": course,
             "categories": recipe_categories(recipe, tags, keys),
             "servings": max(1, min(24, int(servings))) if servings and servings.is_integer() else 2,
             "preference_reasons": preference_reasons, "_preference_score": preference_score,
@@ -209,11 +215,11 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         return True
 
     if rules:
-        selected, solver_complete = weekday_selection(candidates, count, vegetarian_count, quotas, rules)
+        selected, solver_complete = weekday_selection(candidates, count, vegetarian_count, quotas, rules, quota_mode=quota_mode)
         search_complete = search_complete and solver_complete
         vegetarian_found = sum(item["vegetarian"] for item in selected)
     elif quotas:
-        selected, solver_complete = quota_selection(candidates, count, vegetarian_count, quotas)
+        selected, solver_complete = quota_selection(candidates, count, vegetarian_count, quotas, quota_mode=quota_mode)
         search_complete = search_complete and solver_complete
         vegetarian_found = sum(item["vegetarian"] for item in selected)
     else:
@@ -243,7 +249,8 @@ def meal_plan_suggestions(db, *, count: int, vegetarian_count: int = 0,
         missing = max(0, quota["count"] - fulfilled)
         missing_quotas.append({"category": category, "requested": quota["count"], "fulfilled": fulfilled, "missing": missing})
         if missing:
-            warnings.append(f"{CATEGORY_NAMES[category]}: {fulfilled} von exakt {quota['count']} passenden Gerichten gefunden.")
+            qualifier = "mindestens" if quota_mode == "minimum" else "exakt"
+            warnings.append(f"{CATEGORY_NAMES[category]}: {fulfilled} von {qualifier} {quota['count']} passenden Gerichten gefunden.")
     if quotas or any(rule.get("category") for rule in rules):
         warnings.append("Zutatenarten werden aus gespeicherten Zutaten erkannt; Gerichtstypen aus Rezeptart, Kategorie, Tags und Gerichtsname. Ein Gericht mit mehreren Kategorien zählt in jeder davon; Mengen spielen dabei keine Rolle.")
     if excluded_keys:

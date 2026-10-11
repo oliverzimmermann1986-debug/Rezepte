@@ -12,7 +12,7 @@ from ..db import RECIPE_VARIANT_PENDING_STATUS
 from .cookbook_pdf import _text
 from .discovery import _complete_ingredients, _key, available_keys, explicit_total_minutes
 from .household_features import account_id
-from .meal_constraints import CATEGORY_NAMES, excluded_ingredient_match, recipe_categories, matches_weekday_rule
+from .meal_constraints import CATEGORY_NAMES, COURSE_NAMES, excluded_ingredient_match, recipe_categories, recipe_course, matches_weekday_rule
 
 MAX_TEXT_CHARACTERS = 40_000
 MAX_PDF_BYTES = 2 * 1024 * 1024
@@ -61,6 +61,8 @@ def meal_plan_snapshot(db, criteria: dict, selections: list[dict]) -> dict:
             if characters > MAX_TEXT_CHARACTERS or len(ingredients) > 500 or len(tags) > 100:
                 raise HTTPException(422, "Die ausgewählten Rezepte enthalten zu viel Text für einen Wochenexport.")
             keys = {_key(ingredient) for ingredient in ingredients if _key(ingredient)}
+            if item.get("meal_course") is not None and recipe_course(recipe, set(tags)) != item["meal_course"]:
+                raise HTTPException(409, "Ein zusätzliches Rezept passt nicht zur gewählten Mahlzeit. Bitte neu suchen.")
             rows.append({**item, "name": recipe["name"] or "Unbenannt", "categories": recipe_categories(recipe, set(tags), keys),
                          "total_minutes": explicit_total_minutes(recipe),
                          "vegetarian": bool({tag.strip().casefold() for tag in tags} & {"vegetarisch", "vegan"}),
@@ -74,15 +76,19 @@ def meal_plan_snapshot(db, criteria: dict, selections: list[dict]) -> dict:
 
 def _snapshot_warnings(criteria: dict, rows: list[dict], recent: set[int]) -> list[str]:
     warnings = []
-    if len(rows) != criteria["count"]:
-        warnings.append(f"Aktuell {len(rows)} von {criteria['count']} gewünschten Gerichten ausgewählt.")
-    vegetarian = sum(row["vegetarian"] for row in rows)
+    main_rows = [row for row in rows if not row.get("meal_course")]
+    if len(main_rows) != criteria["count"]:
+        warnings.append(f"Aktuell {len(main_rows)} von {criteria['count']} gewünschten Gerichten ausgewählt.")
+    vegetarian = sum(row["vegetarian"] for row in main_rows)
     if vegetarian < criteria["vegetarian_count"]:
         warnings.append(f"Aktuell {vegetarian} von mindestens {criteria['vegetarian_count']} vegetarisch markierten Gerichten.")
     for quota in criteria["category_quotas"]:
-        actual = sum(quota["category"] in row["categories"] for row in rows)
-        if actual != quota["count"]:
-            warnings.append(f"{CATEGORY_NAMES[quota['category']]}: aktuell {actual}, gewünscht exakt {quota['count']}.")
+        actual = sum(quota["category"] in row["categories"] for row in main_rows)
+        minimum = criteria.get("quota_mode") == "minimum" and quota["count"] > 0
+        violated = actual < quota["count"] if minimum else actual != quota["count"]
+        if violated:
+            qualifier = "mindestens" if minimum else "exakt"
+            warnings.append(f"{CATEGORY_NAMES[quota['category']]}: aktuell {actual}, gewünscht {qualifier} {quota['count']}.")
     excluded = available_keys(criteria["excluded_ingredients"])
     excluded_ids = set(criteria["exclude_recipe_ids"])
     for row in rows:
@@ -98,12 +104,15 @@ def _snapshot_warnings(criteria: dict, rows: list[dict], recent: set[int]) -> li
         if row["recipe_id"] in excluded_ids:
             warnings.append(f"{prefix} - gehört zu den ausgeschlossenen Rezepten.")
     for rule in criteria.get("weekday_rules", []):
-        matches = [row for row in rows if row["date"].isoweekday() == rule["weekday"]]
+        matches = [row for row in main_rows if row["date"].isoweekday() == rule["weekday"]]
         day = WEEKDAYS[rule["weekday"] - 1]
         if not matches:
             warnings.append(f"{day}: Für die Tagesregel ist noch kein Gericht ausgewählt.")
         elif not all(matches_weekday_rule(row, rule) for row in matches):
             warnings.append(f"{day}: Das ausgewählte Gericht erfüllt die Tagesregel nicht.")
+    for slot in criteria.get("additional_courses", []):
+        if not any(row.get("meal_course") == slot["course"] and row["date"].isoweekday() == slot["weekday"] for row in rows):
+            warnings.append(f"{WEEKDAYS[slot['weekday'] - 1]}: {COURSE_NAMES[slot['course']]} fehlt noch.")
     return warnings
 
 
@@ -167,7 +176,8 @@ def build_meal_plan_pdf(snapshot: dict) -> bytes:
     for row in rows:
         date_label = f"{WEEKDAYS[row['date'].weekday()]}, {row['date'].strftime('%d.%m.')}"
         story.append(Paragraph(_text(date_label), ParagraphStyle("MealPlanDay", parent=body, fontName="MealPlanSans-Bold", keepWithNext=True)))
-        story.append(Paragraph(_text(row["name"]), body))
+        course = COURSE_NAMES.get(row.get("meal_course") or "main", "Hauptgericht")
+        story.append(Paragraph(_text(course + ": " + row["name"]), body))
         metadata = [f"{row['servings']} Portionen",
                     f"{row['total_minutes']} Min. Gesamtzeit" if row["total_minutes"] is not None else "Gesamtzeit unbekannt"]
         if row["vegetarian"]:
@@ -179,8 +189,9 @@ def build_meal_plan_pdf(snapshot: dict) -> bytes:
                f"höchstens {criteria['max_minutes']} Min. pro Gericht" if criteria["max_minutes"] is not None else "keine allgemeine Zeitgrenze"]
     story.append(Paragraph(_text(" · ".join(general)), body))
     for quota in criteria["category_quotas"]:
-        actual = sum(quota["category"] in row["categories"] for row in rows)
-        story.append(Paragraph(_text(f"{CATEGORY_NAMES[quota['category']]}: exakt {quota['count']} gewünscht, {actual} ausgewählt"), body))
+        actual = sum(quota["category"] in row["categories"] for row in rows if not row.get("meal_course"))
+        qualifier = "mindestens" if criteria.get("quota_mode") == "minimum" and quota["count"] > 0 else "exakt"
+        story.append(Paragraph(_text(f"{CATEGORY_NAMES[quota['category']]}: {qualifier} {quota['count']} gewünscht, {actual} ausgewählt"), body))
     if criteria["excluded_ingredients"]:
         story.append(Paragraph("Ausgeschlossene Zutaten: " + _text(", ".join(criteria["excluded_ingredients"])), body))
     if criteria["avoid_recent_days"]:

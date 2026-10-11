@@ -17,7 +17,8 @@ from ..recipes.meal_constraints import CATEGORY_NAMES
 router = APIRouter(prefix="/api/discovery", tags=["discovery"], dependencies=[Depends(require_auth)])
 IngredientName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 RecipeId = Annotated[int, Field(gt=0)]
-MealCategory = Literal["pasta", "potato", "rice", "legume", "salad", "soup", "stew", "casserole", "pizza", "wrap"]
+MealCategory = Literal["pasta", "potato", "rice", "legume", "salad", "soup", "stew", "casserole", "pizza", "wrap", "breakfast", "starter", "dessert"]
+MealCourse = Literal["main", "breakfast", "starter", "dessert"]
 
 
 class IngredientRequest(BaseModel):
@@ -56,6 +57,8 @@ class MealPlanRequest(BaseModel):
     week_start: date | None = None
     weekday_rules: list[WeekdayRule] = Field(default_factory=list, max_length=7)
     household_only: bool = False
+    quota_mode: Literal["exact", "minimum"] = "exact"
+    meal_course: MealCourse | None = None
 
     @field_validator("week_start", mode="before")
     @classmethod

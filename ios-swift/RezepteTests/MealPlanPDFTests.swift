@@ -3,6 +3,23 @@ import XCTest
 @testable import Rezepte
 
 final class MealPlanPDFTests: XCTestCase {
+    func testSnapshotIncludesOptionalCoursesAndMinimumModeWithoutChangingMainCount() throws {
+        var preferences = MealPlanningPreferences(count: 1, vegetarian: 0)
+        preferences.constraints.additionalCourses = [1: [.dessert]]
+        let dish = MealSuggestion(recipeId: 9, name: "Tiramisu", servings: 2, totalMinutes: 20, vegetarian: true)
+        let value = MealPlanPDFSnapshot(preferences: preferences, weekStart: "2026-10-12",
+            rows: [MealSuggestionDraft(suggestion: dish, date: "2026-10-12", servings: 2, mealCourse: .dessert)])
+        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(value)) as? [String: Any])
+        let criteria = try XCTUnwrap(object["criteria"] as? [String: Any])
+        XCTAssertEqual(criteria["count"] as? Int, 1)
+        XCTAssertEqual(criteria["quota_mode"] as? String, "minimum")
+        let slot = try XCTUnwrap((criteria["additional_courses"] as? [[String: Any]])?.first)
+        XCTAssertEqual(slot["weekday"] as? Int, 1)
+        XCTAssertEqual(slot["course"] as? String, "dessert")
+        let item = try XCTUnwrap((object["items"] as? [[String: Any]])?.first)
+        XCTAssertEqual(item["meal_course"] as? String, "dessert")
+    }
     private func snapshot() -> MealPlanPDFSnapshot {
         let preferences = MealPlanningPreferences(count: 2, vegetarian: 1, maxMinutes: 30,
             constraints: MealPlanConstraints(counts: [.pasta: 1], excludedIngredientsText: "Pilze, Sellerie",

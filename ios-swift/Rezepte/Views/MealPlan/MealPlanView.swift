@@ -192,6 +192,9 @@ struct MealPlanView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(entry.recipeName)
                                 .fontWeight(.medium)
+                            if let course = entry.mealCourse.flatMap(MealExtraCourse.init(rawValue:)) {
+                                Text(course.title).font(.caption).foregroundStyle(.secondary)
+                            }
                             Text("\(entry.plannedServings) Portionen")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)

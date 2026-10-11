@@ -61,6 +61,7 @@ struct MealSuggestionDraft: Identifiable {
     var date: String
     var servings: Int
     var status: Status = .pending
+    var mealCourse: MealExtraCourse? = nil
     var id: Int { suggestion.recipeId }
 
     static func make(_ suggestions: [MealSuggestion], days: [MealDay]) -> [Self] {

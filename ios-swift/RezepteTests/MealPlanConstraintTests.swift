@@ -3,6 +3,21 @@ import XCTest
 @testable import Rezepte
 
 final class MealPlanConstraintTests: XCTestCase {
+    func testAdditionalCoursesAreOptionalPerDayAndOldProfilesRemainEmpty() throws {
+        var preferences = MealPlanningPreferences()
+        XCTAssertTrue(preferences.constraints.extraCourseSlots.isEmpty)
+        preferences.constraints.additionalCourses = [1: [.breakfast, .starter, .dessert], 5: [.dessert]]
+        let restored = try JSONDecoder().decode(MealPlanningPreferences.self, from: JSONEncoder().encode(preferences))
+        XCTAssertEqual(restored, preferences)
+        XCTAssertEqual(restored.constraints.extraCourseSlots.count, 4)
+        XCTAssertEqual(restored.constraints.extraCourseSlots.first?.course, .breakfast)
+        XCTAssertNotNil(restored.availabilityMessage(advanced: true, weekdayRules: true, dishTypes: true))
+        XCTAssertNil(restored.availabilityMessage(advanced: true, weekdayRules: true, dishTypes: true, extraCourses: true))
+        let legacy = try JSONDecoder().decode(MealPlanConstraints.self, from: Data("{}".utf8))
+        XCTAssertTrue(legacy.extraCourseSlots.isEmpty)
+        preferences.constraints.additionalCourses[8] = [.dessert]
+        XCTAssertNotNil(preferences.validationMessage)
+    }
     func testDishTypesRoundTripAndKeepOverlappingReplacementQuotas() throws {
         var preferences = MealPlanningPreferences(count: 2, vegetarian: 0)
         preferences.constraints.counts = [.salad: 1, .soup: 1, .pasta: 1]
@@ -14,7 +29,6 @@ final class MealPlanConstraintTests: XCTestCase {
         XCTAssertNotNil(restored.availabilityMessage(advanced: true, weekdayRules: true))
         XCTAssertNil(restored.availabilityMessage(advanced: true, weekdayRules: true, dishTypes: true))
         XCTAssertEqual(restored.constraints.replacementQuotas(remainingIDs: [42], categories: [42: [.pasta, .salad]]), [
-            MealCategoryQuota(category: .pasta, count: 0), MealCategoryQuota(category: .salad, count: 0),
             MealCategoryQuota(category: .soup, count: 1),
         ])
     }
@@ -28,7 +42,7 @@ final class MealPlanConstraintTests: XCTestCase {
         XCTAssertEqual(response.missingQuotas.first?.missing, 2)
     }
 
-    func testExactQuotasAllowOverlapAndPreserveZeroInsteadOfTreatingItAsUnset() {
+    func testMinimumQuotasAllowOverlapAndPreserveExplicitExclusion() {
         var constraints = MealPlanConstraints()
         constraints.counts = [.pasta: 2, .potato: 2, .rice: 0]
         let categories: [Int: Set<MealIngredientCategory>] = [1: [.pasta, .potato], 2: [.pasta, .potato]]
@@ -44,11 +58,12 @@ final class MealPlanConstraintTests: XCTestCase {
         XCTAssertFalse(constraints.quotas.contains { $0.category == .rice })
     }
 
-    func testReplacementKeepsAlreadySatisfiedQuotaAtZero() {
+    func testReplacementOmitsSatisfiedMinimumInsteadOfExcludingItsCategory() {
         var constraints = MealPlanConstraints()
         constraints.counts = [.pasta: 1, .potato: 1]
         let result = constraints.replacementQuotas(remainingIDs: [1], categories: [1: [.pasta]])
-        XCTAssertEqual(result, [MealCategoryQuota(category: .pasta, count: 0), MealCategoryQuota(category: .potato, count: 1)])
+        XCTAssertEqual(result, [MealCategoryQuota(category: .potato, count: 1)])
+        XCTAssertEqual(constraints.replacementQuotas(remainingIDs: [1, 2], categories: [1: [.pasta], 2: [.pasta, .potato]]), [])
     }
 
     func testIngredientExclusionsParseWithoutDroppingEntriesOrInventingSubstrings() {
@@ -75,6 +90,7 @@ final class MealPlanConstraintTests: XCTestCase {
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: MockURLProtocol.lastBody()) as? [String: Any])
         XCTAssertEqual(body["week_start"] as? String, "2026-10-12")
         XCTAssertEqual(body["avoid_recent_days"] as? Int, 7)
+        XCTAssertEqual(body["quota_mode"] as? String, "minimum")
         XCTAssertEqual(body["exclude_recipe_ids"] as? [Int], [1, 3])
         XCTAssertEqual(body["excluded_ingredients"] as? [String], ["Sellerie"])
         let quotas = try XCTUnwrap(body["category_quotas"] as? [[String: Any]])

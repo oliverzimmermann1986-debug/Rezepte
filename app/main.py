@@ -440,6 +440,8 @@ APP_CAPABILITIES = [
     "meal-plan-weekday-rules-v1",
     "meal-plan-preferences-v1",
     "meal-plan-dish-types-v1",
+    "meal-plan-minimum-quotas-v1",
+    "meal-plan-extra-courses-v1",
     "shared-recipes-household-filter-v1",
     "meal-plan-pdf-v1",
     "servings-estimate-v1",

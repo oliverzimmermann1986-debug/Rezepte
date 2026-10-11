@@ -75,7 +75,7 @@ def test_more_than_four_categories_can_be_submitted_and_missing_dishes_stay_miss
         'category_quotas': [{'category': category, 'count': 1} for category in CATEGORY_NAMES]})
     assert response.status_code == 200, response.text
     assert not response.json()['constraints_satisfied']
-    assert len(response.json()['missing_quotas']) == 10
+    assert len(response.json()['missing_quotas']) == len(CATEGORY_NAMES)
 
 
 @pytest.mark.parametrize('quotas', [[{'category': 'salad', 'count': 1}] * 2,

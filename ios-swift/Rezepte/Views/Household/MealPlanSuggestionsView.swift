@@ -19,23 +19,36 @@ struct MealPlanSuggestionsView: View {
     private var started: Bool { rows.contains { $0.status != .pending } }
     private var complete: Bool { !rows.isEmpty && rows.allSatisfy { $0.status == .saved } }
     private var excluded: [Int] { week.days.flatMap(\.items).map(\.recipeId) + rows.map(\.id) }
+    private var mainRows: [MealSuggestionDraft] { rows.filter { $0.mealCourse == nil } }
     private var advanced: Bool { session.supports("meal-plan-constraints-v1") }
     private var supportsWeekdays: Bool { advanced && session.supports("meal-plan-weekday-rules-v1") }
     private var planningPreferences: MealPlanningPreferences {
         MealPlanningPreferences(count: count, vegetarian: vegetarian, maxMinutes: minutes, constraints: constraints)
     }
     private var validationMessage: String? {
-        planningPreferences.availabilityMessage(advanced: advanced, weekdayRules: supportsWeekdays, dishTypes: session.supports("meal-plan-dish-types-v1"), householdFilter: session.supports("shared-recipes-household-filter-v1"))
+        if !constraints.extraCourseSlots.isEmpty, !session.supports("meal-plan-extra-courses-v1") {
+            return "Dieser Server unterstützt zusätzliche Mahlzeiten pro Tag noch nicht. Bitte den Server aktualisieren."
+        }
+        if constraints.counts.values.contains(where: { $0 > 0 }), !session.supports("meal-plan-minimum-quotas-v1") {
+            return "Dieser Server unterstützt Mindestzahlen pro Gerichtstyp noch nicht. Bitte den Server aktualisieren."
+        }
+        return planningPreferences.availabilityMessage(advanced: advanced, weekdayRules: supportsWeekdays, dishTypes: session.supports("meal-plan-dish-types-v1"), householdFilter: session.supports("shared-recipes-household-filter-v1"), minimumQuotas: session.supports("meal-plan-minimum-quotas-v1"), extraCourses: session.supports("meal-plan-extra-courses-v1"))
     }
     private var unmetRules: [MealWeekdayRule] {
-        MealWeekdayDates.unmetRules(constraints.weekdayRules, rows: rows, categories: categories, weekStart: week.weekStart)
+        MealWeekdayDates.unmetRules(constraints.weekdayRules, rows: mainRows, categories: categories, weekStart: week.weekStart)
     }
     private var quotasSatisfied: Bool {
         !advanced || constraints.quotas.allSatisfy { quota in
-            constraints.fulfilled(quota.category, recipeIDs: rows.map(\.id), categories: categories) == quota.count
+            let actual = constraints.fulfilled(quota.category, recipeIDs: mainRows.map(\.id), categories: categories)
+            return quota.count == 0 ? actual == 0 : actual >= quota.count
         }
     }
-    private var partial: Bool { rows.count < count || rows.filter { $0.suggestion.vegetarian }.count < vegetarian || !quotasSatisfied || !unmetRules.isEmpty }
+    private var missingExtraCourses: [MealExtraCourseSlot] {
+        constraints.extraCourseSlots.filter { slot in
+            !rows.contains { $0.mealCourse == slot.course && $0.date == MealWeekdayDates.date(weekday: slot.weekday, weekStart: week.weekStart) }
+        }
+    }
+    private var partial: Bool { mainRows.count < count || mainRows.filter { $0.suggestion.vegetarian }.count < vegetarian || !quotasSatisfied || !unmetRules.isEmpty || !missingExtraCourses.isEmpty }
 
     var body: some View {
         NavigationStack {
@@ -55,7 +68,7 @@ struct MealPlanSuggestionsView: View {
                         }
                         Text("Woche ab \(week.weekStart). Prüfe Gerichte, Tage und Portionen vor dem Übernehmen.")
                             .font(.subheadline).foregroundStyle(.secondary)
-                        Stepper("\(count) Gerichte", value: $count, in: 1...7)
+                        Stepper("\(count) Hauptgerichte", value: $count, in: 1...7)
                             .onChange(of: count) { _, value in
                                 vegetarian = min(vegetarian, value)
                                 constraints.counts = constraints.counts.mapValues { min($0, value) }
@@ -80,7 +93,7 @@ struct MealPlanSuggestionsView: View {
                     }
                     if advanced {
                         Section("So soll deine Woche aussehen") {
-                            Button("7 Gerichte: 2 × Pasta, 4 × Kartoffeln") {
+                            Button("7 Gerichte: mindestens 2 × Pasta, 4 × Kartoffeln") {
                                 count = 7
                                 constraints.counts = [.pasta: 2, .potato: 4]
                             }
@@ -89,7 +102,7 @@ struct MealPlanSuggestionsView: View {
                                     count = 7
                                     constraints.counts = [.pasta: 2, .potato: 2, .salad: 1, .soup: 1]
                                 }
-                                Text("7 Gerichte: genau 2 × Pasta, 2 × Kartoffeln, 1 × Salat, 1 × Suppe. Weitere Gerichte frei nach deinen übrigen Vorgaben.")
+                                Text("7 Gerichte: mindestens 2 × Pasta, 2 × Kartoffeln, 1 × Salat, 1 × Suppe. Weitere passende Gerichte dürfen dazukommen.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             ForEach(MealIngredientCategory.available(dishTypes: session.supports("meal-plan-dish-types-v1"))) { category in
@@ -99,10 +112,10 @@ struct MealPlanSuggestionsView: View {
                                 )) {
                                     Text("Egal").tag(-1)
                                     Text("Keine Gerichte").tag(0)
-                                    ForEach(1...count, id: \.self) { Text("Genau \($0) Gerichte").tag($0) }
+                                    ForEach(1...count, id: \.self) { Text("Mindestens \($0) Gerichte").tag($0) }
                                 }
                             }
-                            Text("Die Anzahl gilt für die neuen Vorschläge. Ein Nudelsalat zählt zum Beispiel als Pasta und Salat. Gerichtstypen werden aus Rezeptart, Kategorie, Tags und Gerichtsname erkannt. Bereits geplante Gerichte bleiben erhalten.")
+                            Text("Die Mindestanzahl gilt für die neuen Vorschläge; mehr passende Gerichte sind erlaubt. Keine Gerichte schließt die Kategorie aus. Ein Nudelsalat zählt als Pasta und Salat. Bereits geplante Gerichte bleiben erhalten.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }.disabled(state.busy || started)
                         Section("Zutaten und Abwechslung") {
@@ -124,7 +137,7 @@ struct MealPlanSuggestionsView: View {
                         }.disabled(state.busy || started)
                     }
                     if supportsWeekdays {
-                        MealWeekdayRulesView(rules: $constraints.weekdayRules, count: count)
+                        MealWeekdayRulesView(rules: $constraints.weekdayRules, additionalCourses: $constraints.additionalCourses, count: count)
                             .disabled(state.busy || started)
                     }
                     Section {
@@ -147,16 +160,29 @@ struct MealPlanSuggestionsView: View {
                     if advanced, !rows.isEmpty, !constraints.quotas.isEmpty {
                         Section("Deine Vorgaben im Ergebnis") {
                             ForEach(constraints.quotas, id: \.category) { quota in
-                                let actual = constraints.fulfilled(quota.category, recipeIDs: rows.map(\.id), categories: categories)
-                                Label("\(quota.category.title): \(actual) von genau \(quota.count)",
-                                      systemImage: actual == quota.count ? "checkmark.circle" : "exclamationmark.circle")
-                                    .foregroundStyle(actual == quota.count ? Color.primary : Color.orange)
+                                let actual = constraints.fulfilled(quota.category, recipeIDs: mainRows.map(\.id), categories: categories)
+                                let satisfied = quota.count == 0 ? actual == 0 : actual >= quota.count
+                                Label(quota.count == 0 ? "\(quota.category.title): \(actual), keine gewünscht"
+                                      : "\(quota.category.title): \(actual), mindestens \(quota.count) gewünscht",
+                                      systemImage: satisfied ? "checkmark.circle" : "exclamationmark.circle")
+                                    .foregroundStyle(satisfied ? Color.primary : Color.orange)
                             }
                             if partial { Text("Die Auswahl erfüllt noch nicht alle Vorgaben. Du kannst weiter suchen oder diese Auswahl ausdrücklich übernehmen.").font(.caption).foregroundStyle(.secondary) }
                         }
                     }
+                    if !constraints.extraCourseSlots.isEmpty, !rows.isEmpty {
+                        Section("Zusätzliche Mahlzeiten") {
+                            ForEach(Array(constraints.extraCourseSlots.enumerated()), id: \.offset) { _, slot in
+                                let missing = missingExtraCourses.contains { $0.weekday == slot.weekday && $0.course == slot.course }
+                                Label("\(MealWeekdayRule.title(slot.weekday)): \(slot.course.title)",
+                                      systemImage: missing ? "exclamationmark.circle" : "checkmark.circle")
+                                    .foregroundStyle(missing ? Color.orange : Color.primary)
+                            }
+                        }
+                    }
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                         Section {
+                            Text(row.mealCourse?.title ?? "Hauptgericht").font(.subheadline.bold())
                             NavigationLink(row.suggestion.name) { RecipeDetailView(recipeID: row.id) }.font(.headline)
                             Text([row.suggestion.vegetarian ? "Vegetarisch" : nil,
                                   row.suggestion.totalMinutes.map { "\(Int($0)) Min." } ?? "Zeit nicht hinterlegt"].compactMap { $0 }.joined(separator: " · "))
@@ -167,7 +193,7 @@ struct MealPlanSuggestionsView: View {
                             }
                             Picker("Tag", selection: $rows[index].date) {
                                 ForEach(availableDays(for: row)) { day in Text("\(day.label), \(day.date)").tag(day.date) }
-                            }.disabled(state.busy || started || rule(for: row) != nil)
+                            }.disabled(state.busy || started || rule(for: row) != nil || row.mealCourse != nil)
                             if rule(for: row) != nil { Text("Der Tag bleibt wegen deiner Wochentagsregel fest.").font(.caption).foregroundStyle(.secondary) }
                             Stepper("\(row.servings) Portionen", value: $rows[index].servings, in: 1...24)
                                 .disabled(state.busy || started)
@@ -238,12 +264,30 @@ struct MealPlanSuggestionsView: View {
                     maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded,
                     quotas: constraints.quotas, excludedIngredients: constraints.excludedIngredients,
                     avoidRecentDays: constraints.avoidRecentDays, weekStart: week.weekStart,
-                    weekdayRules: supportsWeekdays ? constraints.weekdayRules : [], householdOnly: constraints.householdOnly)
+                    weekdayRules: supportsWeekdays ? constraints.weekdayRules : [], householdOnly: constraints.householdOnly,
+                    mealCourse: session.supports("meal-plan-extra-courses-v1") ? "main" : nil)
                 guard state.current(token, session) else { return }
                 rows = try MealWeekdayDates.drafts(result.items, week: week, requireWeekdays: !constraints.weekdayRules.isEmpty)
                 categories = Dictionary(result.items.map { ($0.recipe.id, $0.categories) }, uniquingKeysWith: { first, _ in first })
                 warnings = result.warnings
                 if !result.searchComplete { state.notice = "Die Suche wurde begrenzt. Weitere passende Kombinationen können noch vorhanden sein." }
+                for slot in constraints.extraCourseSlots {
+                    guard state.current(token, session),
+                          let date = MealWeekdayDates.date(weekday: slot.weekday, weekStart: week.weekStart) else { return }
+                    let extra = try await session.api.constrainedMealSuggestions(count: 1, vegetarian: 0,
+                        maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded, quotas: [],
+                        excludedIngredients: constraints.excludedIngredients, avoidRecentDays: constraints.avoidRecentDays,
+                        weekStart: week.weekStart, householdOnly: constraints.householdOnly, mealCourse: slot.course.rawValue)
+                    guard state.current(token, session) else { return }
+                    if let item = extra.items.first {
+                        rows.append(MealSuggestionDraft(suggestion: item.recipe, date: date,
+                            servings: min(24, max(1, item.recipe.servings ?? 2)), mealCourse: slot.course))
+                        categories[item.recipe.id] = item.categories
+                    } else {
+                        warnings.append("\(MealWeekdayRule.title(slot.weekday)): Keine passende \(slot.course.title) gefunden. Die Vorgaben bleiben erhalten.")
+                    }
+                }
+                rows.sort { $0.date < $1.date }
             } else {
                 let result = try await session.api.mealSuggestions(count: count, vegetarian: vegetarian, maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded)
                 guard state.current(token, session) else { return }
@@ -258,7 +302,20 @@ struct MealPlanSuggestionsView: View {
         defer { state.finish(token, session) }
         do {
             if advanced {
-                let otherRows = rows.enumerated().filter { $0.offset != index }.map(\.element)
+                if let course = rows[index].mealCourse {
+                    let result = try await session.api.constrainedMealSuggestions(count: 1, vegetarian: 0,
+                        maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded, quotas: [],
+                        excludedIngredients: constraints.excludedIngredients, avoidRecentDays: constraints.avoidRecentDays,
+                        weekStart: week.weekStart, householdOnly: constraints.householdOnly, mealCourse: course.rawValue)
+                    guard state.current(token, session), rows.indices.contains(index) else { return }
+                    if let replacement = result.items.first {
+                        categories.removeValue(forKey: rows[index].id)
+                        rows[index].suggestion = replacement.recipe
+                        categories[replacement.recipe.id] = replacement.categories
+                    } else { state.notice = "Keine weitere passende \(course.title) gefunden. Der bisherige Vorschlag bleibt erhalten." }
+                    return
+                }
+                let otherRows = rows.enumerated().filter { $0.offset != index && $0.element.mealCourse == nil }.map(\.element)
                 guard let quotas = constraints.replacementQuotas(remainingIDs: otherRows.map(\.id), categories: categories) else {
                     state.notice = "Die fehlenden Vorgaben benötigen mehrere Gerichte. Suche bitte ein neues Vorschlagspaket."
                     return
@@ -268,7 +325,8 @@ struct MealPlanSuggestionsView: View {
                     maxMinutes: minutes == 0 ? nil : minutes, excluding: excluded,
                     quotas: quotas, excludedIngredients: constraints.excludedIngredients,
                     avoidRecentDays: constraints.avoidRecentDays, weekStart: week.weekStart,
-                    weekdayRules: rule(for: rows[index]).map { [$0] } ?? [], householdOnly: constraints.householdOnly)
+                    weekdayRules: rule(for: rows[index]).map { [$0] } ?? [], householdOnly: constraints.householdOnly,
+                    mealCourse: session.supports("meal-plan-extra-courses-v1") ? "main" : nil)
                 guard state.current(token, session), rows.indices.contains(index) else { return }
                 if result.constraintsSatisfied, let replacement = result.items.first,
                    rule(for: rows[index]).map({ replacement.weekday == $0.weekday && $0.matches(replacement.recipe, categories: replacement.categories) }) ?? true {
@@ -289,12 +347,13 @@ struct MealPlanSuggestionsView: View {
     }
 
     private func rule(for row: MealSuggestionDraft) -> MealWeekdayRule? {
+        guard row.mealCourse == nil else { return nil }
         guard let weekday = MealWeekdayDates.weekday(date: row.date, weekStart: week.weekStart) else { return nil }
         return constraints.weekdayRules.first { $0.weekday == weekday }
     }
 
     private func availableDays(for row: MealSuggestionDraft) -> [MealDay] {
-        if rule(for: row) != nil { return week.days.filter { $0.date == row.date } }
+        if rule(for: row) != nil || row.mealCourse != nil { return week.days.filter { $0.date == row.date } }
         let fixed = Set(constraints.weekdayRules.compactMap { MealWeekdayDates.date(weekday: $0.weekday, weekStart: week.weekStart) })
         return week.days.filter { !fixed.contains($0.date) }
     }

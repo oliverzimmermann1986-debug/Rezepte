@@ -80,8 +80,8 @@ struct RecipeDetailView: View {
                                 .foregroundStyle(theme.ink)
                         }
 
-                        if recipe.needsManualCare {
-                            ManualCareBanner(reasons: recipe.manualCareReasons)
+                        if recipe.readiness != .ready {
+                            recipeReadinessSection(recipe)
                         }
 
                         librarySection(recipe)
@@ -451,6 +451,35 @@ struct RecipeDetailView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .cardSurface()
         }
+    }
+
+    private func recipeReadinessSection(_ recipe: Recipe) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(recipe.readiness.title, systemImage: recipe.readiness.symbol)
+                .font(.headline)
+                .foregroundStyle(theme.warning)
+            Text(recipe.readiness.explanation)
+                .font(.subheadline)
+            ForEach(Array(recipe.manualCareReasons.enumerated()), id: \.offset) { _, reason in
+                Text(reason).font(.subheadline)
+            }
+            if recipe.readiness != .pending {
+                Text(canEdit(recipe)
+                     ? "Vergleiche die Angaben mit der Quelle. Fehlendes kannst du unter Zutaten oder Zubereitung über Bearbeiten ergänzen."
+                     : "Vergleiche die Angaben mit der Quelle. Mit einer eigenen Variante kannst du Fehlendes ergänzen.")
+                    .font(.subheadline)
+                if canEdit(recipe), session.fullAccess, !session.readOnly, !usingOfflineRecipe, !session.isOfflineSession {
+                    Button("Quelle erneut auswerten", systemImage: "waveform.and.magnifyingglass") {
+                        Task { await reextractSource() }
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: 44)
+                    .disabled(isManaging)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
     }
 
     private func ingredientSection(_ recipe: Recipe) -> some View {

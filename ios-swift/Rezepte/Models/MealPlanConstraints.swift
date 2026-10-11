@@ -28,22 +28,49 @@ struct MealCategoryQuota: Codable, Equatable {
     let count: Int
 }
 
+enum MealExtraCourse: String, Codable, CaseIterable, Identifiable {
+    case breakfast, starter, dessert
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .breakfast: "Frühstück"
+        case .starter: "Vorspeise"
+        case .dessert: "Nachspeise"
+        }
+    }
+}
+
+struct MealExtraCourseSlot: Encodable {
+    let weekday: Int
+    let course: MealExtraCourse
+}
+
 struct MealPlanConstraints: Codable, Equatable {
     var counts: [MealIngredientCategory: Int] = [:]
     var excludedIngredientsText = ""
     var avoidRecentDays = 0
     var weekdayRules: [MealWeekdayRule] = []
     var householdOnly = false
+    var additionalCourses: [Int: Set<MealExtraCourse>] = [:]
 
-    private enum CodingKeys: String, CodingKey { case counts, excludedIngredientsText, avoidRecentDays, weekdayRules, householdOnly }
+    var extraCourseSlots: [MealExtraCourseSlot] {
+        additionalCourses.keys.sorted().flatMap { day in
+            MealExtraCourse.allCases.filter { additionalCourses[day]?.contains($0) == true }
+                .map { MealExtraCourseSlot(weekday: day, course: $0) }
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case counts, excludedIngredientsText, avoidRecentDays, weekdayRules, householdOnly, additionalCourses }
 
     init(counts: [MealIngredientCategory: Int] = [:], excludedIngredientsText: String = "",
-         avoidRecentDays: Int = 0, weekdayRules: [MealWeekdayRule] = [], householdOnly: Bool = false) {
+         avoidRecentDays: Int = 0, weekdayRules: [MealWeekdayRule] = [], householdOnly: Bool = false,
+         additionalCourses: [Int: Set<MealExtraCourse>] = [:]) {
         self.counts = counts
         self.excludedIngredientsText = excludedIngredientsText
         self.avoidRecentDays = avoidRecentDays
         self.weekdayRules = weekdayRules
         self.householdOnly = householdOnly
+        self.additionalCourses = additionalCourses
     }
 
     init(from decoder: Decoder) throws {
@@ -53,6 +80,7 @@ struct MealPlanConstraints: Codable, Equatable {
         avoidRecentDays = try values.decodeIfPresent(Int.self, forKey: .avoidRecentDays) ?? 0
         weekdayRules = try values.decodeIfPresent([MealWeekdayRule].self, forKey: .weekdayRules) ?? []
         householdOnly = try values.decodeIfPresent(Bool.self, forKey: .householdOnly) ?? false
+        additionalCourses = try values.decodeIfPresent([Int: Set<MealExtraCourse>].self, forKey: .additionalCourses) ?? [:]
     }
 
     var quotas: [MealCategoryQuota] {
@@ -69,6 +97,7 @@ struct MealPlanConstraints: Codable, Equatable {
     }
 
     var validationMessage: String? {
+        if additionalCourses.keys.contains(where: { !(1...7).contains($0) }) { return "Bitte einen gültigen Wochentag für zusätzliche Mahlzeiten wählen." }
         if ![0, 7, 14, 28].contains(avoidRecentDays) { return "Bitte einen gültigen Zeitraum für die Abwechslung wählen." }
         if counts.values.contains(where: { !(0...7).contains($0) }) { return "Die Anzahl je Vorgabe muss zwischen 0 und 7 liegen." }
         if weekdayRules.count > 7 || Set(weekdayRules.map(\.weekday)).count != weekdayRules.count { return "Bitte jeden Wochentag nur einmal festlegen." }
@@ -86,8 +115,15 @@ struct MealPlanConstraints: Codable, Equatable {
     func replacementQuotas(remainingIDs: [Int], categories: [Int: Set<MealIngredientCategory>]) -> [MealCategoryQuota]? {
         var result: [MealCategoryQuota] = []
         for quota in quotas {
-            let remaining = quota.count - fulfilled(quota.category, recipeIDs: remainingIDs, categories: categories)
-            guard (0...1).contains(remaining) else { return nil }
+            let actual = fulfilled(quota.category, recipeIDs: remainingIDs, categories: categories)
+            if quota.count == 0 {
+                guard actual == 0 else { return nil }
+                result.append(quota)
+                continue
+            }
+            let remaining = max(0, quota.count - actual)
+            guard remaining <= 1 else { return nil }
+            if remaining == 0 { continue }
             result.append(MealCategoryQuota(category: quota.category, count: remaining))
         }
         return result

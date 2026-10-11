@@ -1,4 +1,4 @@
-"""Bounded deterministic selection for exact ingredient and dish-type quotas."""
+"""Bounded deterministic selection for exact or minimum weekly quotas."""
 from __future__ import annotations
 
 import re
@@ -8,7 +8,9 @@ from collections import defaultdict
 CATEGORY_NAMES = {"pasta": "Nudelgerichte", "potato": "Kartoffelgerichte",
                   "rice": "Reisgerichte", "legume": "Hülsenfruchtgerichte",
                   "salad": "Salate", "soup": "Suppen", "stew": "Eintöpfe",
-                  "casserole": "Aufläufe", "pizza": "Pizza", "wrap": "Wraps"}
+                  "casserole": "Aufläufe", "pizza": "Pizza", "wrap": "Wraps",
+                  "breakfast": "Frühstück", "starter": "Vorspeisen", "dessert": "Nachspeisen"}
+COURSE_NAMES = {"main": "Hauptgericht", "breakfast": "Frühstück", "starter": "Vorspeise", "dessert": "Nachspeise"}
 WEEKDAY_NAMES = {1: "Montag", 2: "Dienstag", 3: "Mittwoch", 4: "Donnerstag",
                  5: "Freitag", 6: "Samstag", 7: "Sonntag"}
 _FAMILIES = {
@@ -60,6 +62,9 @@ _DISH_MARKERS = {
     "casserole": {"auflauf", "aufläufe", "gratin", "gratins", "lasagne", "lasagna", "casserole"},
     "pizza": {"pizza", "pizzen", "pizzas", "flammkuchen"},
     "wrap": {"wrap", "wraps", "burrito", "burritos"},
+    "breakfast": {"frühstück", "breakfast", "brunch", "porridge", "müsli", "granola", "overnight"},
+    "starter": {"vorspeise", "vorspeisen", "starter", "appetizer", "antipasti", "bruschetta", "carpaccio"},
+    "dessert": {"nachspeise", "nachspeisen", "dessert", "desserts", "tiramisu", "pudding", "kuchen", "torte", "brownie", "brownies"},
 }
 
 
@@ -79,6 +84,11 @@ def recipe_categories(recipe: dict, tags: set[str], keys: set[str]) -> list[str]
         if metadata_words & markers or any(word.endswith(marker) for word in title_words for marker in markers):
             categories.append(category)
     return categories
+
+
+def recipe_course(recipe: dict, tags: set[str] | None = None) -> str:
+    categories = recipe_categories(recipe, tags or set(), set())
+    return next((course for course in ("breakfast", "starter", "dessert") if course in categories), "main")
 
 
 def planned_weekdays(count: int, rules: list[dict]) -> list[int]:
@@ -104,6 +114,7 @@ def matches_weekday_rule(item: dict, rule: dict) -> bool:
 
 def weekday_selection(candidates: list[dict], count: int, vegetarian_count: int,
                       quotas: list[dict], rules: list[dict], *,
+                      quota_mode: str = "exact",
                       transition_limit: int = 2_000_000,
                       state_limit: int = 50_000) -> tuple[list[dict], bool]:
     """Joint recipe/day/quota DP; day rules are never assigned after selection.
@@ -149,7 +160,9 @@ def weekday_selection(candidates: list[dict], count: int, vegetarian_count: int,
                     break
                 quantity = subset.bit_count()
                 next_n, next_veg = occupied.bit_count() + quantity, veg + quantity * int(vegetarian)
-                next_filled = tuple(value + quantity * include for value, include in zip(filled, membership))
+                next_filled = tuple(min(target, value + quantity * include) if quota_mode == "minimum"
+                                    else value + quantity * include
+                                    for value, include, target in zip(filled, membership, targets))
                 if (quantity <= len(items) and next_n - next_veg <= count - vegetarian_count
                         and all(value <= target for value, target in zip(next_filled, targets))):
                     assigned_days = [day for day in days if subset & (1 << (day - 1))]
@@ -184,12 +197,13 @@ def weekday_selection(candidates: list[dict], count: int, vegetarian_count: int,
 
 
 def quota_selection(candidates: list[dict], count: int, vegetarian_count: int,
-                    quotas: list[dict], *, transition_limit: int = 2_000_000,
+                    quotas: list[dict], *, quota_mode: str = "exact", transition_limit: int = 2_000_000,
                     state_limit: int = 50_000) -> tuple[list[dict], bool]:
-    """Exact DP by constraint signature; keeping count recipes/group is lossless.
+    """DP by constraint signature; keeping count recipes/group is lossless.
 
     A recipe containing several requested families counts toward all of them.
-    Upper bounds and ingredient exclusions are never relaxed. Incomplete output
+    Minimum counters saturate at their target. Zero still excludes a category.
+    Exact upper bounds and ingredient exclusions are never relaxed. Incomplete output
     reserves at least the number of slots still required by the largest deficit.
     """
     categories = [item["category"] for item in quotas]
@@ -223,7 +237,9 @@ def quota_selection(candidates: list[dict], count: int, vegetarian_count: int,
                 next_n, next_veg = n + quantity, veg + quantity * int(vegetarian)
                 if next_n - next_veg > count - vegetarian_count:
                     break
-                next_filled = tuple(current + quantity * include for current, include in zip(filled, membership))
+                next_filled = tuple(min(target, current + quantity * include) if quota_mode == "minimum"
+                                    else current + quantity * include
+                                    for current, include, target in zip(filled, membership, targets))
                 if any(value > target for value, target in zip(next_filled, targets)):
                     break
                 key = (next_n, next_veg, *next_filled)

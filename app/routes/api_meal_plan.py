@@ -65,12 +65,16 @@ def _week_payload(week_start: date) -> dict:
     by_day: dict[str, list[dict]] = {}
     selections = []
     for entry in entries:
+        from ..recipes.meal_constraints import recipe_course
+        recipe = db.recipe_get(entry["recipe_id"]) or {}
+        tags = {str(tag["name"]).strip().casefold() for tag in db.recipe_tags_get(entry["recipe_id"])}
         multiplier = _entry_multiplier(entry)
         item = {
             **entry,
             "multiplier": round(multiplier, 4),
             "scalable": bool(entry.get("recipe_servings")),
             "thumb_url": f"/api/recipes/{entry['recipe_id']}/thumb",
+            "meal_course": recipe_course(recipe, tags),
         }
         by_day.setdefault(entry["planned_for"], []).append(item)
         selections.append({

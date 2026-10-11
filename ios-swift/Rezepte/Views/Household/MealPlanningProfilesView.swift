@@ -27,12 +27,12 @@ struct MealPlanningProfilesView: View {
                 Section {
                     if profiles.items.isEmpty { Text("Noch keine gespeicherten Wochenprofile.").foregroundStyle(.secondary) }
                     ForEach(profiles.items) { item in
-                        let unavailable = item.preferences.availabilityMessage(advanced: session.supports("meal-plan-constraints-v1"), weekdayRules: session.supports("meal-plan-weekday-rules-v1"), dishTypes: session.supports("meal-plan-dish-types-v1"), householdFilter: session.supports("shared-recipes-household-filter-v1"))
+                        let unavailable = item.preferences.availabilityMessage(advanced: session.supports("meal-plan-constraints-v1"), weekdayRules: session.supports("meal-plan-weekday-rules-v1"), dishTypes: session.supports("meal-plan-dish-types-v1"), householdFilter: session.supports("shared-recipes-household-filter-v1"), minimumQuotas: session.supports("meal-plan-minimum-quotas-v1"), extraCourses: session.supports("meal-plan-extra-courses-v1"))
                         VStack(alignment: .leading, spacing: 4) {
                             Button {
                                 perform {
                                     let selected = try profiles.preferences(id: item.id)
-                                    if let message = selected.availabilityMessage(advanced: session.supports("meal-plan-constraints-v1"), weekdayRules: session.supports("meal-plan-weekday-rules-v1"), dishTypes: session.supports("meal-plan-dish-types-v1"), householdFilter: session.supports("shared-recipes-household-filter-v1")) {
+                                    if let message = selected.availabilityMessage(advanced: session.supports("meal-plan-constraints-v1"), weekdayRules: session.supports("meal-plan-weekday-rules-v1"), dishTypes: session.supports("meal-plan-dish-types-v1"), householdFilter: session.supports("shared-recipes-household-filter-v1"), minimumQuotas: session.supports("meal-plan-minimum-quotas-v1"), extraCourses: session.supports("meal-plan-extra-courses-v1")) {
                                         throw APIError.server(0, message)
                                     }
                                     onApply(selected); dismiss()
@@ -78,10 +78,11 @@ struct MealPlanningProfilesView: View {
     private func summary(_ value: MealPlanningPreferences) -> String {
         var parts = ["\(value.count) Gerichte", "mind. \(value.vegetarian) vegetarisch"]
         if value.maxMinutes > 0 { parts.append("bis \(value.maxMinutes) Min.") }
-        parts.append(contentsOf: value.constraints.quotas.map { "\($0.count) × \($0.category.title)" })
+        parts.append(contentsOf: value.constraints.quotas.map { $0.count == 0 ? "Keine \($0.category.title)" : "Mindestens \($0.count) × \($0.category.title)" })
         parts.append(value.constraints.avoidRecentDays == 0
                      ? "Vorwochen erlaubt" : "\(value.constraints.avoidRecentDays / 7) Wochen Rückblick")
         if !value.constraints.weekdayRules.isEmpty { parts.append("\(value.constraints.weekdayRules.count) feste Tage") }
+        if !value.constraints.extraCourseSlots.isEmpty { parts.append("\(value.constraints.extraCourseSlots.count) zusätzliche Mahlzeiten") }
         return parts.joined(separator: " · ")
     }
 

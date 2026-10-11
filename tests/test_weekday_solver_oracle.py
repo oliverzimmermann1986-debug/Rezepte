@@ -1,6 +1,7 @@
 """Compare coupled day/ingredient planning with independent exhaustive search."""
 from itertools import permutations
 from random import Random
+import pytest
 
 from app.recipes.meal_constraints import quota_selection, weekday_selection
 
@@ -18,7 +19,8 @@ def _fits(recipe, rule):
     return True
 
 
-def test_weekday_solver_matches_exhaustive_feasibility_and_never_relaxes_hard_rules():
+@pytest.mark.parametrize("quota_mode", ["exact", "minimum"])
+def test_weekday_solver_matches_exhaustive_feasibility_and_never_relaxes_hard_rules(quota_mode):
     random = Random(20261011)
     preference_random = Random(20261012)
     feasible_cases = 0
@@ -47,8 +49,10 @@ def test_weekday_solver_matches_exhaustive_feasibility_and_never_relaxes_hard_ru
 
         def exact(selection):
             return (sum(recipe["vegetarian"] for recipe in selection) >= vegetarian_count
-                    and all(sum(quota["category"] in recipe["categories"] for recipe in selection)
-                            == quota["count"] for quota in quotas))
+                    and all((sum(quota["category"] in recipe["categories"] for recipe in selection)
+                             >= quota["count"] if quota_mode == "minimum" and quota["count"] > 0
+                             else sum(quota["category"] in recipe["categories"] for recipe in selection)
+                             == quota["count"]) for quota in quotas))
 
         quota_scores = []
         weekday_scores = []
@@ -59,20 +63,20 @@ def test_weekday_solver_matches_exhaustive_feasibility_and_never_relaxes_hard_ru
                 if all(_fits(recipe, rules_by_day.get(day, {})) for day, recipe in zip(days, selection)):
                     weekday_scores.append(score)
         possible = bool(weekday_scores)
-        selected, complete = weekday_selection(candidates, count, vegetarian_count, quotas, rules)
+        selected, complete = weekday_selection(candidates, count, vegetarian_count, quotas, rules, quota_mode=quota_mode)
         assert complete, case
         assert len({recipe["recipe_id"] for recipe in selected}) == len(selected), case
         assert len({recipe["weekday"] for recipe in selected}) == len(selected), case
         assert all(recipe["weekday"] in days and _fits(recipe, rules_by_day.get(recipe["weekday"], {}))
                    for recipe in selected), case
         assert all(sum(quota["category"] in recipe["categories"] for recipe in selected)
-                   <= quota["count"] for quota in quotas), case
+                   <= quota["count"] for quota in quotas if quota_mode == "exact" or quota["count"] == 0), case
         assert (len(selected) == count and exact(selected)) == possible, case
         if possible:
             assert sum(recipe["_preference_score"] for recipe in selected) == max(weekday_scores), case
         assert weekday_selection(list(reversed(candidates)), count, vegetarian_count, quotas,
-                                 list(reversed(rules))) == (selected, complete), case
-        quota_selected, quota_complete = quota_selection(candidates, count, vegetarian_count, quotas)
+                                 list(reversed(rules)), quota_mode=quota_mode) == (selected, complete), case
+        quota_selected, quota_complete = quota_selection(candidates, count, vegetarian_count, quotas, quota_mode=quota_mode)
         assert quota_complete, case
         assert (len(quota_selected) == count and exact(quota_selected)) == bool(quota_scores), case
         if quota_scores:

@@ -248,25 +248,41 @@ struct IngredientFacet: Codable, Identifiable, Hashable, Sendable {
 }
 
 enum RecipeReadiness: Equatable {
-    case ready, pending, failed, missingDescription, manual
+    case ready, pending, failed, missingDescription, manual, missingIngredients, missingSteps, missingContent
 
     static func classify(status: String?, ingredients: Int, steps: Int, needsManualCare: Bool) -> Self {
-        switch status {
-        case "pending", "running": .pending
-        case "error": .failed
-        case "skipped": .missingDescription
-        case "ok" where !needsManualCare && ingredients > 0 && steps > 0: .ready
-        default: .manual
-        }
+        if status == "pending" || status == "running" { return .pending }
+        if ingredients <= 0 && steps <= 0 { return .missingContent }
+        if ingredients <= 0 { return .missingIngredients }
+        if steps <= 0 { return .missingSteps }
+        if status == "error" { return .failed }
+        if status == "skipped" { return .missingDescription }
+        return status == "ok" && !needsManualCare ? .ready : .manual
     }
 
     var title: String {
         switch self {
         case .ready: "Kochfertig"
-        case .pending: "Zutaten werden ermittelt"
-        case .failed: "Auswertung fehlgeschlagen"
-        case .missingDescription: "Beschreibung fehlt"
-        case .manual: "Manuell pflegen"
+        case .pending: "Rezept wird ausgewertet"
+        case .failed: "Auswertung nicht bestätigt"
+        case .missingDescription: "Quelle konnte nicht ausgewertet werden"
+        case .manual: "Angaben bitte prüfen"
+        case .missingIngredients: "Zutaten fehlen"
+        case .missingSteps: "Zubereitung fehlt"
+        case .missingContent: "Zutaten und Zubereitung fehlen"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .ready: "Zutaten und Zubereitung sind vorhanden."
+        case .pending: "Die automatische Auswertung läuft oder wartet noch auf Verarbeitung."
+        case .missingIngredients: "Es wurden noch keine Zutaten gespeichert. Die Zubereitung ist bereits vorhanden."
+        case .missingSteps: "Es wurden noch keine Zubereitungsschritte gespeichert. Die Zutaten sind bereits vorhanden."
+        case .missingContent: "Es wurden noch keine Zutaten und keine Zubereitungsschritte gespeichert."
+        case .failed: "Zutaten und Zubereitung sind vorhanden. Die letzte automatische Auswertung wurde nicht als erfolgreich bestätigt. Ob Angaben unsicher waren oder ein technischer Fehler auftrat, ist nicht gespeichert."
+        case .missingDescription: "Zutaten und Zubereitung sind vorhanden. Die automatische Auswertung der Quelle wurde übersprungen."
+        case .manual: "Zutaten und Zubereitung sind vorhanden. Bitte vergleiche die Angaben mit der Quelle."
         }
     }
 
@@ -348,6 +364,11 @@ struct Recipe: Codable, Identifiable {
     var visibility: String? = nil
     var inLibrary: Bool? = nil
     var canEdit: Bool? = nil
+
+    var readiness: RecipeReadiness {
+        .classify(status: ingredientsStatus, ingredients: ingredients.count,
+                  steps: steps.count, needsManualCare: needsManualCare)
+    }
 }
 
 struct SubstitutionIngredientValue: Codable, Hashable {
@@ -852,6 +873,7 @@ struct MealEntry: Codable, Identifiable {
     let recipeServings: Int?
     let multiplier: Double
     let scalable: Bool
+    var mealCourse: String? = nil
 }
 
 struct ShoppingPreview: Codable, Identifiable {

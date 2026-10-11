@@ -344,10 +344,10 @@ private struct RecipeRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                    Label(recipe.readiness.title, systemImage: recipe.readiness.symbol)
-                        .font(.caption.bold())
-                        .foregroundStyle(recipe.readiness == .ready ? theme.success
-                                         : recipe.readiness == .failed ? theme.danger : theme.warning)
+                Label(recipe.readiness.title, systemImage: recipe.readiness.symbol)
+                    .font(.caption.bold())
+                    .foregroundStyle(recipe.readiness == .ready ? theme.success : theme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.vertical, 7)
