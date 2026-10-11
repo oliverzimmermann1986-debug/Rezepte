@@ -83,6 +83,15 @@ def test_pdf_rechecks_current_membership_for_household_only(household_api):
     assert client.post('/api/discovery/meal-plan/pdf', json=body).status_code == 409
 
 
+def test_global_recipe_keeps_its_name_in_another_households_shopping_provenance(household_api):
+    from app.recipes.cart_logic import add_recipe_to_cart, cart_for_display
+    _, db, users, _ = household_api
+    rid = imported(db, users['anna'][1])
+    other = HouseholdDatabase(db, HouseholdScope(users['bert'][1]))
+    add_recipe_to_cart(other, rid)
+    assert cart_for_display(other)[0]['source_contributions'][0]['recipe_name'] == 'Familienpasta'
+
+
 def test_pending_variants_are_not_published_until_finalized(household_api):
     client, db, users, login = household_api
     rid = imported(db, users['anna'][1], status=RECIPE_VARIANT_PENDING_STATUS)

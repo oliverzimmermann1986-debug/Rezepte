@@ -77,7 +77,7 @@ def display_contributions(db, item, recipe_cache=None):
             recipe_cache[recipe_id] = db.recipe_get(recipe_id)
         recipe = recipe_cache.get(recipe_id)
         if (recipe and recipe.get("deleted_at") is None
-                and recipe.get("owner_account_id") in (None, getattr(db, "account_id", 0))):
+                and (recipe.get("is_global") or recipe.get("owner_account_id") in (None, getattr(db, "account_id", 0)))):
             name = recipe.get("name") or "Rezept"
         elif recipe_id:
             recipe_id, name = None, "Nicht mehr verfügbares Rezept"

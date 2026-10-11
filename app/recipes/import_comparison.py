@@ -102,7 +102,7 @@ def finish_pending(db, entry, request_id, recipe_id, request_hash):
         if not current or current["status"] != "pending":
             raise RuntimeError("Dieser Import wurde zwischenzeitlich abgeschlossen. Bitte neu laden.")
         target = connection.execute(
-            "SELECT name,folder_path,owner_account_id FROM recipes WHERE id=? AND deleted_at IS NULL "
+            "SELECT name,folder_path,owner_account_id,is_global FROM recipes WHERE id=? AND deleted_at IS NULL "
             "AND COALESCE(ingredients_status,'')<>'variant_pending'", (recipe_id,),
         ).fetchone()
         if not target:
@@ -110,7 +110,7 @@ def finish_pending(db, entry, request_id, recipe_id, request_hash):
         # Match the pending import's existing namespace. Persisting the receipt
         # and history together prevents a resolved URL being enqueued again.
         # A global import must not publish a newly created private variant alias.
-        visible_target = target["owner_account_id"] is None or target["owner_account_id"] == current["owner_account_id"]
+        visible_target = bool(target["is_global"]) or target["owner_account_id"] is None or target["owner_account_id"] == current["owner_account_id"]
         connection.execute(
             "INSERT OR REPLACE INTO history "
             "(url,processed_at,content_type,name,target_dir,owner_account_id,source_url) VALUES(?,?,?,?,?,?,?)",

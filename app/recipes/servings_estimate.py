@@ -52,7 +52,7 @@ def _snapshot(connection, db, recipe_id):
     if not row:
         raise HTTPException(404, "Rezept nicht gefunden")
     recipe = dict(row)
-    if scope is not None and (scope.is_guest or (recipe["owner_account_id"] is None and not scope.is_admin)):
+    if scope is not None and (scope.is_guest or (not scope.is_admin and recipe["owner_account_id"] != scope.account_id)):
         raise HTTPException(403, "Dieses Rezept darfst du nicht bearbeiten")
     if recipe["ingredients_status"] == "running":
         raise HTTPException(409, "Die Zutaten werden gerade neu eingelesen. Bitte danach erneut prüfen.")
