@@ -118,7 +118,7 @@ struct RecipeTrashView: View {
             }
             recipes.removeAll { $0.id == recipe.id }
             notice = "„\(recipe.name)“ wurde wiederhergestellt."
-            NotificationCenter.default.post(name: .recipesChanged, object: nil)
+            NotificationCenter.default.post(name: .recipesChanged, object: recipe.id)
         } catch {
             guard restoreID == request, session.identity == identity, !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
