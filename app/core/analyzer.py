@@ -20,6 +20,7 @@ from typing import List, Optional
 import requests
 
 from .webhook import server_configured_request
+from ..recipes.ingredient_text import clean_ingredient_text, is_non_ingredient
 
 logger = logging.getLogger(__name__)
 
@@ -911,6 +912,7 @@ class OpenAIAnalyzer:
             "für die Einkaufsliste gemeinsam als 'tomate' normalisiert. Verarbeitete "
             "Produkte wie passierte Tomaten, Dosentomaten und Tomatenmark bleiben getrennt.\n"
             "- raw: genauer Text-Snippet aus der Beschreibung.\n"
+            "- Hashtags, Rezepttitel, Beschreibungstext und Abschnittsüberschriften sind keine Zutaten.\n"
             '- Bei keinen erkennbaren Zutaten: {"ingredients":[]}.'
         )
         content = self._call(system, f"Beschreibung:\n\n{description[:4000]}")
@@ -925,8 +927,8 @@ class OpenAIAnalyzer:
             for it in items:
                 if not isinstance(it, dict):
                     continue
-                name = " ".join(str(it.get("name") or "").split())
-                if not name:
+                name = clean_ingredient_text(str(it.get("name") or ""))
+                if is_non_ingredient(name, it.get("raw")):
                     continue
                 amount = it.get("amount")
                 if amount is not None:
@@ -1043,6 +1045,8 @@ class OpenAIAnalyzer:
             "extrahiert werden. Der umgebende Text (Werbung, Hashtags, PDF-Header, "
             "Datums-Stempel, Print-Buttons) wird IGNORIERT, die Mengen ZÄHLEN.\n\n"
             "REGELN ZUTATEN:\n"
+            "- Hashtags, Rezepttitel, Lead-/Beschreibungstext und Abschnittsüberschriften "
+            "(z.B. 'Soße 1 (Skyr-Gurken-Soße)') sind keine Zutaten.\n"
             "- amount: Zahl oder null. Bei Bereichen ('2-3 Eier', '1-2 Bund') Mittel oder Untergrenze.\n"
             "- unit: nur aus: mg, g, kg, ml, cl, dl, l, TL, EL, Stück, Prise, Bund, "
             "Zehe, Scheibe, Blatt, Pck, Dose, Tasse, Flasche, Glas, Tüte, Becher, "
@@ -1110,8 +1114,8 @@ class OpenAIAnalyzer:
             for it in (data.get("ingredients") or []):
                 if not isinstance(it, dict):
                     continue
-                name = " ".join(str(it.get("name") or "").split())
-                if not name:
+                name = clean_ingredient_text(str(it.get("name") or ""))
+                if is_non_ingredient(name, it.get("raw")):
                     continue
                 amount = it.get("amount")
                 if amount is not None:

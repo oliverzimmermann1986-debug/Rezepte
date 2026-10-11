@@ -18,11 +18,12 @@ from .auto_tags import compute_diet_tags
 from .canonical import canonical_name
 from .units import normalize_unit
 from .quantities import AMOUNT_PATTERN, parse_amount
+from .ingredient_text import clean_ingredient_text, is_non_ingredient
 
 logger = logging.getLogger(__name__)
 
 _SECTION_INGREDIENTS = re.compile(
-    r"^\s*(?:zutaten(?:liste)?|ingredients?|du\s+brauchst|einkaufsliste)\s*:??\s*$",
+    r"^\s*(?:zutaten(?:liste)?|ingredients?|du\s+brauchst|einkaufsliste)\s*(?:\([^)]*\))?\s*:??\s*$",
     re.IGNORECASE,
 )
 _SECTION_STOP = re.compile(
@@ -124,14 +125,18 @@ def parse_ingredient_lines(text: str) -> List[Dict[str, Any]]:
     for raw_line in lines:
         if not raw_line:
             continue
-        if _SECTION_INGREDIENTS.match(raw_line):
+        section_line = re.sub(r"^#{1,6}\s+", "", raw_line)
+        if _SECTION_INGREDIENTS.match(section_line):
             in_section = True
             section_seen = True
             continue
-        if in_section and _SECTION_STOP.match(raw_line):
+        if in_section and _SECTION_STOP.match(section_line):
             break
 
         line = _BULLET.sub("", raw_line).strip()
+        if is_non_ingredient(line):
+            continue
+        line = clean_ingredient_text(line)
         if not line or len(line) > 150:
             continue
         match = _INGREDIENT_LINE.match(line)
@@ -179,8 +184,8 @@ def prepare_recipe_ingredients(items: Iterable[Dict[str, Any]]) -> List[Dict[str
     for item in items or []:
         if not isinstance(item, dict):
             continue
-        name = str(item.get("name") or "").strip()
-        if not name:
+        name = clean_ingredient_text(str(item.get("name") or ""))
+        if is_non_ingredient(name, item.get("raw")):
             continue
         amount = item.get("amount")
         if amount is not None:

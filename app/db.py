@@ -3492,6 +3492,8 @@ class Database:
                 if not owned:
                     return False
             if status == "ok" and ingredients is not None:
+                from .recipes.ingredient_text import filter_imported_ingredients
+                ingredients = filter_imported_ingredients(ingredients)
                 c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
                 for idx, ing in enumerate(ingredients):
                     ingredient_name = ing.get("name") or ""
@@ -3559,6 +3561,8 @@ class Database:
                     return False
 
             if replace_ingredients:
+                from .recipes.ingredient_text import filter_imported_ingredients
+                ingredients = filter_imported_ingredients(ingredients)
                 c.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
                 for idx, ing in enumerate(ingredients):
                     ingredient_name = ing.get("name") or ""
