@@ -87,12 +87,16 @@ struct MealPlanSuggestionsView: View {
                                 .lineLimit(2...4)
                             Text("Mehrere Zutaten durch Kommas trennen. Verwendet werden die gespeicherten Zutaten der Rezepte.")
                                 .font(.caption).foregroundStyle(.secondary)
-                            Picker("Bereits geplante Gerichte vermeiden", selection: $constraints.avoidRecentDays) {
-                                Text("Ausgeschaltet").tag(0)
-                                Text("7 Tage vor dieser Woche").tag(7)
-                                Text("14 Tage vor dieser Woche").tag(14)
-                                Text("28 Tage vor dieser Woche").tag(28)
+                            Picker("Gerichte aus Vorwochen vermeiden", selection: $constraints.avoidRecentDays) {
+                                Text("Wiederholungen erlauben").tag(0)
+                                Text("Letzte Woche").tag(7)
+                                Text("Letzte 2 Wochen (Standard)").tag(14)
+                                Text("Letzte 4 Wochen").tag(28)
                             }
+                            Text(constraints.avoidRecentDays == 0
+                                 ? "Gerichte aus früheren Wochenplänen dürfen wieder vorgeschlagen werden."
+                                 : "Ausgewertet werden deine gespeicherten Wochenpläne vor der ausgewählten Woche. Das gilt auch beim Austauschen eines Gerichts. Reichen andere Rezepte nicht aus, bleiben Plätze offen.")
+                                .font(.caption).foregroundStyle(.secondary)
                             if let message = constraints.validationMessage { Text(message).font(.caption).foregroundStyle(.red) }
                         }.disabled(state.busy || started)
                     }
@@ -184,7 +188,8 @@ struct MealPlanSuggestionsView: View {
                 }
             }
             .task(id: "\(session.identity)-\(week.weekStart)") {
-                state.reset(session); rows = []; warnings = []; categories = [:]; constraints = MealPlanConstraints()
+                state.reset(session); rows = []; warnings = []; categories = [:]
+                constraints = MealPlanConstraints(avoidRecentDays: advanced ? 14 : 0)
                 count = 4; vegetarian = 2; minutes = 0; showingProfiles = false; pdfSnapshot = nil
             }
             .onChange(of: constraints) { _, _ in clearPreview() }
