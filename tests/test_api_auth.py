@@ -134,6 +134,8 @@ def test_native_session_accepts_authenticated_request(client, test_db, monkeypat
         "full_access": False,
         "can_import": False,
         "read_only": False,
+        "household_id": None,
+        "default_servings": 2,
     }
 
 

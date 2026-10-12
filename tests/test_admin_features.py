@@ -490,6 +490,8 @@ def test_current_session_exposes_persisted_user_role(client, test_db: Database, 
         "full_access": False,
         "can_import": False,
         "read_only": False,
+        "household_id": None,
+        "default_servings": 2,
     }
 
 
