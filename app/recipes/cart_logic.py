@@ -31,7 +31,7 @@ from .shopping_history import contribution, combine_contributions, display_contr
 logger = logging.getLogger(__name__)
 
 
-def prepare_for_cart(name: str, amount: Optional[float], unit: Optional[str]) -> Dict[str, Optional[object]]:
+def prepare_for_cart(name: str, amount: Optional[float], unit: Optional[str], *, quantity_name: Optional[str] = None) -> Dict[str, Optional[object]]:
     """Bereitet einen Zutaten-Eintrag fürs Speichern im Cart vor:
        - canonical_name berechnen
        - unit normalisieren
@@ -41,11 +41,18 @@ def prepare_for_cart(name: str, amount: Optional[float], unit: Optional[str]) ->
     Rückgabe ist ein Dict zum direkten Weiterreichen an cart_add_or_merge."""
     canon = _canonical(name)
     norm_unit = normalize_unit(unit)
+    # A counted garlic clove is one Zehe. The food name is the evidence;
+    # generic garlic Stück, bulbs, weight and powder remain separate. During
+    # AI renaming the original name must retain authority over the count unit.
+    basis_name = name if quantity_name is None else quantity_name
+    if norm_unit == 'Stück' and _canonical(basis_name) == 'knoblauch' and 'zehe' in basis_name.casefold():
+        norm_unit = 'Zehe'
     base_unit, base_amount = to_base(norm_unit, amount)
     return {
         "name": (
             TOMATO_SHOPPING_NAME
             if canon == TOMATO_CANONICAL
+            else 'Knoblauch' if canon == 'knoblauch' and norm_unit == 'Zehe'
             else (name or "").strip() or "?"
         ),
         "canonical_name": canon,
@@ -112,11 +119,11 @@ def add_recipe_to_cart(db, recipe_id: int, multiplier: float = 1.0) -> Dict[str,
         amount = ing.get("amount")
         if amount is not None and multiplier != 1.0:
             amount = amount * multiplier
-        unit = normalize_unit(ing.get("unit"))
-        base_unit, base_amount = to_base(unit, amount)
+        prepared = prepare_for_cart(name, amount, ing.get("unit"))
+        base_unit, base_amount = prepared['unit'], prepared['amount']
 
         items.append({
-            "name": TOMATO_SHOPPING_NAME if canon == TOMATO_CANONICAL else name or canon,
+            "name": prepared['name'],
             "canonical_name": canon,
             "amount": base_amount,
             "unit": base_unit,

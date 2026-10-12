@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List
 from .cart_logic import display_amount, prepare_for_cart
 from .shopping_catalog import SHOPPING_CATEGORIES
 from .shopping_history import combine_contributions, contributions
+from .units import normalize_unit
 _CATEGORY_ORDER = {name: index for index, name in enumerate(SHOPPING_CATEGORIES)}
 
 
@@ -96,7 +97,13 @@ def build_optimized_cart(
         if category != (item.get("category") or None):
             categorized += 1
 
-        prepared = prepare_for_cart(proposed_name, item.get("amount"), item.get("unit"))
+        prepared = prepare_for_cart(proposed_name, item.get("amount"), item.get("unit"), quantity_name=current_name)
+        incoming_sources = contributions(item)
+        if normalize_unit(item.get('unit')) == 'Stück' and prepared['unit'] == 'Zehe':
+            incoming_sources = [
+                {**entry, 'unit': 'Zehe'} if normalize_unit(entry.get('unit')) == 'Stück' else entry
+                for entry in incoming_sources
+            ]
         key = (
             str(prepared.get("canonical_name") or proposed_name.casefold()),
             prepared.get("unit"),
@@ -111,7 +118,7 @@ def build_optimized_cart(
                 "checked": bool(item.get("checked")),
                 "added_at": float(item.get("added_at") or 0),
                 "source_recipe_ids": source_ids,
-                "source_contributions": contributions(item),
+                "source_contributions": incoming_sources,
                 "source_item_ids": [item_id],
                 "category": category,
             }
@@ -124,7 +131,7 @@ def build_optimized_cart(
             float(existing.get("added_at") or 0), float(item.get("added_at") or 0)
         )
         existing["source_item_ids"].append(item_id)
-        existing["source_contributions"] = combine_contributions(existing["source_contributions"], contributions(item))
+        existing["source_contributions"] = combine_contributions(existing["source_contributions"], incoming_sources)
         for recipe_id in source_ids:
             if recipe_id not in existing["source_recipe_ids"]:
                 existing["source_recipe_ids"].append(recipe_id)
