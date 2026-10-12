@@ -89,7 +89,7 @@ def test_recipe_add_week_preview_and_later_plan_changes_use_one_clove_unit(test_
                   (json.dumps(legacy), journal_key('2026-10-12')))
     optimized = build_optimized_cart(db.cart_list(), [])['items']
     assert optimized[0]['amount'] == 2.5 and optimized[0]['checked']
-    assert [part['known_amount'] for part in optimized[0]['source_contributions']] == [2, 0.5]
+    assert {part['recipe_id']: part['known_amount'] for part in optimized[0]['source_contributions']} == dict(zip(recipe_ids, [2, 0.5]))
     db.cart_replace(optimized)
     assert cart_for_display(db)[0]['checked']
     db.meal_plan_update(entries[1]['id'], planned_servings=4)
