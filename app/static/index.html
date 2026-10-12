@@ -101,7 +101,7 @@
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
-        <span x-text="'v' + (systemInfo.version || '1.15.3')"></span>
+        <span x-text="'v' + (systemInfo.version || '1.15.4')"></span>
         <form method="post" action="/logout" class="logout-form">
           <button type="submit" class="sidebar-logout-button">Abmelden</button>
         </form>
@@ -2062,7 +2062,7 @@
                 <h2><span aria-hidden="true" x-text="shoppingCategoryIcon(group.category)"></span> <span x-text="group.category"></span></h2>
                 <div class="cart-list">
                 <template x-for="item in group.items" :key="item.id">
-                <div class="cart-swipe-row">
+                <div class="cart-swipe-row" x-data="{ ingredientInfoOpen: false }">
                 <div class="cart-swipe-actions cart-swipe-left">
                   <span>✓ erledigt</span>
                 </div>
@@ -2084,14 +2084,33 @@
                     <span x-show="item.amount !== null" x-text="formatAmount(item.amount)"></span>
                     <span class="muted" x-text="item.unit || ''"></span>
                   </div>
-                  <div class="cart-item-source muted"
-                       x-show="item.source_recipe_ids && item.source_recipe_ids.length > 0"
-                       :title="'aus ' + item.source_recipe_ids.length + ' Rezept(en)'">
-                    <span x-text="item.source_recipe_ids.length"></span>×
-                  </div>
+                  <button type="button" class="btn-icon cart-ingredient-info"
+                          @click.stop="ingredientInfoOpen = !ingredientInfoOpen"
+                          @touchstart.stop @touchmove.stop @touchend.stop
+                          :aria-expanded="ingredientInfoOpen" :aria-controls="'cart-sources-' + item.id"
+                          :aria-label="'Rezepte und Mengenanteile für ' + item.name">
+                    <span aria-hidden="true">ⓘ</span>
+                  </button>
                   <button class="btn-icon" @click="deleteCartItem(item.id)"
                           :aria-label="'Artikel ' + item.name + ' entfernen'"
                           title="Entfernen" :disabled="!canWrite()">✕</button>
+                </div>
+                <div class="cart-ingredient-sources" x-show="ingredientInfoOpen" x-cloak
+                     :id="'cart-sources-' + item.id">
+                  <strong>Rezepte &amp; Mengenanteile</strong>
+                  <template x-for="(source, index) in (item.source_contributions || [])" :key="index">
+                    <div class="cart-ingredient-source">
+                      <template x-if="source.recipe_id">
+                        <button type="button" class="btn btn-secondary btn-sm"
+                                @click="openRecipe(source.recipe_id)"
+                                :aria-label="'Rezept öffnen: ' + source.recipe_name" x-text="source.recipe_name"></button>
+                      </template>
+                      <span x-show="!source.recipe_id" x-text="source.recipe_name"></span>
+                      <span class="muted" x-text="cartSourceQuantity(source)"></span>
+                    </div>
+                  </template>
+                  <p class="muted" x-show="!(item.source_contributions || []).length">Für diesen Artikel wurde keine Rezeptzuordnung gespeichert.</p>
+                  <p class="muted">Die Mengenanteile stammen aus dem Hinzufügen zur Liste. Eine von Hand geänderte Gesamtmenge kann davon abweichen.</p>
                 </div>
               </div>
                 </template>

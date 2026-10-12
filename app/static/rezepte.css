@@ -1525,6 +1525,12 @@ input[type="checkbox"] { width: auto !important; }
   color: var(--fg-dim);
 }
 .cart-item-source { font-size: 11px; text-align: center; }
+.cart-ingredient-info { min-width: 44px; min-height: 44px; flex-shrink: 0; font-size: 20px; }
+.cart-item .cart-ingredient-info, .cart-item .cart-ingredient-info:hover { color: var(--accent-deep); }
+.cart-ingredient-sources { position: relative; background: var(--surface); padding: 12px 16px; }
+.cart-ingredient-sources > p { font-size: 13px; margin-top: 12px; }
+.cart-ingredient-source { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.cart-ingredient-source button { min-height: 44px; text-align: left; white-space: normal; }
 .btn-icon {
   background: none;
   border: none;
@@ -4449,7 +4455,7 @@ a { color: var(--accent-deep); }
   text-transform: uppercase;
 }
 .cart-group .cart-item {
-  grid-template-columns: 30px minmax(0, 1fr) 110px 44px;
+  grid-template-columns: 30px minmax(0, 1fr) 110px 44px 44px;
 }
 .cart-item input[type="checkbox"] {
   width: 20px;
@@ -4617,7 +4623,7 @@ a { color: var(--accent-deep); }
     grid-column: 1;
   }
   .cart-group .cart-item {
-    grid-template-columns: 28px minmax(0, 1fr) 44px;
+    grid-template-columns: 28px minmax(0, 1fr) 44px 44px;
     gap: 7px;
   }
   .cart-group .cart-item-amount {
@@ -4629,6 +4635,7 @@ a { color: var(--accent-deep); }
     grid-column: 3;
     grid-row: 1 / span 2;
   }
+  .cart-group .cart-item > .btn-icon:last-child { grid-column: 4; }
   .recurring-form {
     grid-template-columns: 1fr;
     padding: 13px;

@@ -191,6 +191,14 @@
       this.cart.suggestions = [];
     },
 
+    cartSourceQuantity(source) {
+      if (source?.amount === null || source?.amount === undefined || !Number.isFinite(Number(source.amount))) {
+        return 'Mengenanteil unbekannt';
+      }
+      return [Number(source.amount).toLocaleString('de-DE', { maximumFractionDigits: 3 }), source.unit]
+        .filter(Boolean).join(' ');
+    },
+
     shoppingCategoryIcon(category) {
       return ({
         'Obst & Gemüse': '🍎', 'Bäckerei': '🥖', 'Fleisch & Fisch': '🥩',

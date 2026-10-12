@@ -34,6 +34,7 @@ struct CartView: View {
     @State private var recurringNotice: String?
     @State private var addErrorMessage: String?
     @State private var amountEditor: CartItem?
+    @State private var ingredientInfo: CartItem?
     @State private var recurringEditor: RecurringDraft?
     @State private var recurringToDelete: RecurringCartItem?
     @State private var showShoppingTools = false
@@ -116,6 +117,9 @@ struct CartView: View {
                     }
                 }
             }
+            .sheet(item: $ingredientInfo) { item in
+                ShoppingIngredientInfoView(item: item)
+            }
             .sheet(item: $amountEditor) { item in
                 let expectedIdentity = session.identity
                 CartAmountEditorView(item: item) { amount in
@@ -178,8 +182,11 @@ struct CartView: View {
                         : "\(request.operationIDs.count) lokale Änderungen einschließlich abhängiger Schritte werden dauerhaft verworfen. Der zuletzt geladene Serverstand bleibt erhalten. Andere wartende Änderungen bleiben gespeichert.")
                 }
             }
-            .onChange(of: session.identity) { _, _ in conflictDiscardRequest = nil }
-            .onChange(of: shopping.householdID) { _, _ in conflictDiscardRequest = nil }
+            .onChange(of: session.identity) { _, _ in conflictDiscardRequest = nil; ingredientInfo = nil }
+            .onChange(of: shopping.householdID) { _, _ in conflictDiscardRequest = nil; ingredientInfo = nil }
+            .onChange(of: items) { _, current in
+                if let id = ingredientInfo?.id { ingredientInfo = current.first { $0.id == id } }
+            }
             .task(id: session.identity) {
                 await load()
                 await loadRecurring()
@@ -467,6 +474,19 @@ struct CartView: View {
             .buttonStyle(.plain)
 
             Button {
+                ingredientInfo = item
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Rezepte und Mengenanteile für \(item.name)")
+            .accessibilityIdentifier("cart.ingredient-info.\(item.id)")
+
+            Button {
                 amountEditor = item
             } label: {
                 Image(systemName: "pencil")
@@ -487,24 +507,6 @@ struct CartView: View {
                 .foregroundStyle(theme.muted)
                 .padding(.leading, 42)
                 .accessibilityIdentifier("cart.amount-unavailable.\(item.id)")
-        }
-        if let contributions = item.sourceContributions, !contributions.isEmpty {
-            DisclosureGroup("Herkunft & Mengen") {
-                ForEach(Array(contributions.enumerated()), id: \.offset) { _, source in
-                    VStack(alignment: .leading, spacing: 3) {
-                        if let recipeID = source.recipeId {
-                            NavigationLink(source.recipeName) { RecipeDetailView(recipeID: recipeID) }
-                        } else {
-                            Text(source.recipeName)
-                        }
-                        Text(source.quantityText).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 4)
-                }
-            }
-            .font(.subheadline)
-            .padding(.leading, 42)
         }
         }
     }

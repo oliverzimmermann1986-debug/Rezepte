@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import ast
 from contextlib import closing
+from collections import Counter
 import hashlib
 import json
 import os
@@ -24,6 +25,22 @@ UNITS = (
     "scrapper-db-backup.service", "scrapper-db-backup.timer", "scrapper-schedule-apply.service",
 )
 UNIT_DROPINS = ("scrapper-web.service.d/timer-write.conf",)
+
+# These records are user state, including durable offline receipts and linked
+# weekly shopping. An additive migration may add columns/rows, but must retain
+# every original value. Transformations need an explicit reviewed migration.
+PROTECTED_USER_TABLES = (
+    'recipes', 'users', 'recipe_ingredients', 'recipe_steps', 'recipe_tags', 'tags',
+    'pending', 'history', 'recipe_versions', 'recipe_share_links',
+    'user_accounts', 'account_members', 'account_invitations', 'account_recipe_state',
+    'shopping_cart', 'shopping_recurring', 'shopping_products', 'shopping_exclusions',
+    'meal_plan_entries', 'recipe_cook_history', 'recipe_cooking_progress',
+    'recipe_cooking_completion_requests', 'shopping_sync_operations', 'shopping_deleted_items',
+    'household_cookbooks', 'household_cookbook_recipes', 'recipe_cook_notes',
+    'household_meal_wishes', 'household_meal_wish_votes', 'household_purges', 'deleted_households',
+    'import_budget_usage', 'ai_request_budget_usage', 'user_sessions', 'oidc_identities',
+    'oidc_flows', 'oidc_exchanges', 'oidc_revocations',
+)
 
 
 def assignment(path: Path, name: str):
@@ -83,6 +100,41 @@ def verify_code(source: Path, app: Path) -> dict:
             if hashlib.sha256(target.read_bytes()).hexdigest() != expected:
                 raise ValueError(f"Release-Dateiprüfung fehlgeschlagen: {name}")
     return {"version": version, "verified_files": len(manifest["files"]), "manifest_supplied": True}
+
+
+def verify_user_data(app: Path, state: Path) -> dict:
+    """Compare the quiescent snapshot before any new public writer starts."""
+    def quoted(name):
+        return '"' + name.replace('"', '""') + '"'
+
+    preserved = {}
+    with closing(read_database(state / 'database.db')) as before, closing(read_database(db_path(app))) as after:
+        before.execute('BEGIN')
+        after.execute('BEGIN')
+        for connection in (before, after):
+            if connection.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                raise ValueError('SQLite-Datenprüfung fehlgeschlagen')
+        if after.execute('PRAGMA foreign_key_check').fetchone() is not None:
+            raise ValueError('Verknüpfungen gespeicherter Daten sind beschädigt')
+        existing = {row[0] for row in before.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        installed = {row[0] for row in after.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in PROTECTED_USER_TABLES:
+            if table not in existing:
+                continue
+            if table not in installed:
+                raise ValueError('Gespeicherte Daten fehlen: ' + table)
+            columns = [row[1] for row in before.execute('PRAGMA table_info(' + quoted(table) + ')')]
+            new_columns = {row[1] for row in after.execute('PRAGMA table_info(' + quoted(table) + ')')}
+            if not set(columns) <= new_columns:
+                raise ValueError('Gespeicherte Felder fehlen: ' + table)
+            query = 'SELECT ' + ','.join(map(quoted, columns)) + ' FROM ' + quoted(table)
+            original = Counter(before.execute(query))
+            current = Counter(after.execute(query))
+            if original - current:
+                # Never print rows: they may contain private data or credentials.
+                raise ValueError('Gespeicherte Daten wurden verändert oder entfernt: ' + table)
+            preserved[table] = sum(original.values())
+    return {'user_data_preserved': True, 'tables': preserved, 'before_public_start': True}
 
 
 def _metadata(path: Path) -> dict:
@@ -206,7 +258,7 @@ def restore(state: Path) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("preflight", "verify-code", "capture", "restore", "enable-accounts"))
+    parser.add_argument("action", choices=("preflight", "verify-code", "verify-user-data", "capture", "restore", "enable-accounts"))
     parser.add_argument("--app", type=Path, default=Path("/opt/scrapper"))
     parser.add_argument("--source", type=Path)
     parser.add_argument("--state", type=Path)
@@ -223,6 +275,10 @@ def main() -> int:
             if args.state is None:
                 parser.error("capture benötigt --state")
             result = capture(args.app.resolve(), args.state.resolve())
+        elif args.action == "verify-user-data":
+            if args.state is None:
+                parser.error("verify-user-data benötigt --state")
+            result = verify_user_data(args.app.resolve(), args.state.resolve())
         else:
             if args.state is None:
                 parser.error("restore benötigt --state")

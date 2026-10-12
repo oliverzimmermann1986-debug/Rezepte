@@ -115,6 +115,39 @@ def open_library(page):
     expect(page.locator(".recipe-featured-copy h2")).to_have_text("Zitronen-Ricotta-Pasta")
 
 
+@pytest.mark.parametrize('web', [1440, 390, 320], indirect=True)
+def test_ingredient_info_opens_source_recipe_without_changing_cart(web):
+    page, fixture, width, errors = web
+    fixture.cart = [{**fixture.shopping_item(), 'source_contributions': [
+        {'recipe_id': 2, 'recipe_name': 'Ofengemüse mit Feta', 'amount': 0.3, 'unit': 'kg'},
+        {'recipe_id': None, 'recipe_name': 'Manuell hinzugefügt', 'amount': None, 'unit': None},
+    ]}]
+    open_library(page)
+    nav = page.locator('.nav-item, .mobile-nav-item').filter(visible=True)
+    nav.filter(has_text='Einkauf').first.click()
+    info = page.get_by_role('button', name='Rezepte und Mengenanteile für Tomaten', exact=True)
+    expect(info).to_be_visible()
+    info.click()
+    panel = page.locator('#cart-sources-1')
+    expect(panel).to_be_visible()
+    expect(panel).to_contain_text('0,3 kg')
+    expect(panel).to_contain_text('Mengenanteil unbekannt')
+    expect(page.locator('.cart-item input[type=checkbox]')).not_to_be_checked()
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    bounds = info.bounding_box()
+    remove = page.get_by_role('button', name='Artikel Tomaten entfernen', exact=True).bounding_box()
+    assert bounds['width'] >= 44 and bounds['height'] >= 44
+    assert bounds['x'] + bounds['width'] <= remove['x']
+    capture(page, f'ingredient-info-{width}')
+    panel.get_by_role('button', name='Rezept öffnen: Ofengemüse mit Feta', exact=True).click()
+    expect(page.locator('.recipe-detail-backdrop')).to_be_visible()
+    page.get_by_role('button', name='Rezeptdetails schließen').click()
+    expect(panel).to_be_visible()
+    assert fixture.cart[0]['checked'] is False
+    assert not any(method in ('POST', 'PATCH', 'DELETE') and path.startswith('/api/cart') for method, path, _ in fixture.requests)
+    assert errors == []
+
+
 @pytest.mark.parametrize("web", [1440, 390, 320], indirect=True)
 def test_member_saves_and_unlinks_global_recipe_in_own_collection(web):
     page, fixture, width, errors = web

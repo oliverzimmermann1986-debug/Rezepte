@@ -5,6 +5,19 @@ ROOT = Path(__file__).resolve().parents[1]
 SWIFT = ROOT / "ios-swift" / "Rezepte"
 
 
+def test_plan_opens_recipe_and_cart_info_has_separate_nonmutating_controls():
+    plan = _read(SWIFT / 'Views/MealPlan/MealPlanView.swift')
+    cart = _read(SWIFT / 'Views/Cart/CartView.swift')
+    info = _read(SWIFT / 'Views/Cart/ShoppingIngredientInfoView.swift')
+    assert 'RecipeDetailView(recipeID: entry.recipeId)' in plan
+    assert 'meal-plan.recipe.' in plan
+    assert 'ingredientInfo = item' in cart and 'cart.ingredient-info.' in cart
+    assert '.sheet(item: $ingredientInfo)' in cart
+    assert 'RecipeDetailView(recipeID: recipeID)' in info
+    assert 'source.quantityText' in info and 'keine Rezeptzuordnung' in info
+    assert not any(token in info for token in ('shopping.change', 'toggle(', 'delete(', 'addToCart'))
+
+
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 

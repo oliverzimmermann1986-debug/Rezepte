@@ -208,45 +208,64 @@ struct MealPlanView: View {
             } else {
                 ForEach(day.items) { entry in
                     Divider()
-                    HStack(alignment: .center) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(entry.recipeName)
-                                .fontWeight(.medium)
-                            if let course = entry.mealCourse.flatMap(MealExtraCourse.init(rawValue:)) {
-                                Text(course.title).font(.caption).foregroundStyle(.secondary)
-                            }
-                            Text("\(entry.plannedServings) Portionen")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Stepper(
-                            "",
-                            value: Binding(
-                                get: { entry.plannedServings },
-                                set: { newValue in
-                                    Task { await update(entry, servings: newValue) }
-                                }
-                            ),
-                            in: 1...24
-                        )
-                        .labelsHidden()
-                        .disabled(isMutating || session.readOnly)
-                        if !session.readOnly, session.supports("meal-plan-replace-v1") {
-                            Button {
-                                replacement = MealReplacementTarget(day: day, entry: entry)
-                            } label: { Image(systemName: "arrow.triangle.2.circlepath") }
-                            .frame(minWidth: 44, minHeight: 44)
-                            .accessibilityLabel("\(entry.recipeName) austauschen")
-                            .disabled(isMutating)
-                        }
-                        Button(role: .destructive) {
-                            Task { await delete(entry) }
+                    VStack(alignment: .leading, spacing: 8) {
+                        NavigationLink {
+                            RecipeDetailView(recipeID: entry.recipeId)
                         } label: {
-                            Image(systemName: "trash")
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(entry.recipeName)
+                                        .fontWeight(.medium)
+                                    if let course = entry.mealCourse.flatMap(MealExtraCourse.init(rawValue:)) {
+                                        Text(course.title).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Text("\(entry.plannedServings) Portionen")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold)).foregroundStyle(theme.muted)
+                            }
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                         }
-                        .disabled(isMutating || session.readOnly)
-                        .accessibilityLabel("\(entry.recipeName) entfernen")
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Rezept öffnen: \(entry.recipeName)")
+                        .accessibilityIdentifier("meal-plan.recipe.\(entry.id)")
+                        HStack {
+                            Text("Portionen").font(.subheadline).foregroundStyle(theme.muted)
+                            Spacer()
+                            Stepper(
+                                "",
+                                value: Binding(
+                                    get: { entry.plannedServings },
+                                    set: { newValue in
+                                        Task { await update(entry, servings: newValue) }
+                                    }
+                                ),
+                                in: 1...24
+                            )
+                            .labelsHidden()
+                            .accessibilityLabel("Portionen für \(entry.recipeName)")
+                            .disabled(isMutating || session.readOnly)
+                            if !session.readOnly, session.supports("meal-plan-replace-v1") {
+                                Button {
+                                    replacement = MealReplacementTarget(day: day, entry: entry)
+                                } label: { Image(systemName: "arrow.triangle.2.circlepath") }
+                                .frame(minWidth: 44, minHeight: 44)
+                                .accessibilityLabel("\(entry.recipeName) austauschen")
+                                .disabled(isMutating)
+                            }
+                            Button(role: .destructive) {
+                                Task { await delete(entry) }
+                            } label: {
+                                Image(systemName: "trash")
+                                    .frame(minWidth: 44, minHeight: 44)
+                            }
+                            .disabled(isMutating || session.readOnly)
+                            .accessibilityLabel("\(entry.recipeName) entfernen")
+                        }
                     }
                 }
             }

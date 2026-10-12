@@ -160,12 +160,21 @@ systemctl stop scrapper-web.service 2>/dev/null || true
 
 VENV_SWAPPED=0
 BROWSERS_SWAPPED=0
+PUBLIC_WRITES_POSSIBLE=0
 
 restore_on_error() {
   local rc=$?
   local restored=1
   trap - ERR
   if [[ $rc -ne 0 ]]; then
+    if [[ "${PUBLIC_WRITES_POSSIBLE:-0}" == "1" ]]; then
+      # After the first start, another device may already have saved new data.
+      # Restoring the older snapshot here would silently discard those writes.
+      stop_installed_units scrapper-web.service scrapper-job.timer scrapper-db-backup.timer || true
+      stop_installed_units scrapper-job.service scrapper-db-backup.service || true
+      echo "Update-Prüfung nach Dienststart fehlgeschlagen. Aktuelle Daten bleiben erhalten; Dienste angehalten. Sicherung: $STATE_DIR" >&2
+      exit "$rc"
+    fi
     echo "Update fehlgeschlagen (Code $rc). Stelle bisherigen Code wieder her…" >&2
     if [[ -f "$BACKUP_FILE" ]]; then
       stop_installed_units scrapper-web.service scrapper-job.timer scrapper-db-backup.timer || restored=0
@@ -301,6 +310,19 @@ fi
 if [[ "$IS_REVIEW_INSTANCE" == "1" ]]; then
   systemctl disable --now scrapper-job.timer >/dev/null 2>&1 || true
 fi
+
+# Migrate without workers or HTTP access, then compare user records against the
+# verified snapshot. On mismatch the existing pre-start rollback remains safe.
+(
+  cd "$APP_DIR"
+  runuser -u "$APP_USER" -- env SCRAPPER_CONFIG="$APP_DIR/data/config.yaml" \
+    "$APP_DIR/venv/bin/python" -c 'from app.db import get_db; get_db()'
+)
+"$APP_DIR/venv/bin/python" "$SOURCE_DIR/tools/release_state.py" verify-user-data \
+  --app "$APP_DIR" --state "$STATE_DIR" > "$STATE_DIR/user-data-verification.json"
+chmod 0600 "$STATE_DIR/user-data-verification.json"
+cat "$STATE_DIR/user-data-verification.json"
+PUBLIC_WRITES_POSSIBLE=1
 systemctl restart scrapper-web.service
 
 HEALTH_FILE="$(mktemp /tmp/rezepte-health.XXXXXX)"
