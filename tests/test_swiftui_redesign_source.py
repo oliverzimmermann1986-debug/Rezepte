@@ -307,7 +307,7 @@ def test_swiftui_cooking_mode_persists_progress_scales_and_completes_idempotentl
     detail = _read(SWIFT / "Views" / "Recipes" / "RecipeDetailView.swift")
     api = _read(SWIFT / "Networking" / "APIClient.swift")
 
-    assert "CookingModeView(recipe: recipe, preferOffline: usingOfflineRecipe)" in detail
+    assert "CookingModeView(recipe: recipe, preferOffline: usingOfflineRecipe, initialServings: session.defaultServings)" in detail
     assert "updateCookingProgress" in cooking
     assert "completedSteps" in cooking
     assert "multiplier" in cooking
@@ -337,7 +337,7 @@ def test_swiftui_shopping_asks_for_servings_and_sends_exact_selection():
 
     assert 'Text("Für wie viele Portionen einkaufen?")' in detail
     assert "ShoppingServingsSheet" in detail
-    assert "shoppingServings = recipe.servings ?? 1" in detail
+    assert "shoppingServings = session.defaultServings" in detail
     assert "addRecipeToCart(id: recipeID, servings: servings)" in detail
     assert "struct ServingPicker" in picker
     assert "original: originalServings" in detail

@@ -14,6 +14,8 @@ final class SessionStore: ObservableObject {
     @Published private(set) var state: State = .checking
     @Published private(set) var username = ""
     @Published private(set) var userID: Int?
+    @Published private(set) var householdID: Int?
+    @Published private(set) var defaultServings = 2
     @Published private(set) var role: AccountRole = .guest
     @Published private(set) var passwordEnabled = false
     @Published private(set) var fullAccess = false
@@ -21,7 +23,9 @@ final class SessionStore: ObservableObject {
     @Published private(set) var serverVersion = ""
     @Published private(set) var serverCapabilities: Set<String> = []
     @Published private(set) var compatibilityWarning: String?
-    @Published private(set) var identity = UUID()
+    @Published private(set) var identity = UUID() {
+        didSet { householdID = nil; defaultServings = 2 }
+    }
     @Published private(set) var registrationRequested = false
     @Published private(set) var isEndingSession = false
     @Published private(set) var isOfflineSession = false
@@ -172,6 +176,8 @@ final class SessionStore: ObservableObject {
         removeLegacyAccessCredentials()
         username = ""
         userID = nil
+        householdID = nil
+        defaultServings = 2
         role = .guest
         passwordEnabled = false
         fullAccess = false
@@ -270,6 +276,7 @@ final class SessionStore: ObservableObject {
         NotificationCenter.default.post(name: Notification.Name("KitchenHouseholdChanged"), object: nil)
         KitchenTimerStore.shared.clear()
         identity = UUID()
+        householdID = nil; defaultServings = 2
         let expectedIdentity = identity
         do {
             // Retire every household-bound view before touching Keychain or
@@ -354,6 +361,8 @@ final class SessionStore: ObservableObject {
         role = session.effectiveRole
         fullAccess = role == .admin
         readOnly = role == .guest
+        householdID = readOnly ? nil : session.householdId
+        defaultServings = readOnly ? 2 : HouseholdServingDefaults.resolve(session.defaultServings)
         passwordEnabled = session.passwordEnabled ?? (role != .guest)
         state = .signedIn
         if persist { verifiedSession = session; cacheVerifiedSession() }
@@ -369,6 +378,37 @@ final class SessionStore: ObservableObject {
 
     func supports(_ capability: String) -> Bool {
         serverCapabilities.contains(capability)
+    }
+
+    func adoptHousehold(_ account: HouseholdAccount, expectedIdentity: UUID) {
+        guard identity == expectedIdentity, !readOnly, let userID,
+              !account.isGuest, account.members.contains(where: { $0.id == userID }) else { return }
+        householdID = account.id
+        defaultServings = HouseholdServingDefaults.resolve(account.defaultServings)
+        persistHouseholdDefaults()
+    }
+
+    func saveHouseholdDefaultServings(_ servings: Int) async throws {
+        let expectedIdentity = identity, expectedHousehold = householdID
+        guard !readOnly, supports("household-default-servings-v1"), (1...24).contains(servings) else {
+            throw APIError.invalidResponse("Haushaltseinstellungen")
+        }
+        let result = try await api.saveHouseholdDefaultServings(servings)
+        guard identity == expectedIdentity, expectedHousehold == nil || expectedHousehold == result.householdId else {
+            throw APIError.sessionChanged
+        }
+        guard result.ok, result.defaultServings == servings else { throw APIError.invalidResponse("Portionszahl") }
+        householdID = result.householdId; defaultServings = result.defaultServings
+        persistHouseholdDefaults()
+    }
+
+    private func persistHouseholdDefaults() {
+        // Refresh the signed-in snapshot too, so the household default remains
+        // available offline without being inherited by another login.
+        if var snapshot = verifiedSession {
+            snapshot.householdId = householdID; snapshot.defaultServings = defaultServings
+            verifiedSession = snapshot; cacheVerifiedSession()
+        }
     }
 
     private func refreshSystemInfo() async {

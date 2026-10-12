@@ -335,12 +335,13 @@ struct RecipeDetailView: View {
             }
             Button("Für heute einplanen", systemImage: "calendar.badge.plus") {
                 guard let recipe else { return }
+                plannedServings = session.defaultServings
                 Task { await planMeal(recipe, date: Date()) }
             }
             Button("Anderen Tag wählen", systemImage: "calendar") {
                 guard let recipe else { return }
                 plannedDate = Date()
-                plannedServings = recipe.servings ?? 2
+                plannedServings = session.defaultServings
                 showMealPlanSheet = true
             }
             Button("Abbrechen", role: .cancel) {}
@@ -349,7 +350,7 @@ struct RecipeDetailView: View {
         }
         .navigationDestination(isPresented: $showCookingMode) {
             if let recipe {
-                CookingModeView(recipe: recipe, preferOffline: usingOfflineRecipe)
+                CookingModeView(recipe: recipe, preferOffline: usingOfflineRecipe, initialServings: session.defaultServings)
             }
         }
         .navigationDestination(item: $createdVariantID) { id in
@@ -396,7 +397,7 @@ struct RecipeDetailView: View {
                     .disabled(recipe.steps.isEmpty)
 
                     Button {
-                        shoppingServings = recipe.servings ?? 1
+                        shoppingServings = session.defaultServings
                         showShoppingServings = true
                     } label: {
                         Label("Einkaufen", systemImage: "cart.badge.plus")

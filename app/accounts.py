@@ -14,6 +14,40 @@ INVITATION_TTL = 7 * 24 * 60 * 60
 MAX_ACCOUNT_MEMBERS = 2
 
 
+def migrate_preferences(connection):
+    if 'default_servings' not in {row[1] for row in connection.execute('PRAGMA table_info(user_accounts)')}:
+        connection.execute("ALTER TABLE user_accounts ADD COLUMN default_servings INTEGER NOT NULL DEFAULT 2 "
+                           "CHECK(typeof(default_servings)='integer' AND default_servings BETWEEN 1 AND 24)")
+    connection.execute("INSERT OR IGNORE INTO schema_migrations VALUES(274,'household_default_servings',?)", (time.time(),))
+
+
+def preferences_for_user(db, user_id):
+    """Read without creating a household during login or session checks."""
+    with db.conn() as connection:
+        row = connection.execute('SELECT a.id,a.default_servings FROM user_accounts a JOIN account_members m '
+                                 'ON m.account_id=a.id WHERE m.user_id=?', (user_id,)).fetchone()
+    return {'household_id': row['id'] if row else None, 'default_servings': row['default_servings'] if row else 2}
+
+
+def default_servings(db):
+    account_id = getattr(db, 'account_id', 0)
+    with db.conn() as connection:
+        row = connection.execute('SELECT default_servings FROM user_accounts WHERE id=?', (account_id,)).fetchone()
+    return int(row[0]) if row else 2
+
+
+def save_preferences(db, user_id, servings):
+    if type(servings) is not int or not 1 <= servings <= 24:
+        raise HTTPException(422, 'Portionszahl muss zwischen 1 und 24 liegen')
+    with db.conn() as connection:
+        connection.execute('BEGIN IMMEDIATE')
+        account = _account(connection, user_id)
+        if hasattr(db, 'account_id') and db.account_id != account['id']:
+            raise HTTPException(409, 'Dein Haushalt hat sich geändert. Bitte erneut laden.')
+        connection.execute('UPDATE user_accounts SET default_servings=? WHERE id=?', (servings, account['id']))
+    return {'ok': True, 'household_id': account['id'], 'default_servings': servings}
+
+
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -93,7 +127,7 @@ def view(db: Database, user_id: int) -> dict:
         )] if account["owner_user_id"] == user_id else []
         return {"id": account["id"], "is_owner": account["owner_user_id"] == user_id,
                 "members": members, "invitations": invitations, "max_members": MAX_ACCOUNT_MEMBERS,
-                "data_scope": "household", "global_recipes": True}
+                "data_scope": "household", "global_recipes": True, "default_servings": account['default_servings']}
 
 
 def invite(db: Database, user_id: int) -> dict:

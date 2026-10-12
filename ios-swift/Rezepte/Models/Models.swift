@@ -35,6 +35,8 @@ struct SessionResponse: Codable {
     let role: AccountRole?
     let isAdmin: Bool?
     let passwordEnabled: Bool?
+    var householdId: Int? = nil
+    var defaultServings: Int? = nil
 
     var effectiveRole: AccountRole {
         role ?? ((readOnly ?? false) ? .guest : ((isAdmin ?? false) ? .admin : .user))
@@ -61,6 +63,23 @@ struct HouseholdAccount: Codable {
     let members: [HouseholdMember]
     let invitations: [HouseholdInvitation]
     let maxMembers: Int
+    var defaultServings: Int? = nil
+}
+
+struct HouseholdPreferencesResponse: Decodable {
+    let ok: Bool
+    let householdId: Int
+    let defaultServings: Int
+}
+
+enum HouseholdServingDefaults {
+    static func resolve(_ servings: Int?) -> Int {
+        guard let servings, (1...24).contains(servings) else { return 2 }
+        return servings
+    }
+    static func cooking(initial: Int?, original: Int, progress: CookingProgress) -> Int {
+        min(50, max(1, progress.exists ? (progress.servings ?? original) : (initial ?? original)))
+    }
 }
 
 struct HouseholdMember: Codable, Identifiable {

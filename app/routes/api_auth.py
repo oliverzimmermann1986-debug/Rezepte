@@ -136,7 +136,11 @@ def native_session(request: Request) -> dict:
         raise HTTPException(401, "Authentication required")
     if request_is_guest(request):
         return guest_access_payload()
-    return _access_payload(username)
+    payload = _access_payload(username)
+    if payload.get('id') and not payload.get('read_only'):
+        from ..accounts import preferences_for_user
+        payload.update(preferences_for_user(get_db(), payload['id']))
+    return payload
 
 
 @router.post("/guest")

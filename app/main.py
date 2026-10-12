@@ -443,6 +443,7 @@ APP_CAPABILITIES = [
     "meal-plan-minimum-quotas-v1",
     "meal-plan-extra-courses-v1",
     "meal-plan-variety-v1",
+    "household-default-servings-v1",
     "meal-plan-shopping-link-v1",
     "meal-plan-replace-v1",
     "shared-recipes-household-filter-v1",

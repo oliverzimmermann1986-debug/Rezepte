@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .recipes.naming import normalize_recipe_name
 
 DB_PATH = Path("/opt/scrapper/data/scrapper.db")
-CURRENT_SCHEMA_VERSION = 273
+CURRENT_SCHEMA_VERSION = 274
 RECIPE_VARIANT_PENDING_STATUS = "variant_pending"
 _READ_CONNECTION = ContextVar('recipe_read_connection', default=None)
 
@@ -1530,6 +1530,8 @@ class Database:
         migrate_account_deletion(c)
         from .recipes.shared_library import migrate_schema as migrate_shared_library
         migrate_shared_library(c)
+        from .accounts import migrate_preferences
+        migrate_preferences(c)
 
     @contextmanager
     def read_snapshot(self):

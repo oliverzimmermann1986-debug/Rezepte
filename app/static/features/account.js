@@ -20,7 +20,11 @@
         try {
           const data = await this.api('GET', '/api/account', undefined, { signal: controller.signal });
           if (generation !== this.account._loadGeneration || controller.signal.aborted) return;
-          if (generation === this.account._loadGeneration && !controller.signal.aborted && data) this.account.data = data;
+          if (generation === this.account._loadGeneration && !controller.signal.aborted && data) {
+            this.account.data = data;
+            this.account.defaultServings = this.validHouseholdServings(data.default_servings);
+            this.session.default_servings = this.account.defaultServings;
+          }
           if (data && !data.is_guest) {
             const [imports, profile, sessions, identities] = await Promise.all([
               this.canImport() ? this.api('GET', '/api/account/imports', undefined, { signal: controller.signal }) : null,
@@ -47,6 +51,22 @@
       accountPasswordError(password) {
         const bytes = new TextEncoder().encode(password).length;
         return [...password].length < 10 || bytes > 72 ? 'Das neue Passwort braucht mindestens 10 Zeichen und darf höchstens 72 UTF-8-Bytes lang sein.' : '';
+      },
+      validHouseholdServings(value) {
+        return Number.isInteger(value) && value >= 1 && value <= 24 ? value : 2;
+      },
+      householdDefaultServings() { return this.validHouseholdServings(this.session.default_servings); },
+      async saveHouseholdDefaultServings() {
+        if (!this.canWrite()) return;
+        await this.accountAction(async () => {
+          const value = this.account.defaultServings;
+          if (!Number.isInteger(value) || value < 1 || value > 24) throw new Error('Bitte 1 bis 24 Portionen wählen.');
+          const result = await this.api('PATCH', '/api/account/preferences', { default_servings: value });
+          if (!result?.ok || result.default_servings !== value) throw new Error('Portionszahl konnte nicht bestätigt werden.');
+          this.account.data = { ...this.account.data, default_servings: value };
+          this.session.default_servings = value;
+          this.account.notice = 'Standard-Portionszahl für den Haushalt gespeichert.';
+        });
       },
       clearAccountPasswords() {
         this.account.currentPassword = this.account.newPassword = this.account.confirmPassword = this.account.deletePassword = '';

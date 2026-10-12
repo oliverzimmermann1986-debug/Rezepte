@@ -574,6 +574,11 @@ class HouseholdDatabase(Database):
             if not c.execute("SELECT 1 FROM recipes WHERE id=? AND deleted_at IS NULL AND (owner_account_id IS NULL OR is_global=1 OR owner_account_id=?) AND COALESCE(ingredients_status,'')<>?",
                              (recipe_id, self.account_id, RECIPE_VARIANT_PENDING_STATUS)).fetchone():
                 raise ValueError("Rezept nicht gefunden")
+            if planned_servings is None:
+                existing = c.execute('SELECT planned_servings FROM meal_plan_entries WHERE account_id=? AND planned_for=? AND recipe_id=?',
+                                     (self.account_id, planned_for, recipe_id)).fetchone()
+                default = c.execute('SELECT default_servings FROM user_accounts WHERE id=?', (self.account_id,)).fetchone()
+                planned_servings = existing[0] if existing else default[0] if default else 2
             order = c.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM meal_plan_entries WHERE account_id=? AND planned_for=?",
                               (self.account_id, planned_for)).fetchone()[0]
             c.execute("INSERT INTO meal_plan_entries(account_id,planned_for,recipe_id,planned_servings,sort_order,created_at,updated_at) "

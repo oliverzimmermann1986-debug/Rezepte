@@ -11,6 +11,7 @@ struct HouseholdAccountView: View {
     @State private var isWorking = false
     @State private var message: String?
     @State private var loadID = UUID()
+    @State private var defaultServings = 2
 
     var body: some View {
         List {
@@ -28,6 +29,16 @@ struct HouseholdAccountView: View {
                     Text("Rezepte sind global gespeichert. Der Haushalts-Haken, Favoriten, Bewertungen, Einkäufe und Wochenpläne gehören diesem Haushalt. Eine zweite Person nutzt ihn mit eigener Anmeldung.")
                         .font(.caption)
                         .foregroundStyle(theme.muted)
+                }
+                if session.supports("household-default-servings-v1") {
+                    Section("Standard-Portionen") {
+                        Stepper("\(defaultServings) \(defaultServings == 1 ? "Portion" : "Portionen")", value: $defaultServings, in: 1...24)
+                            .disabled(isWorking)
+                        Text("Gilt für alle Mitglieder bei neuen Wochenvorschlägen, Planungen und Einkäufen. Du kannst die Portionen pro Gericht ändern. Bestehende Planungen bleiben erhalten.")
+                            .font(.caption).foregroundStyle(theme.muted)
+                        Button("Portionszahl speichern") { Task { await saveDefaultServings() } }
+                            .disabled(isWorking || defaultServings == HouseholdServingDefaults.resolve(account.defaultServings))
+                    }
                 }
                 if account.isOwner {
                     Section("Zweite Person einladen") {
@@ -77,24 +88,45 @@ struct HouseholdAccountView: View {
         .scrollContentBackground(.hidden)
         .background(theme.background)
         .navigationTitle("Mein Haushalt")
-        .task { await load() }
+        .task(id: session.identity) {
+            account = nil; inviteURL = nil; message = nil; defaultServings = 2
+            await load()
+        }
         .refreshable { await load() }
     }
 
     private func load() async {
         guard !session.readOnly else { return }
+        let identity = session.identity
         let requestID = UUID()
         loadID = requestID
         isLoading = true
         defer { if loadID == requestID { isLoading = false } }
         do {
             let result = try await session.api.account()
-            guard loadID == requestID else { return }
+            guard loadID == requestID, session.identity == identity else { return }
             account = result
+            defaultServings = HouseholdServingDefaults.resolve(result.defaultServings)
+            session.adoptHousehold(result, expectedIdentity: identity)
         } catch {
-            guard loadID == requestID else { return }
+            guard loadID == requestID, session.identity == identity else { return }
             message = error.localizedDescription
             session.handle(error)
+        }
+    }
+
+    private func saveDefaultServings() async {
+        guard !isWorking else { return }
+        let identity = session.identity, value = defaultServings
+        isWorking = true; defer { isWorking = false }
+        do {
+            try await session.saveHouseholdDefaultServings(value)
+            guard session.identity == identity else { return }
+            await load()
+            message = "Standard-Portionszahl für den Haushalt gespeichert."
+        } catch {
+            guard session.identity == identity else { return }
+            message = error.localizedDescription; session.handle(error)
         }
     }
 

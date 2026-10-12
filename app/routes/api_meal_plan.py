@@ -60,6 +60,7 @@ def _entry_multiplier(entry: dict) -> float:
 
 def _week_payload(week_start: date) -> dict:
     db = get_db()
+    from ..accounts import default_servings
     week_end = week_start + timedelta(days=6)
     entries = db.meal_plan_entries(week_start.isoformat(), week_end.isoformat())
     by_day: dict[str, list[dict]] = {}
@@ -99,6 +100,7 @@ def _week_payload(week_start: date) -> dict:
 
     return {
         "week_start": week_start.isoformat(),
+        "default_servings": default_servings(db),
         "shopping_linked": _shopping_linked(db, week_start.isoformat()),
         "week_end": week_end.isoformat(),
         "previous_week": (week_start - timedelta(days=7)).isoformat(),
@@ -195,14 +197,15 @@ def conductor_preview(payload: MealConductorPreview):
 class MealPlanCreate(BaseModel):
     planned_for: str
     recipe_id: int = Field(gt=0)
-    planned_servings: int = Field(default=2, ge=1, le=24)
+    planned_servings: Optional[int] = Field(default=None, ge=1, le=24)
 
 
 @router.post("/items")
 def add_item(payload: MealPlanCreate):
     planned_for = _parse_date(payload.planned_for, field="planned_for")
     try:
-        item = get_db().meal_plan_add(
+        db = get_db()
+        item = db.meal_plan_add(
             planned_for=planned_for.isoformat(),
             recipe_id=payload.recipe_id,
             planned_servings=payload.planned_servings,

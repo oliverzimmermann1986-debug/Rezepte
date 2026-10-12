@@ -53,7 +53,7 @@ class Vote(Payload):
 
 class Plan(Payload):
     planned_for: str
-    planned_servings: int = Field(ge=1, le=24)
+    planned_servings: int | None = Field(default=None, ge=1, le=24)
 
 
 @router.get("/cookbooks")
@@ -183,4 +183,6 @@ def delete_meal_wish(wish_id: int, request: Request):
 @router.post("/meal-wishes/{wish_id}/plan")
 def plan_meal_wish(wish_id: int, payload: Plan, request: Request):
     db = get_db()
-    return features.plan_wish(db, actor_for(request, db), wish_id, payload.planned_for, payload.planned_servings)
+    from ..accounts import default_servings
+    servings = payload.planned_servings if payload.planned_servings is not None else default_servings(db)
+    return features.plan_wish(db, actor_for(request, db), wish_id, payload.planned_for, servings)

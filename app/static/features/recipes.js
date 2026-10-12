@@ -559,6 +559,9 @@
         if (!this._detailOwns(context)) return;
         if (!r) throw new Error('Das Rezept konnte nicht geladen werden.');
         this.recipeDetail.data = r;
+        if (this.systemInfo.capabilities?.includes('household-default-servings-v1') && Number(r.servings) > 0) {
+          this.recipeDetail.multiplier = this.householdDefaultServings() / Number(r.servings);
+        }
       } catch (error) {
         if (this._detailOwns(context) && !controller.signal.aborted) {
           this.recipeDetail.error = error?.message || 'Das Rezept konnte nicht geladen werden.';

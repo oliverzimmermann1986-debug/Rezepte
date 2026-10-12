@@ -39,6 +39,18 @@ def own_profile(request: Request):
     }
 
 
+class HouseholdPreferences(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    default_servings: int = Field(ge=1, le=24, strict=True)
+
+
+@router.patch('/preferences')
+def save_household_preferences(payload: HouseholdPreferences, request: Request):
+    if request_is_read_only(request):
+        raise HTTPException(403, 'Gastzugang ist schreibgeschützt')
+    return accounts.save_preferences(get_db(), _user(request)['id'], payload.default_servings)
+
+
 class AccountConfirmation(BaseModel):
     current_password: str = Field(default="", max_length=512)
 

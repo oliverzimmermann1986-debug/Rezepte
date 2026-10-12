@@ -192,11 +192,15 @@ def current_session(request: Request) -> Dict[str, Any]:
         role = str(user.get("role") or ROLE_USER)
         if role not in VALID_ROLES:
             role = ROLE_GUEST
-    return {
+    payload = {
         "username": (user or {}).get("username") or username,
         "role": role,
         **role_capabilities(role),
     }
+    if user and user.get('id') and role != ROLE_GUEST:
+        from ..accounts import preferences_for_user
+        payload.update(preferences_for_user(get_db(), user['id']))
+    return payload
 
 
 @router.get("/overview")

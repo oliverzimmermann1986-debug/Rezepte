@@ -20,6 +20,7 @@ struct RecipePickerView: View {
     @State private var errorMessage: String?
     @State private var loadedQuery: String?
     @State private var loadToken = UUID()
+    @State private var initializedIdentity: UUID?
     private var queryKey: String { "\(session.identity)-\(search)-\(householdOnly)" }
     private var excludedIDs: Set<Int> { Set(excluding + day.items.map(\.recipeId)) }
 
@@ -89,7 +90,10 @@ struct RecipePickerView: View {
                 }
             }
             .task(id: queryKey) {
-                if let replacing, loadedQuery == nil { servings = replacing.plannedServings }
+                if initializedIdentity != session.identity {
+                    initializedIdentity = session.identity
+                    servings = replacing?.plannedServings ?? session.defaultServings
+                }
                 await load()
             }
             .onChange(of: householdOnly) { _, _ in suggested = nil }

@@ -24,6 +24,7 @@
           { silent: true, signal: controller.signal },
         );
         if (!result || controller.signal.aborted || sequence !== this.mealPlan._loadSequence) return;
+        this.session.default_servings = this.validHouseholdServings(result.default_servings);
         this.mealPlan = {
           ...this.mealPlan,
           weekStart: result.week_start,
@@ -87,7 +88,7 @@
 
     async openMealPlanAdd(day) {
       this.mealPlan.addingFor = day.date;
-      this.mealPlan.draft = { recipe_id: '', planned_servings: 2 };
+      this.mealPlan.draft = { recipe_id: '', planned_servings: this.householdDefaultServings() };
       try {
         await this.loadMealPlanRecipeOptions();
       } catch (error) {
@@ -101,14 +102,12 @@
 
     closeMealPlanAdd() {
       this.mealPlan.addingFor = '';
-      this.mealPlan.draft = { recipe_id: '', planned_servings: 2 };
+      this.mealPlan.draft = { recipe_id: '', planned_servings: this.householdDefaultServings() };
     },
 
     mealPlanRecipeChanged() {
-      const selected = this.mealPlan.recipeOptions.find(
-        item => Number(item.id) === Number(this.mealPlan.draft.recipe_id),
-      );
-      this.mealPlan.draft.planned_servings = Number(selected?.servings) || 2;
+      // Choosing another recipe preserves the household default or the
+      // portions already selected by the person planning this meal.
     },
 
     async addMealPlanItem() {

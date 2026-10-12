@@ -56,7 +56,7 @@ struct MealWishesView: View {
                                 }.buttonStyle(.borderedProminent)
                                 if pending == nil { Button("Abbrechen") { selectedID = nil } }
                             } else {
-                                Button("In den Wochenplan übernehmen") { selectedID = wish.id }
+                                Button("In den Wochenplan übernehmen") { servings = session.defaultServings; selectedID = wish.id }
                                     .disabled(pending != nil)
                             }
                             if wish.canDelete, wish.plannedFor == nil {

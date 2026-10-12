@@ -255,7 +255,7 @@ struct MealPlanSuggestionsView: View {
                 initializedWeekStart = week.weekStart
                 state.reset(session); rows = []; warnings = []; categories = [:]
                 constraints = MealPlanConstraints(avoidRecentDays: advanced ? 14 : 0)
-                count = 4; vegetarian = 2; minutes = 0; servings = 2; showingProfiles = false; pdfSnapshot = nil
+                count = 4; vegetarian = 2; minutes = 0; servings = session.defaultServings; showingProfiles = false; pdfSnapshot = nil
             }
             .onChange(of: constraints) { _, _ in clearPreview() }
         }

@@ -101,7 +101,7 @@
       <div x-show="status.scraper"><span class="pill running">Import</span> läuft</div>
       <div x-show="!status.scraper">Importdienst bereit</div>
       <div class="sidebar-meta">
-        <span x-text="'v' + (systemInfo.version || '1.15.2')"></span>
+        <span x-text="'v' + (systemInfo.version || '1.15.3')"></span>
         <form method="post" action="/logout" class="logout-form">
           <button type="submit" class="sidebar-logout-button">Abmelden</button>
         </form>
@@ -221,6 +221,11 @@
       </div>
       <div x-show="canWrite() && account.data && !account.data.is_guest" class="card">
         <h2>Personen im Konto</h2>
+        <form x-show="systemInfo.capabilities?.includes('household-default-servings-v1')" @submit.prevent="saveHouseholdDefaultServings()" class="account-form">
+          <label>Standard-Portionen im Haushalt<input type="number" min="1" max="24" step="1" required x-model.number="account.defaultServings" :disabled="account.busy || account.loading"></label>
+          <p class="muted">Gilt für neue Planungen und Einkäufe aller Mitglieder. Portionen pro Gericht bleiben anpassbar; bestehende Planungen bleiben erhalten.</p>
+          <button type="submit" class="btn btn-primary" :disabled="account.busy || account.loading || account.defaultServings===account.data?.default_servings">Portionszahl speichern</button>
+        </form>
         <template x-for="member in account.data?.members || []" :key="member.id"><p x-text="member.username + (member.disabled ? ' · deaktiviert' : '')"></p></template>
         <div x-show="account.data?.is_owner && (account.data?.members?.length || 0) < 2">
           <p>Die zweite Person meldet sich mit eigenem Benutzernamen und Passwort an. Der Link gilt sieben Tage und ist einmal verwendbar.</p>
@@ -3599,27 +3604,27 @@
               <div class="nutrition-grid" x-show="recipeDetail.data?.calories_per_serving">
                 <div class="nutrition-box">
                   <div class="nutrition-value">
-                    ~<span x-text="Math.round((recipeDetail.data?.calories_per_serving || 0) * recipeDetail.multiplier)"></span>
+                    ~<span x-text="Math.round(recipeDetail.data?.calories_per_serving || 0)"></span>
                   </div>
                   <div class="nutrition-label">kcal</div>
                 </div>
                 <div class="nutrition-box">
                   <div class="nutrition-value">
-                    <span x-text="((recipeDetail.data?.protein_g || 0) * recipeDetail.multiplier).toFixed(1)"></span>
+                    <span x-text="(recipeDetail.data?.protein_g || 0).toFixed(1)"></span>
                     <span class="nutrition-unit">g</span>
                   </div>
                   <div class="nutrition-label">Eiweiß</div>
                 </div>
                 <div class="nutrition-box">
                   <div class="nutrition-value">
-                    <span x-text="((recipeDetail.data?.carbs_g || 0) * recipeDetail.multiplier).toFixed(1)"></span>
+                    <span x-text="(recipeDetail.data?.carbs_g || 0).toFixed(1)"></span>
                     <span class="nutrition-unit">g</span>
                   </div>
                   <div class="nutrition-label">Kohlenhydrate</div>
                 </div>
                 <div class="nutrition-box">
                   <div class="nutrition-value">
-                    <span x-text="((recipeDetail.data?.fat_g || 0) * recipeDetail.multiplier).toFixed(1)"></span>
+                    <span x-text="(recipeDetail.data?.fat_g || 0).toFixed(1)"></span>
                     <span class="nutrition-unit">g</span>
                   </div>
                   <div class="nutrition-label">Fett</div>

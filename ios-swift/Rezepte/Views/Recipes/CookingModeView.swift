@@ -5,6 +5,7 @@ import UIKit
 struct CookingModeView: View {
     let recipe: Recipe
     let preferOffline: Bool
+    let initialServings: Int?
 
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var offline: OfflineRecipeStore
@@ -33,10 +34,11 @@ struct CookingModeView: View {
     @State private var pendingCompletion: CookingCompletionIntent?
     @State private var offlineCooking = false
 
-    init(recipe: Recipe, preferOffline: Bool = false) {
+    init(recipe: Recipe, preferOffline: Bool = false, initialServings: Int? = nil) {
         self.recipe = recipe
         self.preferOffline = preferOffline
-        _servings = State(initialValue: recipe.servings ?? 1)
+        self.initialServings = initialServings
+        _servings = State(initialValue: min(50, max(1, initialServings ?? recipe.servings ?? 1)))
     }
 
     private var originalServings: Int { recipe.servings ?? servings }
@@ -668,7 +670,7 @@ struct CookingModeView: View {
     private func apply(_ progress: CookingProgress) {
         completedSteps = Set(progress.completedSteps.filter { recipe.steps.indices.contains($0) })
         activeStep = min(max(0, progress.activeStep), max(0, recipe.steps.count - 1))
-        servings = min(50, max(1, progress.servings ?? originalServings))
+        servings = HouseholdServingDefaults.cooking(initial: initialServings, original: originalServings, progress: progress)
     }
 
     private var voiceControls: some View {

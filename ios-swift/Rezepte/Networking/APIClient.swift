@@ -278,6 +278,11 @@ actor APIClient {
         try await send("/api/account")
     }
 
+    func saveHouseholdDefaultServings(_ servings: Int) async throws -> HouseholdPreferencesResponse {
+        struct Body: Encodable { let defaultServings: Int }
+        return try await send("/api/account/preferences", method: "PATCH", body: Body(defaultServings: servings))
+    }
+
     func createInvitation() async throws -> CreatedHouseholdInvitation {
         try await send("/api/account/invitations", method: "POST", body: EmptyBody())
     }
