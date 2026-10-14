@@ -9,6 +9,8 @@ htmlcov/
 .pytest_cache/
 .ruff_cache/
 .tmp/
+reports/ci/
+reports/unified-quality-report.json*
 
 # Runtime
 data/*.db

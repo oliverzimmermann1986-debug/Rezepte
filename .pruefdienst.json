@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "image": "rezepte",
+  "command": "bash tools/ci/verify.sh",
+  "timeoutSeconds": 7200,
+  "postgres": false
+}
