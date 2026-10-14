@@ -4,7 +4,8 @@ Profil `rezepte`, VM 110, bestehender Dienst `pruefdienst.service`. Die Prüfdat
 `.pruefdienst.json` aktiviert die Prüfung am jeweiligen Commit. Der zentrale Dienst
 entdeckt `main` und Tags; andere Branches werden von GitHub Actions geprüft.
 Ein technischer Tag `ci/rezepte-…` prüft den genauen Küchenbranch-Stand ebenfalls
-auf Proxmox. Er erstellt weder einen App-Build noch eine Veröffentlichung.
+auf Proxmox. GitHub kann dafür zusätzliche Buildprüfungen starten; ein technischer
+Tag veröffentlicht keine App und löst keinen signierten Upload aus.
 
 ## Prüfplan
 
