@@ -189,7 +189,7 @@ def main(argv=None, root: Path = ROOT) -> int:
     node_files += sorted((root / "native-ios/tests").glob("*.test.cjs"))
     node_files += sorted((root / "native-ios/scripts").glob("*.test.mjs"))
     ids = ["runtime"] + (["python-dependencies"] if options.install_deps else [])
-    ids += ["python-syntax", "python-lint", "configuration-syntax", "shell-syntax", "javascript-syntax", "client-unit", "native-install",
+    ids += ["python-syntax", "python-lint", "configuration-syntax", "shell-syntax", "javascript-syntax", "native-install", "client-unit",
             "native-typecheck", "native-lint", "native-config", "native-bundle", "server-unit"]
     if browser_files:
         ids.append("client-e2e")
@@ -216,9 +216,9 @@ def main(argv=None, root: Path = ROOT) -> int:
             raise ValueError("No Node test files found")
         output = plan.command("client-unit", ["node", "--test", "--test-reporter=tap", *map(str, node_files)])
         return {"tests": node_summary(output)}
-    plan.gate("client-unit", node_tests, ("runtime",))
     native = root / "native-ios"
     plan.gate("native-install", lambda: plan.command("native-install", ["npm", "ci", "--no-audit", "--no-fund"], cwd=native) and {}, ("runtime",))
+    plan.gate("client-unit", node_tests, ("native-install",))
     for key, args in (
         ("native-typecheck", ["npm", "run", "typecheck"]),
         ("native-lint", ["npm", "run", "lint"]),
