@@ -1,8 +1,8 @@
 # Resolve the Python tag to a reviewed digest during provisioning; never use a
 # mutable registry tag in service.json. Build this image on the dedicated VM.
-ARG BASE_IMAGE
+ARG BASE_IMAGE=python@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89
 FROM ${BASE_IMAGE}
-ARG NODE_SHA256
+ARG NODE_SHA256=d80a33707605ced9a31b8f543cea9ab512bc3d2fef2c148f31a50e939ff07560
 USER root
 RUN sed -i 's@http://@https://@g' /etc/apt/sources.list.d/debian.sources \
  && apt-get update && apt-get install -y --no-install-recommends \
@@ -23,6 +23,7 @@ RUN python3 -m pip install --no-cache-dir playwright==1.61.0 \
  && chmod -R a+rX /opt/browsers \
  && python3 -c 'import sys; assert sys.version_info[:2] == (3, 11)' \
  && node -e 'if (process.versions.node !== "20.19.4") process.exit(1)' \
+ && useradd --uid 1000 --user-group --no-create-home --home-dir /work/home ci \
  && mkdir -p /work /snapshot /opt/pruefdienst \
  && chown 1000:1000 /work
 COPY tools/ci/container-entry.sh /opt/pruefdienst/container-entry.sh
