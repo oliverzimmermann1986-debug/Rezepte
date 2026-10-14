@@ -11,7 +11,7 @@ auf Proxmox. Er erstellt weder einen App-Build noch eine Veröffentlichung.
 `python tools/ci_verify.py` führt denselben Plan auf GitHub und Proxmox aus:
 
 - Python 3.11 und Node 20.19.4 wie in den bisherigen Repo-Workflows.
-- Python-Syntax, Ruff, alle JavaScript-Dateien unter `app/static`.
+- Python-Syntax, Ruff, alle versionierten JavaScript-Dateien, Shellsyntax und YAML-Konfigurationen.
 - Alle Node-Tests in `tests`, `native-ios/tests` und `native-ios/scripts`.
 - Expo: Installation mit `npm ci`, Typecheck, Lint, Konfiguration und
   iOS-JavaScript-Bundle. Keine Signierung und kein Upload.

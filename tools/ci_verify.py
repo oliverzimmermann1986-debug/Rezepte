@@ -135,14 +135,33 @@ def verify_runtime(plan: Plan):
 
 
 def javascript_syntax(plan: Plan):
-    files = sorted((plan.root / "app/static").rglob("*.js"))
-    files += sorted((plan.root / "tools").rglob("*.cjs"))
+    names = subprocess.check_output(["git", "ls-files", "--", "*.js", "*.cjs", "*.mjs"], cwd=plan.root, text=True).splitlines()
+    files = [plan.root / name for name in names]
     if not files:
         raise ValueError("No JavaScript sources found")
     # One log for the whole stage; node --check never evaluates application code.
     script = "for (const f of process.argv.slice(1)) { const r = require('node:child_process').spawnSync(process.execPath, ['--check', f], {stdio:'inherit'}); if (r.status !== 0) process.exit(1); }"
     plan.command("javascript-syntax", ["node", "-e", script, *[str(p) for p in files]])
     return {"files": len(files)}
+
+
+def shell_syntax(plan: Plan):
+    names = subprocess.check_output(["git", "ls-files", "--", "*.sh"], cwd=plan.root, text=True).splitlines()
+    if not names:
+        raise ValueError("No shell scripts found")
+    plan.command("shell-syntax", ["bash", "-c", 'for file; do bash -n -- "$file" || exit 1; done', "ci-shell-syntax", *names])
+    return {"files": len(names)}
+
+
+def configuration_syntax(plan: Plan):
+    import yaml
+    names = subprocess.check_output(["git", "ls-files", "--", "*.yml", "*.yaml"], cwd=plan.root, text=True).splitlines()
+    if not names:
+        raise ValueError("No YAML configuration found")
+    for name in names:
+        with (plan.root / name).open(encoding="utf-8") as source:
+            list(yaml.safe_load_all(source))
+    return {"files": len(names)}
 
 
 def python_tests(plan: Plan, key: str, browser_files: list[Path]):
@@ -170,7 +189,7 @@ def main(argv=None, root: Path = ROOT) -> int:
     node_files += sorted((root / "native-ios/tests").glob("*.test.cjs"))
     node_files += sorted((root / "native-ios/scripts").glob("*.test.mjs"))
     ids = ["runtime"] + (["python-dependencies"] if options.install_deps else [])
-    ids += ["python-syntax", "python-lint", "javascript-syntax", "client-unit", "native-install",
+    ids += ["python-syntax", "python-lint", "configuration-syntax", "shell-syntax", "javascript-syntax", "client-unit", "native-install",
             "native-typecheck", "native-lint", "native-config", "native-bundle", "server-unit"]
     if browser_files:
         ids.append("client-e2e")
@@ -188,6 +207,8 @@ def main(argv=None, root: Path = ROOT) -> int:
     sources = ["app", "tests", "tools", "video_archiver"]
     plan.gate("python-syntax", lambda: plan.command("python-syntax", [sys.executable, "-m", "compileall", "-q", *sources]) and {}, python_requires)
     plan.gate("python-lint", lambda: plan.command("python-lint", [sys.executable, "-m", "ruff", "check", *sources]) and {}, python_requires)
+    plan.gate("configuration-syntax", lambda: configuration_syntax(plan), python_requires)
+    plan.gate("shell-syntax", lambda: shell_syntax(plan), ("runtime",))
     plan.gate("javascript-syntax", lambda: javascript_syntax(plan), ("runtime",))
 
     def node_tests():
