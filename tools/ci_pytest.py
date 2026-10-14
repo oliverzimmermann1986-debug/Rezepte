@@ -34,6 +34,11 @@ def main():
     os.environ["REZEPTE_BROWSER_ARTIFACT_DIR"] = str(root / "reports/ci/browser")
     from app.db import Database
     Database.__init__.__defaults__ = (sandbox / "fallback.db",)
+    from app.jobs import locks
+    # Older main predates config-derived lock paths. Keep that legacy constant
+    # inside the test sandbox; newer code must exercise its real path resolver.
+    if not hasattr(locks, "lock_dir"):
+        locks.LOCK_DIR = sandbox / "locks"
     import pytest
     return pytest.main([*sys.argv[1:], "-p", "no:cacheprovider", "--basetemp", str(sandbox / "pytest")])
 
