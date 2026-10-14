@@ -116,6 +116,9 @@ class Plan:
                 process.wait()
                 raise RuntimeError(f"{key}: timed out after {timeout}s")
         output = log.read_text(encoding="utf-8", errors="replace")
+        gate = next((g for g in self.report["gates"] if g["id"] == key), None)
+        if gate is not None:
+            gate["output"] = output[-60000:]
         print(output[-60000:] if code else output[-4000:], flush=True)
         if code:
             raise RuntimeError(f"{key}: exit {code}; see reports/ci/{key}.log")
