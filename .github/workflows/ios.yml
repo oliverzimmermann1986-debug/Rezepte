@@ -1,5 +1,9 @@
 name: Legacy Expo iPhone App
 
+permissions:
+  contents: read
+  statuses: read
+
 on:
   workflow_dispatch:
     inputs:
@@ -31,56 +35,20 @@ concurrency:
 
 jobs:
   verify:
-    name: Typecheck, lint and bundle Expo app
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: native-ios
+    name: Require successful VM 110 verification
+    runs-on: macos-26
+    timeout-minutes: 3
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20.19.4
-          cache: npm
-          cache-dependency-path: native-ios/package-lock.json
-
-      - name: Install locked dependencies
-        run: npm ci
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Cache regression tests
-        run: npm test
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Validate Expo configuration
-        run: npx expo config --type public
-
-      - name: Validate isolated development and preview variants
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP_VARIANT=development npx expo config --type public >/dev/null
-          APP_VARIANT=preview npx expo config --type public >/dev/null
-
-      - name: Produce iOS JavaScript bundle
-        run: npx expo export --platform ios --output-dir dist-ci
-
-      - name: Upload bundle diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-ios-bundle-${{ github.sha }}
-          path: native-ios/dist-ci
-          if-no-files-found: ignore
-          retention-days: 7
+      - name: Require Pruefdienst for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node native-ios/scripts/pruefdienst-status.mjs
 
   testflight:
     name: Build signed IPA locally and submit to TestFlight
@@ -199,7 +167,7 @@ jobs:
     name: Verify existing TestFlight build
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_build_number != '' }}
     needs: verify
-    runs-on: ubuntu-24.04
+    runs-on: macos-26
     timeout-minutes: 25
     environment: testflight
     defaults:

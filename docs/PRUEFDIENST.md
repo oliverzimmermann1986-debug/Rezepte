@@ -2,19 +2,29 @@
 
 Profil `rezepte`, VM 110, bestehender Dienst `pruefdienst.service`. Die Prüfdatei
 `.pruefdienst.json` aktiviert die Prüfung am jeweiligen Commit. Der zentrale Dienst
-entdeckt `main` und Tags; andere Branches werden von GitHub Actions geprüft.
+entdeckt `main` und Tags. **Alle Linux-Prüfungen laufen ausschließlich dort.**
+Für andere Branches und Pull Requests im selben Repository übermittelt der kurze
+GitHub-Workflow `Pruefdienst request` nur den exakten Quell-SHA als idempotenten Tag
+`ci/rezepte-request/<SHA>`. Er checkt keinen Code aus und führt keine App-Tests aus.
+Ein erfolgreicher Auftrag ist noch kein erfolgreicher Test: maßgeblich bleibt
+`pruefdienst/release` am angeforderten Commit. Bei Pull Requests wird der Head-SHA
+geprüft; `main` wird direkt vom Prüfdienst erkannt. Die Prüfung eines synthetischen
+GitHub-Merge-Commits ist damit nicht verbunden.
+Fork-PRs erhalten keinen Schreibtoken; ein Maintainer muss deren Stand zuerst in
+einen vertrauenswürdigen Repository-Branch übernehmen und dort prüfen lassen.
 Ein technischer Tag `ci/rezepte-…` prüft den genauen Küchenbranch-Stand ebenfalls
 auf Proxmox. GitHub kann dafür zusätzliche Buildprüfungen starten; ein technischer
 Tag veröffentlicht keine App und löst keinen signierten Upload aus.
 
 ## Prüfplan
 
-`python tools/ci_verify.py` führt denselben Plan auf GitHub und Proxmox aus:
+`python tools/ci_verify.py` führt den vollständigen Plan auf Proxmox aus;
+derselbe Einstieg kann lokal mit den angegebenen Runtimes verwendet werden:
 
 - Python 3.11 und Node 20.19.4 wie in den bisherigen Repo-Workflows.
 - Python-Syntax, Ruff, alle versionierten JavaScript-Dateien, Shellsyntax und YAML-Konfigurationen.
 - Alle Node-Tests in `tests`, `native-ios/tests` und `native-ios/scripts`.
-- Expo: Installation mit `npm ci`, Typecheck, Lint, Konfiguration und
+- Expo: Installation mit `npm ci`, Typecheck, Lint, Produktions-/Entwicklungs-/Preview-Konfiguration und
   iOS-JavaScript-Bundle. Keine Signierung und kein Upload.
 - Vollständige Pytest-Suite einschließlich vorhandener API-, Rechte-, Import-,
   PDF/OCR-, SQLite-Migrations-, Update-, Wochenplan-, Portions- und Einkaufsprüfungen.
@@ -40,11 +50,19 @@ Host-Mounts oder Docker-Sockets. Kein Zugriff auf CT117/CT200 ist nötig.
 Verbindlich ist GitHub-Status `pruefdienst/release` am geprüften SHA. Der bestehende
 Dienst veröffentlicht Server-, Client- und Browser-Teilstatus für die passenden
 Gate-IDs. Rohlogs und `reports/unified-quality-report.json` gehen ins private
-Prüfprotokoll-Repository. GitHub Actions lädt zusätzlich JUnit und Browser-/Bundleartefakte
-für sieben Tage hoch. VM-Diagnose und fachliches Testergebnis sind separat.
+Prüfprotokoll-Repository. Die frühere Linux-Quality-Action und der doppelte
+Linux-Expo-Prüfjob entfallen. JUnit und Browser-/Bundledateien entstehen im
+isolierten Container; der zentrale Dienst archiviert daraus JSON-Bericht und
+Rohlog, aber keine Browserbilder oder vollständigen Bundles. VM-Diagnose und
+fachliches Testergebnis sind separat.
 
 Swift-/Xcode-Tests, Simulatorprüfungen, signierte IPA, TestFlight und Apple-Freigabe
-laufen weiterhin im macOS-Workflow. Der nichtprivilegierte Linux-Container prüft keine
+laufen weiterhin im macOS-Workflow; VM 110 betreibt Linux und kann Xcode nicht ausführen.
+Technische CI-Tags starten keine zusätzlichen macOS-Prüfungen. Signierte neue
+SwiftUI- und Legacy-Expo-Uploads verlangen vorher einen erfolgreichen
+`pruefdienst/release`-Status auf exakt dem zu bauenden SHA. Teilstatus, ausstehende,
+fehlende oder rote Ergebnisse sowie API-Ausfälle erlauben keinen Upload.
+Der nichtprivilegierte Linux-Container prüft keine
 rootabhängige Installer-Eigentümerabnahme und keine reale Produktionsmigration.
 
 ## Image bereitstellen

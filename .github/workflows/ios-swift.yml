@@ -1,5 +1,9 @@
 name: SwiftUI iPhone App
 
+permissions:
+  contents: read
+  statuses: read
+
 on:
   workflow_dispatch:
     inputs:
@@ -29,10 +33,13 @@ on:
         default: false
         type: boolean
   push:
+    tags-ignore: ["ci/**"]
     paths:
       - "ios-swift/**"
       - "native-ios/scripts/testflight-ensure.mjs"
       - "native-ios/scripts/testflight-ensure.test.mjs"
+      - "native-ios/scripts/pruefdienst-status.mjs"
+      - "native-ios/scripts/pruefdienst-status.test.mjs"
       - "native-ios/scripts/testflight-what-to-test-1.11.0.txt"
       - "app/main.py"
       - "app/auth.py"
@@ -46,6 +53,8 @@ on:
       - "ios-swift/**"
       - "native-ios/scripts/testflight-ensure.mjs"
       - "native-ios/scripts/testflight-ensure.test.mjs"
+      - "native-ios/scripts/pruefdienst-status.mjs"
+      - "native-ios/scripts/pruefdienst-status.test.mjs"
       - "native-ios/scripts/testflight-what-to-test-1.11.0.txt"
       - "app/main.py"
       - "app/auth.py"
@@ -160,6 +169,16 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Use Node.js for the central release gate
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.4
+
+      - name: Require Pruefdienst for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node ../native-ios/scripts/pruefdienst-status.mjs
 
       - name: Install pinned XcodeGen
         shell: bash
