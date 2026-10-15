@@ -100,10 +100,10 @@ class Plan:
         marker = {k: gate[k] for k in ("id", "status", "durationMs")}
         print("[pruefdienst-gate] " + json.dumps(marker), flush=True)
 
-    def command(self, key: str, args: list[str], *, cwd: Path | None = None, timeout: int = 1800) -> str:
+    def command(self, key: str, args: list[str], *, cwd: Path | None = None, timeout: int = 1800, extra_env: dict | None = None) -> str:
         log = self.directory / f"{key}.log"
         with log.open("wb") as stream:
-            process = subprocess.Popen(args, cwd=cwd or self.root, env=self.env,
+            process = subprocess.Popen(args, cwd=cwd or self.root, env={**self.env, **(extra_env or {})},
                                        stdout=stream, stderr=subprocess.STDOUT,
                                        start_new_session=os.name == "posix")
             try:
@@ -179,6 +179,15 @@ def python_tests(plan: Plan, key: str, browser_files: list[Path]):
     return {"tests": summary}
 
 
+def native_config(plan: Plan, native: Path):
+    # These variants were previously checked by the legacy GitHub Linux job.
+    # Keep all of them when that job moves to the central Pruefdienst.
+    for variant in ("production", "development", "preview"):
+        plan.command("native-config-" + variant, ["npx", "--no-install", "expo", "config", "--type", "public"],
+                     cwd=native, extra_env={"APP_VARIANT": variant})
+    return {"variants": ["production", "development", "preview"]}
+
+
 def main(argv=None, root: Path = ROOT) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--install-deps", action="store_true")
@@ -222,10 +231,10 @@ def main(argv=None, root: Path = ROOT) -> int:
     for key, args in (
         ("native-typecheck", ["npm", "run", "typecheck"]),
         ("native-lint", ["npm", "run", "lint"]),
-        ("native-config", ["npx", "--no-install", "expo", "config", "--type", "public"]),
-        ("native-bundle", ["npx", "--no-install", "expo", "export", "--platform", "ios", "--output-dir", str(plan.directory / "expo-ios")]),
     ):
         plan.gate(key, lambda key=key, args=args: plan.command(key, args, cwd=native) and {}, ("native-install",))
+    plan.gate("native-config", lambda: native_config(plan, native), ("native-install",))
+    plan.gate("native-bundle", lambda: plan.command("native-bundle", ["npx", "--no-install", "expo", "export", "--platform", "ios", "--output-dir", str(plan.directory / "expo-ios")], cwd=native) and {}, ("native-install",))
     plan.gate("server-unit", lambda: python_tests(plan, "server-unit", browser_files), python_requires)
     if browser_files:
         plan.gate("client-e2e", lambda: python_tests(plan, "client-e2e", browser_files), python_requires)
