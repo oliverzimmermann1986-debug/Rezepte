@@ -71,6 +71,7 @@ def test_signed_uploads_require_canonical_pruefdienst_status_before_signing():
     assert any("pruefdienst-status.mjs" in step.get("run", "") for step in steps)
     native = workflow("ios-swift.yml")
     triggers = native.get("on", native.get(True))
+    assert "**" in triggers["push"]["branches"]
     assert "ci/**" in triggers["push"]["tags-ignore"]
     steps = native["jobs"]["testflight"]["steps"]
     gate = next(i for i, step in enumerate(steps) if "pruefdienst-status.mjs" in step.get("run", ""))
